@@ -2186,6 +2186,7 @@ GMTVTK_API void gmtvtk_set_shade_intensity_h(void *handle, const float *inten, i
 		return;
 	}
 	ExternShade &E = (side == 1) ? s->shadeInLand : s->shadeIn;
+	E.rgb.clear();                       // a reflectance replaces a method-1 picture on this side
 	E.inten.assign(inten, inten + (size_t)nx * ny);
 	E.nx = nx;   E.ny = ny;
 	E.x0 = x0;   E.x1 = x1;
@@ -8365,111 +8366,93 @@ GMTVTK_API int gmtvtk_copy_view_clipboard_h(void *handle) {
 // gmtvtk_capture_view_rgba.
 GMTVTK_API void gmtvtk_free_rgb(unsigned char *buf) { delete[] buf; }
 
-// ONE AQUAMOTO HALF LIT WITH A C++ LOOK — methods 5 (Hillshade grdimage), 6 (Hillshade Lambert) and
-// 7 (Shade PBR) — as a node-resolution RGB picture, for the host's combined "Rendered image".
-//
-// Those three methods are not reflectances: they are the shading engine's own looks, and the host's
-// reflectance function (`_hs_reflectance`, 2/3/4 only) cannot make them — which is why asking the
-// combine for a 5/6/7 half died with "unknown illumination model". So the half is lit HERE, by the
-// very pieces bakeAquaShade lights the live layer with: that side's own light snapshot
-// (makeReliefLightSide), applyReliefShade for 5/6, reliefOcclusion + applyPBRShade for 7. Nothing of
-// that maths is re-implemented; only the method flags and the sun come from the request.
-//
-// `z` is the half grid (other side NaN) in its own layout `zlayout` (GridLay); the palette is the CPT
-// nodes cz/crgb, built through makeGridCTF (the one LUT constructor), or the optional albedo texRgb.
-// `side`: 1 = LAND, else WATER.
-// Output: nx*ny RGB triplets, FIRST ROW NORTH — the layout gmtvtk_pbr_render_offscreen returns, so
-// the host unpacks both the same way. Caller frees with gmtvtk_free_rgb. Returns 1, or 0 on failure.
-GMTVTK_API int gmtvtk_aqua_half_bake_rgb(void *handle, const float *z, int nx, int ny, int zlayout,
-                                         double x0, double x1, double y0, double y1,
-                                         const double *cz, const double *crgb, int ncolor,
-                                         int method, int side, double azim, double elev,
-                                         const unsigned char *texRgb, int texW, int texH, int texBands,
-                                         unsigned char **outRgb, int *oW, int *oH) {
+// THE TSUNAMI LAYER PICTURE, handed to the host: the very pixels the layer is lit with
+// (aquaBakeNodes, 40_shading.cpp — each side through the plain-grid bake from its own surface), so
+// "Rendered image", "Water side" and "Land side" show the layer and never a second picture of it.
+// `side`: -1 = the whole layer; 0 = the water alone, 1 = the land alone (the other side's nodes are
+// painted with the Preferences NaN colour). nx*ny RGB, FIRST ROW NORTH. Caller frees with
+// gmtvtk_free_rgb. Returns 1, or 0 when the window has no tsunami layer.
+GMTVTK_API int gmtvtk_aqua_layer_rgb_h(void *handle, int side, unsigned char **outRgb, int *oW, int *oH) {
 	Scene *s = static_cast<Scene*>(handle);
-	if (!sceneAlive(s) || !z || nx < 2 || ny < 2 || !cz || !crgb || ncolor < 2 || !outRgb || !oW || !oH)
-		return 0;
-	if (method != 5 && method != 6 && method != 7) return 0;
-	// Optional ALBEDO (Aquamoto "Sat img"): row 0 = SOUTH, west->east, texBands per pixel. It replaces
-	// the palette as the colour the light multiplies, nothing else.
-	const bool useTex = (texRgb && texW > 0 && texH > 0 && (texBands == 3 || texBands == 4));
-	const double dx = (x1 - x0) / (nx - 1), dy = (y1 - y0) / (ny - 1);
-	if (dx == 0.0 || dy == 0.0) return 0;
-	// THIS SIDE's light, exactly as bakeAquaShade takes it, with the requested look and sun.
-	const AquaSideShade &own = (side == 1) ? s->aquaLandShade : s->aquaWaterShade;
-	AquaSideShade A = own.valid ? own : snapshotShade(s);
-	A.useHillshade = (method == 5 || method == 6);
-	A.hillGrd      = (method == 5);
-	A.litBake      = (method == 7);
-	A.lightAz = azim;  A.lightEl = elev;
-	const ReliefLight L = makeReliefLightSide(s, A);
-	const bool pbr = (method == 7);
-	const GridLay lay = gridLay(nx, ny, zlayout);
-	auto Zc = [&](int ix, int iy) -> double { return lay.at(z, ix, iy); };
-	const double NaN = std::numeric_limits<double>::quiet_NaN();
-	const BakeOcclusion occ = pbr ? makeBakeOcclusion(s, L, s->bakeShadows ? gridTopZ(nx, ny, Zc) : NaN)
-	                              : BakeOcclusion();
-	auto ctf = makeGridCTF(s, cz, crgb, ncolor);
-	const double lo = cz[0], hi = cz[ncolor - 1];
-	const int NT = 1024;                                 // the CPT discretised once, as bakeLayerRGBA does
-	std::vector<unsigned char> tbl((size_t)NT * 3);
-	{
-		const double span = (hi > lo) ? (hi - lo) : 1.0;
-		double c[3];
-		for (int i = 0; i < NT; ++i) {
-			ctf->GetColor(lo + span * i / (NT - 1), c);
-			tbl[3*i+0] = (unsigned char)(c[0]*255.0+0.5);
-			tbl[3*i+1] = (unsigned char)(c[1]*255.0+0.5);
-			tbl[3*i+2] = (unsigned char)(c[2]*255.0+0.5);
-		}
-	}
-	const double invspan = (hi > lo) ? (NT - 1) / (hi - lo) : 0.0;
+	if (!sceneAlive(s) || !outRgb || !oW || !oH) return 0;
+	std::vector<unsigned char> px;
+	if (!aquaBakeNodes(s, px)) return 0;
+	const int nx = s->gnx, ny = s->gny;
+	const bool haveMask = s->aquaLandMask.size() == (size_t)nx * ny;
+	const unsigned char nan[3] = { (unsigned char)(s->nanColor[0] * 255.0 + 0.5),
+	                               (unsigned char)(s->nanColor[1] * 255.0 + 0.5),
+	                               (unsigned char)(s->nanColor[2] * 255.0 + 0.5) };
 	unsigned char *buf = new unsigned char[(size_t)nx * ny * 3];
-	vtkSMPTools::For(0, ny, [&](vtkIdType rBeg, vtkIdType rEnd) {
-	for (int iy = (int)rBeg; iy < (int)rEnd; ++iy) {         // iy counted from the SOUTH
-		const int iym = iy > 0 ? iy - 1 : iy, iyp = iy < ny - 1 ? iy + 1 : iy;
-		unsigned char *row = buf + (size_t)(ny - 1 - iy) * nx * 3;   // output row 0 = NORTH
-		for (int ix = 0; ix < nx; ++ix) {
-			unsigned char *p = row + (size_t)ix * 3;
-			const double zc = Zc(ix, iy);
-			if (std::isnan(zc)) {                        // the other side: never read by the combine
-				p[0] = (unsigned char)(s->nanColor[0]*255.0+0.5);
-				p[1] = (unsigned char)(s->nanColor[1]*255.0+0.5);
-				p[2] = (unsigned char)(s->nanColor[2]*255.0+0.5);
-				continue;
-			}
-			double c[3];
-			if (useTex) {                                // the albedo's pixel over this node (nearest)
-				const int tx = std::min(texW - 1, (int)std::lround((double)ix * (texW - 1) / (nx - 1)));
-				const int ty = std::min(texH - 1, (int)std::lround((double)iy * (texH - 1) / (ny - 1)));
-				const unsigned char *t = texRgb + ((size_t)ty * texW + tx) * texBands;
-				c[0] = t[0] / 255.0;  c[1] = t[1] / 255.0;  c[2] = t[2] / 255.0;
-			}
-			else {
-				int ti = (int)((zc - lo) * invspan); if (ti < 0) ti = 0; else if (ti > NT - 1) ti = NT - 1;
-				c[0] = tbl[3*ti] / 255.0;  c[1] = tbl[3*ti+1] / 255.0;  c[2] = tbl[3*ti+2] / 255.0;
-			}
-			const int ixm = ix > 0 ? ix - 1 : ix, ixp = ix < nx - 1 ? ix + 1 : ix;
-			const double za = Zc(ixp, iy), zb = Zc(ixm, iy), zu = Zc(ix, iyp), zd = Zc(ix, iym);
-			const double dzdx = (ixp == ixm || std::isnan(za) || std::isnan(zb)) ? 0.0 : (za - zb) / ((ixp - ixm) * dx);
-			const double dzdy = (iyp == iym || std::isnan(zu) || std::isnan(zd)) ? 0.0 : (zu - zd) / ((iyp - iym) * dy);
-			double n0 = -dzdx, n1 = -dzdy, n2 = 1.0;
-			const double len = std::sqrt(n0*n0 + n1*n1 + n2*n2);
-			if (len > 0.0) { n0 /= len; n1 /= len; n2 /= len; }
-			const double nv[3] = { n0, n1, n2 };
-			if (pbr) {
-				double ao, sunVis;
-				reliefOcclusion(L, occ, Zc, nx, ny, dx, dy, ix, iy, nv, ao, sunVis);
-				applyPBRShade(L, nv, c, ao, sunVis);
-			}
-			else applyReliefShade(L, nv, c);
-			p[0] = (unsigned char)std::min(255.0, c[0] * 255.0 + 0.5);
-			p[1] = (unsigned char)std::min(255.0, c[1] * 255.0 + 0.5);
-			p[2] = (unsigned char)std::min(255.0, c[2] * 255.0 + 0.5);
+	for (int r = 0; r < ny; ++r)
+		for (int c = 0; c < nx; ++c) {
+			const size_t i = (size_t)r * nx + c;
+			unsigned char *d = buf + ((size_t)(ny - 1 - r) * nx + c) * 3;   // row 0 south -> row 0 north
+			const bool land = haveMask && s->aquaLandMask[i] != 0;
+			if (side >= 0 && land != (side == 1)) { d[0] = nan[0]; d[1] = nan[1]; d[2] = nan[2]; continue; }
+			d[0] = px[4*i]; d[1] = px[4*i+1]; d[2] = px[4*i+2];
 		}
-	}
-	});
 	*outRgb = buf; *oW = nx; *oH = ny;
+	return 1;
+}
+
+// METHOD 1 ON ONE TSUNAMI SIDE: VTK's own render of that side's surface, pushed by the host (which
+// renders it offscreen, `_pbr_capture`) as the side's picture — ExternShade::rgb, taken as it is by
+// aquaBakeNodes. `rgb` is nx*ny RGB, FIRST ROW NORTH, over the layer's own nodes; NULL clears it.
+// Lives in the side's ExternShade, so any other method chosen for the side drops it.
+GMTVTK_API int gmtvtk_aqua_set_side_rgb_h(void *handle, int side, const unsigned char *rgb, int nx, int ny) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s)) return 0;
+	ExternShade &E = (side == 1) ? s->shadeInLand : s->shadeIn;
+	E = ExternShade();
+	if (rgb && nx == s->gnx && ny == s->gny && nx > 1 && ny > 1) {
+		E.nx = nx;  E.ny = ny;
+		E.x0 = s->gx0;  E.x1 = s->gx1;  E.y0 = s->gy0;  E.y1 = s->gy1;
+		E.model = 1;
+		E.owner = activeGridName(s);
+		E.rgb.resize((size_t)nx * ny * 3);
+		for (int r = 0; r < ny; ++r)                          // row 0 north -> row 0 south
+			memcpy(E.rgb.data() + (size_t)r * nx * 3, rgb + (size_t)(ny - 1 - r) * nx * 3, (size_t)nx * 3);
+	}
+	applyShading(s);
+	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+	return E.rgb.empty() && rgb ? 0 : 1;
+}
+
+// THE METHOD ONE TSUNAMI SIDE IS LIT WITH, as the viewer holds it — the ONE record of it. 1 = a
+// pushed render, 2/3/4 = a loaded reflectance (its model), 5 grdimage, 6 Lambert, 7 the PBR bake,
+// 0 = unlit. The host asks this at every slice instead of keeping a copy that a dialog pick made in
+// C++ never updates (which is how 7 picked in the dialog came back as 1 on the next layer).
+GMTVTK_API int gmtvtk_aqua_side_method_h(void *handle, int side) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s)) return 0;
+	const ExternShade &E = (side == 1) ? s->shadeInLand : s->shadeIn;
+	if (haveExternRGB(E)) return 1;
+	if (haveExternShade(E)) return E.model;
+	const AquaSideShade &own = (side == 1) ? s->aquaLandShade : s->aquaWaterShade;
+	const AquaSideShade A = own.valid ? own : snapshotShade(s);
+	if (A.useHillshade) return A.hillGrd ? 5 : 6;
+	return A.litBake ? 7 : 0;
+}
+
+// "Sat img" on a tsunami layer: the land side shows the satellite picture as it is (aquaBakeNodes).
+GMTVTK_API void gmtvtk_aqua_set_land_plain_h(void *handle, int on) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s)) return;
+	s->aquaLandPlain = (on != 0);
+	applyShading(s);
+	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+}
+
+// The light ONE tsunami side is drawn with, for the host's method-1 render of it: sun azimuth,
+// elevation, roughness, metallic, key and fill intensity (out6). The side's own snapshot — the same
+// numbers aquaBakeNodes lights it with — so the render and the bake cannot be aimed differently.
+GMTVTK_API int gmtvtk_aqua_side_light_h(void *handle, int side, double *out6) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !out6) return 0;
+	const AquaSideShade &own = (side == 1) ? s->aquaLandShade : s->aquaWaterShade;
+	const AquaSideShade A = own.valid ? own : snapshotShade(s);
+	out6[0] = A.lightAz;  out6[1] = A.lightEl;  out6[2] = A.roughness;
+	out6[3] = A.metallic; out6[4] = A.lightIntensity;  out6[5] = A.fillIntensity;
 	return 1;
 }
 
@@ -8919,7 +8902,10 @@ GMTVTK_API void *gmtvtk_open_empty_offscreen(const char *title) {
 	// window not OUTLIVING its purpose: it is uncounted (above), closed with the last real window
 	// (70_window.cpp) and torn down once it goes idle (`_aqua_stage_close!`, aquamoto.jl).
 	s->win->setWindowOpacity(0.0);           // invisible even if a compositor ignores the move
-	s->win->move(-32000, -32000);            // …and off every screen
+	// -10000 LOGICAL, not -32000: Windows keeps window positions inside ±32768 PHYSICAL pixels, and at
+	// 225% scaling -32000 became -72000 — Qt then printed a setGeometry refusal on every build. Still
+	// far past the left of any real desktop.
+	s->win->move(-10000, -10000);            // …and off every screen
 	s->win->lower();
 	return s;
 }
@@ -9514,6 +9500,15 @@ GMTVTK_API int gmtvtk_show_layer_rgba_h(void *handle, const unsigned char *rgba,
 	// true, hillGrd=true) already say so; only WATER needs an explicit flat override. Each side gets
 	// its OWN valid snapshot here so bakeAquaShade never falls back to the live dock state for either.
 	if (s->aquaBaseRGBA.empty()) {
+		// A TSUNAMI LAYER IS A LIT PICTURE, NOT A LIT SURFACE: its colours are baked per side
+		// (aquaBakeNodes) and drawn unlit, so the window's screen-space passes (tone mapping, SSAO,
+		// shadows) would re-darken finished colours over the whole framebuffer — the defect a bare image
+		// had, fixed the same way. METHOD 7's own switches start where the Illumination dialog's boxes
+		// start (the dialog seeds them from the pass flags), so the picture the tank opens with is the
+		// picture applying 7 from the dialog gives — never one only the opening can make.
+		s->useTone = s->useSSAO = s->useShadows = false;
+		s->bakeTone = s->useTone;  s->bakeAO = s->useSSAO;  s->bakeShadows = s->useShadows;
+		s->aquaLandPlain = false;          // a new file starts without "Sat img"
 		s->aquaWaterShade = AquaSideShade{};
 		s->aquaWaterShade.valid = true; s->aquaWaterShade.useHillshade = false; s->aquaWaterShade.hillGrd = false;
 		s->aquaWaterShade.litBake = false;
@@ -9532,11 +9527,16 @@ GMTVTK_API int gmtvtk_show_layer_rgba_h(void *handle, const unsigned char *rgba,
 	// this (70_window.cpp) and it refuses anything that is not the same surface, so a real change of
 	// layer still falls through to the full builder below. The composite is kept with it, so
 	// re-checking "Shaded image (2-D)" restores the land/water blend from this very slice.
-	if (!s->layerImgMode && !s->aquaBaseRGBA.empty() &&
-	    sceneUpdateBaseGridZ(s, zhover, nx, ny, x0, x1, y0, y1, cz, crgb, ncolor, name, zlayout)) {
-		s->aquaBaseRGBA.assign(rgba, rgba + (size_t)nx * ny * 4);
-		refreshGridColorbar(s);        // the water scale moved with the slice
-		return 1;
+	// The composite is stored BEFORE the z update: that update re-lights the surface, and the surface
+	// wears this slice's composite (aquaBakeNodes), not the previous one.
+	if (!s->layerImgMode && !s->aquaBaseRGBA.empty() && s->aquaBaseRGBA.size() == (size_t)nx * ny * 4) {
+		std::vector<unsigned char> prev(rgba, rgba + (size_t)nx * ny * 4);
+		prev.swap(s->aquaBaseRGBA);
+		if (sceneUpdateBaseGridZ(s, zhover, nx, ny, x0, x1, y0, y1, cz, crgb, ncolor, name, zlayout)) {
+			refreshGridColorbar(s);        // the water scale moved with the slice
+			return 1;
+		}
+		s->aquaBaseRGBA.swap(prev);        // not the same surface: the full builder below takes over
 	}
 	return showLayerImageTail(s, rgba, nx, ny, zhover, nx, ny, x0, x1, y0, y1, geographic,
 	                          cz, crgb, ncolor, name, /*isCustom=*/true, zlayout);
@@ -9899,7 +9899,7 @@ GMTVTK_API int gmtvtk_make_photo_window_h(void *handle, int w, int h) {
 	QApplication::processEvents();
 	// OFF THE SCREEN, not hidden: hiding a window tears its GL surface down on some drivers, and a
 	// torn-down surface renders nothing. Moved instead, so it keeps a live context nobody can see.
-	s->win->move(-32000, -32000);
+	s->win->move(-10000, -10000);            // off screen, inside the ±32768 physical limit (see above)
 	QApplication::processEvents();
 	return (w > 1 && h > 1) ? gmtvtk_set_render_size_h(handle, w, h) : 1;
 }

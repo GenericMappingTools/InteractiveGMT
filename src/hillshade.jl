@@ -350,6 +350,13 @@ function _on_hillshade(scene::Ptr{Cvoid}, raw::String)::Cint
 		# window kept whatever method it had. They are looks, not reflectances: set the look, through
 		# the ONE setter that may change a method (sceneSetReliefLook, via gmtvtk_set_relief_look_h),
 		# and stop. RL_: 0 none, 1 PBR, 2 Hillshade-Lambert, 3 Hillshade-grdimage.
+		# ON A TSUNAMI the side setter decides: it bakes 5/6/7 per side and RENDERS 1 per side (VTK's own
+		# render of each side's surface). Setting RL_PBR here instead made 1 the CPU bake, i.e. method 7.
+		if model in (1, 5, 6, 7) && haskey(_AQUA, scene)
+			_aqua_illuminate!(scene, model, d, side)
+			_session_record_illum!(scene, raw, side)
+			return Cint(1)
+		end
 		if model in (1, 5, 6, 7)
 			# NOTE: the C++ side already applied this look when the method button was pressed (the dialog
 			# calls the look setter itself for 1/5/6/7). This branch exists for the session-replay door,

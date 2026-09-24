@@ -1252,11 +1252,16 @@ public:
 		// applied once, where the tank is born, so a tank opened by hand and a tank opened by a
 		// benchmark come up alike.
 		if (scene_ && sceneAlive(scene_)) sceneSetShadedImage2D(scene_, false);
-		// THE VTK ILLUMINATION. A tsunami window comes up lit like every other window in this program:
-		// the VTK (PBR) look, set through the ONE switch the Shading dock's own box throws
-		// (sceneSetReliefLook). It used to open at RL_None — no relief light at all — so the composite
-		// arrived flat.
-		if (scene_ && sceneAlive(scene_)) sceneSetReliefLook(scene_, RL_PBR, /*keepExternShade=*/true);
+		// EACH SIDE OPENS LIT WITH THE METHOD ITS BOX SHOWS — through the very setter a box edit uses
+		// (`_aqua_set_illum_model`). It used to force RL_PBR on both sides here whatever the boxes said,
+		// so the first picture was method 7 on water and land while the boxes stated something else.
+		if (scene_ && sceneAlive(scene_) && netIllumWater_ && netIllumLand_) {
+			QString o; bool closedNow = false;
+			runBlocking(QString("(InteractiveGMT._aqua_set_illum_model(%1,0,%2); InteractiveGMT._aqua_set_illum_model(%1,1,%3))")
+			                .arg(aquaScenePtr(scene_)).arg(netIllumWater_->value()).arg(netIllumLand_->value()),
+			            o, closedNow);
+			if (closedNow) return;
+		}
 		// THE LAYER'S GEOMETRY IS NOT TOUCHED HERE. A tsunami opens as the composited image it has
 		// always opened as — land coloured from the bathymetry, water from the stage. Switching it to
 		// the 3-D surface hands it to the plain-grid builder, which colours the stage with the WATER

@@ -6483,12 +6483,12 @@ public:
 		// fell back to a look.
 		const bool composited = scn && ((g_aquamotoHasWindow && g_aquamotoHasWindow(scn)) ||
 		                                scn->customLayerTexture || !scn->aquaBathyZ.empty());
-		// ONLY METHOD 1 GOES TO THE HOST ON A TSUNAMI. It is VTK's own RENDER and the material lives on
-		// an ACTOR, so a single composited actor cannot carry one per side — it has to be taken per
-		// side and combined (`aqua_shade_image`). 5, 6 and 7 stay C++ looks, re-lighting the existing
-		// composite in place: that is instant, and routing them to the host instead made every change
-		// of method pay a full rebuild.
-		if (model == 5 || model == 6 || model == 7 || (model == 1 && !composited)) {
+		// ONLY METHOD 1 GOES TO THE HOST ON A TSUNAMI. It is VTK's own RENDER, of each side's own
+		// surface, so the host renders it and pushes the picture (`_aqua_illuminate!`). Its sun and
+		// material are this dialog's all the same: they are written below first, and the side takes
+		// them from there. 5, 6 and 7 stay C++ looks, re-lighting the layer in place.
+		const bool hostRender = (model == 1 && composited);
+		if (model == 1 || model == 5 || model == 6 || model == 7) {
 			activeLook(scn).lightAz = eAzim->text().trimmed().toDouble();
 			activeLook(scn).lightEl = eElev->text().trimmed().toDouble();
 			// THE RENDER PASSES belong to method 1 and to nothing else — IBL, ambient occlusion, tone
@@ -6498,10 +6498,14 @@ public:
 			// its colours verbatim). Set unconditionally, so picking another method TURNS THEM OFF
 			// instead of leaving a pass running under a look that cannot use it.
 			scn->useIBL     = false;      // the "Image-based light" box is gone (user order, 2026-09-24)
-			scn->useSSAO    = (model == 1) && cbSSAOx->isChecked();
-			scn->useTone    = (model == 1) && cbTonex->isChecked();
-			scn->useFXAA    = (model == 1) && cbFXAAx->isChecked();
-			scn->useShadows = (model == 1) && cbShadowx->isChecked();
+			// …and NEVER ON A TSUNAMI. There method 1 is each side's own render, pushed as a finished
+			// picture; the window's passes would run over the WHOLE window on top of it — a second tone
+			// mapping, occlusion and shadows over pixels that are already lit.
+			const bool winPasses = (model == 1) && !composited;
+			scn->useSSAO    = winPasses && cbSSAOx->isChecked();
+			scn->useTone    = winPasses && cbTonex->isChecked();
+			scn->useFXAA    = winPasses && cbFXAAx->isChecked();
+			scn->useShadows = winPasses && cbShadowx->isChecked();
 			if (model == 1) scn->envIntensity = sEnvI.value();
 			// Method 7 does three of those itself, in the bake, and keeps its own switches for them so
 			// no GPU pass runs over the baked texture as well (a second tone mapping, most of all).
@@ -6533,7 +6537,7 @@ public:
 				// picked silently became method 7 on the next layer. The LOOK still applies — the
 				// composite is re-lit through it — the geometry is simply not this method's to change
 				// for a layer that has no plain-grid form.
-				if (!scn->customLayerTexture) sceneSetShadedImage2D(scn, model == 7);
+				if (!composited) sceneSetShadedImage2D(scn, model == 7);
 			}
 			HillshadeState ls;                       // remember the aim like every other method does
 			ls.valid = true;  ls.model = model;
@@ -6546,19 +6550,32 @@ public:
 			ls.wavelength = eWave->text().trimmed();  ls.amp = eAmp->text().trimmed();
 			ls.oldAlgo = rbOldAlgo->isChecked();
 			g_hillshadeState = ls;
+			// Method 1 on a tsunami is its per-side render and nothing else: the sides are aimed (sun and
+			// material) with NO bake look, so it can never turn into method 7's bake.
 			const int look = model == 5 ? RL_HillGrdimage
 			               : model == 6 ? RL_HillLambert
+			               : hostRender ? RL_None
 			                            : RL_PBR;
 			// AIMED AT ONE SIDE when the dialog was opened from the Aquamoto palette buttons: a tsunami
 			// layer's water and land stand on different surfaces and each carries its own method, so the
 			// window-wide setter (which copies the look to BOTH sides, deliberately — see its comment)
 			// is not what a side-aimed pick means. Same act, the side variant of the same function.
 			if (side() >= 0) sceneSetReliefLookAquaSide(scn, look, side());
+			// THE TOOLBAR'S DIALOG ON A TSUNAMI means BOTH sides, with EVERYTHING this dialog set — sun,
+			// key and fill light, roughness, metallic, gain, ambient. The window-wide setter copies only
+			// the three look flags onto the sides (by design, for its other callers), so each side kept
+			// drawing with its old light and the Light slider changed nothing. Both sides are aimed the
+			// way the two side buttons aim one.
+			else if (composited) { sceneSetReliefLookAquaSide(scn, look, 0);  sceneSetReliefLookAquaSide(scn, look, 1); }
 			else             sceneSetReliefLook(scn, look);
-			// APPLIED — say so, once, to the Aquamoto window that aimed this (its model box states the
-			// method and its rendered image is rebuilt). No-op when no Aquamoto window owns this scene.
-			if (side() >= 0) aquamotoIllumApplied(scn, side(), model);
-			return;
+			// Method 1 on a tsunami: the sides now carry this dialog's light; the host renders them.
+			if (!hostRender) {
+				// APPLIED — say so, once, to the Aquamoto window that aimed this (its model box states the
+				// method and its rendered image is rebuilt). No-op when no Aquamoto window owns this scene.
+				if (side() >= 0) aquamotoIllumApplied(scn, side(), model);
+				else if (composited) { aquamotoIllumApplied(scn, 0, model);  aquamotoIllumApplied(scn, 1, model); }
+				return;
+			}
 		}
 
 		HillshadeState st;
@@ -6609,6 +6626,7 @@ public:
 		// …and the same notice on the Julia-computed models (2/3/4, the ones a tsunami side uses).
 		else if (side() >= 0)
 			aquamotoIllumApplied(scn, side(), model);
+		else if (composited) { aquamotoIllumApplied(scn, 0, model);  aquamotoIllumApplied(scn, 1, model); }
 	}
 };
 

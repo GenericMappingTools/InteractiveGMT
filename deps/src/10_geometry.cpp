@@ -882,6 +882,11 @@ struct ExternShade {
 	int    nx = 0, ny = 0;
 	double x0 = 0.0, x1 = 0.0, y0 = 0.0, y1 = 0.0;
 	int    model = 0;              // the Mirone illum_model that produced it (0 = none loaded)
+	// …OR A FINISHED PICTURE. An Aquamoto side lit with METHOD 1 is VTK's own render of that side's
+	// surface (the host renders it offscreen), so what arrives is colour, not an intensity: nx*ny RGB,
+	// row-major, row 0 = SOUTH, over the same box. ExternShade() clears it with the rest, so every path
+	// that drops a side's model drops this too.
+	std::vector<unsigned char> rgb;
 	// WHOSE reflectance this is: the Scene Objects name of the layer it was computed for ("" = the
 	// base surface). A reflectance is computed FROM ONE LAYER's z, so it describes that layer and
 	// nothing else. Without an owner it was a window-wide value and every bake consumed it, so
@@ -1268,6 +1273,12 @@ struct Scene {
 	// per-slice stage = the WATER surface. Empty -> not an Aquamoto layer, bakeAquaShade is a no-op.
 	std::vector<unsigned char> aquaBaseRGBA;
 	std::vector<float>         aquaBathyZ;
+	// THE LIT layer picture (aquaBakeNodes, 40_shading.cpp) the 3-D surface's vertices are coloured from,
+	// cached per shading generation (styleGen) so every LOD tile of one pass reads the same bake.
+	std::vector<unsigned char> aquaLitRGBA;
+	long                       aquaLitGen = 0;
+	// "Sat img" is on: the land side shows the satellite picture AS IT IS, no light over it.
+	bool                       aquaLandPlain = false;
 	// WHICH pixels are dry land, decided ONCE by the host that composited them (`_aqua_indland`,
 	// aquamoto.jl) and pushed WITH the composite. Same layout as aquaBaseRGBA: one byte per node,
 	// row-major, row 0 = south, 1 = land. The shading below splits the two sides BY THIS MASK and

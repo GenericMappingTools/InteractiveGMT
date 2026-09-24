@@ -528,6 +528,8 @@ function _aquamoto_sat_img(scene::Ptr{Cvoid}, on::Bool)
 	st = get(_AQUA, scene, nothing)
 	(st === nothing) && error("Aquamoto: no file open in this window")
 	st.satimg = on
+	# The land side shows the photograph as it is: no light over it (aquaBakeNodes).
+	ccall(_fn(:gmtvtk_aqua_set_land_plain_h), Cvoid, (Ptr{Cvoid}, Cint), scene, Cint(on))
 	st.imgbat = Array{UInt8}(undef, 0, 0, 0)
 	empty!(_AQUA_LAND_CACHE)
 	empty!(_AQUA_LAND_IMG)
@@ -950,8 +952,9 @@ the C++ side (75_aquamoto.cpp) to parse.
 function _aqua_illum_models(scene::Ptr{Cvoid})::Cint
 	st = get(_AQUA, scene, nothing)
 	(st === nothing) && (print("0,0"); return Cint(0))
-	m(p) = isempty(p) ? 0 : parse(Int, p["model"])
-	print(m(st.illum[1]), ',', m(st.illum[2]))
+	# THE VIEWER's record (`_aqua_side_method`), the same one every slice follows.
+	m(sd) = (v = _aqua_side_method(scene, sd); v > 0 ? v : (isempty(st.illum[sd + 1]) ? 0 : parse(Int, st.illum[sd + 1]["model"])))
+	print(m(0), ',', m(1))
 	return Cint(1)
 end
 
@@ -969,6 +972,14 @@ function _aqua_set_illum_model(scene::Ptr{Cvoid}, side::Int, model::Int)::Cint
 	(0 <= side <= 1) || return Cint(0)
 	d = copy(st.illum[side+1])
 	d["model"] = string(model)
+	# NO SUN STORED YET: the side's OWN sun (the one its looks are baked with), never a default of this
+	# function's — so 2/3/4 and 5/6/7 on the same side are lit from the same direction.
+	if isempty(_get(d, "azim")) || isempty(_get(d, "elev"))
+		lt = zeros(Float64, 6)
+		if ccall(_fn(:gmtvtk_aqua_side_light_h), Cint, (Ptr{Cvoid}, Cint, Ptr{Cdouble}), scene, Cint(side), lt) == 1
+			d["azim"] = string(lt[1]);  d["elev"] = string(lt[2])
+		end
+	end
 	_aqua_illuminate!(scene, model, d, side)
 	return Cint(1)
 end
@@ -983,14 +994,20 @@ function _aqua_illuminate!(scene::Ptr{Cvoid}, model::Int, d::Dict{String,String}
 		empty!(p); merge!(p, d)
 		p["model"] = string(model)
 	end
-	# 1, 5, 6, 7 ARE LOOKS, NOT REFLECTANCES: set on the aimed side(s) through the ONE side-look setter,
-	# the same mapping the Illumination dialog's own branch uses (hillshade.jl). The model stays stored
-	# in `st.illum`, so the side's boxes keep stating it; there is nothing to push.
+	# 1, 5, 6, 7 ARE NOT REFLECTANCES. 5, 6 and 7 are looks the viewer bakes (bakeLayerRGBA, the plain
+	# grid's bake, per side) and are set through the ONE side-look setter, the Illumination dialog's
+	# own mapping. 1 is VTK's RENDER of the side's surface: the side is aimed first (so it carries the
+	# live sun and material), then rendered and its picture pushed (`_aqua_render_side!`). The model
+	# stays stored in `st.illum`, so the side's box keeps stating it.
 	if model in (1, 5, 6, 7)
-		rl = (model == 6) ? 2 : (model == 5) ? 3 : 1
+		# Method 1 carries NO bake look (RL_None = 0): its light is its render, and nothing else. Aimed
+		# with RL_PBR it was method 7's bake with a picture laid over it, and fell back to 7 whenever the
+		# picture was not there — the two methods were never separate.
+		rl = (model == 6) ? 2 : (model == 5) ? 3 : (model == 7) ? 1 : 0
 		for sd in (side < 0 ? (0, 1) : (side,))
 			ccall(_fn(:gmtvtk_set_relief_look_side_h), Cvoid, (Ptr{Cvoid}, Cint, Cint, Cint),
 			      scene, Cint(rl), Cint(0), Cint(sd))
+			model == 1 && _aqua_render_side!(scene, st, sd)
 		end
 		return nothing
 	end
@@ -1000,7 +1017,7 @@ function _aqua_illuminate!(scene::Ptr{Cvoid}, model::Int, d::Dict{String,String}
 	# baked colours) with them, which is what every other grid in this app does with an Illumination
 	# model — same operation, same function (`_hs_reflectance`), no second picture.
 	(side < 0 || side == 1) && _hs_push_grid(scene, st.bat, model, st.illum[2], 1)   # LAND
-	(side < 0 || side == 0) && _aqua_relight_water!(scene, st)                        # WATER
+	(side < 0 || side == 0) && _aqua_push_water_reflectance!(scene, st, model)       # WATER
 	# The method is DECLARED here, by the act that chose it — never by the pushes above, which are
 	# data and run again at every slice.
 	_hs_declare_look(scene, side)
@@ -1011,27 +1028,66 @@ end
 # AGAIN by every slice change: the stage is a DIFFERENT surface at every timestep, so a reflectance
 # computed once would light slice 40's wave with slice 3's relief. `G` is the slice the caller has
 # already read (never re-read it); without one, the slice on screen is read here.
+# The method a tsunami side is lit with, AS THE VIEWER HOLDS IT (`gmtvtk_aqua_side_method_h`) — the one
+# record. A pick made in C++ (the dialog's 5/6/7) never reaches `st.illum`, so a per-slice decision
+# taken from `st.illum` brought method 1 back on the next layer after 7 had been picked.
+_aqua_side_method(scene::Ptr{Cvoid}, side::Int) =
+	Int(ccall(_fn(:gmtvtk_aqua_side_method_h), Cint, (Ptr{Cvoid}, Cint), scene, Cint(side)))
+
+# EVERY SLICE: each side keeps the method the viewer says it carries. Method 1 is a render wearing THIS
+# slice's composite colours — the stage is a new surface at every slice, and the shoreline the land's
+# colours stop at moves with the wave — so both render again. A reflectance (2/3/4) on the water is
+# recomputed from the new stage. A look (5/6/7) lives on the viewer and needs nothing here.
 function _aqua_relight_water!(scene::Ptr{Cvoid}, st::_AquaState, G::Union{GMTgrid,Nothing}=nothing)
-	p = st.illum[1]
-	isempty(p) && return nothing
-	# A LOOK (1, 5, 6, 7) carries no reflectance: it lives on the viewer and survives the slice change.
-	(parse(Int, p["model"]) in (2, 3, 4)) || return nothing
-	# …AND ONLY WHILE THAT MODEL IS STILL THE WINDOW'S LIGHT. Picking a relief look (VTK PBR, grdimage,
-	# Lambert) REPLACES a loaded Illumination model — sceneSetReliefLook drops it — so re-pushing the
-	# remembered one here would put the window straight back on a hillshade method (every push force-
-	# sets useHillshade/hillGrd), i.e. the method the user just chose silently reverting at the next
-	# slice. Ask the viewer whether the model is still loaded; when it is not, forget it.
-	if ccall(_fn(:gmtvtk_has_extern_shade_h), Cint, (Ptr{Cvoid},), scene) == 0
-		empty!(p)
-		return nothing
+	mw, ml = _aqua_side_method(scene, 0), _aqua_side_method(scene, 1)
+	for (sd, m) in ((0, mw), (1, ml))              # the host's copy follows the viewer, never the reverse
+		m > 0 && (st.illum[sd + 1]["model"] = string(m))
 	end
-	model = parse(Int, p["model"])
+	(ml == 1 && !st.satimg) && _aqua_render_side!(scene, st, 1, G)   # a satellite land is not lit
+	mw == 1 && return _aqua_render_side!(scene, st, 0, G)
+	mw in (2, 3, 4) && _aqua_push_water_reflectance!(scene, st, mw, G)
+	return nothing
+end
+
+# The WATER's reflectance for `model` (2/3/4), from the stage it stands on, pushed on the water side.
+function _aqua_push_water_reflectance!(scene::Ptr{Cvoid}, st::_AquaState, model::Int,
+                                       G::Union{GMTgrid,Nothing}=nothing)
 	Gw = G === nothing ? _aqua_layer(st, st.cur) : G     # st.cur is 0-based; THE layer read (RAM or disk)
 	Gw === nothing && error("Aquamoto: could not read layer $(st.cur + 1) of '$(st.varname)' from $(st.path)")
 	R = _aqua_water_reflectance(st, Gw, model)
 	R === nothing && return nothing            # an entirely dry step has no water to light
 	_hs_push(scene, R, Float64(Gw.range[1]), Float64(Gw.range[2]),
 	         Float64(Gw.range[3]), Float64(Gw.range[4]), model, 0)
+	return nothing
+end
+
+# METHOD 1 ON ONE SIDE: VTK's own render — the SAME render a plain grid of that side gets, because it
+# IS one: the side is drawn as a plain grid in the staging window (`_aqua_capture_combined`, the window
+# the Illumination tool lights through its own door, with its own passes) and photographed straight
+# down, lit with THIS side's own sun, material, key and fill (`gmtvtk_aqua_side_light_h`). The picture
+# is sampled at the layer's own nodes and pushed as the side's (`gmtvtk_aqua_set_side_rgb_h`); the
+# viewer's one layer bake takes that side's nodes from it.
+function _aqua_render_side!(scene::Ptr{Cvoid}, st::_AquaState, side::Int, G::Union{GMTgrid,Nothing} = nothing)
+	Gw = G === nothing ? _aqua_layer(st, st.cur) : G
+	Gw === nothing && return nothing
+	lt = zeros(Float64, 6)                         # az, el, roughness, metallic, key, fill
+	ccall(_fn(:gmtvtk_aqua_side_light_h), Cint, (Ptr{Cvoid}, Cint, Ptr{Cdouble}), scene, Cint(side), lt)
+	ss = "rough=$(lt[3]);metal=$(lt[4]);keyi=$(lt[5]);filli=$(lt[6]);"
+	img = _aqua_capture_combined(st, Gw, 1, 1, lt[1], lt[2], lt[1], lt[2]; scenestate = ss)
+	img === nothing && return nothing           # no dry/wet split on this slice: nothing to render per side
+	A = img.image                                  # (col, row, band), row 1 = NORTH
+	nxp, nyp = size(A, 1), size(A, 2)
+	nx, ny = _grid_dims(Gw)
+	buf = Vector{UInt8}(undef, nx * ny * 3)        # row 0 = NORTH, what the push takes
+	ixs = [clamp(round(Int, (ix - 1) / max(nx - 1, 1) * (nxp - 1)) + 1, 1, nxp) for ix in 1:nx]
+	rws = [clamp(round(Int, (rn - 1) / max(ny - 1, 1) * (nyp - 1)) + 1, 1, nyp) for rn in 1:ny]
+	@inbounds for rn in 1:ny, ix in 1:nx
+		o = ((rn - 1) * nx + (ix - 1)) * 3
+		c, r = ixs[ix], rws[rn]
+		buf[o + 1] = A[c, r, 1];  buf[o + 2] = A[c, r, 2];  buf[o + 3] = A[c, r, 3]
+	end
+	ccall(_fn(:gmtvtk_aqua_set_side_rgb_h), Cint, (Ptr{Cvoid}, Cint, Ptr{UInt8}, Cint, Cint),
+	      scene, Cint(side), buf, Cint(nx), Cint(ny))
 	return nothing
 end
 
@@ -1092,44 +1148,59 @@ end
 # Records the resolved pair in `_AQUA_LAST_MODELS`, so the message line reports what the picture was
 # ACTUALLY built with rather than what was asked for.
 function _aqua_resolve_models(scene::Ptr{Cvoid}, st::_AquaState, wbox::Int, lbox::Int)
-	mdl(p, dflt) = isempty(p) ? dflt : parse(Int, p["model"])
-	mw = wbox > 0 ? wbox : mdl(st.illum[1], 2)
-	ml = lbox > 0 ? lbox : mdl(st.illum[2], 2)
+	mdl(sd) = (v = _aqua_side_method(scene, sd); v > 0 ? v : 2)   # the viewer's record
+	mw = wbox > 0 ? wbox : mdl(0)
+	ml = lbox > 0 ? lbox : mdl(1)
 	_AQUA_LAST_MODELS[scene] = (mw, ml)
 	return mw, ml
 end
 
+# THE BOXES' MODELS, ON THE LAYER. A box that states a model other than the one its side carries is
+# applied to the side first (`_aqua_set_illum_model`, the box edit's own setter), so every picture a
+# button shows is the method its box states. Returns the resolved pair (`_aqua_resolve_models`).
+function _aqua_apply_box_models!(scene::Ptr{Cvoid}, st::_AquaState, mw::Int, ml::Int)
+	(mw > 0 && mw != _aqua_side_method(scene, 0)) && _aqua_set_illum_model(scene, 0, mw)
+	(ml > 0 && ml != _aqua_side_method(scene, 1)) && _aqua_set_illum_model(scene, 1, ml)
+	return _aqua_resolve_models(scene, st, mw, ml)
+end
+
+# THE LAYER PICTURE the viewer lights the tsunami with (`gmtvtk_aqua_layer_rgb_h` -> aquaBakeNodes):
+# the whole layer (`side` -1) or one side (0 water / 1 land, the other painted with the NaN colour).
+# (ny, nx, 3), row 1 = NORTH. `nothing` when the window has no tsunami layer.
+function _aqua_layer_picture(scene::Ptr{Cvoid}, side::Int)::Union{Array{UInt8,3},Nothing}
+	pRgb = Ref{Ptr{UInt8}}(C_NULL); pW = Ref{Cint}(0); pH = Ref{Cint}(0)
+	ok = ccall(_fn(:gmtvtk_aqua_layer_rgb_h), Cint, (Ptr{Cvoid}, Cint, Ptr{Ptr{UInt8}}, Ptr{Cint}, Ptr{Cint}),
+	           scene, Cint(side), pRgb, pW, pH)
+	ok == 0 && return nothing
+	try
+		v = unsafe_wrap(Array, pRgb[], (3, Int(pW[]), Int(pH[])))   # (band, col, row), borrowed
+		return permutedims(v, (3, 2, 1))                            # (row, col, band), owned
+	finally
+		ccall(_fn(:gmtvtk_free_rgb), Cvoid, (Ptr{UInt8},), pRgb[])
+	end
+end
+
+# …as a georeferenced image over the layer's own box: bottom-first, column-major, band-planar
+# ("BCBa"), the shape every image consumer in this program is written around.
+function _aqua_picture_image(st::_AquaState, A::Array{UInt8,3})::GMTimage
+	r = st.bat.range
+	I = GMT.mat2img(reverse(A, dims = 1); x = [Float64(r[1]), Float64(r[2])], y = [Float64(r[3]), Float64(r[4])])
+	I.layout = "BCBa"
+	return I
+end
+
+# The layer picture for the slice on screen, with its two sides kept for the side buttons.
 function _aqua_shaded_rgb(scene::Ptr{Cvoid}, st::_AquaState, G::GMTgrid, splitDryWet::Bool;
                           model_water::Int = 0, model_land::Int = 0)::Union{Array{UInt8,3},Nothing}
-	splitDryWet || return nothing                     # no dry/wet split -> no two halves to combine
-	# EVERY LAYER, NO GATE ON A STORED MODEL. The combined image is what this window shows, so it is
-	# built at every timestep whether or not the Illumination dialog has been through here: with no
-	# model stored the sides fall back to the defaults below (2, the classic reflectance).
-	pw, pl = st.illum[1], st.illum[2]
-	num(p, key, dflt) = (isempty(p) && return dflt; v = _get(p, key); isempty(v) ? dflt : parse(Float64, v))
-	mw, ml = _aqua_resolve_models(scene, st, model_water, model_land)
-	img, iw, il = aqua_shade_image(st.bat, G;
-	                        method_water = mw, method_land = ml,
-	                        azim_water = num(pw, "azim", 45.0), elev_water = num(pw, "elev", 30.0),
-	                        azim_land  = num(pl, "azim", 45.0), elev_land  = num(pl, "elev", 30.0),
-	                        cmap_water = st.watercmap, cmap_land = st.landcmap,
-	                        # "Sat img": the LAND half's colours come from the satellite mosaic instead
-	                        # of cmap_land. Asked at the same one door the flat composite asks
-	                        # (`_aqua_land_albedo`), so the lit picture and the flat one can never be
-	                        # showing different land. Nothing = that side keeps its colormap.
-	                        albedo_land = _aqua_land_image(st),
-	                        scene = scene)   # render the halves in THIS window — never open one
-	# HANDED OVER AS IT LIES. It is a PICTURE — one pixel per node, row 1 = NORTH, col 1 = WEST — and
-	# it is packed as one: the caller passes layout code 2 for it, which is exactly what a Julia
-	# (ny, nx) column-major array with its first row in the north IS to `_aqua_pack_rgba`. Re-ordering
-	# it into the grid's element order here was a second place that had to agree about layout, and it
-	# is the place the water half was lost.
-	A = img.image
-	nx, ny = _grid_dims(G)
-	(size(A, 1) == ny && size(A, 2) == nx) ||
-		error("Aquamoto: the illuminated picture is $(size(A,1))x$(size(A,2)) for a $(ny)x$(nx) grid")
-	_AQUA_LAST_COMBINED[scene] = img                  # the button shows THIS, never a second build
-	_AQUA_LAST_HALVES[scene] = (iw, il)               # …and the Debug tab's two side buttons show THESE
+	splitDryWet || return nothing                     # no dry/wet split -> no two sides
+	_aqua_apply_box_models!(scene, st, model_water, model_land)
+	A = _aqua_layer_picture(scene, -1)
+	A === nothing && return nothing
+	iw = _aqua_layer_picture(scene, 0)
+	il = _aqua_layer_picture(scene, 1)
+	(iw === nothing || il === nothing) && return nothing
+	_AQUA_LAST_COMBINED[scene] = _aqua_picture_image(st, A)
+	_AQUA_LAST_HALVES[scene] = (iw, il)
 	return A
 end
 
@@ -1373,7 +1444,8 @@ function _aqua_land_grid(st::_AquaState)
 end
 
 function _aqua_capture_combined(st::_AquaState, G::GMTgrid, mw::Int, ml::Int,
-                                azw::Float64, elw::Float64, azl::Float64, ell::Float64)
+                                azw::Float64, elw::Float64, azl::Float64, ell::Float64;
+                                scenestate::String = "")
 	# THE SPLIT IS CACHED PER SLICE. It depends on the layer and nothing else — not on the methods,
 	# not on the sun — so pressing the button again on the same slice must not pay for it twice
 	# (0.195 s of a ~1 s press, measured). Keyed by the state object and the slice index, so a new
@@ -1446,6 +1518,8 @@ function _aqua_capture_combined(st::_AquaState, G::GMTgrid, mw::Int, ml::Int,
 		_pump_once()
 	end
 	_aqua_stage_touch!()          # used now: the idle watchdog restarts its count (and is armed once)
+	# THE LIGHT OF THE LAYER BEING RENDERED (material, key and fill), when the caller carries one.
+	isempty(scenestate) || ccall(_fn(:gmtvtk_apply_scene_state), Cvoid, (Ptr{Cvoid}, Cstring), h, scenestate)
 	_AQUA_STAGE_BUSY[] = true
 	try
 		# THE SURFACES ARE REBUILT ONLY WHEN THE SLICE CHANGES. They are the same two grids at every
@@ -1548,10 +1622,10 @@ function _aqua_capture_combined(st::_AquaState, G::GMTgrid, mw::Int, ml::Int,
 		# method 1 (its PBR render washes a photograph grey) — lit as 2, anonymously, as everywhere.
 		lhit = _AQUA_LAND_SHOT[]
 		imgL = (lhit !== nothing && lhit[1] === st && lhit[2] == ml && lhit[3] == azl && lhit[4] == ell &&
-		        lhit[5] == st.satimg) ? lhit[6] : nothing
+		        lhit[5] == st.satimg && lhit[7] == scenestate) ? lhit[6] : nothing
 		if imgL === nothing
 			imgL = shoot((st.satimg && ml == 1) ? 2 : ml, AQUA_LAND, azl, ell)
-			imgL === nothing || (_AQUA_LAND_SHOT[] = (st, ml, azl, ell, st.satimg, imgL))
+			imgL === nothing || (_AQUA_LAND_SHOT[] = (st, ml, azl, ell, st.satimg, imgL, scenestate))
 		end
 		(imgW === nothing || imgL === nothing) && return imgW
 
@@ -1651,18 +1725,17 @@ function _aqua_combined_popup(scene::Ptr{Cvoid}, model_water::Int = 0, model_lan
 	# `_aqua_resolve_models` (the same rule, in one place now), and the halves the Debug tab's two
 	# side buttons show are built by `_aqua_side_popup` itself, which calls `_aqua_shaded_rgb` on its
 	# own and always did.
-	mw, ml = _aqua_resolve_models(scene, st, model_water, model_land)
-	pw, pl = st.illum[1], st.illum[2]
-	numv(p, key, dflt) = (isempty(p) && return dflt; v = _get(p, key); isempty(v) ? dflt : parse(Float64, v))
 	# WHERE THE TIME GOES, SPLIT. `t0` is stamped in C++ at the CLICK, so the single number this used
 	# to print covered the `runBlocking` bridge crossing (Qt -> the Julia console -> back) as well as
 	# the work. They are very different things to look at: the build is what this code controls, the
 	# bridge is what the door costs. Both are reported.
 	tin = time()
-	img = _aqua_capture_combined(st, G, mw, ml,
-	                             numv(pw, "azim", 45.0), numv(pw, "elev", 30.0),
-	                             numv(pl, "azim", 45.0), numv(pl, "elev", 30.0))
-	(img === nothing) && (print("the render could not be captured"); return Cint(0))
+	# THE RENDERED IMAGE IS THE LAYER'S OWN PICTURE — the one bake the tsunami window is lit with
+	# (`_aqua_layer_picture`), after the boxes' models are applied to the layer. Never a second build.
+	_aqua_apply_box_models!(scene, st, model_water, model_land)
+	A = _aqua_layer_picture(scene, -1)
+	(A === nothing) && (print("the layer picture could not be read"); return Cint(0))
+	img = _aqua_picture_image(st, A)
 	tbuilt = time()
 	# EACH PRESS UNDOES THE LAST. The previous popup is closed before a new one opens, so this button
 	# can never leave a pile of windows behind — every one of them is a live scene the event loop
@@ -1726,110 +1799,31 @@ function _aqua_combined_popup(scene::Ptr{Cvoid}, model_water::Int = 0, model_lan
 	return Cint(1)
 end
 
-# ONE SIDE ON ITS OWN, in the same window the combined image uses. `side` 0 = water, 1 = land.
+# ONE SIDE ON ITS OWN, in a window of its own. `side` 0 = water, 1 = land.
 #
-# What it shows is THE HALF THE COMBINE TOOK — `_AQUA_LAST_HALVES`, filled by the one build in
-# `_aqua_shaded_rgb` — so the side seen alone and the side seen inside the composite are the same
-# pixels, never two pictures of the same thing (SACRED_LAW.md).
+# What it shows is THE LAYER'S OWN PIXELS for that side (`_aqua_layer_picture`) — the very bake the
+# tsunami window is lit with, the other side painted with the NaN colour — so the side seen alone and
+# the side seen in the layer are the same pixels, never a second picture of the same thing
+# (SACRED_LAW.md). The boxes' models are applied to the layer first, so the side shows the method its
+# box states.
 function _aqua_side_popup(scene::Ptr{Cvoid}, side::Int, model_water::Int = 0, model_land::Int = 0,
                           t0::Float64 = 0.0)::Cint
 	st = get(_AQUA, scene, nothing)
 	(st === nothing) && return Cint(0)
-	G = _aqua_layer(st, st.cur)
-	G === nothing && return Cint(0)
-	rgb = _aqua_shaded_rgb(scene, st, G, st.split; model_water = model_water, model_land = model_land)
-	(rgb === nothing) && return Cint(0)
-	nm = side == 0 ? AQUA_WATER : AQUA_LAND
-	H  = get(_AQUA_HALF_GRID, nm, nothing)
-	(H === nothing) && return Cint(0)
-	# SHOWN THE WAY TsuIllum SHOWS IT: the half is a PLAIN GRID, so it goes into a plain grid window
-	# with its own palette, and is lit by the app's illumination push with that side's own model —
-	# `illuminate!`'s two steps (`_hs_push_grid` + `_hs_declare_look`), which is what TsuIllum copied
-	# from here in the first place. No image is composed, nothing is drawn for it: it is the grid.
-	mw, ml = get(_AQUA_LAST_MODELS, scene, (0, 0))
-	model  = side == 0 ? mw : ml
-	p      = st.illum[side + 1]
-	cmap   = side == 0 ? st.watercmap : st.landcmap
-	if _AQUA_POPUP_WIN[] != C_NULL                    # one window, replaced — same rule as the combined
+	mw, ml = _aqua_apply_box_models!(scene, st, model_water, model_land)
+	A = _aqua_layer_picture(scene, side)
+	(A === nothing) && return Cint(0)
+	if _AQUA_POPUP_WIN[] != C_NULL                    # one window, replaced
 		ccall(_fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), _AQUA_POPUP_WIN[])
 		_AQUA_POPUP_WIN[] = C_NULL
 		_pump_once()
 	end
 	ttl = (side == 0 ? "Water side" : "Land side") * " — layer $(st.cur + 1)"
-	print(ttl, ": model ", model, ", range ", round(H.range[5]; digits = 3), " .. ",
-	      round(H.range[6]; digits = 3))
+	print(ttl, ": model ", side == 0 ? mw : ml)
 	(t0 > 0) && print(" — built in ", round(time() - t0; digits = 3), " s")
-	# "Sat img": the land half wears the satellite picture, draped on its own surface.
-	landimg = _aqua_land_drape(scene, st)
-	Hw = get(_AQUA_HALF_GRID, AQUA_WATER, nothing)
-	Hl = get(_AQUA_HALF_GRID, AQUA_LAND, nothing)
-	(Hw === nothing) && return Cint(0)
-	# ONE SCENE FOR BOTH BUTTONS: the WATER is always the window's base and the LAND is always added
-	# beside it. The two buttons differ only in which half is lit, framed and carries the colour bar.
-	# Built the other way round (land as base, water added) the water — an added grid, stretched by its
-	# own 2 cm z range — floated over the land with a gap all along the coast.
-	fig = view_grid(Hw; cmap = st.watercmap, title = ttl)
-	# A tsunami window: its halves keep the NaN-hole rim. view_grid has already built the water's tile
-	# pyramid, so the setter re-meshes it (sceneSetAquaWindow) before the land half is added beside it.
-	_aqua_mark_window(fig.h)
-	ccall(_fn(:gmtvtk_set_surface_name_h), Cvoid, (Ptr{Cvoid}, Cstring), fig.h, AQUA_WATER)
+	fig = iview_image_obj(_aqua_picture_image(st, A), ttl; title = ttl)
 	_AQUA_POPUP_WIN[] = fig.h
-	# THE LIGHT, on the window's ACTIVE layer — which is why the water is lit BEFORE the land is added
-	# and the land AFTER (a last-added raster is the active one). EACH HALF WITH ITS OWN model and sun,
-	# in BOTH popups: the scene is one and the same, only the side being looked at differs. (Leaving the
-	# water unlit on the Land side is what left it floating as a slab above the land's zero.)
-	light!(G, model, p) = begin
-		az = _get(p, "azim") == "" ? "45" : _get(p, "azim")
-		el = _get(p, "elev") == "" ? "30" : _get(p, "elev")
-		if model == 1
-			# MODEL 1 IS THE RENDER. It is not a reflectance to push: it is the window's own PBR look with
-			# this side's sun — `gmtvtk_set_relief_look_h` with RL_PBR, the same call the Illumination
-			# dialog makes for a plain grid.
-			ccall(_fn(:gmtvtk_apply_scene_state), Cvoid, (Ptr{Cvoid}, Cstring), fig.h,
-			      "sunaz=$(az);sunel=$(el);")
-			ccall(_fn(:gmtvtk_set_relief_look_h), Cvoid, (Ptr{Cvoid}, Cint, Cint), fig.h, Cint(1), Cint(0))
-		elseif model in (5, 6, 7)
-			# 5/6/7 ARE LOOKS TOO (Hillshade grdimage, Hillshade Lambert, Shade PBR), set through the same
-			# setter with the same mapping the Illumination dialog's own branch uses (hillshade.jl).
-			ccall(_fn(:gmtvtk_apply_scene_state), Cvoid, (Ptr{Cvoid}, Cstring), fig.h,
-			      "sunaz=$(az);sunel=$(el);")
-			rl = (model == 6) ? 2 : (model == 5) ? 3 : 1
-			ccall(_fn(:gmtvtk_set_relief_look_h), Cvoid, (Ptr{Cvoid}, Cint, Cint), fig.h, Cint(rl), Cint(0))
-		else
-			_hs_push_grid(fig.h, G, model, Dict{String,String}("azim" => az, "elev" => el), -1)
-			_hs_declare_look(fig.h, -1)
-		end
-		_pump_once()
-	end
-	light!(Hw, mw, st.illum[1])
-	# THE LAND STANDS BESIDE IT, so neither side is a picture with a hole in it: the nodes one half left
-	# NaN are the other half's. Through `_add_grid_to_scene` + `gmtvtk_set_object_visible`, the SAME two
-	# steps `_aqua_push_two_surfaces` uses (SACRED_LAW.md: same operation, same function).
-	if Hl !== nothing
-		_add_grid_to_scene(fig.h, Hl, AQUA_LAND; cmap = st.landcmap, promote = false,
-		                   source = "$(st.path)?bathymetry", drape = landimg)
-		ccall(_fn(:gmtvtk_set_object_visible), Cint, (Ptr{Cvoid}, Cstring, Cint),
-		      fig.h, AQUA_LAND, Cint(1))
-		# THE LAND'S LIGHT — unless it wears the satellite picture: that drape IS the lit half the combine
-		# took (`_hs_reflectance`, or method 1's render), and a second light pushed on the land re-shades
-		# its colour-mapped surface over the drape.
-		landimg === nothing && light!(Hl, ml, st.illum[2])
-		# ONE SET OF AXES: the other half's is hidden. These two describe THE SAME ground, node for node,
-		# so a second box only doubles the frame (the programmatic form of that raster's Axes checkbox).
-		ccall(_fn(:gmtvtk_set_axes_shown_h), Cvoid, (Ptr{Cvoid}, Cstring, Cint),
-		      fig.h, side == 0 ? AQUA_LAND : AQUA_WATER, Cint(0))
-		# …AND THE CAMERA RE-FIT TO WHAT THE WINDOW NOW HOLDS. Flat 2-D parks the camera just above the
-		# z-max of whatever raster set it — the water half, 3 m — so a companion 2 km tall sat behind it
-		# and the land was simply missing until the user toggled 3-D and back.
-		ccall(_fn(:gmtvtk_refit_view_h), Cvoid, (Ptr{Cvoid},), fig.h)
-		# THE PILE IS LEFT ALONE. The companion arrives on top, which is where a last-added raster
-		# belongs, and the colour bar follows it (resolveActiveGrid reads the pile's top). Sending it
-		# to the bottom to keep the bar on the water was tried and REPAINTS THE LAND IN THE WATER'S
-		# PALETTE — the half this window is about ends up lending its colours to the other half, which
-		# is a worse lie than a bar naming the wrong side. Measured, not assumed: the land came back
-		# white-on-white at sea level under the tsunami's diverging ramp.
-		_pump_once()
-	end
+	_pump_once()
 	return Cint(1)
 end
 

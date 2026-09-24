@@ -82,6 +82,10 @@ static inline bool haveExternShade(const ExternShade &e) {
 static inline bool haveExternShade(const Scene *s) {
 	return s && haveExternShade(s->shadeIn);
 }
+// A side's METHOD-1 PICTURE (ExternShade::rgb).
+static inline bool haveExternRGB(const ExternShade &e) {
+	return e.nx > 1 && e.ny > 1 && e.rgb.size() == (size_t)e.nx * e.ny * 3;
+}
 // Forget the loaded model. Any Shading-dock control that AIMS or STYLES the light (sun azimuth /
 // elevation, the four relief looks) calls this first: asking the dock for a different light means
 // the user wants the dock's own light back, so the control must bite instead of sitting inert
@@ -575,12 +579,20 @@ static void layerTexSize(int nx, int ny, int &txW, int &txH) {
 // given, each pixel's ALBEDO is the host composite (e.g. Aquamoto's dry/wet blend) instead of CPT(z),
 // and everything else — the SAME gradient, normal and applyReliefShade/applyPBRShade — is identical.
 // This is how the tsunami shades through the ONE bake function instead of a fork; grids pass nullptr.
+static AquaSideShade snapshotShade(Scene *s);                          // below
+static ReliefLight makeReliefLightSide(Scene *s, const AquaSideShade &a, double zfac);  // below
+// `sideA` / `sideE` (optional, an Aquamoto side): bake with THAT side's own light and look and the
+// reflectance loaded on THAT side, instead of the window's look and the base's reflectance. A
+// tsunami side is lit by this very function, the plain grid's, from its own surface — never by a
+// loop of its own (SACRED_LAW.md). Omitted, the bake is exactly what it always was.
 static void bakeLayerRGBA(Scene *s, const float *z, int nx, int ny, double gx0, double gy0,
                           double dx, double dy, vtkColorTransferFunction *ctf, double lo, double hi,
                           double wx0, double wx1, double wy0, double wy1,
                           int txW, int txH, std::vector<unsigned char> &out,
                           const unsigned char *baseRGBA = nullptr,
-                          int zlayout = 0) {   // z layout: 0 = "BCB" (s->gridZ), !=0 = a caller's "TRB" buffer
+                          int zlayout = 0,     // z layout: 0 = "BCB" (s->gridZ), !=0 = a caller's "TRB" buffer
+                          const AquaSideShade *sideA = nullptr, const ExternShade *sideE = nullptr,
+                          double sideZfac = 0.0) {   // the side's OWN axis mapping (0 = the window's)
 	out.assign((size_t)txW * txH * 4, 0);
 	if ((!ctf && !baseRGBA) || dx == 0.0 || dy == 0.0) return;
 	// discretize the CPT once (skipped when a host composite supplies the albedo)
@@ -597,13 +609,15 @@ static void bakeLayerRGBA(Scene *s, const float *z, int nx, int ny, double gx0, 
 		}
 	}
 	const double invspan = (hi > lo) ? (NT - 1) / (hi - lo) : 0.0;
-	const bool   pbr   = !s->look.useHillshade && s->look.litBake;   // flat PBR bake (approximates the lit surface)
+	const bool   hill  = sideA ? sideA->useHillshade : s->look.useHillshade;
+	const bool   pbr   = !hill && (sideA ? sideA->litBake : s->look.litBake);   // flat PBR bake (method 7)
 	// Hillshade tool: GMT-computed reflectance — consumed only when it is THIS layer's own. This bake
 	// paints the BASE surface's drape (its callers pass s->gridZ), so the owner asked about is the base.
-	const bool   ext   = externShadeOwns(s, s->surfName);
-	const bool   shade = s->look.useHillshade || pbr;           // any per-pixel shade (hillshade or PBR)
-	// the BASE relief's own look, own axis mapping (Scene::zfac) and own VE
-	const ReliefLight L = makeReliefLight(s, s->look, s->zfac, s->ve);
+	// An Aquamoto side consumes its OWN side's reflectance, whatever its look.
+	const bool   ext   = sideA ? (sideE && haveExternShade(*sideE)) : externShadeOwns(s, s->surfName);
+	const bool   shade = hill || pbr || (sideA && ext);           // any per-pixel shade (hillshade or PBR)
+	// the BASE relief's own look, own axis mapping (Scene::zfac) and own VE -- or the side's own light
+	const ReliefLight L = sideA ? makeReliefLightSide(s, *sideA, sideZfac) : makeReliefLight(s, s->look, s->zfac, s->ve);
 	const GridLay zlay = gridLay(nx, ny, zlayout);                               // THE layout resolver (10_geometry.cpp)
 	auto Zc = [&](int ix, int iy) -> double { return zlay.at(z, ix, iy); };
 	auto clampi = [](int v, int hi2) { return v < 0 ? 0 : (v > hi2 ? hi2 : v); };
@@ -642,7 +656,7 @@ static void bakeLayerRGBA(Scene *s, const float *z, int nx, int ny, double gx0, 
 			// Hillshade tool: the reflectance is already known for this world position -> modulate
 			// with it and skip the gradient entirely (the SAME gmtIlluminate the normal path ends in).
 			if (ext) {
-				const double ei = externShadeAt(s, tx, ty);
+				const double ei = sideA ? externShadeAt(*sideE, tx, ty) : externShadeAt(s, tx, ty);
 				if (!std::isnan(ei)) {
 					double c[3] = { cr / 255.0, cg / 255.0, cb / 255.0 };
 					applyReliefShade(L, nullptr, c, &ei);
@@ -752,7 +766,10 @@ static AquaSideShade snapshotShade(Scene *s) {
 }
 // makeReliefLight, but with the light/style taken from a per-side snapshot (geometry xfac/zfac/ve still
 // live from the Scene). Lets WATER and LAND shade with independent suns through the SAME applyReliefShade.
-static ReliefLight makeReliefLightSide(Scene *s, const AquaSideShade &a) {
+// `zfac` is the SIDE's own axis mapping (sceneZRefFor over its own nodes, the normaliser a plain grid
+// of that side alone gets); 0 = the window's. With the window's, a ±1 m wave was measured against the
+// stage's whole range — land elevations included — and came out flat and barely lit.
+static ReliefLight makeReliefLightSide(Scene *s, const AquaSideShade &a, double zfac) {
 	const double ve = s->ve;                      // the tank IS the base relief -- its own VE and look
 	const LayerShade &lk = s->look;
 	ReliefLight L;
@@ -764,7 +781,7 @@ static ReliefLight makeReliefLightSide(Scene *s, const AquaSideShade &a) {
 	L.fx    = (s->xfac != 0.0) ? 1.0 / s->xfac : 1.0;
 	// The LIGHTING reference, like every other shade path (makeReliefLight) — never the geometry's
 	// horizontal-scale normaliser, or the tank's water and land both wash out to flat colour.
-	const double zsh = s->zfac;
+	const double zsh = (zfac > 0.0) ? zfac : s->zfac;
 	L.fz    = (zsh * ve != 0.0) ? 1.0 / (zsh * ve) : 1.0;
 	L.fzRef = (zsh != 0.0) ? 1.0 / zsh : 1.0;              // same, at the reference VE (ve = 1)
 	L.amb = a.hillAmbient;  L.gain = a.hillGain;  L.twoOverPi = 2.0 / vtkMath::Pi();  L.grd = a.hillGrd;
@@ -775,13 +792,8 @@ static ReliefLight makeReliefLightSide(Scene *s, const AquaSideShade &a) {
 	return L;
 }
 
-// Aquamoto hillshade: re-light the host-composited tsunami texture through the SAME illumination the
-// whole app uses (applyReliefShade / applyPBRShade — ONE shading source of truth; never fork). The
-// colour is the host's dry/wet composite (aquaBaseRGBA, unshaded). WATER and LAND are TWO SEPARATE
-// images with INDEPENDENT lights: water pixels shade from the per-slice stage (s->gridZ) with the
-// WATER snapshot, land pixels from the static bathymetry (s->aquaBathyZ) with the LAND snapshot.
-// Because each side re-bakes from its OWN snapshot, editing one side (only its snapshot changes, see
-// rebakeLayerImage) leaves the OTHER side pixel-identical — no colour, no light of the other touched.
+// Aquamoto hillshade: see aquaBakeNodes below — each side through the plain-grid bake, from its own
+// surface with its own light, so editing one side leaves the other pixel-identical.
 // IGMT_TRACE_AQUA, read the live process block. Not getenv(): on Windows the CRT keeps its own
 // snapshot taken at start-up, so a variable the host sets afterwards (Julia's ENV[...], which calls
 // SetEnvironmentVariableW) never appears in it — the same trap 70_window.cpp's envFlag documents.
@@ -818,139 +830,83 @@ static void dayNightAquaPass(Scene *s, unsigned char *out, int nx, int ny) {
 	});
 }
 
+// THE TSUNAMI LAYER'S PICTURE, one pixel per node (nx*ny RGBA, row 0 = south -- the composite's own
+// layout). EACH SIDE IS LIT BY bakeLayerRGBA, THE PLAIN-GRID BAKE, from ITS OWN surface (water: the
+// live stage s->gridZ; land: the static bathymetry s->aquaBathyZ), with ITS OWN light and look and the
+// reflectance loaded on it -- exactly what a plain grid of that surface gets (SACRED_LAW.md: same
+// operation, same function; two-surface law: each side from its own surface). The colours it lights
+// are the host composite's (aquaBaseRGBA). The two results are then taken node by node by
+// aquaLandMask, the mask the composite was painted with. A side lit with METHOD 1 carries VTK's own
+// render of its surface instead (ExternShade::rgb), taken as it is.
+// BOTH GEOMETRIES DRAW FROM THIS ONE PICTURE: the flat image copies it into its texture
+// (bakeAquaShade), the 3-D surface colours its vertices from it (hillshadeMapper), and the host's
+// "Rendered image" / "Water side" / "Land side" capture it (gmtvtk_aqua_layer_rgb_h). There is no
+// other tsunami light. Returns false when the layer has no composite yet.
+static bool aquaBakeNodes(Scene *s, std::vector<unsigned char> &out) {
+	const int nx = s->gnx, ny = s->gny;
+	const size_t np = (size_t)nx * ny;
+	if (nx < 2 || ny < 2 || s->aquaBaseRGBA.size() != np * 4) return false;
+	const unsigned char *base = s->aquaBaseRGBA.data();
+	const double dx = s->gdx != 0.0 ? s->gdx : 1.0, dy = s->gdy != 0.0 ? s->gdy : 1.0;
+	const bool haveMask = s->aquaLandMask.size() == np;
+	auto side = [&](int sd, std::vector<unsigned char> &o) {
+		// A SATELLITE LAND IS A PHOTOGRAPH: shown as it is, never lit a second time (only the night
+		// still reaches it).
+		if (sd == 1 && s->aquaLandPlain) {
+			o.assign(base, base + np * 4);
+			dayNightAquaPass(s, o.data(), nx, ny);
+			return;
+		}
+		const ExternShade &E = (sd == 1) ? s->shadeInLand : s->shadeIn;
+		const std::vector<float> &Z = (sd == 1) ? s->aquaBathyZ : s->gridZ;
+		if (haveExternRGB(E) && E.nx == nx && E.ny == ny) {     // METHOD 1: the render, as it is
+			o.resize(np * 4);
+			for (size_t i = 0; i < np; ++i) {
+				o[4*i] = E.rgb[3*i];  o[4*i+1] = E.rgb[3*i+1];  o[4*i+2] = E.rgb[3*i+2];  o[4*i+3] = 255;
+			}
+			dayNightAquaPass(s, o.data(), nx, ny);          // the night reaches a render as it reaches a bake
+			return;
+		}
+		if (Z.size() != np) { o.assign(base, base + np * 4); return; }   // no surface: its colours verbatim
+		const AquaSideShade &own = (sd == 1) ? s->aquaLandShade : s->aquaWaterShade;
+		const AquaSideShade A = own.valid ? own : snapshotShade(s);
+		// THIS SIDE's own z range, over its own nodes -> its own axis mapping, exactly what a plain grid
+		// of this side alone is drawn and lit with.
+		double lo = std::numeric_limits<double>::infinity(), hi = -lo;
+		for (int ix = 0; ix < nx; ++ix)
+			for (int iy = 0; iy < ny; ++iy) {
+				const bool land = haveMask && s->aquaLandMask[(size_t)iy * nx + ix] != 0;
+				if (land != (sd == 1)) continue;
+				const double v = Z[(size_t)ix * ny + iy];
+				if (std::isfinite(v)) { lo = std::min(lo, v);  hi = std::max(hi, v); }
+			}
+		const double zf = (hi > lo) ? sceneZRefFor(s, lo, hi, s->gx0, s->gx1, s->gy0, s->gy1) : 0.0;
+		bakeLayerRGBA(s, Z.data(), nx, ny, s->gx0, s->gy0, dx, dy, nullptr, 0.0, 1.0,
+		              s->gx0, s->gx1, s->gy0, s->gy1, nx, ny, o, base, /*zlayout=*/0, &A, &E, zf);
+	};
+	std::vector<unsigned char> w, l;
+	side(0, w);
+	if (haveMask) side(1, l);
+	if (w.size() != np * 4 || (haveMask && l.size() != np * 4)) return false;
+	out.resize(np * 4);
+	for (size_t i = 0; i < np; ++i) {
+		const unsigned char *p = (haveMask && s->aquaLandMask[i] != 0) ? &l[4*i] : &w[4*i];
+		out[4*i] = p[0];  out[4*i+1] = p[1];  out[4*i+2] = p[2];  out[4*i+3] = base[4*i+3];
+	}
+	return true;
+}
+
+// The flat tsunami image: THE layer picture above, into the drape texture.
 static void bakeAquaShade(Scene *s) {
 	if (!s || !s->layerImgMode || !s->customLayerTexture || !s->drape) return;
-	const int nx = s->gnx, ny = s->gny;
-	if (nx < 2 || ny < 2) return;
-	if ((int)s->aquaBaseRGBA.size() != nx * ny * 4) return;   // no base composite -> nothing to shade
-	const bool haveStage = (int)s->gridZ.size()    == nx * ny;
-	const bool haveBathy = (int)s->aquaBathyZ.size() == nx * ny;
 	vtkTexture   *tx = s->drape->GetTexture();
 	vtkImageData *id = tx ? vtkImageData::SafeDownCast(tx->GetInput()) : nullptr;
 	if (!id) return;
 	int dims[3] = { 0, 0, 0 }; id->GetDimensions(dims);
-	if (dims[0] != nx || dims[1] != ny) return;
-	unsigned char *out = static_cast<unsigned char*>(id->GetScalarPointer());
-	const unsigned char *base = s->aquaBaseRGBA.data();
-
-	// Each side uses its OWN light snapshot (fall back to the live dock only the first time, before either
-	// side has ever been set). Water shades from the stage, land from the bathymetry — fully independent.
-	const AquaSideShade wS = s->aquaWaterShade.valid ? s->aquaWaterShade : snapshotShade(s);
-	const AquaSideShade lS = s->aquaLandShade.valid  ? s->aquaLandShade  : snapshotShade(s);
-	const ReliefLight Lw = makeReliefLightSide(s, wS);
-	const ReliefLight Ll = makeReliefLightSide(s, lS);
-	// Hillshade tool: a GMT-computed reflectance, ONE PER SIDE. Water's was computed from the live
-	// stage and land's from the static bathymetry, exactly the two surfaces this function shades from
-	// below -- so the tool splits dry from wet the same way the composite and the dock already do.
-	const bool wExt = haveExternShade(s->shadeIn), lExt = haveExternShade(s->shadeInLand);
-	const bool wPbr = !wS.useHillshade && wS.litBake, wShade = ((wS.useHillshade || wPbr) && haveStage) || wExt;
-	const bool lPbr = !lS.useHillshade && lS.litBake, lShade = (lS.useHillshade || lPbr) || lExt;
-	if (!wShade && !lShade) {                            // neither side shades -> the composite verbatim
-		memcpy(out, base, (size_t)nx * ny * 4);
-		dayNightAquaPass(s, out, nx, ny);                // …still night where it is night
-		id->Modified(); tx->Modified();
-		if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
-		return;
-	}
-	const float *stage = haveStage ? s->gridZ.data() : nullptr;
-	const float *bathy = haveBathy ? s->aquaBathyZ.data() : nullptr;
-	const bool haveMask = ((int)s->aquaLandMask.size() == nx * ny);
-	const unsigned char *mask = haveMask ? s->aquaLandMask.data() : nullptr;
-	// TRACE (IGMT_TRACE_AQUA): what actually decides each pixel's side and light. Set the variable and
-	// the numbers say whether a land pixel is being SEEN as land, and whether the colour it starts
-	// from is already the water CPT's red or is turned red by the shading.
-	if (aquaTraceOn()) {
-		long nland = 0;
-		if (mask) for (long i = 0; i < (long)nx * ny; ++i) nland += (mask[i] != 0);
-		long li = -1;
-		if (mask) for (long i = 0; i < (long)nx * ny; ++i) if (mask[i] != 0) { li = i; break; }
-		fprintf(stdout, "[aqua] %dx%d stage=%d bathy=%d mask=%d landpx=%ld | water(hill=%d pbr=%d ext=%d shade=%d)"
-		                " land(hill=%d pbr=%d ext=%d shade=%d)",
-		        nx, ny, (int)haveStage, (int)haveBathy, (int)haveMask, nland,
-		        (int)wS.useHillshade, (int)wPbr, (int)wExt, (int)wShade,
-		        (int)lS.useHillshade, (int)lPbr, (int)lExt, (int)lShade);
-		if (li >= 0) fprintf(stdout, " | first land texel base RGB = %3d,%3d,%3d",
-		                     base[(size_t)li * 4], base[(size_t)li * 4 + 1], base[(size_t)li * 4 + 2]);
-		fprintf(stdout, "\n");
-		fflush(stdout);
-	}
-	const double dx = s->gdx != 0.0 ? s->gdx : 1.0, dy = s->gdy != 0.0 ? s->gdy : 1.0;
-	auto at = [](const float *z, int ix, int iy, int gny) -> double { return z[(size_t)ix * gny + iy]; };
-	// Method 7's occlusion and cast shadows, PER SIDE: each side is occluded by its own surface, as it
-	// is lit from its own (two-surface illumination law).
-	auto zStage = [&](int ix, int iy) -> double { return at(stage, ix, iy, ny); };
-	auto zBathy = [&](int ix, int iy) -> double { return at(bathy, ix, iy, ny); };
-	const double NaN = std::numeric_limits<double>::quiet_NaN();
-	const BakeOcclusion occW = (wPbr && stage) ?
-		makeBakeOcclusion(s, Lw, s->bakeShadows ? gridTopZ(nx, ny, zStage) : NaN) : BakeOcclusion();
-	const BakeOcclusion occL = (lPbr && bathy) ?
-		makeBakeOcclusion(s, Ll, s->bakeShadows ? gridTopZ(nx, ny, zBathy) : NaN) : BakeOcclusion();
-	// Per-row parallel: texel (row r = south..north, col) <-> grid (ix=col, iy=r); z is column-major
-	// z[ix*ny+iy] (same layout as gridZ), the composite RGBA is row-major row0=south (aqua_pack_rgba).
-	vtkSMPTools::For(0, ny, [&](vtkIdType rBeg, vtkIdType rEnd) {
-	for (int r = (int)rBeg; r < (int)rEnd; ++r) {
-		const int iy = r;
-		const int iym = iy > 0 ? iy - 1 : iy, iyp = iy < ny - 1 ? iy + 1 : iy;
-		for (int col = 0; col < nx; ++col) {
-			const int ix = col;
-			const size_t t = ((size_t)r * nx + col) * 4;
-			const double sz = stage ? at(stage, ix, iy, ny) : std::numeric_limits<double>::quiet_NaN();
-			// LAND or WATER: read off the host's mask, the SAME one that decided how this very pixel was
-			// coloured (`_aqua_indland`, pushed with the composite). Never re-derived here — that was the
-			// second implementation of one operation, and a disagreement between the two lit land pixels
-			// with the water light and wiped out the dry/wet split. `bathy` is still required, since the
-			// land side shades FROM it.
-			const bool land = bathy && haveMask && mask[(size_t)r * nx + col] != 0;
-			const bool shadeThis = land ? lShade : wShade;
-			if (!shadeThis) {                            // this side's light is off -> its colour verbatim
-				out[t] = base[t]; out[t+1] = base[t+1]; out[t+2] = base[t+2]; out[t+3] = base[t+3];
-				continue;
-			}
-			const ReliefLight &L = land ? Ll : Lw;
-			// Hillshade tool: an externally computed reflectance covers EVERY element type, the
-			// tsunami composite included (SACRED_LAW: no element type opts out of a shared operation).
-			// THIS SIDE's reflectance, never the other's: a single grid smeared over both lit the sea
-			// with the land's relief (and the reverse), which is the dry/wet split vanishing again.
-			if (land ? lExt : wExt) {
-				const double ei = externShadeAt(land ? s->shadeInLand : s->shadeIn,
-				                                s->gx0 + ix * dx, s->gy0 + iy * dy);
-				if (!std::isnan(ei)) {
-					double c[3] = { base[t] / 255.0, base[t+1] / 255.0, base[t+2] / 255.0 };
-					applyReliefShade(L, nullptr, c, &ei);
-					out[t]   = (unsigned char)std::min(255.0, c[0] * 255.0 + 0.5);
-					out[t+1] = (unsigned char)std::min(255.0, c[1] * 255.0 + 0.5);
-					out[t+2] = (unsigned char)std::min(255.0, c[2] * 255.0 + 0.5);
-					out[t+3] = base[t+3];
-					continue;
-				}
-			}
-			const bool pbr = land ? lPbr : wPbr;
-			const float *z = land ? bathy : stage;
-			const int ixm = ix > 0 ? ix - 1 : ix, ixp = ix < nx - 1 ? ix + 1 : ix;
-			const double za = at(z, ixp, iy, ny), zb = at(z, ixm, iy, ny);
-			const double zu = at(z, ix, iyp, ny), zd = at(z, ix, iym, ny);
-			const double dzdx = (ixp == ixm || std::isnan(za) || std::isnan(zb)) ? 0.0 : (za - zb) / ((ixp - ixm) * dx);
-			const double dzdy = (iyp == iym || std::isnan(zu) || std::isnan(zd)) ? 0.0 : (zu - zd) / ((iyp - iym) * dy);
-			double n0 = -dzdx, n1 = -dzdy, n2 = 1.0;
-			const double len = std::sqrt(n0*n0 + n1*n1 + n2*n2);
-			if (len > 0.0) { n0 /= len; n1 /= len; n2 /= len; }
-			const double nv[3] = { n0, n1, n2 };
-			double c[3] = { base[t] / 255.0, base[t+1] / 255.0, base[t+2] / 255.0 };
-			if (pbr) {                                   // SAME PBR bake as the flat CPT image
-				double ao, sunVis;
-				if (land) reliefOcclusion(L, occL, zBathy, nx, ny, dx, dy, ix, iy, nv, ao, sunVis);
-				else      reliefOcclusion(L, occW, zStage, nx, ny, dx, dy, ix, iy, nv, ao, sunVis);
-				applyPBRShade(L, nv, c, ao, sunVis);
-			}
-			else     applyReliefShade(L, nv, c);         // SAME grdimage/Lambert shade as every surface
-			out[t]   = (unsigned char)std::min(255.0, c[0] * 255.0 + 0.5);
-			out[t+1] = (unsigned char)std::min(255.0, c[1] * 255.0 + 0.5);
-			out[t+2] = (unsigned char)std::min(255.0, c[2] * 255.0 + 0.5);
-			out[t+3] = base[t+3];
-		}
-	}
-	});
-	dayNightAquaPass(s, out, nx, ny);                    // the second factor, over the finished composite
+	if (dims[0] != s->gnx || dims[1] != s->gny || id->GetNumberOfScalarComponents() != 4) return;
+	std::vector<unsigned char> px;
+	if (!aquaBakeNodes(s, px)) return;
+	memcpy(id->GetScalarPointer(), px.data(), px.size());
 	id->Modified(); tx->Modified();
 	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 }
@@ -1274,6 +1230,43 @@ static void hillshadeMapper(Scene *s, vtkActor *act) {
 		return;
 	}
 	if (!pd) return;
+	// A TSUNAMI SURFACE WEARS THE LAYER PICTURE. Its colours and its light are aquaBakeNodes' -- each
+	// side through the plain-grid bake from its own surface -- the very pixels the flat image shows, so
+	// the two geometries cannot light the tank differently. Each vertex takes its own node.
+	if (landCol) {
+		if (s->aquaLitGen != s->styleGen || s->aquaLitRGBA.size() != (size_t)s->gnx * s->gny * 4) {
+			if (!aquaBakeNodes(s, s->aquaLitRGBA)) s->aquaLitRGBA.clear();
+			s->aquaLitGen = s->styleGen;
+		}
+		vtkPoints *vp = pd->GetPoints();
+		const int gnx = s->gnx, gny = s->gny;
+		if (vp && !s->aquaLitRGBA.empty() && s->gdx != 0.0 && s->gdy != 0.0) {
+			const vtkIdType np = pd->GetNumberOfPoints();
+			vtkSmartPointer<vtkUnsignedCharArray> col = vtkSmartPointer<vtkUnsignedCharArray>::New();
+			col->SetName("hillshade");
+			col->SetNumberOfComponents(3);
+			col->SetNumberOfTuples(np);
+			const unsigned char *lit = s->aquaLitRGBA.data();
+			vtkSMPTools::For(0, np, [&](vtkIdType iBeg, vtkIdType iEnd) {
+			for (vtkIdType i = iBeg; i < iEnd; ++i) {
+				double p[3]; vp->GetPoint(i, p);
+				int ix = (int)std::lround((p[0] - s->gx0) / s->gdx), iy = (int)std::lround((p[1] - s->gy0) / s->gdy);
+				ix = ix < 0 ? 0 : (ix > gnx - 1 ? gnx - 1 : ix);
+				iy = iy < 0 ? 0 : (iy > gny - 1 ? gny - 1 : iy);
+				const unsigned char *c = lit + ((size_t)iy * gnx + ix) * 4;
+				col->SetTypedComponent(i, 0, c[0]);
+				col->SetTypedComponent(i, 1, c[1]);
+				col->SetTypedComponent(i, 2, c[2]);
+			}
+			});
+			pd->GetPointData()->AddArray(col);
+			m->SetScalarModeToUsePointFieldData();
+			m->SelectColorArray("hillshade");
+			m->SetColorModeToDirectScalars();
+			m->ScalarVisibilityOn();
+			return;
+		}
+	}
 	vtkDataArray *nrm = pd->GetPointData()->GetNormals();
 	vtkDataArray *zs  = pd->GetPointData()->GetScalars();
 	// Prefer the actor's OWN mapper LUT (a dropped grid extra carries its own CPT); fall back to the
@@ -1311,24 +1304,14 @@ static void hillshadeMapper(Scene *s, vtkActor *act) {
 	// …and ONLY if that reflectance was computed for THIS actor's layer. Any other layer's light is
 	// not this layer's business (see externShadeOwns).
 	const bool ext = externShadeOwns(s, layerNameOfActor(s, act));
-	// AN AQUAMOTO SURFACE HAS TWO SIDES HERE TOO. `twoBar` already says, per node, which side a point
-	// belongs to -- it is how the two colour bars are applied -- so the LIGHT follows the same split:
-	// water nodes from the WATER snapshot and the water reflectance, land nodes from the LAND ones.
-	// Without this the 3-D surface had a SINGLE light for the whole tank (s->shadeIn + the window
-	// look), which is the flat-image path's two-surface law broken on the other geometry: choosing a
-	// method for the water lit the land with it, and the reverse. Non-Aquamoto actors never get a
-	// `landCol`, so `aqua` is false for them and every line below behaves exactly as before.
+	// A tsunami surface normally never reaches this loop: it wears the layer picture (above). This is
+	// only the case of no picture to wear yet, and then its nodes get their two bars' colours, unlit —
+	// there is no second tsunami light here.
 	const bool aqua = twoBar;
-	const AquaSideShade wS = s->aquaWaterShade.valid ? s->aquaWaterShade : snapshotShade(s);
-	const AquaSideShade lS = s->aquaLandShade.valid  ? s->aquaLandShade  : snapshotShade(s);
-	const ReliefLight Lw = aqua ? makeReliefLightSide(s, wS) : L;   // SAME per-side light builder the
-	const ReliefLight Ll = aqua ? makeReliefLightSide(s, lS) : L;   // composited path uses -- never a copy
-	const bool wExt = aqua && haveExternShade(s->shadeIn);
-	const bool lExt = aqua && haveExternShade(s->shadeInLand);
-	// The points are needed by the extern reflectance samplers AND by day/night, which asks each node
+	// The points are needed by the extern reflectance sampler AND by day/night, which asks each node
 	// where it is on the Earth. Same array, one reason more to fetch it.
-	vtkPoints *pts = (ext || wExt || lExt || dnOn) ? pd->GetPoints() : nullptr;
-	if ((ext || wExt || lExt || dnOn) && !pts) return;
+	vtkPoints *pts = (ext || dnOn) ? pd->GetPoints() : nullptr;
+	if ((ext || dnOn) && !pts) return;
 	vtkSmartPointer<vtkUnsignedCharArray> col = vtkSmartPointer<vtkUnsignedCharArray>::New();
 	col->SetName("hillshade");
 	col->SetNumberOfComponents(3);
@@ -1347,17 +1330,7 @@ static void hillshadeMapper(Scene *s, vtkActor *act) {
 		double c[3] = { rgb8[0] / 255.0, rgb8[1] / 255.0, rgb8[2] / 255.0 };
 		double ei = std::numeric_limits<double>::quiet_NaN();
 		if (aqua) {
-			// THIS NODE'S SIDE, and nothing of the other's: its own reflectance, its own light, its own
-			// on/off. The two sides are independent, so a side whose light is off keeps its colour
-			// verbatim while the other shades.
-			const bool sideExt = land ? lExt : wExt;
-			if (sideExt) { double p[3]; pts->GetPoint(i, p); ei = externShadeAt(land ? s->shadeInLand : s->shadeIn, p[0], p[1]); }
-			const AquaSideShade &A = land ? lS : wS;
-			const ReliefLight   &Ls = land ? Ll : Lw;
-			if (A.useHillshade || sideExt)
-				applyReliefShade(Ls, nv, c, std::isnan(ei) ? nullptr : &ei);
-			else if (A.litBake)
-				applyPBRShade(Ls, nv, c);
+			// colours only (see above)
 		}
 		else if (ext || lk.useHillshade) {
 			if (ext) { double p[3]; pts->GetPoint(i, p); ei = externShadeAt(s, p[0], p[1]); }

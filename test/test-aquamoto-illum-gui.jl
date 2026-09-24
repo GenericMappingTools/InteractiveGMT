@@ -135,6 +135,7 @@ end
 			st = IG._AQUA[f.h]
 			G  = IG._aqua_layer(st, st.cur)
 			nx, ny = IG._grid_dims(G)
+			water = Dict{Int,Vector{Float64}}()          # mean water colour of the LAYER, per method
 			for m in 1:7
 				# the model boxes' door, each side
 				@test IG._aqua_set_illum_model(f.h, 0, m) == 1
@@ -146,6 +147,11 @@ end
 				iw, il = IG._AQUA_LAST_HALVES[f.h]
 				@test size(iw) == (ny, nx, 3)
 				@test size(il) == (ny, nx, 3)
+				# the Rendered image IS the layer: its water nodes are the water side's, pixel for pixel
+				dm = IG._aqua_indland(IG._zmat(st.bat), IG._zmat(G)); nyz = size(dm, 1)
+				wet = [!dm[nyz - r + 1, c] for r in 1:nyz, c in 1:size(dm, 2)]
+				@test all(A[:, :, b][wet] == iw[:, :, b][wet] for b in 1:3)
+				water[m] = [sum(Float64.(A[:, :, b])[wet]) / count(wet) for b in 1:3]
 				# "Water side" / "Land side"
 				for side in (0, 1)
 					@test redirect_stdout(devnull) do
@@ -154,6 +160,32 @@ end
 					aqf_pump(5)
 				end
 			end
+			# 1 is VTK's render, 7 the CPU bake: two different pictures, never the same code path
+			@test water[1] != water[7]
+			# every method really changes what the layer shows
+			@test length(unique(values(water))) == 7
+			# 1, then 7, then THE NEXT LAYER: it stays 7 (it used to come back as 1)
+			for sd in (0, 1); IG._aqua_set_illum_model(f.h, sd, 1); end
+			for sd in (0, 1); IG._aqua_set_illum_model(f.h, sd, 7); end
+			IG._aquamoto_slice(f.h, 1, true, false, 0.0);  aqf_pump(10)
+			@test IG._aqua_side_method(f.h, 0) == 7
+			@test IG._aqua_side_method(f.h, 1) == 7
+			# …and 7, then 1, then the next layer: it stays 1
+			for sd in (0, 1); IG._aqua_set_illum_model(f.h, sd, 1); end
+			IG._aquamoto_slice(f.h, 2, true, false, 0.0);  aqf_pump(10)
+			@test IG._aqua_side_method(f.h, 0) == 1
+			@test IG._aqua_side_method(f.h, 1) == 1
+			# "Sat img": the land shows its picture UNLIT — the same land pixels whatever its method
+			ccall(IG._fn(:gmtvtk_aqua_set_land_plain_h), Cvoid, (Ptr{Cvoid}, Cint), f.h, Cint(1))
+			land = Dict{Int,Array{UInt8,3}}()
+			for m in (5, 7)
+				IG._aqua_set_illum_model(f.h, 1, m);  aqf_pump(5)
+				land[m] = IG._aqua_layer_picture(f.h, 1)
+			end
+			@test land[5] == land[7]
+			ccall(IG._fn(:gmtvtk_aqua_set_land_plain_h), Cvoid, (Ptr{Cvoid}, Cint), f.h, Cint(0))
+			IG._aqua_set_illum_model(f.h, 1, 5);  aqf_pump(5)
+			@test IG._aqua_layer_picture(f.h, 1) != land[5]    # …and lit again once it is off
 		finally
 			if IG._AQUA_POPUP_WIN[] != C_NULL
 				aqf_close(IG._AQUA_POPUP_WIN[]);  IG._AQUA_POPUP_WIN[] = C_NULL

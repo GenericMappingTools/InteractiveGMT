@@ -216,11 +216,6 @@ function _aqua_side_picture(G::GMTgrid, other::AbstractArray{Bool}, method::Int,
 	if method == 1
 		return _pbr_capture(H, name, cmap, azim, elev, scene; albedo = albedo)
 	end
-	# METHODS 5, 6, 7 ARE THE C++ LOOKS (Hillshade grdimage, Hillshade Lambert, Shade PBR), not
-	# reflectances: `_hs_reflectance` has no such model and threw "unknown illumination model". The half
-	# is lit by the shading engine itself, with this side's own light snapshot.
-	# Under "Sat img" the picture is the albedo, exactly as the palette would be.
-	method in (5, 6, 7) && return _aqua_half_bake(H, name, cmap, method, azim, elev, scene; albedo = albedo)
 	# `_hs_reflectance` (hillshade.jl) is THE reflectance — the one every surface in this program is
 	# lit by. This file used to carry its own method table beside it; a second implementation of one
 	# quantity is exactly what SACRED_LAW.md forbids, and it is gone.
@@ -473,34 +468,6 @@ function _pbr_capture(H::GMTgrid, name::String, cmap, azim::Float64, elev::Float
 	# resolution, and the combine then resampled that grab down onto the nodes: a picture built out of
 	# interpolated screen pixels, which is the fuzz. A half is one pixel per node or it is not a half.
 	error("Aquamoto: the $name half could not be rendered (gmtvtk_pbr_render_offscreen)")
-end
-
-# ONE half lit with METHOD 5, 6 or 7 — the shading engine's own looks — by `gmtvtk_aqua_half_bake_rgb`,
-# with the Aquamoto window's own light snapshot for that side. Comes back as a plain (row, col, band)
-# RGB array, row 1 = NORTH, one pixel per node — the same shape `_pbr_capture` hands the combine.
-function _aqua_half_bake(H::GMTgrid, name::String, cmap, method::Int, azim::Float64, elev::Float64,
-                         scene::Ptr{Cvoid}; albedo::Union{Nothing,GMTimage} = nothing)::Array{UInt8,3}
-	(scene == C_NULL) && error("Aquamoto: the $name half needs its window to be lit with method $method")
-	zb, nxc, nyc, zlay = _grid_zbuf(H)
-	cz, crgb, ncol = _cpt_nodes_range(Float64(H.range[5]), Float64(H.range[6]), cmap)
-	# THE ALBEDO through `_drape_buf`, the one packer every drape is fed by: row 0 = south, west->east.
-	tex, texW, texH, texB = albedo === nothing ? (UInt8[], 0, 0, 0) : _drape_buf(albedo)
-	side = name == AQUA_LAND ? 1 : 0
-	pRgb = Ref{Ptr{UInt8}}(C_NULL); pW = Ref{Cint}(0); pH = Ref{Cint}(0)
-	ok = ccall(_fn(:gmtvtk_aqua_half_bake_rgb), Cint,
-	           (Ptr{Cvoid}, Ptr{Cfloat}, Cint, Cint, Cint, Cdouble, Cdouble, Cdouble, Cdouble,
-	            Ptr{Cdouble}, Ptr{Cdouble}, Cint, Cint, Cint, Cdouble, Cdouble,
-	            Ptr{Cuchar}, Cint, Cint, Cint, Ptr{Ptr{UInt8}}, Ptr{Cint}, Ptr{Cint}),
-	           scene, zb, nxc, nyc, zlay, H.range[1], H.range[2], H.range[3], H.range[4],
-	           cz, crgb, Cint(ncol), Cint(method), Cint(side), azim, elev,
-	           tex, Cint(texW), Cint(texH), Cint(texB), pRgb, pW, pH)
-	(ok == 0) && error("Aquamoto: the $name half could not be lit with method $method")
-	try
-		v = unsafe_wrap(Array, pRgb[], (3, Int(pW[]), Int(pH[])))   # (band, col, row), borrowed
-		return permutedims(v, (3, 2, 1))                            # (row, col, band), owned
-	finally
-		ccall(_fn(:gmtvtk_free_rgb), Cvoid, (Ptr{UInt8},), pRgb[])
-	end
 end
 
 _pbr_pump(n::Int) = for _ in 1:n; _pump_once(); sleep(0.02); end
