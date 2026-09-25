@@ -1317,7 +1317,10 @@ public:
 		// CPT and paints the land red; doing that automatically at open made every tank arrive that
 		// way. It is the user's switch to throw, not this function's.
 		// The first slice is what fills in the tank's extent, so the figure is put up after it.
-		if (cineProfCheck && cineProfCheck->isChecked()) showEtaFigure(true);
+		// The Cinema tab's "Show η(x) profile" box (checked by default) left aquamoto.ui in 41b5e13, and
+		// with it this figure's only door: no box, no figure, ever. Its default was ON, so with no box
+		// the figure opens exactly as the box did.
+		if (!cineProfCheck || cineProfCheck->isChecked()) showEtaFigure(true);
 	}
 
 	// Fill the Stage/Xmoment/Ymoment/Or… quantity picker from a just-opened (or restored) file's

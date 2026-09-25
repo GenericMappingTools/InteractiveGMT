@@ -53,6 +53,28 @@
 	end
 end
 
+# THE η(x) FIGURE COMES UP WITH THE TANK. Its only door used to be the Cinema tab's "Show η(x)
+# profile" box (checked by default); 41b5e13 removed that box from aquamoto.ui and the figure silently
+# stopped opening at all — no test noticed. This opens a tank and reads the figure off the screen
+# (gmtvtk_aqua_eta_curve_test: -2 = no figure exists).
+@testitem "Aquamoto: the η(x) figure opens with the tank" tags=[:gui, :aquamoto] setup=[GmtvtkTest] begin
+	IG = InteractiveGMT
+	include(joinpath(@__DIR__, "aquamoto_fixture.jl"))
+	mktempdir() do dir
+		nc = aqf_make_tsunami_nc(joinpath(dir, "tsu_eta.nc"); nt = 5)
+		f = iview()
+		try
+			IG._on_drop(f.h, nc);  aqf_pump(40)
+			s = Ref{Cdouble}(0.0)
+			n = ccall(GmtvtkTest._test_fn(:gmtvtk_aqua_eta_curve_test), Cint,
+			          (Ptr{Cvoid}, Ptr{Cdouble}, Cint), f.h, s, Cint(0))
+			@test n >= 2
+		finally
+			aqf_close(f.h)
+		end
+	end
+end
+
 # (An item that held the arrow on a PLAIN, non-benchmark window and watched the same curve lived
 # here. It was dropped: the benchmark item below asserts the very same thing about the profile curve
 # AND about the reference, in the configuration the user is actually in, while this one only held on
