@@ -70,6 +70,12 @@ const _TEST_SYMBOLS = (
 	:gmtvtk_compute_euler_progress,
 	:gmtvtk_aqua_side_rgb_test,       # per-side mean RGB off the live tsunami texture
 	:gmtvtk_aqua_hold_arrow_test,     # hold the slice slider's < / > down for real, report the travel
+	:gmtvtk_aqua_arrow_press_test,    # press / release an arrow, no pumping (the app's pump drives it)
+	:gmtvtk_aqua_slider_value_test,   # the slice slider's value, no pumping
+	:gmtvtk_render_count_test,        # renders that reached the screen since the last reset
+	:gmtvtk_axes_sets_test,           # EVERY axes set: name|shown|onscreen|zlock|z0|z1 per line
+	:gmtvtk_image_tex_hash_test,      # hash + dims of an image extra's texture bytes
+	:gmtvtk_aqua_arrow_screen_test,   # screen pos of an arrow, for REAL OS mouse input
 	:gmtvtk_aqua_edit_tip_test,       # type into a dialog line edit, finish the edit, read its hover text
 	:gmtvtk_aqua_check_test,          # tick a dialog checkbox by name, its handler runs
 	:gmtvtk_aqua_eta_curve_test,      # the eta(x) figure's live curve: point count + sum of y

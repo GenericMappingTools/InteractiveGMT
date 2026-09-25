@@ -1,30 +1,52 @@
-# THE TRANSPORT IS MEASURED HERE, BY HOLDING THE BUTTON.
+# THE TRANSPORT IS MEASURED HERE, BY HOLDING THE BUTTON — UNDER THE APP'S OWN EVENT LOOP.
 #
 # `test-aquamoto-slider-hotpath.jl` reads the SOURCE: it can say that nothing is wired to the
-# slider's signal and that nothing disables the arrows. It cannot say that holding `>` steps — and
-# that is the failure the user has hit three times in a row:
+# slider's signal and that nothing disables the arrows. It cannot say that holding `>` steps, that the
+# tank is REDRAWN on screen while it does, or that it STOPS when the finger comes off.
 #
-#   * the arrows were disabled for the duration of each slice draw, and Qt CANCELS a pressed button's
-#     auto-repeat when the button is disabled (the press is dropped, the grab goes, and the repeat
-#     does not resume when it is re-enabled) — so a hold gave exactly ONE step, for ever;
-#   * a blocking host call taken between two repeats ate the gap the next repeat needed.
+# THE ITEM THAT USED TO BE HERE WAS USELESS, AND WHY IS THE POINT. It held the button inside
+# `gmtvtk_aqua_hold_arrow_test`, which pumps its OWN `processEvents` loop. The app never runs that
+# loop: there the outer loop is the Julia Timer's `gmtvtk_process_events`, whose `inPump` guard makes
+# every nested tick during a slice draw a no-op. So the old item measured repeats being coalesced
+# inside draws — a machine the user never holds — and it stayed green while the real one stalled.
+# It also asserted only "the slider moved more than 1", which says nothing about what reaches the
+# screen, whether the REPL froze, or whether loading ran on after release.
 #
-# Both are invisible to source reading and to every Julia-level call. So this item presses the real
-# QToolButton with a real QMouseEvent, holds it while the event loop runs, releases it, and asserts
-# the slider actually travelled (`gmtvtk_aqua_hold_arrow_test`, 90_c_api.cpp). Re-enable the arrows
-# in `transportEnable` and this goes red; that is what it is for.
+# Here the button is PRESSED and RELEASED with REAL OS mouse input (`aqf_realpress`, the fixture),
+# and the hold is a Julia `sleep`, so the app's own Timer pump drives the auto-repeat exactly as it
+# does under a finger. What is asserted is what the user sees:
+#   * slices are DRAWN during the hold (the host's own "slice on screen", `st.cur`), several of them;
+#   * each drawn slice is RENDERED (`gmtvtk_render_count_test` counts finished renders);
+#   * Julia keeps getting control (the REPL is not frozen): no gap between wakeups over 1 s;
+#   * after release the slider STOPS within one step, and the drawn slice catches up to it — no
+#     loading that goes on by itself.
 
-@testitem "Aquamoto transport: holding > steps through slices, holding < comes back" tags=[:gui, :aquamoto] setup=[GmtvtkTest] begin
+@testitem "Aquamoto transport: a real-pump hold draws, renders, keeps the REPL alive, stops on release" tags=[:gui, :aquamoto] setup=[GmtvtkTest] begin
 	IG = InteractiveGMT
 	include(joinpath(@__DIR__, "aquamoto_fixture.jl"))
+	slider(h)  = Int(ccall(GmtvtkTest._test_fn(:gmtvtk_aqua_slider_value_test), Cint, (Ptr{Cvoid},), h))
+	renders(h, reset = false) = Int(ccall(GmtvtkTest._test_fn(:gmtvtk_render_count_test), Cint,
+	                                      (Ptr{Cvoid}, Cint), h, Cint(reset)))
 
-	# Hold an arrow for `ms` and report (slices advanced, slice landed on).
-	hold(h, dir, ms) = begin
-		out = Ref{Cint}(0)
-		n = ccall(GmtvtkTest._test_fn(:gmtvtk_aqua_hold_arrow_test), Cint,
-		          (Ptr{Cvoid}, Cint, Cint, Ptr{Cint}, Ptr{Cint}, Ptr{Cint}), h, Cint(dir), Cint(ms),
-		          out, C_NULL, C_NULL)
-		(Int(n), Int(out[]))
+	# Hold for `secs` by SLEEPING (the Timer pump runs), then release and let it settle `settle` s.
+	function hold(h, st, dir, secs; settle = 3.0)
+		renders(h, true)
+		v0 = aqf_realpress(h, dir, true)
+		@assert v0 >= 0 "arrow press hook failed: $v0"
+		drawn = Int[]; gap = 0.0; tl = time(); t0 = tl
+		while time() - t0 < secs
+			sleep(0.01); t = time(); gap = max(gap, t - tl); tl = t
+			push!(drawn, st.cur)
+		end
+		vrel = aqf_realpress(h, dir, false)
+		nr = renders(h)
+		marks = Int[]; t1 = time()
+		while time() - t1 < settle
+			sleep(0.01); t = time(); gap = max(gap, t - tl); tl = t
+			push!(marks, slider(h))
+		end
+		(; v0, vrel, ndrawn = length(unique(drawn)), nr, gap,
+		   vmid = marks[max(1, length(marks) ÷ 2)], vend = slider(h), cur = st.cur + 1)
 	end
 
 	mktempdir() do dir
@@ -32,21 +54,79 @@
 		nc = aqf_make_tsunami_nc(joinpath(dir, "tsu_transport.nc"); nt = 40)
 		f = iview()
 		try
-			IG._on_drop(f.h, nc);  aqf_pump(40)
+			IG._on_drop(f.h, nc);  aqf_pump(80)
+			st = IG._AQUA[f.h]
+			for dir in (+1, -1)
+				r = hold(f.h, st, dir, 2.0)
+				@info "hold dir=$dir" r
+				# Moves in the asked direction, several DRAWN slices (a healthy 2 s hold draws 10+).
+				@test dir * (r.vrel - r.v0) > 3
+				@test r.ndrawn > 3
+				# Every drawn slice reached the screen.
+				@test r.nr >= r.ndrawn
+				# The REPL is alive throughout: the pump never kept the UI thread for a second.
+				@test r.gap < 1.0
+				# RELEASE STOPS IT: at most the one repeat already in flight, nothing after mid-settle,
+				# and the tank shows the slice the slider says.
+				@test abs(r.vend - r.vrel) <= 1
+				@test r.vend == r.vmid
+				@test r.cur == r.vend
+			end
+		finally
+			aqf_close(f.h)
+		end
+	end
+end
 
-			# THE HOLD. Qt's auto-repeat starts after ~300 ms and then fires every ~100 ms, so 2 s of
-			# holding is a dozen repeats on an idle machine. The assertion is deliberately loose — how
-			# many slices a hold gets through depends on how fast each one draws — but it is FAR above
-			# what the defect produces, which is exactly 1, however long the button is held.
-			adv, land = hold(f.h, +1, 2000)
-			@test adv > 1
-			@test land > 1
+# THE SAME HOLD WITH "Sat img" ON, ON A REAL-SIZE TANK. With the satellite drape on, every slice also
+# rebuilds the drape's RGBA at the "Res" resolution (Res 4 on 765x476 nodes = a 3060x1904 texture).
+# That loop was type-unstable (the mask came from a Union-typed grid) and cost 1.2 s per slice, so a
+# hold drew one slice every ~1.5 s, froze the REPL for as long, and went on loading after release —
+# while the plain-tank item above stayed green. So this item runs the identical assertions with the
+# satellite on, at the size where the cost shows. Needs the tiles once (GMT's own tile cache after).
+@testitem "Aquamoto transport: the real-pump hold stays live with Sat img on" tags=[:gui, :aquamoto] setup=[GmtvtkTest] begin
+	IG = InteractiveGMT
+	include(joinpath(@__DIR__, "aquamoto_fixture.jl"))
+	slider(h) = Int(ccall(GmtvtkTest._test_fn(:gmtvtk_aqua_slider_value_test), Cint, (Ptr{Cvoid},), h))
+	renders(h, reset = false) = Int(ccall(GmtvtkTest._test_fn(:gmtvtk_render_count_test), Cint,
+	                                      (Ptr{Cvoid}, Cint), h, Cint(reset)))
+	check(h, name, on) = ccall(GmtvtkTest._test_fn(:gmtvtk_aqua_check_test), Cint,
+	                           (Ptr{Cvoid}, Cstring, Cint), h, name, Cint(on))
 
-			# …AND BACK. The left arrow must do the same in the other direction (its own button, its
-			# own repeat), and it must not be the slider simply running to an end stop.
-			back, home = hold(f.h, -1, 2000)
-			@test back > 1
-			@test home < land
+	mktempdir() do dir
+		nc = aqf_make_tsunami_nc(joinpath(dir, "tsu_sat.nc"); nx = 765, ny = 476, nt = 40, coast = true)
+		f = iview()
+		try
+			IG._on_drop(f.h, nc);  aqf_pump(80)
+			st = IG._AQUA[f.h]
+			@test check(f.h, "cinema3DCheckBox", 1) == 1           # 3-D, where it was reported
+			@test check(f.h, "splitDryWetCheckBox", 1) == 1        # Sat img needs a land side
+			@test check(f.h, "renderedSatImgCheckBox", 1) == 1
+			aqf_pump(40)
+			@test st.satimg                                         # the drape really is on
+			renders(f.h, true); g0 = Base.gc_time_ns()
+			v0 = aqf_realpress(f.h, +1, true)
+			drawn = Int[]; gap = 0.0; gapat = 0.0; tl = time(); t0 = tl
+			while time() - t0 < 2.0
+				sleep(0.01); t = time(); (t - tl > gap) && (gap = t - tl; gapat = t - t0); tl = t
+				push!(drawn, st.cur)
+			end
+			vrel = aqf_realpress(f.h, +1, false)
+			nr = renders(f.h)
+			marks = Int[]; t1 = time()
+			while time() - t1 < 3.0
+				sleep(0.01); t = time(); (t - tl > gap) && (gap = t - tl; gapat = t - t0); tl = t
+				push!(marks, slider(f.h))
+			end
+			vend = slider(f.h)
+			@info "sat hold" gapat gcms = round((Base.gc_time_ns() - g0) / 1e6) v0 vrel ndrawn = length(unique(drawn)) nr gap vend cur = st.cur + 1
+			@test vrel - v0 > 3
+			@test length(unique(drawn)) > 3
+			@test nr >= length(unique(drawn))
+			@test gap < 1.0
+			@test abs(vend - vrel) <= 1
+			@test vend == marks[max(1, length(marks) ÷ 2)]
+			@test st.cur + 1 == vend
 		finally
 			aqf_close(f.h)
 		end

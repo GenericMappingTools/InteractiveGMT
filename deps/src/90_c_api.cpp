@@ -2510,6 +2510,47 @@ GMTVTK_API int gmtvtk_image_set_pixels_h(void *handle, const char *name, const u
 	return 1;
 }
 
+// Rewrite ONLY THE ALPHA of the 4-band image `name`'s existing texture from a per-NODE mask: `mask`
+// is nx*ny bytes, row-major, row 0 = SOUTH (non-zero = opaque), and texel (c, r) takes node
+// (round((c+0.5)/W*(nx-1)), round((r+0.5)/H*(ny-1))) — ties to even, the very sampling
+// `_aqua_sat_rgba` (aquasat.jl) builds the full picture with, so the two produce identical texels.
+//
+// For the Aquamoto satellite drape, whose colours are fixed and whose land/water cut moves with the
+// wave: re-sending the whole RGBA through gmtvtk_image_set_pixels_h at every slice (a 3060x1904
+// texture at Res 4) plus that function's own forced Render() is what made < / > crawl with "Sat img"
+// on. This touches one byte per texel in place and does NOT render — the slice push that follows
+// renders once. Returns 1, or 0 when there is no such 4-band texture (the caller then builds it whole).
+GMTVTK_API int gmtvtk_image_set_alpha_mask_h(void *handle, const char *name, const unsigned char *mask,
+                                             int nx, int ny) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !mask || nx < 1 || ny < 1) return 0;
+	bool isPrimary = false;
+	ExtraObj *ex = imageExtraByName(s, name ? name : "", isPrimary);
+	vtkTexture *tx = ex ? ex->tex.Get() : nullptr;
+	if (!tx) return 0;
+	vtkImageData *im = vtkImageData::SafeDownCast(tx->GetInput());
+	if (!im || im->GetNumberOfScalarComponents() != 4 || im->GetScalarType() != VTK_UNSIGNED_CHAR) return 0;
+	int dims[3];
+	im->GetDimensions(dims);
+	const int W = dims[0], H = dims[1];
+	if (W < 1 || H < 1) return 0;
+	unsigned char *px = static_cast<unsigned char *>(im->GetScalarPointer());
+	if (!px) return 0;
+	std::vector<int> ixs(W), iys(H);
+	for (int c = 0; c < W; ++c)
+		ixs[c] = std::clamp((int)std::nearbyint((c + 0.5) / W * (nx - 1)), 0, nx - 1);
+	for (int r = 0; r < H; ++r)
+		iys[r] = std::clamp((int)std::nearbyint((r + 0.5) / H * (ny - 1)), 0, ny - 1);
+	for (int r = 0; r < H; ++r) {
+		const unsigned char *mrow = mask + (size_t)iys[r] * nx;
+		unsigned char *prow = px + (size_t)r * W * 4 + 3;
+		for (int c = 0; c < W; ++c) prow[(size_t)c * 4] = mrow[ixs[c]] ? 0xff : 0x00;
+	}
+	im->Modified();
+	tx->Modified();
+	return 1;
+}
+
 // Image > Flip > Up-Down / Left-Right -> Julia (see JuliaImageFlipFn, 30_app.cpp). nullptr detaches.
 GMTVTK_API void gmtvtk_set_image_flip_callback(JuliaImageFlipFn fn) {
 	g_juliaImageFlip = fn;
@@ -7141,6 +7182,191 @@ GMTVTK_API int gmtvtk_aqua_hold_arrow_test(void *scene, int dir, int ms, int *ou
 	const int end = slider->value();
 	if (outSlice) *outSlice = end;
 	return std::abs(end - start);
+}
+
+// test hook: PRESS (down=1) or RELEASE (down=0) the slice slider's < (dir<0) / > arrow, and return
+// at once, WITHOUT pumping anything. The hold hook above runs its own processEvents loop, which the
+// app never does: there the outer loop is the Julia Timer's gmtvtk_process_events, whose `inPump`
+// guard turns every nested tick during a slice draw into a no-op. A hold measured under the test's
+// own loop is therefore a different machine from the one the user holds, and it stayed green while
+// the real one stalled. With press and release split, the caller holds by SLEEPING in Julia, so the
+// app's own pump drives the repeats exactly as it does under a finger.
+// Returns the slider value (>= 0), -2 no Aquamoto dialog, -3 more than one, -4 no such arrow.
+GMTVTK_API int gmtvtk_aqua_arrow_press_test(void *scene, int dir, int down) {
+	(void)scene;
+	QScrollBar *slider = nullptr;
+	int nFound = 0;
+	for (QWidget *tl : QApplication::topLevelWidgets())
+		if (QScrollBar *sb = tl->findChild<QScrollBar *>("sliceSlider")) { slider = sb; ++nFound; }
+	if (!slider)     return -2;
+	if (nFound != 1) return -3;
+	QToolButton *btn = nullptr;
+	if (QWidget *row = slider->parentWidget())
+		for (QToolButton *b : row->findChildren<QToolButton *>())
+			if (b->arrowType() == (dir < 0 ? Qt::LeftArrow : Qt::RightArrow)) { btn = b; break; }
+	if (!btn) return -4;
+	const QPoint c = btn->rect().center();
+	QMouseEvent ev(down ? QEvent::MouseButtonPress : QEvent::MouseButtonRelease, QPointF(c),
+	               btn->mapToGlobal(c), Qt::LeftButton, down ? Qt::LeftButton : Qt::NoButton,
+	               Qt::NoModifier);
+	QApplication::sendEvent(btn, &ev);
+	return slider->value();
+}
+
+// test hook: how many times the window's render window has FINISHED A RENDER since the last reset —
+// i.e. how many pictures actually reached the screen. `reset` != 0 zeroes it (installing the observer
+// on first use). A slice that is read and pushed but never rendered is invisible to every Julia-side
+// count; this is the count of what the user sees. -1 no widget/render window.
+GMTVTK_API int gmtvtk_render_count_test(void *scene, int reset) {
+	static std::map<void *, int> counts;
+	static std::set<void *> hooked;
+	Scene *s = (Scene*)scene;
+	if (!s || !s->widget || !s->widget->renderWindow()) return -1;
+	vtkRenderWindow *rw = s->widget->renderWindow();
+	if (!hooked.count(rw)) {
+		hooked.insert(rw);
+		vtkNew<vtkCallbackCommand> cb;
+		cb->SetClientData(rw);
+		cb->SetCallback([](vtkObject *, unsigned long, void *cd, void *) { ++counts[cd]; });
+		rw->AddObserver(vtkCommand::EndEvent, cb);
+	}
+	if (reset) counts[rw] = 0;
+	return counts[rw];
+}
+
+// test hook: EVERY axes set in the window, not just the active one — the base's and each extra's —
+// as "name|shown|onscreen|zlock|z0|z1\n" per set, `onscreen` = its box actor is built and visible and
+// z0/z1 = that box's DRAWN Z bounds. A box that pierces a surface is usually NOT the active set's
+// (that one is pinned): it is a second raster's own set standing beside it, which every
+// active-set-only check is blind to. Returns the number of sets.
+GMTVTK_API int gmtvtk_axes_sets_test(void *scene, char *buf, int cap) {
+	Scene *s = (Scene*)scene;
+	if (!s || !buf || cap <= 0) return -1;
+	std::string o;
+	int n = 0;
+	auto one = [&](const std::string &name, AxesSet &A) {
+		const bool on = A.built && A.cube && A.cube->GetVisibility() != 0;
+		double b[6] = { 0, 0, 0, 0, 0, 0 };
+		if (A.cube) A.cube->GetBounds(b);
+		char t[256];
+		snprintf(t, sizeof(t), "%s|%d|%d|%d|%.10g|%.10g\n", name.c_str(), A.shown ? 1 : 0, on ? 1 : 0,
+		         A.zLock ? 1 : 0, b[4], b[5]);
+		o += t;
+		++n;
+	};
+	one(s->surfName, s->baseAxes);
+	for (auto &ex : s->extras) one(ex.name, ex.ax);
+	// …and every VISIBLE prop in the scene that is not an axes box, as "@class|name|z0|z1": what the
+	// boxes must stand below. `name` is the owning extra's, or "base" for the primary's actors.
+	if (s->ren) {
+		vtkPropCollection *pc = s->ren->GetViewProps();
+		pc->InitTraversal();
+		while (vtkProp *p = pc->GetNextProp()) {
+			vtkProp3D *p3 = vtkProp3D::SafeDownCast(p);
+			if (!p3 || !p3->GetVisibility() || vtkCubeAxesActor::SafeDownCast(p)) continue;
+			if (vtkBillboardTextActor3D::SafeDownCast(p)) continue;
+			std::string who = "?";
+			if (p3 == surfProp(s) || p3 == s->drape.Get()) who = "base";
+			for (auto &ex : s->extras) if (ex.actor.Get() == p3) who = ex.name;
+			double b[6];
+			p3->GetBounds(b);
+			if (!(std::isfinite(b[4]) && std::isfinite(b[5])) || b[4] > b[5]) continue;
+			char t[256];
+			snprintf(t, sizeof(t), "@%s|%s|%.10g|%.10g|transl=%d\n", p->GetClassName(), who.c_str(), b[4], b[5],
+			         p3->HasTranslucentPolygonalGeometry());
+			o += t;
+		}
+	}
+	const int k = std::min(cap - 1, (int)o.size());
+	memcpy(buf, o.data(), k);
+	buf[k] = 0;
+	return n;
+}
+
+// test hook: FNV-1a hash of the image extra `name`'s texture bytes, and its W x H x bands. Lets a test
+// say two routes to the same picture put the SAME texels on screen. Returns 1, 0 no such texture.
+GMTVTK_API int gmtvtk_image_tex_hash_test(void *scene, const char *name, unsigned long long *hash,
+                                          int *w, int *h, int *nb) {
+	Scene *s = (Scene*)scene;
+	if (!s || !hash) return 0;
+	vtkTexture *tx = nullptr;
+	for (auto &ex : s->extras) if (ex.name == (name ? name : "")) { tx = ex.tex.Get(); break; }
+	vtkImageData *im = tx ? vtkImageData::SafeDownCast(tx->GetInput()) : nullptr;
+	if (!im || im->GetScalarType() != VTK_UNSIGNED_CHAR) return 0;
+	int d[3];
+	im->GetDimensions(d);
+	const int c = im->GetNumberOfScalarComponents();
+	const unsigned char *p = static_cast<const unsigned char *>(im->GetScalarPointer());
+	unsigned long long x = 1469598103934665603ULL;
+	for (size_t i = 0, n = (size_t)d[0] * d[1] * c; i < n; ++i) { x ^= p[i]; x *= 1099511628211ULL; }
+	*hash = x;
+	if (w) *w = d[0];
+	if (h) *h = d[1];
+	if (nb) *nb = c;
+	return 1;
+}
+
+// test hook: the SCREEN position (physical pixels) of the < (dir<0) / > arrow's centre, after raising
+// and activating the Aquamoto dialog — so a test can press it with REAL OS mouse input. A synthetic
+// QMouseEvent sent straight to the button bypasses Qt's mouse grab, so a release that the app LOSES
+// (a window shown or activated mid-hold takes the grab, the button never hears the release, and its
+// auto-repeat runs on for ever) is invisible to it. Returns 1, or <0 as gmtvtk_aqua_arrow_press_test.
+GMTVTK_API int gmtvtk_aqua_arrow_screen_test(void *scene, int dir, int *outX, int *outY) {
+	(void)scene;
+	QScrollBar *slider = nullptr;
+	int nFound = 0;
+	for (QWidget *tl : QApplication::topLevelWidgets())
+		if (QScrollBar *sb = tl->findChild<QScrollBar *>("sliceSlider")) { slider = sb; ++nFound; }
+	if (!slider)     return -2;
+	if (nFound != 1) return -3;
+	QToolButton *btn = nullptr;
+	if (QWidget *row = slider->parentWidget())
+		for (QToolButton *b : row->findChildren<QToolButton *>())
+			if (b->arrowType() == (dir < 0 ? Qt::LeftArrow : Qt::RightArrow)) { btn = b; break; }
+	if (!btn) return -4;
+	QWidget *top = btn->window();
+	top->show(); top->raise(); top->activateWindow();
+	QApplication::processEvents();
+	const QPoint g = btn->mapToGlobal(btn->rect().center());
+	const qreal dpr = btn->devicePixelRatioF();
+	if (outX) *outX = (int)std::lround(g.x() * dpr);
+	if (outY) *outY = (int)std::lround(g.y() * dpr);
+	return 1;
+}
+
+// test hook: the arrow's press state as Qt sees it — "down|qtButtons|grabber|activeWindow|popup" in
+// `buf`. For telling a LOST RELEASE (down=1 with the OS button up) from anything else.
+GMTVTK_API int gmtvtk_aqua_arrow_state_test(void *scene, int dir, char *buf, int cap) {
+	(void)scene;
+	QScrollBar *slider = nullptr;
+	for (QWidget *tl : QApplication::topLevelWidgets())
+		if (QScrollBar *sb = tl->findChild<QScrollBar *>("sliceSlider")) slider = sb;
+	if (!slider || !buf || cap <= 0) return -2;
+	QToolButton *btn = nullptr;
+	if (QWidget *row = slider->parentWidget())
+		for (QToolButton *b : row->findChildren<QToolButton *>())
+			if (b->arrowType() == (dir < 0 ? Qt::LeftArrow : Qt::RightArrow)) { btn = b; break; }
+	if (!btn) return -4;
+	QWidget *g = QWidget::mouseGrabber();
+	QWidget *a = QApplication::activeWindow();
+	QWidget *p = QApplication::activePopupWidget();
+	const QByteArray s = QString("%1|%2|%3|%4|%5")
+		.arg(btn->isDown() ? 1 : 0).arg((int)QGuiApplication::mouseButtons())
+		.arg(g ? g->metaObject()->className() + QString(":") + g->objectName() + ":" + g->windowTitle() : QString("-"))
+		.arg(a ? a->windowTitle() : QString("-"))
+		.arg(p ? p->metaObject()->className() : "-").toUtf8();
+	const int k = std::min(cap - 1, (int)s.size());
+	memcpy(buf, s.constData(), k);
+	buf[k] = 0;
+	return btn->isDown() ? 1 : 0;
+}
+
+// test hook: the slice slider's current value, no pumping. -2 no Aquamoto dialog.
+GMTVTK_API int gmtvtk_aqua_slider_value_test(void *scene) {
+	(void)scene;
+	for (QWidget *tl : QApplication::topLevelWidgets())
+		if (QScrollBar *sb = tl->findChild<QScrollBar *>("sliceSlider")) return sb->value();
+	return -2;
 }
 
 // test hook: WHAT IS ACTUALLY ON THE TSUNAMI TEXTURE, one side at a time. `side`: 0 = water, 1 =

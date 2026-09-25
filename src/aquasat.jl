@@ -208,10 +208,40 @@ function _aqua_sat_drape_rgb(bat::GMTgrid, W::Int, H::Int, zoom::Int)::Array{UIn
 	return _AQUA_SAT_DRAPE_CACHE[key] = S
 end
 
+# The drape's RGBA: the satellite colours `S` (H x W x 3) with the land/water mask `dm` ((ny, nx),
+# row 1 = SOUTH, true = dry) as alpha — water is see-through to the lit layer.
+# A FUNCTION BARRIER, and that is the whole point of it being separate. In `_aqua_sat_drape!` the
+# mask is built from a grid whose type is a Union with a non-concrete GMTgrid (`_aqua_layer`), so
+# `dm` was inferred `Any` and this loop dispatched dynamically on every one of its W*H pixels:
+# 1.2 s per slice at Res 4 on a 765x476 tank, which is what froze the < / > hold with "Sat img" on.
+# Here every argument is concrete and the loop is tens of milliseconds.
+function _aqua_sat_rgba(S::Array{UInt8,3}, dm::BitMatrix, nx::Int, ny::Int)::Array{UInt8,3}
+	H, W = size(S, 1), size(S, 2)
+	A = Array{UInt8,3}(undef, H, W, 4)
+	ixs = [clamp(round(Int, (c - 0.5) / W * (nx - 1)) + 1, 1, nx) for c in 1:W]
+	iys = [clamp(round(Int, (r - 0.5) / H * (ny - 1)) + 1, 1, ny) for r in 1:H]
+	@inbounds for c in 1:W, r in 1:H
+		A[r, c, 1] = S[r, c, 1];  A[r, c, 2] = S[r, c, 2];  A[r, c, 3] = S[r, c, 3]
+		A[r, c, 4] = dm[iys[r], ixs[c]] ? 0xff : 0x00
+	end
+	return A
+end
+
 # Put up / refresh / take down the satellite drape. `on` false removes it. Called by the "Sat img"
 # box and after every slice while it is on (the land/water mask moves with the wave).
-function _aqua_sat_drape!(scene::Ptr{Cvoid}, st::_AquaState, G::Union{GMTgrid,Nothing} = nothing)
+#
+# ONLY THE CUT MOVES. The colours are the same photograph at every slice; what the wave changes is
+# which nodes are land. So once the picture is up at a given size, a slice sends the per-node mask
+# alone (`gmtvtk_image_set_alpha_mask_h`, nx*ny bytes) and the viewer rewrites the texture's alpha in
+# place, with the same sampling `_aqua_sat_rgba` uses. Rebuilding and re-sending the whole RGBA each
+# slice (3060x1904 at Res 4, plus a forced render inside the pixel setter) is what made < / > crawl
+# with "Sat img" on. `full = true` forces the whole build (the test compares the two).
+const _AQUA_SAT_BUILT = IdDict{_AquaState,NTuple{3,Int}}()   # (W, H, zoom) of the picture now up
+
+function _aqua_sat_drape!(scene::Ptr{Cvoid}, st::_AquaState, G::Union{GMTgrid,Nothing} = nothing;
+                          full::Bool = false)
 	if !st.satimg
+		delete!(_AQUA_SAT_BUILT, st)
 		if ccall(_fn(:gmtvtk_remove_image_h), Cint, (Ptr{Cvoid}, Cstring), scene, AQUA_SAT_NAME) != 0
 			_forget_object!(scene, :image, AQUA_SAT_NAME)
 		end
@@ -225,15 +255,17 @@ function _aqua_sat_drape!(scene::Ptr{Cvoid}, st::_AquaState, G::Union{GMTgrid,No
 	if W * H > _AQUA_SAT_MAXPIX                    # capped, aspect kept
 		sc = sqrt(_AQUA_SAT_MAXPIX / (W * H));  W = max(2, round(Int, W * sc));  H = max(2, round(Int, H * sc))
 	end
-	S = _aqua_sat_drape_rgb(st.bat, W, H, _aqua_sat_zoom(st.bat, f))
-	dm = _aqua_indland(_zmat(st.bat), _zmat(Gw))   # (iy, ix), row 1 = SOUTH: true = dry land
-	A = Array{UInt8,3}(undef, H, W, 4)
-	ixs = [clamp(round(Int, (c - 0.5) / W * (nx - 1)) + 1, 1, nx) for c in 1:W]
-	iys = [clamp(round(Int, (r - 0.5) / H * (ny - 1)) + 1, 1, ny) for r in 1:H]
-	@inbounds for c in 1:W, r in 1:H
-		A[r, c, 1] = S[r, c, 1];  A[r, c, 2] = S[r, c, 2];  A[r, c, 3] = S[r, c, 3]
-		A[r, c, 4] = dm[iys[r], ixs[c]] ? 0xff : 0x00        # water: see-through to the lit layer
+	zoom = _aqua_sat_zoom(st.bat, f)
+	if !full && get(_AQUA_SAT_BUILT, st, (0, 0, 0)) == (W, H, zoom)
+		mask = _aqua_pack_landmask(_aqua_indland(st.bat.z, Gw.z), _grid_layout_code(Gw), Int(nx), Int(ny))
+		ccall(_fn(:gmtvtk_image_set_alpha_mask_h), Cint, (Ptr{Cvoid}, Cstring, Ptr{UInt8}, Cint, Cint),
+		      scene, AQUA_SAT_NAME, mask, Cint(nx), Cint(ny)) != 0 && return nothing
+		# no such texture any more (removed from Scene Objects, say): build it whole below
 	end
+	delete!(_AQUA_SAT_BUILT, st)
+	S = _aqua_sat_drape_rgb(st.bat, W, H, zoom)
+	dm = _aqua_indland(_zmat(st.bat), _zmat(Gw))   # (iy, ix), row 1 = SOUTH: true = dry land
+	A = _aqua_sat_rgba(S, dm, nx, ny)
 	r = st.bat.range
 	I = GMT.mat2img(A; x = [Float64(r[1]), Float64(r[2])], y = [Float64(r[3]), Float64(r[4])])
 	I.layout = "BCBa"
@@ -242,6 +274,7 @@ function _aqua_sat_drape!(scene::Ptr{Cvoid}, st::_AquaState, G::Union{GMTgrid,No
 		ccall(_fn(:gmtvtk_set_object_visible), Cint, (Ptr{Cvoid}, Cstring, Cint), scene, AQUA_SAT_NAME, Cint(1))
 		ccall(_fn(:gmtvtk_image_set_draped_h), Cint, (Ptr{Cvoid}, Cstring, Cint), scene, AQUA_SAT_NAME, Cint(1))
 	end
+	_AQUA_SAT_BUILT[st] = (W, H, zoom)
 	return nothing
 end
 

@@ -185,3 +185,33 @@ end
 # The kinds the host registry holds for this window: [(:grid|:image, name), …].
 aqf_objects(h) = [(k, n) for (k, n, _) in get(InteractiveGMT._SCENE_OBJS, h, Tuple{Symbol,String,Any}[])]
 aqf_object(h, kind::Symbol, name::AbstractString) = InteractiveGMT._find_object_exact(h, kind, String(name))
+
+# (Used by test-aquamoto-transport-gui.jl; needs GmtvtkTest, i.e. setup=[GmtvtkTest].)
+# REAL OS MOUSE INPUT. A synthetic event sent to the button bypasses Qt's mouse grab, and the bug
+# this item exists for was a mouse-up that never REACHED Qt with Sat img on: the arrow stayed down
+# and auto-repeated through the layers after the finger was off. Only a real press/release shows it.
+# The ALT tap lets the window take the foreground (Windows refuses SetForegroundWindow otherwise),
+# and the item checks the arrow really is the window under the cursor before it trusts anything.
+function aqf_realpress(h, dir, down)
+	if down
+		ccall((:keybd_event, "user32"), Cvoid, (UInt8, UInt8, UInt32, UInt), 0x12, 0, 0, 0)
+		ccall((:keybd_event, "user32"), Cvoid, (UInt8, UInt8, UInt32, UInt), 0x12, 0, 2, 0)
+		x = Ref{Cint}(0); y = Ref{Cint}(0)
+		@assert ccall(GmtvtkTest._test_fn(:gmtvtk_aqua_arrow_screen_test), Cint,
+		              (Ptr{Cvoid}, Cint, Ptr{Cint}, Ptr{Cint}), h, Cint(dir), x, y) == 1
+		aqf_pump(10)
+		ccall((:SetCursorPos, "user32"), Cint, (Cint, Cint), x[], y[]);  sleep(0.2)
+		buf = zeros(UInt16, 256)
+		hw = ccall((:WindowFromPoint, "user32"), Ptr{Cvoid}, (NTuple{2,Cint},), (x[], y[]))
+		ccall((:GetWindowTextW, "user32"), Cint, (Ptr{Cvoid}, Ptr{UInt16}, Cint),
+		      ccall((:GetAncestor, "user32"), Ptr{Cvoid}, (Ptr{Cvoid}, UInt32), hw, 2), buf, 256)
+		under = transcode(String, buf[1:findfirst(==(0), buf)-1])
+		@test under == "Aquamoto"                 # the click lands on the arrow, not on another app
+		v = Int(ccall(GmtvtkTest._test_fn(:gmtvtk_aqua_slider_value_test), Cint, (Ptr{Cvoid},), h))
+		ccall((:mouse_event, "user32"), Cvoid, (UInt32, UInt32, UInt32, UInt32, UInt), 0x0002, 0, 0, 0, 0)
+		return v
+	end
+	ccall((:mouse_event, "user32"), Cvoid, (UInt32, UInt32, UInt32, UInt32, UInt), 0x0004, 0, 0, 0, 0)
+	sleep(0.3)                                  # the up is queued: let the pump deliver it
+	return Int(ccall(GmtvtkTest._test_fn(:gmtvtk_aqua_slider_value_test), Cint, (Ptr{Cvoid},), h))
+end

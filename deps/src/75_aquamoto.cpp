@@ -45,6 +45,32 @@ static bool aquaEval(Scene *scene, const QString &call, QString &out) {
 	return n >= 0;
 }
 
+// IS THE FINGER STILL ON THE < / > ARROW? Asked on every one of its clicks. An auto-repeat click
+// comes while the button is DOWN; a click from a release comes after Qt has already put it up, so
+// that one always steps. For a down button the OS is asked for the REAL button state, because Qt's
+// own can be wrong: with "Sat img" on, the mouse-up of a hold never reached Qt (measured: OS button
+// up, QGuiApplication::mouseButtons() still LeftButton, the arrow still down), so the auto-repeat ran
+// on after the user let go and the slider raced through the layers by itself. A repeat that finds
+// the physical button up means the release was lost: the arrow is put up (which stops its repeat
+// timer) and the click does nothing. Hand-declared user32 calls, for the reason 30_app.cpp gives.
+#ifdef _WIN32
+extern "C" {
+	__declspec(dllimport) short __stdcall GetAsyncKeyState(int vKey);
+	__declspec(dllimport) int __stdcall GetSystemMetrics(int nIndex);
+}
+#endif
+static bool arrowStillHeld(QToolButton *b) {
+	if (!b || !b->isDown()) return true;              // a release click: the step the user asked for
+#ifdef _WIN32
+	const int vk = GetSystemMetrics(23 /*SM_SWAPBUTTON*/) ? 0x02 /*VK_RBUTTON*/ : 0x01 /*VK_LBUTTON*/;
+	const bool held = (GetAsyncKeyState(vk) & 0x8000) != 0;
+#else
+	const bool held = (QGuiApplication::mouseButtons() & Qt::LeftButton) != 0;
+#endif
+	if (!held) b->setDown(false);                     // the lost release, applied: the repeat stops
+	return held;
+}
+
 // The acting window's Scene *as a Julia pointer literal, the same "Ptr{Cvoid}(UInt(...))" spelling
 // NswingDialog's own calls use.
 static QString aquaScenePtr(Scene *scene) {
@@ -593,11 +619,11 @@ public:
 				rightBtn->setAutoRepeat(true);
 				row->insertWidget(idx, leftBtn);
 				row->insertWidget(idx + 2, rightBtn);   // sliceSlider shifted to idx+1 by the insert above
-				QObject::connect(leftBtn,  &QToolButton::clicked, sliceSlider, [this]() {
-					if (sliceSlider) sliceSlider->setValue(sliceSlider->value() - 1);
+				QObject::connect(leftBtn,  &QToolButton::clicked, sliceSlider, [this, leftBtn]() {
+					if (sliceSlider && arrowStillHeld(leftBtn)) sliceSlider->setValue(sliceSlider->value() - 1);
 				});
-				QObject::connect(rightBtn, &QToolButton::clicked, sliceSlider, [this]() {
-					if (sliceSlider) sliceSlider->setValue(sliceSlider->value() + 1);
+				QObject::connect(rightBtn, &QToolButton::clicked, sliceSlider, [this, rightBtn]() {
+					if (sliceSlider && arrowStillHeld(rightBtn)) sliceSlider->setValue(sliceSlider->value() + 1);
 				});
 			}
 		}
