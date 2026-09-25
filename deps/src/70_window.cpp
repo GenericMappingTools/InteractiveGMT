@@ -13206,6 +13206,7 @@ public:
 		if (cbSpanMode) QObject::connect(cbSpanMode, &QComboBox::currentIndexChanged,  live);
 		if (cbFrame)    QObject::connect(cbFrame,    &QComboBox::currentIndexChanged,  live);
 		if (cbAltitude) QObject::connect(cbAltitude, &QCheckBox::toggled,              live);
+		if (cbCoverage) QObject::connect(cbCoverage, &QCheckBox::toggled,              live);
 		if (leSpan)     QObject::connect(leSpan,     &QLineEdit::editingFinished,      live);
 		if (leStep)     QObject::connect(leStep,     &QLineEdit::editingFinished,      live);
 
@@ -13312,7 +13313,11 @@ public:
 			known = (askQuiet("what=swathknown\nname=" + nm + "\n") == "1");
 		}
 		cbCoverage->setEnabled(nsel == 1 && known);
-		if (!cbCoverage->isEnabled()) cbCoverage->setChecked(false);
+		if (!cbCoverage->isEnabled()) {
+			// Blocked: the box is live (replotIfPlotted), and a SELECTION change must never re-plot.
+			QSignalBlocker b(cbCoverage);
+			cbCoverage->setChecked(false);
+		}
 		cbCoverage->setToolTip(nsel != 1
 			? QString("Select exactly one satellite.")
 			: known ? QString("Paint the strip of ground %1's instrument covers as the animation runs.").arg(nm)
@@ -13409,6 +13414,9 @@ public:
 		// the .ui cannot silently change what is asked for — same contract as the span-mode combo.
 		const int fr = cbFrame ? cbFrame->currentIndex() : 0;
 		kv += QString("frame=%1\n").arg(fr == 1 ? "earthfixed" : fr == 2 ? "inertial" : "auto");
+		// The coverage box asks the SAME thing of a static plot as of the animation: paint the swath
+		// along the track just drawn. Same enable gate as animToggle (one satellite, known swath).
+		kv += QString("coverage=%1\n").arg(cbCoverage && cbCoverage->isEnabled() && cbCoverage->isChecked() ? 1 : 0);
 		return kv;
 	}
 

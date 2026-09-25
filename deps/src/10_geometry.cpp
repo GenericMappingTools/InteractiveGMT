@@ -626,6 +626,8 @@ struct Polygon {
 	std::vector<double> zClampSave;          // same one function, offered on every vector element's handle)
 	std::string groupName;                   // when non-empty, polys sharing it fold under ONE collapsible Scene Objects node (e.g. "Slip model" — Import Model Slip patches)
 	bool closed = true;                      // closed ring (polygon/rect/circle) vs open chain (polyline)
+	bool zIsPlaceholder = false;             // the caller's data had no Z (every z sent was the 0 filler):
+	                                         // the data table must not invent a Z column (Overlay twin)
 	bool isRect = false;                     // drawn with a rectangle tool (SH_Rect/SH_RectN): vertex edits stay axis-aligned
 	bool isFault = false;                    // drawn with the Draw Fault tool (SH_Fault): props hold the elastic-deformation dialog
 	double faultSlip = std::nan("");         // dislocation slip in METERS (set when imported from a sub-fault file; NaN = unknown -> dialog default)

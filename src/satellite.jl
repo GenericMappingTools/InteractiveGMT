@@ -581,7 +581,10 @@ function _plot_track!(scene::Ptr{Cvoid}, D::Vector{GMT.GMTdataset}, nm::String; 
 		# same pixels as zero; and on a flat map the orbit's height is 1.1% of the map's width, against
 		# 6.8% of the radius on the globe. The globe is therefore the view this box is naming, and the
 		# window is put on it. Unticked, nothing here touches the view at all.
-		if lift > 0
+		# ONLY ON THE FIRST PLOT of this satellite. A track that REPLACED one already on screen (Update
+		# orbit, a live Time-span re-plot) is the user's view being refreshed, not a new one being set up:
+		# the view mode and the zoom they are using are theirs, and neither is touched.
+		if lift > 0 && nrep == 0
 			# The globe is refused when the window holds nothing geographic; 3-D is then the best
 			# this box can honour, and it is still a view with a vertical axis.
 			if ccall(_fn(:gmtvtk_set_view_mode_h), Cint, (Ptr{Cvoid}, Cint), scene, Cint(2)) == 0
@@ -1220,6 +1223,37 @@ end
 _swath_polys(lon::Vector{Float64}, lat::Vector{Float64}, d0::Float64, d1::Float64)::Vector{Matrix{Float64}} =
 	_swath_rings(_swath_edges(lon, lat, d0, d1)...)
 
+# THE TRACK AS ONE CURVE, NOT AS DATELINE PIECES. The track is cut at ±180 for drawing, but a ribbon
+# built per piece ends in a cap that pokes past the cut on BOTH sides of it, so every crossing added two
+# extra sliver polygons lying on the strip of the neighbouring piece — the band painted twice there.
+# Pieces that meet at the dateline (the last point of one is the first of the next, 360° away) are
+# joined back into one run; a real gap (a failed epoch) keeps its runs apart. `_swath_rings` then cuts
+# the whole ribbon at ±180 once, which is what it was written to do.
+function _track_runs(D::Vector{GMT.GMTdataset})::Vector{Tuple{Vector{Float64},Vector{Float64}}}
+	runs = Tuple{Vector{Float64},Vector{Float64}}[]
+	for d in D
+		m = d.data
+		size(m, 1) == 0 && continue
+		lon = Vector{Float64}(m[:,1])
+		lat = Vector{Float64}(m[:,2])
+		if !isempty(runs)
+			plon, plat = runs[end]
+			dl = lon[1] - plon[end]
+			# Modulo 360: a run already joined across one crossing carries shifted longitudes.
+			if abs(dl) > 180.0 && abs(rem(dl, 360.0, RoundNearest)) < 1e-6 && abs(lat[1] - plat[end]) < 1e-6
+				# Same point on the other side of the cut: continue the run in continuous longitude and
+				# drop the repeated crossing point.
+				sh = plon[end] - lon[1]
+				append!(plon, lon[2:end] .+ sh)
+				append!(plat, lat[2:end])
+				continue
+			end
+		end
+		push!(runs, (lon, lat))
+	end
+	return runs
+end
+
 # GREY, HALF TRANSPARENT: the band is a mask over the map, not a layer with data of its own — the
 # geography under it has to stay readable, which is the whole reason it is not painted solid.
 const _SWATH_RGB = (0.5, 0.5, 0.5)
@@ -1281,11 +1315,8 @@ function _plot_coverage!(scene::Ptr{Cvoid}, nm::String, bands::Vector{Tuple{Floa
 	D = get(_SAT_TRACKS, (UInt(scene), nm), nothing)
 	D === nothing && error("no ground track for \"$nm\" in this window — plot the satellite first")
 	rings = Matrix{Float64}[]
-	for d in D
-		m = d.data
-		size(m, 1) < 2 && continue
-		lon = Vector{Float64}(m[:,1])
-		lat = Vector{Float64}(m[:,2])
+	for (lon, lat) in _track_runs(D)
+		length(lon) < 2 && continue
 		for (a, b) in bands
 			append!(rings, _swath_polys(lon, lat, a, b))
 		end
@@ -1467,6 +1498,7 @@ function _on_satellite(scene::Ptr{Cvoid}, params::Cstring, out::Ptr{UInt8}, cap:
 			# rule rather than erroring, because a frame is a view choice and never a reason not to plot.
 			fw = get(d, "frame", "auto")
 			frame = fw == "earthfixed" ? :earthfixed : fw == "inertial" ? :inertial : :auto
+			wantCover = get(d, "coverage", "0") == "1"
 
 			done = String[]
 			nupd = 0
@@ -1494,6 +1526,17 @@ function _on_satellite(scene::Ptr{Cvoid}, params::Cstring, out::Ptr{UInt8}, cap:
 					D  = groundtrack(s; step = step, altitude = useAlt, frame = frame, kw...)   # propagated ONCE, used twice
 					if _plot_track!(scene, D, nm; replaced = rep, sat = s)
 						push!(done, nm);  nupd += rep[]
+						# GROUND COVERAGE along the track just drawn — the same painter the spacecraft
+						# menu and the animation use (`_plot_coverage!` reads the track `_plot_track!`
+						# kept). Box unticked: a band left from an earlier plot no longer matches this
+						# track, so it goes.
+						if wantCover
+							sw = _swath_for(nm)
+							sw === nothing || _plot_coverage!(scene, nm, sw[1])
+						else
+							ccall(_fn(:gmtvtk_remove_polys_h), Cint, (Ptr{Cvoid}, Cstring),
+							      scene, _sat_cover_group(nm))
+						end
 					end
 				finally
 					close!(s)          # the finalizer would get it, but not predictably

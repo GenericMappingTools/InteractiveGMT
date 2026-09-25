@@ -505,7 +505,11 @@ static void showLineDataTable(Scene *s, const LineRef &lr, const QString &name) 
 	// real input data the user explicitly asked this table to show -- always show all 3 for overlays,
 	// UNLESS the source itself was 2-column and z=0 is only a placeholder (zIsPlaceholder): there is
 	// no real Z to show, so never invent one.
-	const bool showZ  = (!s->flat2d || lr.kind == LK_Overlay) && !(ovp && ovp->zIsPlaceholder);
+	// Same veto for a polygon whose source had no Z (Polygon::zIsPlaceholder, gmtvtk_add_poly_full).
+	bool polyNoZ = false;
+	if (lr.kind == LK_Polygon)
+		for (const auto &pg : s->polys) if (pg.line.Get() == actor || pg.fill.Get() == actor) { polyNoZ = pg.zIsPlaceholder; break; }
+	const bool showZ  = (!s->flat2d || lr.kind == LK_Overlay) && !(ovp && ovp->zIsPlaceholder) && !polyNoZ;
 	QStringList hdr;   hdr << "#" << "X" << "Y";   if (showZ) hdr << "Z";
 
 	// THE SOURCE TABLE WINS. When the overlay carries the data it was built from (Overlay::dataHdr /

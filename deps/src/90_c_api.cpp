@@ -3660,7 +3660,13 @@ GMTVTK_API int gmtvtk_add_poly_full(void *handle, const double *xyz, int npts, i
 	pg.groupName = (groupName && groupName[0]) ? groupName : "";
 	(void)lstyle;                                   // reserved (Polygon has no dashed/dotted style)
 	pg.fillColor[0] = fr; pg.fillColor[1] = fg; pg.fillColor[2] = fb; pg.fillOpacity = fop;
-	for (int i = 0; i < npts; ++i) pg.v.push_back({ xyz[3*i], xyz[3*i+1], xyz[3*i+2] });
+	// NO Z IN THE DATA -> NO Z COLUMN. Asked of the z's, same as the overlay door (50_scene.cpp): a
+	// 2-column source (a satellite swath, a night side) can only arrive here with the 0 filler.
+	pg.zIsPlaceholder = true;
+	for (int i = 0; i < npts; ++i) {
+		pg.v.push_back({ xyz[3*i], xyz[3*i+1], xyz[3*i+2] });
+		if (xyz[3*i+2] != 0.0) pg.zIsPlaceholder = false;
+	}
 	polyRebuildLine(s, pg);
 	if (pg.line) { pg.line->GetProperty()->SetColor(lr, lg, lb); pg.line->GetProperty()->SetLineWidth(lw); }
 	pg.stack = s->vecSeq++;
