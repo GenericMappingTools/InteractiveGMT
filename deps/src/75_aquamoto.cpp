@@ -528,7 +528,12 @@ public:
 			act->onActivate = [this]() { syncIllumModelSpins(); };
 			win->installEventFilter(act);
 		}
-		QObject::connect(win, &QObject::destroyed, win, [this]() { registry().remove(scene_); delete this; });
+		// Remove OUR entry only: aquamotoDestroy may already have dropped it, and a new viewer window at the
+		// same Scene address may own that key by now.
+		QObject::connect(win, &QObject::destroyed, win, [this]() {
+			if (registry().value(scene_, nullptr) == this) registry().remove(scene_);
+			delete this;
+		});
 
 		QMainWindow *w = win;   // local copy for lambda capture (member `win` still usable directly)
 
@@ -2514,6 +2519,12 @@ static void aquamotoDestroy(Scene *scene) {
 	w->destroyEtaFigure();
 	w->win->hide();
 	w->win->deleteLater();
+	// …AND OUT OF THE REGISTRY *NOW*, not when that deferred delete finally runs. The key is the Scene
+	// pointer, which is freed the moment the caller returns, and the allocator hands the same address to
+	// the next viewer window. With the entry still here, that new window's openFor found THIS dialog —
+	// hidden, still owned by the dead window — and re-showed it: nothing kept it above the new tank, the
+	// tank covered it, and a click on the slice arrow landed on the tank's title bar instead.
+	AquamotoWindow::registry().remove(scene);
 }
 // "Color Bar water"/"Color Bar Land" colormap chooser (50_scene.cpp aquaWaterColorbarRow/
 // aquaLandColorbarRow) -- side 0=water, 1=land. Stores the new cmap in the Julia _AquaState
