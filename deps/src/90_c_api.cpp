@@ -2161,8 +2161,23 @@ GMTVTK_API void gmtvtk_set_shade_intensity_h(void *handle, const float *inten, i
 	Scene *s = static_cast<Scene*>(handle);
 	if (!sceneAlive(s)) return;
 	if (!inten || nx < 2 || ny < 2) {
+		if (side == 2) {                 // the active layer's own light only (see the push below)
+			const ActiveGrid ag = resolveActiveGrid(s);
+			if (ag.valid && ag.tag >= 0)
+				for (auto &ex : s->extras) if (ex.tag == ag.tag) {
+					ex.shadeIn = ExternShade();
+					if (model < 0) {         // "Remove illumination" on THIS layer: its light, off
+						sceneSetReliefLook(s, RL_None, /*keepExternShade=*/true);
+						activeLook(s).noShade = true;
+					}
+					applyShading(s);
+					return;
+				}
+		}
 		s->shadeIn     = ExternShade();
 		s->shadeInLand = ExternShade();
+		if (model < 0 && side != 2)      // a WINDOW-wide "Remove": every layer's light, extras' too
+			for (auto &ex : s->extras) ex.shadeIn = ExternShade();
 		// model < 0 is the tool's "Remove illumination" (Mirone's ImageResetOrigImg_CB): EVERY light
 		// goes off, not just this tool's reflectance, so the grid falls back to plain CPT colour. Just
 		// dropping the reflectance would hand it to the Shading dock's own look — still an
@@ -2184,6 +2199,26 @@ GMTVTK_API void gmtvtk_set_shade_intensity_h(void *handle, const float *inten, i
 		}
 		applyShading(s);
 		return;
+	}
+	// side 2 = THE ACTIVE LAYER (the Illumination tool's plain-grid push). When that layer is a grid
+	// EXTRA, the reflectance is ITS OWN (ExtraObj::shadeIn) — never the window's slot, which in an
+	// Aquamoto window is the TANK's water light. The base keeps its slot (side 0), as ever.
+	if (side == 2) {
+		const ActiveGrid ag = resolveActiveGrid(s);
+		ExtraObj *X = nullptr;
+		if (ag.valid && ag.tag >= 0)
+			for (auto &ex : s->extras) if (ex.tag == ag.tag) { X = &ex; break; }
+		if (X) {
+			ExternShade &XE = X->shadeIn;
+			XE = ExternShade();
+			XE.inten.assign(inten, inten + (size_t)nx * ny);
+			XE.nx = nx;  XE.ny = ny;  XE.x0 = x0;  XE.x1 = x1;  XE.y0 = y0;  XE.y1 = y1;
+			XE.model = model;
+			XE.owner = X->name;
+			applyShading(s);
+			return;
+		}
+		side = 0;
 	}
 	ExternShade &E = (side == 1) ? s->shadeInLand : s->shadeIn;
 	E.rgb.clear();                       // a reflectance replaces a method-1 picture on this side
@@ -2229,6 +2264,39 @@ GMTVTK_API void gmtvtk_set_shade_intensity_h(void *handle, const float *inten, i
 	    s->aquaBathyZ.empty() && !s->gridZ.empty() && s->gnx > 1 && s->gny > 1)
 		rebuildBaseFromStored(s, /*asImage=*/true);
 	applyShading(s);
+}
+
+// A reflectance FOR THE GRID NAMED `name` (the Illumination tool's plain-grid push, which knows which
+// grid it lit). A grid EXTRA gets it in its OWN slot (ExtraObj::shadeIn) and nothing else is touched;
+// the base (its own name, or "") goes through the window door as side 0. Named, never "the active
+// layer": resolving by activity let a push meant for one grid land on the tank whenever something
+// else happened to be active at that instant. `inten` NULL clears that grid's light (`model` < 0 =
+// "Remove illumination" on it). A name nobody owns touches nothing.
+GMTVTK_API void gmtvtk_set_shade_intensity_named_h(void *handle, const char *name, const float *inten,
+                                                   int nx, int ny, double x0, double x1, double y0,
+                                                   double y1, int model) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s)) return;
+	const std::string nm = name ? name : "";
+	for (auto &ex : s->extras) {
+		if (ex.name != nm) continue;
+		ex.shadeIn = ExternShade();
+		if (inten && nx >= 2 && ny >= 2) {
+			ex.shadeIn.inten.assign(inten, inten + (size_t)nx * ny);
+			ex.shadeIn.nx = nx;  ex.shadeIn.ny = ny;
+			ex.shadeIn.x0 = x0;  ex.shadeIn.x1 = x1;  ex.shadeIn.y0 = y0;  ex.shadeIn.y1 = y1;
+			ex.shadeIn.model = model;
+			ex.shadeIn.owner = ex.name;
+		}
+		else if (model < 0) {
+			ex.look.noShade = true;
+			ex.look.useHillshade = false;
+		}
+		applyShading(s);
+		return;
+	}
+	if (nm.empty() || nm == s->surfName)
+		gmtvtk_set_shade_intensity_h(handle, inten, nx, ny, x0, x1, y0, y1, model, 0);
 }
 
 // DAY / NIGHT: darken the night side of the Earth, for ONE instant.
@@ -2511,8 +2579,9 @@ GMTVTK_API int gmtvtk_image_set_pixels_h(void *handle, const char *name, const u
 }
 
 // Rewrite ONLY THE ALPHA of the 4-band image `name`'s existing texture from a per-NODE mask: `mask`
-// is nx*ny bytes, row-major, row 0 = SOUTH (non-zero = opaque), and texel (c, r) takes node
-// (round((c+0.5)/W*(nx-1)), round((r+0.5)/H*(ny-1))) — ties to even, the very sampling
+// is nx*ny bytes, row-major, row 0 = SOUTH (non-zero = opaque), and texel (c, r) at u = (c+0.5)/W
+// takes node round(u*(nx-1)) on a gridline grid (ties to even) or floor(u*nx) on a PIXEL-registered
+// one (`pixreg`: the texture then spans cell edges) — the very sampling `_aqua_sat_node` /
 // `_aqua_sat_rgba` (aquasat.jl) builds the full picture with, so the two produce identical texels.
 //
 // For the Aquamoto satellite drape, whose colours are fixed and whose land/water cut moves with the
@@ -2521,7 +2590,7 @@ GMTVTK_API int gmtvtk_image_set_pixels_h(void *handle, const char *name, const u
 // on. This touches one byte per texel in place and does NOT render — the slice push that follows
 // renders once. Returns 1, or 0 when there is no such 4-band texture (the caller then builds it whole).
 GMTVTK_API int gmtvtk_image_set_alpha_mask_h(void *handle, const char *name, const unsigned char *mask,
-                                             int nx, int ny) {
+                                             int nx, int ny, int pixreg) {
 	Scene *s = static_cast<Scene*>(handle);
 	if (!sceneAlive(s) || !mask || nx < 1 || ny < 1) return 0;
 	bool isPrimary = false;
@@ -2536,11 +2605,13 @@ GMTVTK_API int gmtvtk_image_set_alpha_mask_h(void *handle, const char *name, con
 	if (W < 1 || H < 1) return 0;
 	unsigned char *px = static_cast<unsigned char *>(im->GetScalarPointer());
 	if (!px) return 0;
+	auto node = [pixreg](double u, int n) {
+		const double v = pixreg ? std::floor(u * n) : std::nearbyint(u * (n - 1));
+		return std::clamp((int)v, 0, n - 1);
+	};
 	std::vector<int> ixs(W), iys(H);
-	for (int c = 0; c < W; ++c)
-		ixs[c] = std::clamp((int)std::nearbyint((c + 0.5) / W * (nx - 1)), 0, nx - 1);
-	for (int r = 0; r < H; ++r)
-		iys[r] = std::clamp((int)std::nearbyint((r + 0.5) / H * (ny - 1)), 0, ny - 1);
+	for (int c = 0; c < W; ++c) ixs[c] = node((c + 0.5) / W, nx);
+	for (int r = 0; r < H; ++r) iys[r] = node((r + 0.5) / H, ny);
 	for (int r = 0; r < H; ++r) {
 		const unsigned char *mrow = mask + (size_t)iys[r] * nx;
 		unsigned char *prow = px + (size_t)r * W * 4 + 3;
@@ -5610,6 +5681,69 @@ GMTVTK_API const char *gmtvtk_objtree_test(void *scene) {
 	return buf.c_str();
 }
 
+// test hook: the same tree WITH EACH ROW'S CHECKBOX, "[x] label" / "[ ] label" ("    " when the row
+// has none), so a test can assert the group-uncheck law on what the user actually sees.
+GMTVTK_API const char *gmtvtk_objtree_checks_test(void *scene) {
+	static std::string buf; buf.clear();
+	Scene *s = (Scene*)scene;
+	if (!s || !s->objPanel) return "";
+	QTreeWidget *tree = s->objPanel->findChild<QTreeWidget*>();
+	if (!tree) return "";
+	std::function<void(QTreeWidgetItem*, int)> walk = [&](QTreeWidgetItem *it, int depth) {
+		QString label; const char *box = "    ";
+		if (QWidget *w = tree->itemWidget(it, 0)) {
+			for (QLabel *l : w->findChildren<QLabel*>())
+				if (!l->text().isEmpty()) { label = l->text(); break; }
+			if (QCheckBox *cb = w->findChild<QCheckBox*>()) box = cb->isChecked() ? "[x] " : "[ ] ";
+		}
+		if (label.isEmpty()) label = it->text(0);
+		buf += std::string((size_t)depth * 2, ' ');
+		buf += box;
+		buf += label.toStdString();
+		buf += '\n';
+		for (int i = 0; i < it->childCount(); ++i) walk(it->child(i), depth + 1);
+	};
+	for (int i = 0; i < tree->topLevelItemCount(); ++i) walk(tree->topLevelItem(i), 0);
+	return buf.c_str();
+}
+
+// test hook: CLICK the checkbox of the Scene Objects row at `path` ("tsu.nc/z", "tsu.nc/z/Axes" —
+// labels from the top, '/'-separated), exactly as the user's click does (QCheckBox::click, so its
+// own toggled handler runs), then let the queued panel rebuild land. Returns the box's state AFTER
+// the rebuild (1 checked / 0 unchecked), -1 when no such row or it has no checkbox.
+GMTVTK_API int gmtvtk_objrow_click_test(void *scene, const char *path) {
+	Scene *s = (Scene*)scene;
+	if (!s || !s->objPanel || !path) return -1;
+	const QStringList want = QString::fromUtf8(path).split('/');
+	auto find = [&](QTreeWidget *tree) -> QCheckBox * {
+		std::function<QCheckBox *(QTreeWidgetItem*, int)> walk = [&](QTreeWidgetItem *it, int depth) -> QCheckBox * {
+			QString label; QCheckBox *cb = nullptr;
+			if (QWidget *w = tree->itemWidget(it, 0)) {
+				for (QLabel *l : w->findChildren<QLabel*>())
+					if (!l->text().isEmpty()) { label = l->text(); break; }
+				cb = w->findChild<QCheckBox*>();
+			}
+			if (label.isEmpty()) label = it->text(0);
+			if (depth >= want.size() || label != want[depth]) return nullptr;
+			if (depth == want.size() - 1) return cb;
+			for (int i = 0; i < it->childCount(); ++i)
+				if (QCheckBox *r = walk(it->child(i), depth + 1)) return r;
+			return nullptr;
+		};
+		for (int i = 0; i < tree->topLevelItemCount(); ++i)
+			if (QCheckBox *r = walk(tree->topLevelItem(i), 0)) return r;
+		return nullptr;
+	};
+	QTreeWidget *tree = s->objPanel->findChild<QTreeWidget*>();
+	QCheckBox *cb = tree ? find(tree) : nullptr;
+	if (!cb) return -1;
+	cb->click();
+	for (int i = 0; i < 5; ++i) QApplication::processEvents();
+	tree = s->objPanel->findChild<QTreeWidget*>();
+	cb = tree ? find(tree) : nullptr;
+	return cb ? (cb->isChecked() ? 1 : 0) : -1;
+}
+
 // test hook: z-range + vertex count of the fault trace line geometry (draped if z spans the relief,
 // a flat chord if ~constant). out[0]=zmin out[1]=zmax out[2]=npts. Returns 1 if a fault line exists.
 GMTVTK_API int gmtvtk_trace_zbounds_test(void *scene, double *out) {
@@ -7361,6 +7495,17 @@ GMTVTK_API int gmtvtk_aqua_arrow_state_test(void *scene, int dir, char *buf, int
 	return btn->isDown() ? 1 : 0;
 }
 
+// test hook: pin the window's 3-D view widget to w x h pixels (0,0 releases it), so captures taken in
+// different runs are the same size and comparable pixel for pixel. Returns 1, 0 no widget.
+GMTVTK_API int gmtvtk_view_fixed_size_test(void *scene, int w, int h) {
+	Scene *s = (Scene*)scene;
+	if (!s || !s->widget) return 0;
+	if (w > 0 && h > 0) s->widget->setFixedSize(w, h);
+	else { s->widget->setMinimumSize(0, 0); s->widget->setMaximumSize(QWIDGETSIZE_MAX, QWIDGETSIZE_MAX); }
+	QApplication::processEvents();
+	return 1;
+}
+
 // test hook: the slice slider's current value, no pumping. -2 no Aquamoto dialog.
 GMTVTK_API int gmtvtk_aqua_slider_value_test(void *scene) {
 	(void)scene;
@@ -7903,6 +8048,22 @@ GMTVTK_API void gmtvtk_set_axes_shown_h(void *handle, const char *name, int on) 
 	rebuildAxisLabels(s);
 	rebuildSceneObjects(s);
 	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+}
+
+// Declare the extra called `name` a child of the file group `owner` (ExtraObj::owner): the loader
+// that just added it says where it came from, so Scene Objects nests it under that file's row and the
+// row's Remove takes it — by that tag, never by position. "" makes it nobody's child. Returns 1, or 0
+// when no extra has that name.
+GMTVTK_API int gmtvtk_set_extra_owner_h(void *handle, const char *name, const char *owner) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !name) return 0;
+	for (auto &ex : s->extras)
+		if (ex.name == name) {
+			ex.owner = owner ? owner : "";
+			rebuildSceneObjects(s);
+			return 1;
+		}
+	return 0;
 }
 
 // Move the raster called `name` inside the window's ONE draw-order pile: `op` is the same code the

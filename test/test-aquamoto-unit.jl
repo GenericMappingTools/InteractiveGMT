@@ -167,11 +167,17 @@ end
 	@test rgb0[1, 2, :] == imgbat[1, 2, :]
 	@test rgb0[1, 3, :] == imgbat[1, 3, :]
 
-	# Split, alfa=1 (fully cross-blended toward land tint EVERYWHERE) -- land pixels are STILL exactly
-	# the land colour (the hard overwrite runs after the blend), proving land never depends on alfa.
-	rgb1, imgbat2 = IG._aqua_composite_rgb(bat, Z, true, 2.0, 4.0, 1.0, imgbat, landhi)
+	# Split, alfa=1 (the water fully transparent) -- land pixels are STILL exactly the land colour (the
+	# hard overwrite runs after the blend), proving land never depends on alfa. A WET cell shows THE SEA
+	# BED — the bathymetry in its own colours — never the land colouring: that one is scaled to the dry
+	# nodes' elevations, so every depth clamped to one colour and transparency showed a flat tint.
+	seabed = IG._aqua_colorize(bat, -5.0, 10.0, :turbo)
+	rgb1, imgbat2 = IG._aqua_composite_rgb(bat, Z, true, 2.0, 4.0, 1.0, imgbat, landhi; seabed = seabed)
 	@test rgb1[1, 1, :] == imgbat2[1, 1, :]
-	@test rgb1[2, 1, :] == imgbat2[2, 1, :]   # a WET cell at alfa=1 also equals the land colour (100% blend)
+	@test rgb1[2, 1, :] == seabed[2, 1, :]    # a WET cell at alfa=1 is the sea bed (100% blend)
+	@test rgb1[2, 1, :] != imgbat2[2, 1, :]   # …and not the land colour
+	# transparency without a sea-bed picture is an error, never a silent fall back to the land colours
+	@test_throws ErrorException IG._aqua_composite_rgb(bat, Z, true, 2.0, 4.0, 0.5, imgbat, landhi)
 
 	# The cached imgbat is reused byte-for-byte across calls (only depends on bathymetry).
 	@test imgbat === imgbat2

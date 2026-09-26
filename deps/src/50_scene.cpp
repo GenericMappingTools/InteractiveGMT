@@ -1317,6 +1317,17 @@ static LayerShade *activeLookPtr(Scene *s) {
 	return &s->look;
 }
 
+// The ACTIVE grid as an extra (nullptr when the base is active, or nothing is) — the same resolver
+// activeLookPtr uses, for the reflectance a layer owns (ExtraObj::shadeIn).
+static ExtraObj *activeExtraOf(Scene *s) {
+	if (!s) return nullptr;
+	const ActiveGrid ag = resolveActiveGrid(s);
+	if (ag.valid && ag.tag >= 0)
+		for (auto &ex : s->extras)
+			if (ex.tag == ag.tag) return &ex;
+	return nullptr;
+}
+
 static double *activeVEPtr(Scene *s) {
 	if (!s) return nullptr;
 	// requireVisible = TRUE: this number SCALES GEOMETRY. A layer nobody can see must never decide how
@@ -1421,8 +1432,17 @@ static AxesSet *axesForName(Scene *s, const char *name) {
 static AxesSet *axesForActive(Scene *s) {
 	if (!s) return nullptr;
 	ActiveGrid ag = resolveActiveGrid(s);
-	if (ag.valid && !ag.name.empty())
-		for (auto &ex : s->extras) if (ex.name == ag.name) return &ex.ax;
+	// A GRID RESOLVED: the answer is ITS set and no one else's. The base (tag -1) owns the base set —
+	// resolveActiveGrid only returns it when it is visible. This used to match extras by name only, so
+	// when the base was the active grid nothing matched and the search fell through to "the topmost
+	// visible image": a tsunami layer with "Sat img" on handed out the SATELLITE IMAGE's axes, and the
+	// Z pin / Z grow / reframe meant for the tank landed on the photograph's set. Matched by TAG, the
+	// element's identity, never by guessing.
+	if (ag.valid) {
+		if (ag.tag < 0) return &s->baseAxes;
+		for (auto &ex : s->extras) if (ex.tag == ag.tag) return &ex.ax;
+		return nullptr;
+	}
 	// No grid layer resolved (bare image, cloud, solid): the topmost VISIBLE image extra owns the
 	// display, else the base surface — but only when the BASE IS ITSELF VISIBLE. A hidden base does
 	// not own the display, and handing its set out as a fallback is the same steal `axesForName`
@@ -2013,7 +2033,10 @@ static void surfaceObjectMenu(Scene *s, const QPoint &gp) {
 // children's own rows use — back to front, since sceneRemoveExtraAt erases from s->extras.
 static void aquaRemoveFileGroup(Scene *s) {
 	if (!s) return;
-	for (size_t i = s->extras.size(); i-- > 0; ) sceneRemoveExtraAt(s, i);
+	// ONLY THIS FILE'S OWN. An extra dropped in from anywhere else is not a child of this group.
+	const std::string file = s->surfName;
+	for (size_t i = s->extras.size(); i-- > 0; )
+		if (!file.empty() && s->extras[i].owner == file) sceneRemoveExtraAt(s, i);
 	sceneRemoveSurface(s);      // last: also destroys the Aquamoto control window
 }
 
@@ -2548,6 +2571,12 @@ static void rebuildSceneObjects(Scene *s) {
 			onToggle(on);
 			if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 		});
+		// THE ROWS ABOVE FOLLOW (SACRED_LAW.md, group-uncheck law, read upwards): a group's box is the
+		// OR of its rows, so it is recomputed after the USER changes one — checking the bathymetry left
+		// its tsunami file row unchecked, because nothing rebuilt the panel. On `clicked`, the user's act,
+		// NEVER on `toggled`: code sets boxes too (a slice, a sync), and a rebuild per programmatic
+		// toggle rebuilt the whole panel at every Aquamoto step. Queued and coalesced.
+		QObject::connect(cb, &QCheckBox::clicked, [s](bool) { sceneQueueRebuildObjects(s); });
 
 		QLabel *icon = new QLabel(row); icon->setPixmap(makeObjectIcon(iconKind));
 		ClickableLabel *text = new ClickableLabel(label, row);   // left-click -> properties
@@ -2630,6 +2659,8 @@ static void rebuildSceneObjects(Scene *s) {
 				if (tl.groupName == gname && tl.actor) tl.actor->SetVisibility(on ? 1 : 0);
 			if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 		});
+		// the groups above follow — on the USER's click only (see makeRow)
+		QObject::connect(cb, &QCheckBox::clicked, [s](bool) { sceneQueueRebuildObjects(s); });
 
 		QLabel *icon = new QLabel(row); icon->setPixmap(makeObjectIcon(iconKind));
 		ClickableLabel *text = new ClickableLabel(name, row);
@@ -2848,8 +2879,17 @@ static void rebuildSceneObjects(Scene *s) {
 	// side's cmap in the Julia _AquaState and re-renders the CURRENT slice, unlike the generic
 	// applyColormap/gmtvtk_set_cpt_grid path (a host-composited texture has no scalar+LUT surface
 	// for that to recolour — see the flat-image-bake bug this replaces).
+	// IS THE TANK'S WATER BAR SHOWING? `s->bar` is the WINDOW's one colour bar and describes whichever grid
+	// is ACTIVE; with the bathymetry row checked it shows the BATHYMETRY's scale, and the Water row read
+	// that as its own — the `z` group stayed checked over a hidden tank. It is the water bar only while
+	// the tank itself (the base, tag -1) is the active grid. One answer, for the row and its group.
+	auto aquaWaterBarOn = [&]() -> bool {
+		if (!s->bar || s->bar->GetVisibility() == 0) return false;
+		const ActiveGrid ag = resolveActiveGrid(s);
+		return !(ag.valid && ag.tag >= 0);   // no OTHER grid active (the flat tank resolves to none)
+	};
 	auto aquaWaterColorbarRow = [&]() {
-		const bool vis = s->bar && s->bar->GetVisibility() != 0;
+		const bool vis = aquaWaterBarOn();
 		makeRow("Color Bar water", IC_ColorBar, vis,
 		        [s](bool on) { s->surfShowBar = on; if (on) s->aquaShowWater = true; refreshGridColorbar(s); sceneQueueRebuildObjects(s); },
 		        [s](const QPoint &g) {
@@ -2899,11 +2939,41 @@ static void rebuildSceneObjects(Scene *s) {
 	// group, all hosted in the main group for the file. Scoped to the WINDOW being an Aquamoto one
 	// (sceneIsAquamoto -- never the per-frame texture flag), so the tree is the same in 2-D and 3-D.
 	const bool aquaWrap = sceneIsAquamoto(s);
+	// A GROUP'S BOX IS THE OR OF WHAT ITS ROWS SHOW (SACRED_LAW.md, group-uncheck law) — one function
+	// per kind of group, used by the group's own row AND by any row above it, so a container can never
+	// read a state its children do not display.
+	auto extraGrpOn = [&](const ExtraObj &ex) -> bool {
+		vtkProp3D *a = ex.actor.Get();
+		const bool v = a && a->GetVisibility() != 0;
+		return ex.isImage ? (v || ex.ax.shown || (ex.palette.n > 0 && ex.palette.show))
+		                  : (v || ex.ax.shown || (!ex.isMesh && ex.showBar) ||
+		                     (ex.drape && ex.drape->GetVisibility() != 0));
+	};
+	// The base relief group. The two Aquamoto colour-bar rows show their bar ACTORS (one of the pair
+	// is up at a time), so the group reads the actors too. It used to read the `aquaLandShowBar` FLAG,
+	// which stays true while the Land row shows unchecked: the uncheck cascade skipped that
+	// already-unchecked row, the flag survived, and the `z` box came back checked — two clicks.
+	auto baseGrpOnOf = [&](vtkProp3D *sp) -> bool {
+		if (!sp) return false;
+		const bool aquaBarsOn = aquaWaterBarOn() ||
+		                        (s->aquaLandBar && s->aquaLandBar->GetVisibility() != 0);
+		return sp->GetVisibility() != 0 || s->baseAxes.shown ||
+		       (s->drape && s->drape->GetVisibility() != 0) ||
+		       (aquaWrap ? aquaBarsOn : s->surfShowBar);
+	};
+	// In an Aquamoto window the FILE's own elements (tagged with its name by the loader,
+	// ExtraObj::owner) go inside the file wrapper; everything else comes after it, at top level.
+	const std::string aquaFile = aquaWrap ? s->surfName : std::string();
+	auto inFile = [&](const ExtraObj &ex) { return aquaWrap && !aquaFile.empty() && ex.owner == aquaFile; };
 	if (aquaWrap) {
 		const QString fileNm = s->surfName.empty() ? QString("Tsunami") : QString::fromStdString(s->surfName);
+		// The FILE row's box is the OR of its children — the tank group and the file's own elements —
+		// never a constant `true`, which left it checked over a file whose every row was off.
+		bool fileOn = !s->imageOnly && baseGrpOnOf(surfProp(s));
+		for (const auto &ex : s->extras) if (inFile(ex) && extraGrpOn(ex)) fileOn = true;
 		// This row is the FILE, not the z surface: its own menu, whose Remove takes every child
 		// (aquaRemoveFileGroup). Borrowing surfaceObjectMenu left the other variables behind.
-		beginGroupHandle(fileNm, IC_Surface, true,
+		beginGroupHandle(fileNm, IC_Surface, fileOn,
 		        [s](const QPoint &g) { aquaFileObjectMenu(s, g); },
 		        [s](const QPoint &g) { aquaFileObjectMenu(s, g); },
 		        "Every variable loaded from this file · right-click to remove the whole file");
@@ -2920,9 +2990,7 @@ static void rebuildSceneObjects(Scene *s) {
 			// unchecked on its own (bar + axes still up, container drawn empty), and the next rebuild
 			// then dragged every child's box down with it. Its toggle still cascades to every child.
 			const bool baseVis = sp->GetVisibility() != 0;
-			const bool baseGrpOn = baseVis || s->baseAxes.shown ||
-			                       (s->drape && s->drape->GetVisibility() != 0) ||
-			                       (aquaWrap ? (s->surfShowBar || s->aquaLandShowBar) : s->surfShowBar);
+			const bool baseGrpOn = baseGrpOnOf(sp);    // what its rows show — see baseGrpOnOf
 			beginGroupHandle(nm, IC_Surface, baseGrpOn,
 			        nullptr,                                              // container does NOT fold the Shading dock (the Surface leaf does)
 			        [s](const QPoint &g) { surfaceObjectMenu(s, g); },
@@ -2998,13 +3066,15 @@ static void rebuildSceneObjects(Scene *s) {
 		endGroup();
 	}
 
-	for (size_t ei = 0; ei < s->extras.size(); ++ei) {      // dropped grids / images: one group each
-		auto &ex = s->extras[ei];
+	// Dropped grids / images: one group each. In an Aquamoto window the FILE's own elements (tagged
+	// with its name by the loader, ExtraObj::owner) go inside the file wrapper; everything else comes
+	// after it, at top level. Placement used to be by POSITION — every extra in the window landed in
+	// the tsunami file's group, and that group's Remove deleted them all.
+	auto emitExtra = [&](ExtraObj &ex) {
 		const QString nm = QString::fromStdString(ex.name);
 		if (ex.isImage) {                                  // dropped image group — header IS the image handle
 			vtkProp3D *a = ex.actor.Get();
-			const bool ivis0 = a && a->GetVisibility() != 0;
-			beginGroupHandle(nm, IC_Image, ivis0 || ex.ax.shown || (ex.palette.n > 0 && ex.palette.show),
+			beginGroupHandle(nm, IC_Image, extraGrpOn(ex),
 			        [s, a](const QPoint &g) { imageObjectMenu(s, a, g); },
 			        [s, a](const QPoint &g) { imageObjectMenu(s, a, g); },
 			        "Left- or right-click for image properties (incl. Save)",
@@ -3024,8 +3094,7 @@ static void rebuildSceneObjects(Scene *s) {
 		} else {                                           // dropped grid group — header mirrors the surface handle
 			vtkProp3D *a = ex.actor.Get();
 			const bool gvis = a && a->GetVisibility() != 0;
-			beginGroupHandle(nm, IC_Surface, gvis || ex.ax.shown || (!ex.isMesh && ex.showBar) ||
-			                                 (ex.drape && ex.drape->GetVisibility() != 0),
+			beginGroupHandle(nm, IC_Surface, extraGrpOn(ex),
 			        nullptr,                                               // container does NOT fold the Shading dock (the Surface leaf does)
 			        [s, a](const QPoint &g) { gridObjectMenu(s, a, g); },  // right-click: save / delete
 			        "Checkbox toggles the whole group · right-click to save / delete",
@@ -3043,9 +3112,12 @@ static void rebuildSceneObjects(Scene *s) {
 			axesRow(&ex.ax);                         // THIS grid/mesh's OWN set
 		}
 		endGroup();
-	}
+	};
+	for (auto &ex : s->extras) if (inFile(ex)) emitExtra(ex);
 
 	if (aquaWrap) endGroup();   // close the per-file wrapper opened above
+
+	for (auto &ex : s->extras) if (!inFile(ex)) emitExtra(ex);
 
 	// ── OTHER OBJECTS ── lines / points / curtains / polygons / text / profile (top-level rows; a fault
 	// with planes becomes its own group, see below).

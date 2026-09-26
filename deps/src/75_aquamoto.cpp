@@ -67,7 +67,12 @@ static bool arrowStillHeld(QToolButton *b) {
 #else
 	const bool held = (QGuiApplication::mouseButtons() & Qt::LeftButton) != 0;
 #endif
-	if (!held) b->setDown(false);                     // the lost release, applied: the repeat stops
+	if (!held) {
+		b->setDown(false);                            // the lost release, applied: the repeat stops
+		// PROBE: say so, so a hold that "does nothing" can be told apart from a slow one.
+		if (auto *mw = qobject_cast<QMainWindow *>(b->window()))
+			mw->statusBar()->showMessage("< / >: Windows reports the mouse button UP - repeat stopped", 4000);
+	}
 	return held;
 }
 
@@ -759,7 +764,8 @@ public:
 				runBlocking(QString("InteractiveGMT._aqua_side_popup(%1,%2,%3,%4,%5)")
 				                .arg(aquaScenePtr(scene_)).arg(side).arg(mw).arg(ml)
 				                .arg(QString::number(t0, 'f', 3)),
-				            out, closedNow);
+				            out, closedNow,
+				            side == 0 ? "Rendering the water side\xE2\x80\xA6" : "Rendering the land side\xE2\x80\xA6");
 				if (closedNow) return;
 				// THE BOXES STATE THE USER'S METHODS, AND THIS BUTTON NEVER CHANGES THEM. Whatever the build
 				// does under the hood — a "Sat img" land half lit with 2 instead of 1 — is anonymous (user
@@ -826,14 +832,13 @@ public:
 				}
 				QString out; bool closedNow = false;
 				// NO DEAD TIME (SACRED_LAW.md). Turning it on downloads satellite tiles — seconds, on a
-				// network — so the app's ONE busy notice is up for the whole wait, the same pair the
-				// Benchmark 1 load below raises around its own `runBlocking`.
-				showBusyDialog(on ? "Downloading satellite imagery\xE2\x80\xA6" : "Restoring the land colour map\xE2\x80\xA6");
+				// network — so the busy notice is up for the whole wait (raised by runBlocking, the door).
 				const bool ok = runBlocking(QString("InteractiveGMT._aquamoto_sat_img(%1,%2,%3)")
 				                                .arg(aquaScenePtr(scene_)).arg(QString(on ? "true" : "false"))
 				                                .arg(QString::number(satResFactor(), 'f', 6)),
-				                            out, closedNow);
-				closeBusyDialog();              // taken down first: it outlives `this` if the window went away
+				                            out, closedNow,
+				                            on ? "Downloading satellite imagery\xE2\x80\xA6"
+				                               : "Restoring the land colour map\xE2\x80\xA6");
 				if (closedNow) return;
 				// IT ALWAYS SAYS WHAT HAPPENED. On success the host prints the one line describing what
 				// the land side now wears; on failure `out` is the reason (no network, a region the
@@ -1075,11 +1080,30 @@ public:
 	// blocking the close: hold a LOCAL copy of the shared `alive_` token (survives the object's
 	// death); if it reads false after aquaEval returns, `this` is gone. `closedNow` comes back true
 	// and every caller MUST return immediately, touching no member of `this` afterward.
-	bool runBlocking(const QString &call, QString &out, bool &closedNow) {
+	//
+	// NO DEAD TIME (SACRED_LAW.md), AT THIS ONE DOOR. Every request of this dialog passes here, so this
+	// is where the user is told the window is working — never at each call site, where a new request
+	// could be added without it. `busyTitle` names what the user waits FOR and raises the app's ONE
+	// busy notice (showBusyDialog) for the whole call; without one the call gets the lighter form, the
+	// wait cursor. The PER-SLICE calls (the slice, the η(x) curves, a per-slice re-render) pass `quiet`
+	// and get neither: the tank redrawing under the finger IS their notice, and both forms broke the
+	// < / > hold — a top-level notice takes the mouse from the held button, and the override cursor
+	// swapped in and out at every step cut real-mouse holds short and left the other arrow dead
+	// (measured: > stopped after 7 of 40 slices and a following < press did nothing, 2 runs of 3; with
+	// the cursor off at that door, 15-16 slices each way and a clean stop).
+	bool runBlocking(const QString &call, QString &out, bool &closedNow,
+	                 const QString &busyTitle = QString(), bool quiet = false) {
 		closedNow = false;
 		auto alive = alive_;              // local copy -- outlives `this` if it gets deleted mid-call
+		const bool notice = !busyTitle.isEmpty();
+		if (notice) showBusyDialog(busyTitle.toUtf8().constData());   // copied into the title at once
+		else if (!quiet) QApplication::setOverrideCursor(Qt::WaitCursor);
 		busy_ = true;
 		const bool ok = aquaEval(scene_, call, out);
+		// Taken down FIRST: the notice and the cursor are the application's, and they must go even when
+		// the call destroyed this dialog.
+		if (notice) closeBusyDialog();
+		else if (!quiet) QApplication::restoreOverrideCursor();
 		if (!*alive) { closedNow = true; return ok; }   // `this` was destroyed during the pump -- bail
 		busy_ = false;
 		return ok;
@@ -1103,7 +1127,7 @@ public:
 		if (QSpinBox *sb = (side == 0 ? netIllumWater_ : netIllumLand_))
 			if (sb->value() != model) { QSignalBlocker b(sb); sb->setValue(model); }
 		if (busy_) return;                  // a slice is drawing: its own tail rebuilds the picture
-		if (renderedImageCheck && renderedImageCheck->isChecked()) runCombinedImage();
+		if (renderedImageCheck && renderedImageCheck->isChecked()) runCombinedImage(/*perSlice=*/true);   // a re-render, not a button: no modal notice
 	}
 
 	// "Scale colour to global min/max" SAYS WHAT THAT RANGE IS, on hover. Asked at the moment the
@@ -1186,8 +1210,11 @@ public:
 		QString out; bool closedNow = false;
 		runBlocking(QString("InteractiveGMT._aqua_set_illum_model(%1,%2,%3)")
 		                .arg(aquaScenePtr(scene_)).arg(side).arg(v), out, closedNow);
+		// NO busy dialog here: this also runs when the boxes are RESTORED from the settings at open, and
+		// an application-modal notice raised then took the activation from the Aquamoto dialog — it
+		// came up behind the main window and its first < / > presses went nowhere.
 		if (closedNow) return;
-		if (renderedImageCheck && renderedImageCheck->isChecked()) runCombinedImage();
+		if (renderedImageCheck && renderedImageCheck->isChecked()) runCombinedImage(/*perSlice=*/true);   // a re-render, not a button: no modal notice
 	}
 	bool modelBoxBusy_ = false;
 
@@ -1268,13 +1295,11 @@ public:
 		if (busy_) return;   // reentrancy guard -- see fireSlice
 		// Busy cursor (hourglass) for the duration of the open -- header read + the eager per-layer
 		// min/max prescan (every layer, every time) can take real seconds; the Julia side also raises
-		// its own progress dialog for it, this cursor covers the header read on top of that.
-		QApplication::setOverrideCursor(Qt::WaitCursor);
+		// its own progress dialog for it, and runBlocking's cursor covers the header read on top of it.
 		QString out;
 		bool closedNow = false;
 		const bool ok0 = runBlocking(QString("InteractiveGMT._aquamoto_open(%1,raw\"%2\")")
 		                             .arg(aquaScenePtr(scene_)).arg(path), out, closedNow);
-		QApplication::restoreOverrideCursor();
 		if (closedNow) return;   // `this` may already be destroyed -- touch NOTHING below
 		if (!ok0) {
 			QMessageBox::warning(win, "Aquamoto", out.isEmpty() ? "could not open the file" : out);
@@ -1334,7 +1359,7 @@ public:
 			QString o; bool closedNow = false;
 			runBlocking(QString("(InteractiveGMT._aqua_set_illum_model(%1,0,%2); InteractiveGMT._aqua_set_illum_model(%1,1,%3))")
 			                .arg(aquaScenePtr(scene_)).arg(netIllumWater_->value()).arg(netIllumLand_->value()),
-			            o, closedNow);
+			            o, closedNow);   // inside the open: its own notice covers it (the notice is ONE global)
 			if (closedNow) return;
 		}
 		// THE LAYER'S GEOMETRY IS NOT TOUCHED HERE. A tsunami opens as the composited image it has
@@ -1739,12 +1764,11 @@ public:
 		// has anything to say about it. That silence is what the user sees as a hung dialog, so the
 		// notice goes up here, at the one door both the Load button and the "a run already exists"
 		// offer pass through.
-		showBusyDialog(keepram ? "Loading the simulation into memory\xE2\x80\xA6"
-		                       : "Loading the simulation\xE2\x80\xA6");
 		const bool ok = runBlocking(QString("InteractiveGMT._on_bench1_load(%1,raw\"%2\",%3)")
 		                            .arg(aquaScenePtr(scene_)).arg(QDir::toNativeSeparators(path))
-		                            .arg(keepram ? 1 : 0), reply, closedNow);
-		closeBusyDialog();              // taken down first: it outlives `this` if the window went away
+		                            .arg(keepram ? 1 : 0), reply, closedNow,
+		                            keepram ? "Loading the simulation into memory\xE2\x80\xA6"
+		                                    : "Loading the simulation\xE2\x80\xA6");
 		if (closedNow) return;          // `this` may be gone — touch no member below
 		if (!ok) QMessageBox::warning(win, "Benchmark 1",
 		                              reply.isEmpty() ? "could not open that file" : reply);
@@ -1787,14 +1811,11 @@ public:
 	// the dock gives, so the two buttons behave identically. After it, slice changes slice memory.
 	void fireLoadAllRam() {
 		if (!opened_ || busy_ || !loadRamBtn) return;
-		QApplication::setOverrideCursor(Qt::WaitCursor);
-		QApplication::processEvents();                  // let the cursor paint before we block
 		QString out;
 		bool closedNow = false;
 		const bool ok = runBlocking(QString("InteractiveGMT._aqua_load_all(%1)").arg(aquaScenePtr(scene_)),
-		                            out, closedNow);
+		                            out, closedNow, "Loading the simulation into memory\xE2\x80\xA6");
 		if (closedNow) return;                          // the window died during the call: touch nothing
-		QApplication::restoreOverrideCursor();
 		const int rc = ok ? out.trimmed().toInt() : 2;
 		if (rc == 0) {
 			markCubeInRam();
@@ -2342,12 +2363,12 @@ public:
 		bool closedNow = false;
 		runBlocking(QString("InteractiveGMT._aqua_eta_curves(%1,%2,%3,%4)")
 		            .arg(aquaScenePtr(scene_)).arg(x0, 0, 'g', 12).arg(x1, 0, 'g', 12).arg(n),
-		            out, closedNow);
+		            out, closedNow, QString(), /*quiet=*/true);
 	}
 
 	// "Combined image" (Debug tab) / "Rendered image" (netCDF tab) — ONE body, so the box does
 	// exactly what the button does and nothing else.
-	void runCombinedImage() {
+	void runCombinedImage(bool perSlice = false) {   // perSlice: the slice's own re-render (cursor only, see runBlocking)
 		QString out; bool closedNow = false;
 		// WHAT THE BOX SAYS IS WHAT IS APPLIED: the model pair is sent unconditionally, and
 		// `syncIllumModelSpins` keeps each box showing its side's own stored model.
@@ -2359,7 +2380,8 @@ public:
 		runBlocking(QString("InteractiveGMT._aqua_combined_popup(%1,%2,%3,%4)")
 		                .arg(aquaScenePtr(scene_)).arg(mw).arg(ml)
 		                .arg(QString::number(t0, 'f', 3)),
-		            out, closedNow);
+		            out, closedNow, perSlice ? QString() : QString("Rendering the image\xE2\x80\xA6"),
+		            /*quiet=*/perSlice);
 		if (closedNow) return;
 		// The Messages dock keeps the line (the status bar clears itself): the timing on a build, the
 		// REASON on a refusal — the host prints one either way, so a slice that rebuilt nothing says so.
@@ -2385,6 +2407,7 @@ public:
 		if (busy_) { sliceDirty_ = true; return; }
 		if (!opened_ || !sliceSlider) return;
 		const int k = sliceSlider->value() - 1;              // 0-based for the Julia side
+		QElapsedTimer sliceClock;  sliceClock.start();       // PROBE: the whole step, shown in the status bar
 		const bool split = splitDryWetCheck && splitDryWetCheck->isChecked();
 		const bool global = scaleGlobalCheck && scaleGlobalCheck->isChecked();
 		const double transp = waterTransparencySlider ? waterTransparencySlider->value() / 100.0 : 0.0;
@@ -2400,14 +2423,15 @@ public:
 		                            .arg(split ? "true" : "false").arg(global ? "true" : "false")
 		                            .arg(transp, 0, 'f', 4)
 		                            .arg(shadeWater ? "true" : "false").arg(shadeLand ? "true" : "false"),
-		                            out, closedNow);
+		                            out, closedNow, QString(), /*quiet=*/true);
 		if (closedNow) return;   // `this` may already be destroyed -- touch NOTHING below
 		if (!ok && win) win->statusBar()->showMessage("Aquamoto: " + out, 5000);
 		if (ok) afterSliceShown();          // 3-D geometry, a spinning camera, the η(x) figure
+		if (ok && win) win->statusBar()->showMessage(QString("slice %1: %2 s").arg(k + 1).arg(sliceClock.elapsed() / 1000.0, 0, 'f', 2), 3000);   // PROBE
 		// "Rendered image": the layer changed, so the picture is made again — the very call the Debug
 		// button makes, after the slice is up. It runs INSIDE the transport's disabled window: it is
 		// the long half of the step, and a < / > auto-repeating through it is the stall.
-		if (ok && renderedImageCheck && renderedImageCheck->isChecked()) runCombinedImage();
+		if (ok && renderedImageCheck && renderedImageCheck->isChecked()) runCombinedImage(/*perSlice=*/true);
 		transportEnable(true);
 		// Requests that came in while this one was running: ONE catch-up redraw, on the next turn of
 		// the loop (never a recursive call), at whatever slice the slider ended up on.

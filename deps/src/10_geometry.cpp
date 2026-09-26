@@ -528,6 +528,29 @@ struct LayerShade {
 	double roughness = 0.3, metallic = 0.0, ior = 1.5;   // its PBR material (F3D defaults)
 };
 
+// ONE external-reflectance store: a per-node intensity grid computed by GMT in Julia (the
+// "Illumination (Hillshade)" tool, src/hillshade.jl) over a true-coord box, sampled by WORLD
+// position. A window normally has one (Scene::shadeIn). An Aquamoto layer has TWO -- see
+// Scene::shadeInLand -- because water and land are two images standing on two different surfaces;
+// they are the SAME struct read through the SAME haveExternShade/externShadeAt, never a fork.
+struct ExternShade {
+	std::vector<float> inten;      // column-major inten[ix*ny + iy], the gridZ layout
+	int    nx = 0, ny = 0;
+	double x0 = 0.0, x1 = 0.0, y0 = 0.0, y1 = 0.0;
+	int    model = 0;              // the Mirone illum_model that produced it (0 = none loaded)
+	// …OR A FINISHED PICTURE. An Aquamoto side lit with METHOD 1 is VTK's own render of that side's
+	// surface (the host renders it offscreen), so what arrives is colour, not an intensity: nx*ny RGB,
+	// row-major, row 0 = SOUTH, over the same box. ExternShade() clears it with the rest, so every path
+	// that drops a side's model drops this too.
+	std::vector<unsigned char> rgb;
+	// WHOSE reflectance this is: the Scene Objects name of the layer it was computed for ("" = the
+	// base surface). A reflectance is computed FROM ONE LAYER's z, so it describes that layer and
+	// nothing else. Without an owner it was a window-wide value and every bake consumed it, so
+	// illuminating one grid re-lit every other grid in the window — layers interfering with each
+	// other, reported 2026-09-07. Read it through externShadeOwns(), never bare.
+	std::string owner;
+};
+
 struct ExtraObj {
 	vtkSmartPointer<vtkActor> actor;
 	// This raster's OWN axes (Raster-own-axes law above). Built when the extra is adopted; torn
@@ -571,6 +594,18 @@ struct ExtraObj {
 	                                         // the window when the re-float did rebuild).
 	double bx0 = 0, bx1 = 0, by0 = 0, by1 = 0;  // image footprint (true coords): tcoords + grid-overlap test
 	int    gstack  = 0;                   // GRID draw-order rank in the grid pile (base relief + grids)
+	// THIS LAYER'S OWN REFLECTANCE (the Illumination tool's models 2/3/4, pushed with side 2 = "the
+	// active layer"). It used to share the window's one slot, `Scene::shadeIn` — which in an Aquamoto
+	// window is the TANK's water light: lighting a grid dropped into a tsunami window overwrote the
+	// tank, and the tank's per-slice re-light overwrote the grid, so its illumination came out wrong
+	// and the dialog could not change it. Read through externShadeOfActor (40_shading.cpp).
+	ExternShade shadeIn;
+	// THE FILE THIS ELEMENT CAME FROM, when it belongs to a multi-element file group (a tsunami
+	// netCDF's bathymetry, masks, static grids, satellite drape, rendered image): the group's name.
+	// Set by the loader that made it (gmtvtk_set_extra_owner_h), never guessed. Scene Objects nests
+	// the element under that file's row, and the row's Remove takes exactly these — BY TAG, never
+	// "every extra in the window". Empty = the element is nobody's child.
+	std::string owner;
 	int    tag     = 0;                      // UNIQUE, STABLE group tag (assigned once at creation from
 	                                         // Scene::gridTagSeq, never reused). The Color Bar row carries
 	                                         // this tag so a recolour always hits THIS grid, regardless of
@@ -874,28 +909,6 @@ static const char *annoSourceName(int source);                              // "
 // with its OWN light: editing the selected side updates only ITS snapshot, and bakeAquaShade re-bakes
 // the OTHER side from its own (unchanged) snapshot -- so a water edit changes NOTHING of the land
 // (no colour, no light), and vice versa. Only geometry (xfac/zfac/ve) is shared (read live from Scene).
-// ONE external-reflectance store: a per-node intensity grid computed by GMT in Julia (the
-// "Illumination (Hillshade)" tool, src/hillshade.jl) over a true-coord box, sampled by WORLD
-// position. A window normally has one (Scene::shadeIn). An Aquamoto layer has TWO -- see
-// Scene::shadeInLand -- because water and land are two images standing on two different surfaces;
-// they are the SAME struct read through the SAME haveExternShade/externShadeAt, never a fork.
-struct ExternShade {
-	std::vector<float> inten;      // column-major inten[ix*ny + iy], the gridZ layout
-	int    nx = 0, ny = 0;
-	double x0 = 0.0, x1 = 0.0, y0 = 0.0, y1 = 0.0;
-	int    model = 0;              // the Mirone illum_model that produced it (0 = none loaded)
-	// …OR A FINISHED PICTURE. An Aquamoto side lit with METHOD 1 is VTK's own render of that side's
-	// surface (the host renders it offscreen), so what arrives is colour, not an intensity: nx*ny RGB,
-	// row-major, row 0 = SOUTH, over the same box. ExternShade() clears it with the rest, so every path
-	// that drops a side's model drops this too.
-	std::vector<unsigned char> rgb;
-	// WHOSE reflectance this is: the Scene Objects name of the layer it was computed for ("" = the
-	// base surface). A reflectance is computed FROM ONE LAYER's z, so it describes that layer and
-	// nothing else. Without an owner it was a window-wide value and every bake consumed it, so
-	// illuminating one grid re-lit every other grid in the window — layers interfering with each
-	// other, reported 2026-09-07. Read it through externShadeOwns(), never bare.
-	std::string owner;
-};
 
 struct AquaSideShade {
 	bool   valid = false;

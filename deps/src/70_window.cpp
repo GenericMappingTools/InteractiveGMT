@@ -5823,7 +5823,21 @@ public:
 	// WHICH SIDE THIS DIALOG IS AIMED AT, read straight off the Scene (`aquaIllumSide`: -1 the whole
 	// window, 0 the tsunami's water, 1 its land) so the title, the request block and the look setter
 	// can never disagree about where the method lands — one fact, one place, as everywhere else.
-	int side() const { return sceneAlive(scn) ? scn->aquaIllumSide : -1; }
+	// IS THIS DIALOG AIMED AT THE TSUNAMI TANK? Only while the tank IS the displayed grid (the base,
+	// tag -1). In a tsunami window with another grid opened on top (layer0.grd), every pick used to be
+	// aimed at the tank regardless: its looks went to both tank sides, the tank's remembered side rode
+	// along with 2/3/4 — so the displayed grid never changed, and the tank took the method (method 1,
+	// a render per side per slice, made every slice slow). One grid never touches another.
+	// "Aimed at the tank" = no OTHER grid is the active one. In the flat view the tank's own surface
+	// actor is hidden (its picture is a drape), so resolveActiveGrid finds no grid at all — requiring
+	// the base to be found made every pick on the tank land as a plain-grid pick, and the tank lost
+	// its shading.
+	bool onTank() const {
+		if (!sceneAlive(scn)) return false;
+		const ActiveGrid ag = resolveActiveGrid(scn);
+		return !(ag.valid && ag.tag >= 0);
+	}
+	int side() const { return (sceneAlive(scn) && onTank()) ? scn->aquaIllumSide : -1; }
 	void retitle() {
 		if (!dlg) return;
 		const int sd = side();
@@ -6481,8 +6495,9 @@ public:
 		// `customLayerTexture` only means "flat-image mode right now" (the 3-D path clears it) and
 		// `aquaBathyZ` is filled only on some paths, so both let the gate silently miss and the pick
 		// fell back to a look.
-		const bool composited = scn && ((g_aquamotoHasWindow && g_aquamotoHasWindow(scn)) ||
-		                                scn->customLayerTexture || !scn->aquaBathyZ.empty());
+		const bool composited = scn && onTank() &&        // …and aimed at the tank, not another grid
+		                        ((g_aquamotoHasWindow && g_aquamotoHasWindow(scn)) ||
+		                         scn->customLayerTexture || !scn->aquaBathyZ.empty());
 		// ONLY METHOD 1 GOES TO THE HOST ON A TSUNAMI. It is VTK's own RENDER, of each side's own
 		// surface, so the host renders it and pushes the picture (`_aqua_illuminate!`). Its sun and
 		// material are this dialog's all the same: they are written below first, and the side takes
@@ -6537,7 +6552,10 @@ public:
 				// picked silently became method 7 on the next layer. The LOOK still applies — the
 				// composite is re-lit through it — the geometry is simply not this method's to change
 				// for a layer that has no plain-grid form.
-				if (!composited) sceneSetShadedImage2D(scn, model == 7);
+				// …and the switch is the WINDOW's geometry, i.e. the base's: aimed at another grid (an
+				// extra on top of a tsunami, layer0.grd) it would rebuild the tank underneath. The pick
+				// is that grid's look alone.
+				if (!composited && onTank()) sceneSetShadedImage2D(scn, model == 7);
 			}
 			HillshadeState ls;                       // remember the aim like every other method does
 			ls.valid = true;  ls.model = model;

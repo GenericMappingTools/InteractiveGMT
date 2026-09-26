@@ -88,6 +88,19 @@ function _hs_push(scene::Ptr{Cvoid}, R::Matrix{Float32}, x0::Float64, x1::Float6
 	return nothing
 end
 
+# …the same push AIMED BY NAME: the reflectance of the grid called `name` lands in THAT grid's own
+# slot (an extra's own, or the base's), and nowhere else. The Illumination tool's plain-grid path uses
+# it, because it knows which grid it lit — resolving "the active layer" at the instant of the push let
+# a light meant for one grid land on the tsunami tank. An empty `R` clears that grid's light.
+function _hs_push_named(scene::Ptr{Cvoid}, name::AbstractString, R::Matrix{Float32}, x0::Float64,
+                        x1::Float64, y0::Float64, y1::Float64, model::Int)
+	ny, nx = size(R)
+	GC.@preserve R ccall(_fn(:gmtvtk_set_shade_intensity_named_h), Cvoid,
+	      (Ptr{Cvoid}, Cstring, Ptr{Cfloat}, Cint, Cint, Cdouble, Cdouble, Cdouble, Cdouble, Cint),
+	      scene, String(name), isempty(R) ? C_NULL : pointer(R), Cint(nx), Cint(ny), x0, x1, y0, y1, Cint(model))
+	return nothing
+end
+
 # THE reflectance: one illumination model + its dialog parameters -> a per-node intensity for the
 # grid handed in. EVERY illuminated surface comes through here -- a plain grid, and EACH of an
 # Aquamoto layer's two surfaces (the live stage the water stands on, the static bathymetry the land
@@ -342,6 +355,14 @@ function _on_hillshade(scene::Ptr{Cvoid}, raw::String)::Cint
 		# Those are not a source to illuminate: the models are alternatives, never a pipeline, so the
 		# name is dropped and the source grid resolves normally below.
 		(gname == _HS_FALSECOLOR || gname == _HS_PPDRC) && (gname = "")
+		# IS THIS AIMED AT THE TSUNAMI TANK? In an Aquamoto window the tank is one layer among others: a
+		# grid dropped in beside it (layer0.grd) is lit as the plain grid it is. Every Aquamoto branch
+		# below used to fire on the WINDOW (`haskey(_AQUA, scene)`), so a request aimed at that grid lit
+		# the tank instead, forgot the tank's light, or cleared it — and the grid's own light never came.
+		# The tank is aimed at by a side (0 water / 1 land), by its own name (file or variable), or by none.
+		st_ = get(_AQUA, scene, nothing)
+		aimsTank = st_ !== nothing && (side in (0, 1) || isempty(gname) ||
+		                               gname == basename(st_.path) || gname == st_.varname)
 
 		# THE C++ LOOKS (1 VTK/PBR, 5 Hillshade grdimage, 6 Hillshade Lambert, 7 Shade PBR). This file's
 		# header says they "never reach Julia" — but the dialog sends every method here, so they DID,
@@ -352,7 +373,7 @@ function _on_hillshade(scene::Ptr{Cvoid}, raw::String)::Cint
 		# and stop. RL_: 0 none, 1 PBR, 2 Hillshade-Lambert, 3 Hillshade-grdimage.
 		# ON A TSUNAMI the side setter decides: it bakes 5/6/7 per side and RENDERS 1 per side (VTK's own
 		# render of each side's surface). Setting RL_PBR here instead made 1 the CPU bake, i.e. method 7.
-		if model in (1, 5, 6, 7) && haskey(_AQUA, scene)
+		if model in (1, 5, 6, 7) && aimsTank
 			_aqua_illuminate!(scene, model, d, side)
 			_session_record_illum!(scene, raw, side)
 			return Cint(1)
@@ -367,7 +388,7 @@ function _on_hillshade(scene::Ptr{Cvoid}, raw::String)::Cint
 			      scene, Cint(rl), Cint(0), Cint(side))
 			# A look REPLACES a loaded model, so an Aquamoto layer must stop re-lighting itself from one
 			# — on the side this look was aimed at, and on that side only.
-			haskey(_AQUA, scene) && _aqua_forget_illum!(_AQUA[scene], side)
+			aimsTank && _aqua_forget_illum!(st_, side)
 			_session_record_illum!(scene, raw, side)
 			return Cint(1)
 		end
@@ -382,11 +403,13 @@ function _on_hillshade(scene::Ptr{Cvoid}, raw::String)::Cint
 			if side >= 0
 				ccall(_fn(:gmtvtk_clear_shade_side_h), Cvoid, (Ptr{Cvoid}, Cint), scene, Cint(side))
 			else
-				_hs_push(scene, Matrix{Float32}(undef, 0, 0), 0.0, 0.0, 0.0, 0.0, -1)
+				# the tank: both its sides; any other grid: THAT layer's light only (side 2 = the active layer)
+				aimsTank ? _hs_push(scene, Matrix{Float32}(undef, 0, 0), 0.0, 0.0, 0.0, 0.0, -1) :
+				           _hs_push_named(scene, gname, Matrix{Float32}(undef, 0, 0), 0.0, 0.0, 0.0, 0.0, -1)
 			end
 			# Removal undoes what the models did: an Aquamoto layer also stops re-lighting itself at
 			# every new timestep (the loaded model is what makes _aquamoto_slice do that).
-			haskey(_AQUA, scene) && _aqua_forget_illum!(_AQUA[scene], side)
+			aimsTank && _aqua_forget_illum!(st_, side)
 			# ...and the session forgets the light too: a saved window whose illumination was removed
 			# must reload unlit, not re-run the model the user just took off. That side's recipe only.
 			_session_forget_illum!(scene, side)
@@ -411,7 +434,7 @@ function _on_hillshade(scene::Ptr{Cvoid}, raw::String)::Cint
 		# …unless the window is showing the layer as TWO SURFACES. Then each side is a plain grid with
 		# its own name, and the tool lights it exactly as it lights any grid — no composite, no side
 		# codes, and every method (VTK PBR included) means on a tsunami what it means everywhere else.
-		if haskey(_AQUA, scene) && !_AQUA[scene].twosurf && model in (2, 3, 4)
+		if aimsTank && !st_.twosurf && model in (2, 3, 4)
 			_aqua_illuminate!(scene, model, d, side)
 			_session_record_illum!(scene, raw, side)
 			return Cint(1)
@@ -427,7 +450,7 @@ function _on_hillshade(scene::Ptr{Cvoid}, raw::String)::Cint
 			I = _hs_false_color(G, mod(num("azimR", 0.0), 360.0), mod(num("azimG", 120.0), 360.0),
 			                    mod(num("azimB", 240.0), 360.0);
 			                    oldalgo = _get(d, "oldalgo") == "1", elev = elev, amp = num("amp", 125.0))
-			_hs_push(scene, Matrix{Float32}(undef, 0, 0), 0.0, 0.0, 0.0, 0.0, 0)   # its colours ARE the shade
+			_hs_push_named(scene, gname, Matrix{Float32}(undef, 0, 0), 0.0, 0.0, 0.0, 0.0, 0)   # its colours ARE the shade
 			name = _HS_FALSECOLOR
 			_add_image_to_scene(scene, I, name; promote=false) ||
 				error("could not add the false-colour image to the window")
@@ -451,7 +474,8 @@ function _on_hillshade(scene::Ptr{Cvoid}, raw::String)::Cint
 
 		# ONE reflectance function for every surface this tool lights (see `_hs_reflectance`): the plain
 		# grid here, and each Aquamoto side above. `side = 0` is "the window's surface".
-		_hs_push_grid(scene, G, model, d, 0)
+		R, (rx0, rx1, ry0, ry1) = _hs_reflectance_rng(G, model, d)
+		_hs_push_named(scene, model == 9 ? _HS_PPDRC : gname, R, rx0, rx1, ry0, ry1, model)   # THIS grid's own slot, by name
 		# …and DECLARE the method, once, here. The push carries data only — it may not set the window's
 		# look (that is how a re-lit slice used to overwrite the user's chosen method). A GMT-computed
 		# reflectance is consumed by the grdimage-style shade, so that is the look this act chooses;

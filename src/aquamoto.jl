@@ -479,19 +479,26 @@ end
 # ── THE LAND SIDE'S ALBEDO ───────────────────────────────────────────────────────────────────────
 # ONE function for "what colour is the land?", asked by every land painter there is: the flat
 # composite (`_aqua_composite_rgb`), the lit combine (`aqua_shade_image` -> `_aqua_side_picture`) and
-# the two-surface land actor (`_aqua_push_two_surfaces`). With "Sat img" off it answers EMPTY, which
-# means "colour it from the land colormap as you always did"; with it on it answers the satellite
-# mosaic on the bathymetry's own nodes. A painter that decided this for itself would be the fork
-# SACRED_LAW.md forbids — and would be visible immediately, as one side of the window wearing tiles
-# and another wearing :geo.
-#
-# The answer is CACHED in `st.imgbat`, the same field the colourmapped albedo has always lived in, so
-# it is invalidated by the same one line every other land-colour change already uses.
-function _aqua_land_albedo(st::_AquaState)::Array{UInt8,3}
-	isempty(st.imgbat) || return st.imgbat
-	st.satimg || return st.imgbat          # empty -> the painter colourises from st.landcmap, as before
-	st.imgbat = _aqua_sat_rgb(st.bat; zoom = _aqua_sat_zoom(st.bat, get(_AQUA_SAT_FACTOR, st, 1.0)))
-	return st.imgbat
+# the two-surface land actor (`_aqua_push_two_surfaces`). It answers EMPTY, which means "colour it from
+# the land colormap"; the answer is cached in `st.imgbat`, invalidated by the one line every
+# land-colour change already uses. "Sat img" does NOT change it: the satellite picture is ONE image of
+# its own, the "Satellite image" row draped over the land (aquasat.jl) — it used to be baked into these
+# land colours as a second, lower-resolution copy underneath that one.
+_aqua_land_albedo(st::_AquaState)::Array{UInt8,3} = st.imgbat
+
+# THE SEA BED, what "Water transparency" shows through the water: the bathymetry in the colours its
+# OWN Scene Objects row ("bathymetry") wears — the very palette and range `_add_grid_to_scene` gave it
+# (`_default_cmap` + `_cpt_nodes`, one call, the same one) — in the grid's own element order, like
+# every array the composite combines. Static per file, so built once. The sea-bed staging render
+# (`_aqua_bathy_shot`) colours by the same palette.
+const _AQUA_SEABED = IdDict{_AquaState,Array{UInt8,3}}()
+_aqua_seabed_cmap(st::_AquaState) = _default_cmap(st.bat)
+function _aqua_seabed_rgb(st::_AquaState)::Array{UInt8,3}
+	get!(_AQUA_SEABED, st) do
+		cz, crgb, n = _cpt_nodes(st.bat, _aqua_seabed_cmap(st))
+		(n >= 2) || error("Aquamoto: the bathymetry has no colour range")
+		_aqua_colorize(st.bat.z, cz, crgb)
+	end
 end
 
 # The dialog's "Res" refinement factor per open file (1 = one image pixel per land node).
@@ -511,57 +518,30 @@ function _aqua_sat_res_text(scene::Ptr{Cvoid}, factor::Float64)::Cint
 	return Cint(1)
 end
 
-# The same answer as a georeferenced IMAGE, for the painters that take a picture rather than a
-# per-node array (`grdimage`'s `-I` modulation, the PBR render's texture). `nothing` = "Sat img" is
-# off and that painter keeps its colormap. One source, two shapes of the same thing — never a second
-# fetch and never a second resample.
-function _aqua_land_image(st::_AquaState)::Union{Nothing,GMTimage}
-	st.satimg || return nothing
-	A = _aqua_land_albedo(st)
-	# MEMOISED ON THE ALBEDO ITSELF. The lit land half is cached on this image's identity
-	# (`aqua_shade_image`'s `lkey`), so handing back a freshly built image every slice would make that
-	# key change every slice and re-render the static land half at every timestep — the exact cost
-	# that cache exists to avoid. One image per albedo array; a new albedo (a "Sat img" toggle, a new
-	# region) is a new array and therefore a new image.
-	get!(_AQUA_LAND_IMG, objectid(A)) do
-		_aqua_sat_image(A, st.bat)
-	end
-end
-
-const _AQUA_LAND_IMG = Dict{UInt,GMTimage}()
-
-# "Sat img" (the checkbox under the "Water side" button). Drops the cached land albedo so the next
-# paint asks `_aqua_land_albedo` again, and drops the LIT land half too — that cache is keyed on the
-# land colormap, which is exactly the thing this replaces, so a key that cannot see the change would
-# keep serving the picture made before it. The caller (C++) re-renders the current slice.
+# "Sat img" (the checkbox under the "Water side" button): puts up — or takes down — THE satellite
+# image, the one "Satellite image" row (aquasat.jl). The layer's own land is not touched: it keeps its
+# colour map and its light under the drape, so there is no second, lower-resolution photograph baked
+# into it. The lit land half (method 1 / "Rendered image") is dropped, so it is rebuilt wearing — or
+# no longer wearing — the photograph. The caller (C++) re-renders the current slice.
 #
-# IT FETCHES HERE, NOT LATER. The albedo used to be built lazily, at the next paint: a download that
-# failed then surfaced as a broken SLICE, seconds after the click, with nothing tying the two
-# together — and a download that SUCCEEDED said nothing at all, so a box that had done its whole job
-# looked identical to one that was not wired. Both are the same defect: a control the user cannot
-# tell the outcome of. The work happens inside the click, behind the click's own busy notice, and
-# this prints ONE line saying what the land side now wears — which the caller shows.
+# IT FETCHES HERE, NOT LATER: a download that failed then surfaced as a broken SLICE, seconds after
+# the click, and one that succeeded said nothing at all. The work happens inside the click, behind the
+# click's own busy notice, and this prints ONE line saying what the land now wears.
 function _aquamoto_sat_img(scene::Ptr{Cvoid}, on::Bool, factor::Float64 = 1.0)
 	st = get(_AQUA, scene, nothing)
 	(st === nothing) && error("Aquamoto: no file open in this window")
 	st.satimg = on
 	_AQUA_SAT_FACTOR[st] = factor > 0 ? factor : 1.0     # the "Res" box, read at the click
-	# The land side shows the photograph as it is: no light over it (aquaBakeNodes).
-	ccall(_fn(:gmtvtk_aqua_set_land_plain_h), Cvoid, (Ptr{Cvoid}, Cint), scene, Cint(on))
-	st.imgbat = Array{UInt8}(undef, 0, 0, 0)
+	ccall(_fn(:gmtvtk_aqua_set_land_plain_h), Cvoid, (Ptr{Cvoid}, Cint), scene, Cint(0))   # land lit as ever
 	empty!(_AQUA_LAND_CACHE)
-	empty!(_AQUA_LAND_IMG)
+	_aqua_sat_drape!(scene, st)                    # on: fetches NOW (a failure throws HERE); off: takes it down
 	if !on
-		_aqua_sat_drape!(scene, st)                # takes the satellite image down
 		print("Land side: colour map ($(st.landcmap))")
 		return nothing
 	end
-	A = _aqua_land_albedo(st)                      # downloads + warps NOW, so a failure throws HERE
-	_aqua_sat_drape!(scene, st)                    # …and ON SCREEN at that resolution: its own draped image
-	nx, ny = _grid_dims(st.bat)
-	f = _AQUA_SAT_FACTOR[st]
-	print("Land side: satellite imagery, $(nx)x$(ny) nodes at zoom $(_aqua_sat_zoom(st.bat, f)) ",
-	      "(asked ≈ $(round(_aqua_sat_res_m(st.bat, f); sigdigits = 3)) m)")
+	W, H, z = _aqua_sat_size(st)
+	print("Land side: satellite image, $(W)x$(H) texels at zoom $(z) ",
+	      "(asked ≈ $(round(_aqua_sat_res_m(st.bat, _AQUA_SAT_FACTOR[st]); sigdigits = 3)) m)")
 	return nothing
 end
 
@@ -599,6 +579,14 @@ end
 # Prints "nsteps|activevar|var1,var2,…" (parsed by the C++ dialog to fill "Time steps = N" + the
 # slider range + the Stage/Xmoment/Ymoment/Or… quantity picker) on success; throws (shown as an
 # error dialog by the console-eval bridge) on anything it can't make sense of.
+# THIS FILE OWNS `name`. Every element the tsunami loader adds to the window (bathymetry, masks,
+# static grids, the satellite drape, the rendered image) is stamped with the file it came from — the
+# name its Scene Objects group carries (the layer's handle, `basename(path)`). The tree nests exactly
+# these under the file's row, and that row's Remove takes exactly these: BY TAG, never "every extra in
+# the window", which is what it used to do to grids dropped in from anywhere else.
+_aqua_own!(scene::Ptr{Cvoid}, path::String, name::String) =
+	ccall(_fn(:gmtvtk_set_extra_owner_h), Cint, (Ptr{Cvoid}, Cstring, Cstring), scene, name, basename(path))
+
 # Drop the per-variable Scene Objects rows a PREVIOUS open of this window left behind — the ones
 # `_aquamoto_open` adds below, named after the variable. Called by the open itself, so no caller has
 # to remember to clean up, and so a second file opened into the same window replaces the first file's
@@ -724,6 +712,7 @@ function _aquamoto_open(scene::Ptr{Cvoid}, path::String)
 	# removes nothing.
 	_aqua_drop_var_rows(scene, path, varnames)
 	_add_grid_to_scene(scene, bat, "bathymetry"; promote = false, source = "$(path)?bathymetry")
+	_aqua_own!(scene, String(path), "bathymetry")
 	ccall(_fn(:gmtvtk_set_object_visible), Cint, (Ptr{Cvoid}, Cstring, Cint), scene, "bathymetry", Cint(0))
 	skipvars = Set(lowercase.(varnames)); push!(skipvars, "bathymetry")
 	for v in _netcdf_subdatasets(path)
@@ -741,6 +730,7 @@ function _aquamoto_open(scene::Ptr{Cvoid}, path::String)
 				G = _aqua_clipx(_gmtread_trb("$(path)?$(v.name)"), xwin)
 				_add_grid_to_scene(scene, G, v.name; promote = false, source = "$(path)?$(v.name)")
 			end
+			_aqua_own!(scene, String(path), String(v.name))
 			ccall(_fn(:gmtvtk_set_object_visible), Cint, (Ptr{Cvoid}, Cstring, Cint), scene, v.name, Cint(0))
 		catch e
 			@tool_error "Aquamoto: could not load variable '$(v.name)'" exception=e
@@ -899,7 +889,8 @@ function _aqua_composite_rgb(bat::Matrix{Float32}, Z::Matrix{Float32}, splitDryW
                              waterlo::Float64, waterhi::Float64, transparency::Float64,
                              imgbat::Array{UInt8,3}, landhi::Float64,
                              shadeWater::Bool=true, shadeLand::Bool=true,
-                             watercmap::_AquaPal=:polar, landcmap::_AquaPal=:geo)
+                             watercmap::_AquaPal=:polar, landcmap::_AquaPal=:geo;
+                             seabed::Array{UInt8,3}=Array{UInt8,3}(undef, 0, 0, 0))
 	ny, nx = size(Z)
 	if !splitDryWet
 		return _aqua_colorize(Z, waterlo, waterhi, watercmap), imgbat
@@ -932,8 +923,14 @@ function _aqua_composite_rgb(bat::Matrix{Float32}, Z::Matrix{Float32}, splitDryW
 	alfa = clamp(transparency, 0.0, 1.0)
 	rgb = similar(imgwater)
 	if alfa > 0.01                                          # mixe_images' addweighted cross-blend
+		# THROUGH THE WATER IS THE SEA BED — the bathymetry in its OWN colours (`_aqua_seabed_rgb`,
+		# the palette its Scene Objects row wears, over its own range). It used to be `landrgb`: the
+		# LAND colouring, scaled to the dry nodes' elevations only, so every sea-floor depth clamped to
+		# one colour and "Water transparency" faded the sea to a flat, featureless tint.
+		size(seabed) == size(imgwater) ||
+			error("Aquamoto: water transparency needs the sea-bed picture ($(size(seabed)) vs $(size(imgwater)))")
 		for idx in eachindex(rgb)
-			rgb[idx] = round(UInt8, clamp((1 - alfa) * imgwater[idx] + alfa * landrgb[idx], 0, 255))
+			rgb[idx] = round(UInt8, clamp((1 - alfa) * imgwater[idx] + alfa * seabed[idx], 0, 255))
 		end
 	else
 		rgb = imgwater
@@ -1046,7 +1043,8 @@ function _aqua_illuminate!(scene::Ptr{Cvoid}, model::Int, d::Dict{String,String}
 		for sd in (side < 0 ? (0, 1) : (side,))
 			ccall(_fn(:gmtvtk_set_relief_look_side_h), Cvoid, (Ptr{Cvoid}, Cint, Cint, Cint),
 			      scene, Cint(rl), Cint(0), Cint(sd))
-			model == 1 && _aqua_render_side!(scene, st, sd)
+			# not the land under "Sat img": the photograph is the draped image, never baked into the layer
+			(model == 1 && !(sd == 1 && st.satimg)) && _aqua_render_side!(scene, st, sd)
 		end
 		return nothing
 	end
@@ -1055,7 +1053,7 @@ function _aqua_illuminate!(scene::Ptr{Cvoid}, model::Int, d::Dict{String,String}
 	# The viewer then modulates the composite it already paints (bakeAquaShade / the 3-D surface's
 	# baked colours) with them, which is what every other grid in this app does with an Illumination
 	# model — same operation, same function (`_hs_reflectance`), no second picture.
-	(side < 0 || side == 1) && _hs_push_grid(scene, st.bat, model, st.illum[2], 1)   # LAND
+	(side < 0 || side == 1) && _aqua_push_land_reflectance!(scene, st, model)        # LAND
 	(side < 0 || side == 0) && _aqua_push_water_reflectance!(scene, st, model)       # WATER
 	# The method is DECLARED here, by the act that chose it — never by the pushes above, which are
 	# data and run again at every slice.
@@ -1082,7 +1080,10 @@ function _aqua_relight_water!(scene::Ptr{Cvoid}, st::_AquaState, G::Union{GMTgri
 	for (sd, m) in ((0, mw), (1, ml))              # the host's copy follows the viewer, never the reverse
 		m > 0 && (st.illum[sd + 1]["model"] = string(m))
 	end
-	(ml == 1 && !st.satimg) && _aqua_render_side!(scene, st, 1, G)   # a satellite land is not lit
+	(ml == 1 && !st.satimg) && _aqua_render_side!(scene, st, 1, G)   # not under "Sat img": its render would bake the photo into the layer
+	# The LAND's reflectance too: its surface is the static bathymetry, but its HALF is cut by the
+	# shoreline, which moves with the wave — so it is recomputed at every slice, like the water's.
+	ml in (2, 3, 4) && _aqua_push_land_reflectance!(scene, st, ml, G)
 	mw == 1 && return _aqua_render_side!(scene, st, 0, G)
 	mw in (2, 3, 4) && _aqua_push_water_reflectance!(scene, st, mw, G)
 	return nothing
@@ -1098,6 +1099,42 @@ function _aqua_push_water_reflectance!(scene::Ptr{Cvoid}, st::_AquaState, model:
 	_hs_push(scene, R, Float64(Gw.range[1]), Float64(Gw.range[2]),
 	         Float64(Gw.range[3]), Float64(Gw.range[4]), model, 0)
 	return nothing
+end
+
+# The LAND's reflectance for `model` (2/3/4), from ITS HALF: the bathymetry with this slice's WET
+# nodes dropped, so the stretch is the land relief's own (SACRED_LAW.md, two-surface law). It used
+# to be computed over the whole bathymetry, sea floor included, so the sea floor's range set how hard
+# the land was lit — and computed once, so the land half never followed the moving shoreline.
+function _aqua_push_land_reflectance!(scene::Ptr{Cvoid}, st::_AquaState, model::Int,
+                                      G::Union{GMTgrid,Nothing}=nothing)
+	Gw = G === nothing ? _aqua_layer(st, st.cur) : G
+	Gw === nothing && error("Aquamoto: could not read layer $(st.cur + 1) of '$(st.varname)' from $(st.path)")
+	R = _aqua_land_reflectance(st, Gw, model)
+	R === nothing && return nothing            # an entirely wet step has no land to light
+	_hs_push(scene, R, Float64(st.bat.range[1]), Float64(st.bat.range[2]),
+	         Float64(st.bat.range[3]), Float64(st.bat.range[4]), model, 1)
+	return nothing
+end
+
+# THE LAND SIDE's reflectance: the mirror of `_aqua_water_reflectance` below, and built the same way —
+# the other side's nodes out of the FIELD (so out of the stretch), then back in as NEUTRAL zero, so no
+# node the light has nothing to say about is sent down another shading branch.
+function _aqua_land_reflectance(st::_AquaState, G::GMTgrid, model::Int)
+	(size(st.bat.z) == size(G.z)) ||
+		error("Aquamoto: '$(st.varname)' ($(size(G.z))) and bathymetry ($(size(st.bat.z))) sizes differ")
+	(_grid_layout_code(G) == _grid_layout_code(st.bat)) ||
+		error("Aquamoto: '$(st.varname)' ($(G.layout)) and bathymetry ($(st.bat.layout)) have different memory layouts")
+	dry = _aqua_indland(st.bat.z, G.z)         # element-wise, both buffers as they lie -- no layout
+	any(dry) || return nothing
+	L = deepcopy(st.bat)
+	L.z[.!dry] .= NaN32
+	land = view(L.z, dry)
+	L.range[5], L.range[6] = Float64(minimum(land)), Float64(maximum(land))
+	R = _hs_reflectance(L, model, st.illum[2])
+	@inbounds for k in eachindex(R)
+		isfinite(R[k]) || (R[k] = 0.0f0)
+	end
+	return R
 end
 
 # METHOD 1 ON ONE SIDE: VTK's own render — the SAME render a plain grid of that side gets, because it
@@ -1352,6 +1389,7 @@ end
 # span (down to the abyssal plain) cannot reach the water's pass and flatten its relief.
 const _AQUA_BATHY_WIN  = Ref{Ptr{Cvoid}}(C_NULL)
 const _AQUA_BATHY_SHOT = Ref{Any}(nothing)
+const _AQUA_BATHY_LOADED = Ref{Any}(nothing)   # the _AquaState whose bathymetry the staging window holds
 
 # A mask grown by ONE node in every direction (8-connected), in GRID SPACE.
 #
@@ -1426,12 +1464,19 @@ function _aqua_bathy_shot(st::_AquaState, model::Int, az::Float64, el::Float64,
 		_aqua_mark_window(h)        # a tsunami window: its halves keep the NaN-hole rim
 		_AQUA_BATHY_WIN[] = h
 		_pump_once()
-		_add_grid_to_scene(h, st.bat, AQUA_LAND; cmap = st.landcmap, promote = true, record = false)
+	end
+	# THE BATHYMETRY OF THIS FILE, in the SEA BED's colours (`_aqua_seabed_cmap`, the palette the
+	# "bathymetry" row wears). It was loaded once per session in the LAND palette: every later file
+	# rendered the first file's sea floor, coloured as land.
+	if _AQUA_BATHY_LOADED[] !== st
+		_AQUA_BATHY_LOADED[] === nothing || ccall(_fn(:gmtvtk_remove_grid_h), Cint, (Ptr{Cvoid}, Cstring), h, AQUA_LAND)
+		_add_grid_to_scene(h, st.bat, AQUA_LAND; cmap = _aqua_seabed_cmap(st), promote = true, record = false)
 		ccall(_fn(:gmtvtk_set_surface_name_h), Cvoid, (Ptr{Cvoid}, Cstring), h, AQUA_LAND)
 		_remember_object!(h, :grid, AQUA_LAND, st.bat)
 		ccall(_fn(:gmtvtk_apply_scene_state), Cvoid, (Ptr{Cvoid}, Cstring), h, "flat2d=1;")
 		ccall(_fn(:gmtvtk_set_capture_scale_h), Cvoid, (Ptr{Cvoid}, Cint), h, Cint(1))
 		for _ in 1:20; _pump_once(); end
+		_AQUA_BATHY_LOADED[] = st
 	end
 	_on_hillshade(h, "model=$model\ngrid=$AQUA_LAND\nazim=$az\nelev=$el\n")
 	img = _display_image(h, w, e, s, n)   # no pumps: see `shoot` in `_aqua_capture_combined`
@@ -1565,7 +1610,10 @@ function _aqua_capture_combined(st::_AquaState, G::GMTgrid, mw::Int, ml::Int,
 		# press on the same layer; only the LIGHT differs, and that is pushed onto surfaces already
 		# standing. Removing and re-adding them was costing 0.22 s a press for an identical result.
 		loaded = _AQUA_STAGE_LOADED[]
-		needW = loaded === nothing || loaded[1] !== st || loaded[2] != st.cur
+		# …and when the water's colour span changes ("Scale colour to global min/max"): it is part of what
+		# the water surface wears.
+		wrng  = _aqua_layer_water_range(st, st.cur, st.split, st.globalmm)
+		needW = loaded === nothing || loaded[1] !== st || loaded[2] != st.cur || loaded[3] != wrng
 		# THE LAND SURFACE AND WHAT IT WEARS. With "Sat img" it wears the satellite picture, LIT with the
 		# land's method and sun — the light is baked into that drape — so it is added again whenever any
 		# of those changes; otherwise once per file, as before.
@@ -1579,10 +1627,10 @@ function _aqua_capture_combined(st::_AquaState, G::GMTgrid, mw::Int, ml::Int,
 				ccall(_fn(:gmtvtk_remove_grid_h), Cint, (Ptr{Cvoid}, Cstring), h, AQUA_WATER)
 				_forget_object!(h, :grid, AQUA_WATER)
 			end
-			# The water's palette over the SYMMETRIC scale `_aqua_water_range` gives, so a diverging
-			# palette's centre sits on the calm sea instead of wherever the slice's extremes leave it.
+			# The water's palette over THE LAYER'S OWN span (`_aqua_layer_water_range`), so the render is
+			# coloured exactly as the layer and its colour bar are.
 			_add_grid_to_scene(h, Gw, AQUA_WATER; cmap = st.watercmap, promote = true,
-			                   zrange = _aqua_water_range(Gw), record = false)
+			                   zrange = wrng, record = false)
 			ccall(_fn(:gmtvtk_set_surface_name_h), Cvoid, (Ptr{Cvoid}, Cstring), h, AQUA_WATER)
 			_remember_object!(h, :grid, AQUA_WATER, Gw)
 		end
@@ -1605,7 +1653,7 @@ function _aqua_capture_combined(st::_AquaState, G::GMTgrid, mw::Int, ml::Int,
 			# tile seams show as a cross through the picture. More pixels come from a bigger window.
 			ccall(_fn(:gmtvtk_apply_scene_state), Cvoid, (Ptr{Cvoid}, Cstring), h, "flat2d=1;")
 			ccall(_fn(:gmtvtk_set_capture_scale_h), Cvoid, (Ptr{Cvoid}, Cint), h, Cint(1))
-			_AQUA_STAGE_LOADED[] = (st, st.cur)
+			_AQUA_STAGE_LOADED[] = (st, st.cur, wrng)
 			for _ in 1:20; _pump_once(); end
 		end
 		w, e, s, n = Float64(Gw.range[1]), Float64(Gw.range[2]), Float64(Gw.range[3]), Float64(Gw.range[4])
@@ -1793,7 +1841,7 @@ function _aqua_combined_popup(scene::Ptr{Cvoid}, model_water::Int = 0, model_lan
 	mw, ml = get(_AQUA_LAST_MODELS, scene, (0, 0))
 	dry = _aqua_indland(st.bat.z, G.z)
 	nd, nw = count(dry), count(.!dry)
-	ws = _aqua_water_span(G.z, .!dry)
+	ws = _aqua_layer_water_range(st, st.cur, st.split, st.globalmm)   # THE span the layer is coloured over
 	print("layer $(st.cur + 1): water model $(mw), land model $(ml), dry $(nd) / wet $(nw), ",
 	      "water span ", round(ws[1]; digits = 3), " .. ", round(ws[2]; digits = 3))
 	# INTO THIS WINDOW, AS ITS OWN HANDLE — no second iGMT window.
@@ -1822,6 +1870,7 @@ function _aqua_combined_popup(scene::Ptr{Cvoid}, model_water::Int = 0, model_lan
 		ccall(_fn(:gmtvtk_remove_image_h), Cint, (Ptr{Cvoid}, Cstring), scene, nm)
 		_forget_object!(scene, :image, nm)
 		_add_image_to_scene(scene, img, nm; promote = false, record = false)
+		_aqua_own!(scene, st.path, nm)
 		ccall(_fn(:gmtvtk_set_object_visible), Cint, (Ptr{Cvoid}, Cstring, Cint), scene, nm, Cint(1))
 	end
 	_pump_once()
@@ -1989,6 +2038,26 @@ function _aqua_set_title_time(scene::Ptr{Cvoid}, st::_AquaState, k::Int)
 	return nothing
 end
 
+# THE WATER COLOUR SPAN OF SLICE `k` (0-based), the ONE rule for it: the layer on screen, its colour
+# bar, the method-1 render's staging water and the axes Z pin all read it here, so no two of them can
+# colour or frame the same water differently. The real min/max of exactly the cells this slice colours
+# as water: in Split Dry/Wet the WET cells only (dry cells store the land elevation, which is painted
+# as land and must never enter the water scale); the "Scale colour to global min/max" box is the only
+# override. A plain lookup into the per-layer scan `_aquamoto_open` made — never a rescan.
+function _aqua_layer_water_range(st::_AquaState, k::Int, splitDryWet::Bool, globalMM::Bool)
+	sc = st.scans[st.varname]
+	if globalMM
+		lo, hi = _aqua_global_minmax(st)
+	elseif splitDryWet
+		lo, hi = sc.wetany[k+1] ? (sc.wetlo[k+1], sc.wethi[k+1]) : (0.0, 1.0)   # 0..1: entirely dry
+	else
+		lo, hi = sc.alllo[k+1], sc.allhi[k+1]
+	end
+	lo, hi = Float64(lo), Float64(hi)
+	(hi > lo) || (hi = lo + 1.0)                 # guard an exactly-flat layer (div-by-zero only)
+	return lo, hi
+end
+
 # Compute + display slice `k` (0-based). `splitDryWet` toggles the dry/wet composite; `globalMM`
 # picks the whole-cube min/max over the slice's own; `transparency` (0..1) is the Water-
 # transparency slider (mixe_images' cross-blend fraction — land pixels are always hard-overwritten
@@ -2025,19 +2094,7 @@ function _aquamoto_slice(scene::Ptr{Cvoid}, k::Int, splitDryWet::Bool, globalMM:
 	# "Scale colour to global min/max" checkbox is the only override. Colouring uses this SAME range.
 	# Every range below is a plain lookup into the per-layer arrays `_aquamoto_open` already scanned
 	# up front -- no rescan of `Z` needed here.
-	sc = st.scans[st.varname]
-	if globalMM
-		waterlo, waterhi = _aqua_global_minmax(st)
-	elseif splitDryWet
-		if sc.wetany[k+1]
-			waterlo, waterhi = sc.wetlo[k+1], sc.wethi[k+1]
-		else
-			waterlo, waterhi = 0.0, 1.0                    # this layer is entirely dry
-		end
-	else
-		waterlo, waterhi = sc.alllo[k+1], sc.allhi[k+1]
-	end
-	(waterhi > waterlo) || (waterhi = waterlo + 1.0)     # guard an exactly-flat layer (div-by-zero only)
+	waterlo, waterhi = _aqua_layer_water_range(st, k, splitDryWet, globalMM)
 	# The water quantity is a DEVIATION from the rest state and its palette is DIVERGING (:polar =
 	# trough / calm / crest). A range that never crosses zero — which is what a slice whose water is
 	# entirely above (or below) the rest level gives, e.g. [0.006, 0.397] as the wave arrives — puts
@@ -2083,7 +2140,9 @@ function _aquamoto_slice(scene::Ptr{Cvoid}, k::Int, splitDryWet::Bool, globalMM:
 	# way it always has. Either way it goes into the SAME cache field and is used the SAME way below —
 	# the composite has no idea which source painted it, and must not.
 	rgb, st.imgbat = _aqua_composite_rgb(bat, Z, splitDryWet, waterlo, waterhi, transparency, _aqua_land_albedo(st), landhi,
-	                                     shadeWater, shadeLand, _aqua_side_pal(st, 0), _aqua_side_pal(st, 1))
+	                                     shadeWater, shadeLand, _aqua_side_pal(st, 0), _aqua_side_pal(st, 1);
+	                                     seabed = (splitDryWet && transparency > 0.01) ? _aqua_seabed_rgb(st) :
+	                                              Array{UInt8,3}(undef, 0, 0, 0))
 	# THE LIGHT IS NOT IN THIS PICTURE. The composite carries the COLOURS; the Illumination tool's
 	# light is a reflectance the viewer modulates them with, pushed per side (`_aqua_illuminate!`,
 	# `_aqua_relight_water!` below) — one operation, one function, the same one every grid uses.
@@ -2191,15 +2250,17 @@ const AQUA_LAND  = "LAND bathymetry"    # dialog aims at, one per side
 """
     _aqua_water_range(Gw) -> (lo, hi)
 
-The water half's colour span: SYMMETRIC about zero, `amp = max(|min|, |max|)` over its own wet nodes,
-so calm water sits at the centre of the diverging palette and trough and crest read as the two sides
-they are.
+The water half's colour span: ITS OWN wet data extrema, exactly as the layer on screen colours its
+water (`_aquamoto_slice`: the wet-cell range, no centring) and as a plain grid of that half alone is
+coloured. It used to be symmetric about zero while the layer was not, so the method-1 render, the
+"Rendered image" and the side popups painted the water on a different scale from the layer and its
+own colour bar: one quantity, two functions (SACRED_LAW.md). Only a degenerate span is widened.
 """
 function _aqua_water_range(Gw::GMTgrid)
 	lo, hi = Float64(Gw.range[5]), Float64(Gw.range[6])
-	amp = max(abs(lo), abs(hi))
-	amp > 0 || (amp = 1.0)
-	return (-amp, amp)
+	(isfinite(lo) && isfinite(hi)) || return (0.0, 1.0)
+	(hi > lo) || (hi = lo + 1.0)
+	return (lo, hi)
 end
 
 """

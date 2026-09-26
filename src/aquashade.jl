@@ -288,17 +288,6 @@ function _aqua_rgb_plane(I)::Array{UInt8,3}
 	return out
 end
 
-# THE WATER HALF'S COLOUR SPAN, over the nodes `m` selects. The extrema are this file's own, the
-# SYMMETRY is not: `_aqua_water_range` (aquamoto.jl) is THE rule for a water span in this program —
-# symmetric about zero, so calm water sits at the diverging palette's centre and trough and crest
-# read as the two sides they are — and it is called here rather than restated, so the half and the
-# Aquamoto layer can never disagree about where white is.
-function _aqua_water_span(A::AbstractArray, m::AbstractArray{Bool})::Tuple{Float64,Float64}
-	lo, hi = _aqua_half_range(A, m)
-	stub = GMT.mat2grid(zeros(Float32, 2, 2))          # carrier for the range; nothing is computed on it
-	stub.range[5], stub.range[6] = lo, hi
-	return _aqua_water_range(stub)
-end
 
 # The extrema of `A` over the nodes `m` selects — a half's OWN range, read without copying or
 # blanking anything. A degenerate half is nudged so a CPT can still be built over it.

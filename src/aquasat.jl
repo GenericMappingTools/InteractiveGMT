@@ -1,27 +1,19 @@
-# ── Aquamoto: SATELLITE IMAGERY AS THE LAND SIDE'S ALBEDO ────────────────────────────────────────
+# ── Aquamoto: "Sat img" — ONE SATELLITE IMAGE ────────────────────────────────────────────────────
 #
-# An Aquamoto layer is two images on two surfaces (SACRED_LAW.md, two-surface illumination law):
-# water on the live stage, land on the static bathymetry. The land side has always been a COLOURMAP
-# of the relief. With "Sat img" ticked it is a downloaded satellite mosaic instead — and nothing else
-# about the side changes: the LIGHT is still `_hs_reflectance` over the bathymetry, per side, exactly
-# as before. Only the albedo the light multiplies is swapped.
+# With "Sat img" ticked the land wears a downloaded satellite mosaic. THERE IS EXACTLY ONE OF IT: the
+# "Satellite image" row in Scene Objects, fetched once at the resolution the dialog's "Res" box asks
+# for (`_aqua_sat_size`), draped on the relief with its water texels transparent so the live, lit
+# water of the layer shows through. Everything else that needs the photograph — the method-1 land
+# render and the "Rendered image" (`_aqua_sat_lit`) — reads THAT picture (`_aqua_sat_fetch`).
 #
-# THE ONE LAND ALBEDO. `_aqua_land_albedo(st)` (aquamoto.jl) is what every land painter asks — the
-# flat composite, the lit combine (`aqua_shade_image`) and the two-surface land actor. A path that
-# made its own land colours would be this file's whole purpose defeated.
+# There used to be three: a copy at one pixel per node baked into the layer's land colours, the
+# draped one at Res, and a third fetched two zoom levels finer for the lit land render — three
+# downloads, three resolutions, and a low-resolution photograph under a higher-resolution one. The
+# layer's own land now keeps its colour map, lit like any grid, under the drape.
 #
-# GEOMETRY IS NOT NEGOTIABLE (SACRED_LAW.md, derived-from-a-grid geometry law): the mosaic comes back
-# on web-Mercator tiles at a zoom level, and it leaves here on the BATHYMETRY'S OWN NODES — same nx,
-# same ny, one pixel per node, resampled by `gdalwarp` onto the exact outer box and node count. A
-# count that does not match is an ERROR, never a stretch.
-#
-# ONE FETCH. `GMT.mosaic` keeps the tiles in GMT's own cache, and the finished per-node array is kept
-# here too, keyed on the box, the node count, the provider and the zoom — the region does not change
-# while a cube is being scrubbed, so the download happens once per window and never per slice.
-
-# The finished land albedo, on the bathymetry's nodes, in ITS memory order. Key: the grid's box, its
-# node count, the provider and the zoom — every input that can change a pixel.
-const _AQUA_SAT_CACHE = Dict{Tuple{NTuple{4,Float64},Int,Int,String,Int},Array{UInt8,3}}()
+# GEOMETRY (SACRED_LAW.md, derived-from-a-grid geometry law): the mosaic is warped onto the grid's
+# exact box, W x H texels, and a texel shows the node its registration says it lies on
+# (`_aqua_sat_node`) — the same rule in the full build and in the per-slice cut.
 
 """
     _aqua_sat_zoom(bat) -> Int
@@ -48,154 +40,45 @@ function _aqua_sat_res_m(bat::GMTgrid, factor::Float64 = 1.0)::Float64
 	return (factor > 0) ? mx / factor : mx
 end
 
-"""
-    _aqua_sat_rgb(bat; provider="", zoom=0) -> Array{UInt8,3}
-
-The satellite mosaic over `bat`'s region, resampled onto `bat`'s OWN nodes and returned in `bat`'s
-own memory order — i.e. exactly what `_aqua_colorize(bat, …)` returns, so it is a drop-in albedo for
-every land painter. `provider` empty = GMT's own default (Bing aerial); `zoom` 0 = `_aqua_sat_zoom`.
-"""
-function _aqua_sat_rgb(bat::GMTgrid; provider::String = "", zoom::Int = 0)::Array{UInt8,3}
-	nx, ny = _grid_dims(bat)
-	z = zoom > 0 ? zoom : _aqua_sat_zoom(bat)
-	box = (Float64(bat.range[1]), Float64(bat.range[2]), Float64(bat.range[3]), Float64(bat.range[4]))
-	key = (box, nx, ny, provider, z)
-	haskey(_AQUA_SAT_CACHE, key) && return _AQUA_SAT_CACHE[key]
-
-	kw = Dict{Symbol,Any}(:zoom => z, :cache => "gmt")
-	isempty(provider) || (kw[:provider] = provider)
-	# Under the tiles lock: GMT is not reentrant, and the Tiles Tool can be fetching through the same
-	# library from its own dialog. One lock for every tile fetch in this program, never a second one.
-	I = lock(_TILE_LOCK) do
-		GMT.mosaic([box[1], box[2]], [box[3], box[4]]; kw...)
-	end
-	# PIXEL-INTERLEAVED IN, BAND-PLANAR TO GDAL. A row-major RGB image sends GMT/GDAL down a branch
-	# that reads the buffer as if it were band-planar and hands back colour noise — the same trap
-	# `GMT.crop` is documented with. `_to_band_planar` (drape.jl) is THE de-interleaver.
-	W = _aqua_sat_warp(_to_band_planar(I), bat)
-	return _AQUA_SAT_CACHE[key] = _aqua_sat_in_grid_order(_aqua_sat_south_first(W, nx, ny), bat)
-end
-
-"""
-    _aqua_sat_warp(I, bat) -> GMTimage
-
-`I` resampled onto `bat`'s exact node geometry: one output pixel CENTRED on every node. `-te` wants
-the outer EDGES of the raster, which for a pixel-registered grid is its `range` and for a gridline
-one is `range` grown by half a cell — get that wrong and every pixel sits half a cell off its node,
-which is the silent half-cell shift SACRED_LAW.md's geometry law exists to forbid.
-"""
-function _aqua_sat_warp(I::GMTimage, bat::GMTgrid)::GMTimage
-	nx, ny = _grid_dims(bat)
-	pixreg = (bat.registration == 1)
-	incx = abs(Float64(bat.range[2]) - Float64(bat.range[1])) / (pixreg ? nx : max(nx - 1, 1))
-	incy = abs(Float64(bat.range[4]) - Float64(bat.range[3])) / (pixreg ? ny : max(ny - 1, 1))
-	hx = pixreg ? 0.0 : incx / 2
-	hy = pixreg ? 0.0 : incy / 2
-	opts = ["-t_srs", "EPSG:4326",
-	        "-te", string(Float64(bat.range[1]) - hx), string(Float64(bat.range[3]) - hy),
-	               string(Float64(bat.range[2]) + hx), string(Float64(bat.range[4]) + hy),
-	        "-ts", string(nx), string(ny),
-	        "-r", "bilinear"]
-	return GMT.gdalwarp(I, opts)
-end
-
-"""
-    _aqua_sat_south_first(I, nx, ny) -> Array{UInt8,3}
-
-`I` as a plain `(iy, ix, band)` array with row 1 in the SOUTH — the convention `_zmat` uses for a
-grid, so the two can be paired node for node. Read through `_pixaccess_img` / `_north_first`
-(drape.jl), which are THE accessors for a GMTimage's real pixels whatever its layout claims.
-"""
-function _aqua_sat_south_first(I::GMTimage, nx::Int, ny::Int)::Array{UInt8,3}
-	pix, nb, nlon, nlat, rowmajor = _pixaccess_img(I)
-	(nlon == nx && nlat == ny) ||
-		error("Aquamoto: the satellite mosaic warped to $(nlon)x$(nlat), not the bathymetry's $(nx)x$(ny)")
-	north = _north_first(I.layout, rowmajor)
-	S = Array{UInt8,3}(undef, ny, nx, 3)
-	@inbounds for iy in 1:ny
-		lat = north ? (ny - iy + 1) : iy
-		for ix in 1:nx, b in 1:3
-			S[iy, ix, b] = UInt8(pix(lat, ix, b <= nb ? b : nb))
-		end
-	end
-	return S
-end
-
-"""
-    _aqua_sat_in_grid_order(S, bat) -> Array{UInt8,3}
-
-`S` (south-first) re-laid in `bat`'s own memory order, so it can be indexed element-wise beside
-`bat.z` exactly as `_aqua_colorize`'s output is. The re-ordering itself is `_z_as` (drop.jl) — THE
-one place on the Julia side a buffer is re-laid (SACRED_LAW.md's grid-memory-layout law); this only
-carries each band through it.
-"""
-function _aqua_sat_in_grid_order(S::Array{UInt8,3}, bat::GMTgrid)::Array{UInt8,3}
-	_grid_layout_code(bat) == 0 && return S            # "BCB" already IS (ny,nx) south-first
-	out = Array{UInt8,3}(undef, size(bat.z, 1), size(bat.z, 2), 3)
-	x, y = Float64.(bat.x), Float64.(bat.y)
-	for b in 1:3
-		# THE GRID'S OWN REGISTRATION: a pixel-registered grid's x/y are its nx+1 / ny+1 cell EDGES, and
-		# mat2grid refuses them as gridline nodes ("size of x,y vectors incompatible").
-		Sg = GMT.mat2grid(Float32.(S[:, :, b]); x = x, y = y, reg = Int(bat.registration))
-		out[:, :, b] = round.(UInt8, _z_as(Sg, bat))
-	end
-	return out
-end
-
-"""
-    _aqua_sat_image(rgb, bat) -> GMTimage
-
-The land albedo as a georeferenced image on `bat`'s own box — what `grdimage` takes as the picture to
-modulate with an intensity (`-I`), which is how the satellite land half is LIT by the very same
-`_hs_reflectance` the colourmapped one is. Labelled "BCBa" and built south-first, the convention
-`GMT.mat2img` yields from a grid-derived matrix and every consumer here is written around.
-"""
-function _aqua_sat_image(rgb::Array{UInt8,3}, bat::GMTgrid)::GMTimage
-	S = _grid_layout_code(bat) == 0 ? rgb : _aqua_sat_south_first_of(rgb, bat)
-	I = GMT.mat2img(S; x = Float64.(bat.x), y = Float64.(bat.y))
-	I.layout = "BCBa"
-	return I
-end
-
-# The inverse of `_aqua_sat_in_grid_order`: a land albedo held in the grid's memory order, read back
-# as (iy, ix) south-first. `_zmat` is the accessor for that direction, so each band goes through it
-# rather than through index arithmetic written a second time here.
-function _aqua_sat_south_first_of(rgb::Array{UInt8,3}, bat::GMTgrid)::Array{UInt8,3}
-	nx, ny = _grid_dims(bat)
-	out = Array{UInt8,3}(undef, ny, nx, 3)
-	for b in 1:3
-		Gb = deepcopy(bat)
-		Gb.z = Float32.(rgb[:, :, b])
-		out[:, :, b] = round.(UInt8, Matrix(_zmat(Gb)))
-	end
-	return out
-end
-
-# THE SATELLITE LAND AT THE RESOLUTION "Res" ASKS FOR — ON SCREEN, not only in the download.
-#
-# The layer draws its land one pixel per bathymetry node, so a finer download averaged back onto the
-# nodes showed nothing finer. The picture is therefore its OWN image, W x H = the node count times the
-# factor (capped), fetched at the matching tile zoom, and DRAPED on the relief as a Scene Objects row
-# of its own ("Satellite image") that the user sees, toggles and removes like any image. Its WATER
-# texels are fully transparent, so the live, lit water of the layer shows through; the dry/wet mask
-# moves with the wave, so the alpha is re-cut at every slice (`_aqua_sat_drape!`).
+# THE SATELLITE IMAGE, its own Scene Objects row, draped on the relief. Its WATER texels are fully
+# transparent, so the live, lit water of the layer shows through; the dry/wet mask moves with the
+# wave, so the alpha is re-cut at every slice (`_aqua_sat_drape!`).
 const AQUA_SAT_NAME = "Satellite image"
 const _AQUA_SAT_MAXPIX = 16_000_000
-const _AQUA_SAT_DRAPE_CACHE = Dict{Tuple{NTuple{4,Float64},Int,Int,Int},Array{UInt8,3}}()
 
-# The mosaic warped onto the layer's box at W x H, as (row, col, band) RGB, row 1 = SOUTH.
-function _aqua_sat_drape_rgb(bat::GMTgrid, W::Int, H::Int, zoom::Int)::Array{UInt8,3}
+# THE ONE SIZE: W x H texels = the node count times "Res" (capped, aspect kept), fetched at the tile
+# zoom whose ground resolution matches. Every user of the photograph asks here, so none can pick a
+# resolution of its own.
+function _aqua_sat_size(st::_AquaState)::NTuple{3,Int}
+	nx, ny = _grid_dims(st.bat)
+	f = get(_AQUA_SAT_FACTOR, st, 1.0)
+	W, H = max(2, round(Int, nx * f)), max(2, round(Int, ny * f))
+	if W * H > _AQUA_SAT_MAXPIX
+		sc = sqrt(_AQUA_SAT_MAXPIX / (W * H));  W = max(2, round(Int, W * sc));  H = max(2, round(Int, H * sc))
+	end
+	return (W, H, _aqua_sat_zoom(st.bat, f))
+end
+
+# THE ONE FETCH: the mosaic warped onto the layer's box at W x H — as the warped image (what `grdimage`
+# lights, `_aqua_sat_lit`) and as (row, col, band) RGB with row 1 = SOUTH (what the drape is built
+# from). One entry: the current box, size and zoom; the tiles themselves live in GMT's cache.
+const _AQUA_SAT_PIC = Ref{Any}(nothing)      # (key, warped GMTimage, S)
+
+function _aqua_sat_fetch(bat::GMTgrid, W::Int, H::Int, zoom::Int)::Tuple{GMTimage,Array{UInt8,3}}
 	box = (Float64(bat.range[1]), Float64(bat.range[2]), Float64(bat.range[3]), Float64(bat.range[4]))
 	key = (box, W, H, zoom)
-	haskey(_AQUA_SAT_DRAPE_CACHE, key) && return _AQUA_SAT_DRAPE_CACHE[key]
-	I = lock(_TILE_LOCK) do
+	hit = _AQUA_SAT_PIC[]
+	(hit !== nothing && hit[1] == key) && return (hit[2], hit[3])
+	I = lock(_TILE_LOCK) do                    # one lock for every tile fetch (GMT is not reentrant)
 		GMT.mosaic([box[1], box[2]], [box[3], box[4]]; zoom = zoom, cache = "gmt")
 	end
+	# PIXEL-INTERLEAVED IN, BAND-PLANAR TO GDAL (`_to_band_planar`, drape.jl): the row-major branch
+	# reads the buffer as band-planar and hands back colour noise.
 	opts = ["-t_srs", "EPSG:4326", "-te", string(box[1]), string(box[3]), string(box[2]), string(box[4]),
 	        "-ts", string(W), string(H), "-r", "bilinear"]
 	Wr = GMT.gdalwarp(_to_band_planar(I), opts)
 	pix, nb, nlon, nlat, rowmajor = _pixaccess_img(Wr)
-	(nlon == W && nlat == H) || error("Aquamoto: the satellite drape warped to $(nlon)x$(nlat), not $(W)x$(H)")
+	(nlon == W && nlat == H) || error("Aquamoto: the satellite image warped to $(nlon)x$(nlat), not $(W)x$(H)")
 	north = _north_first(Wr.layout, rowmajor)
 	S = Array{UInt8,3}(undef, H, W, 3)
 	@inbounds for r in 1:H
@@ -204,8 +87,8 @@ function _aqua_sat_drape_rgb(bat::GMTgrid, W::Int, H::Int, zoom::Int)::Array{UIn
 			S[r, c, b] = UInt8(pix(lat, c, b <= nb ? b : nb))
 		end
 	end
-	empty!(_AQUA_SAT_DRAPE_CACHE)                 # one entry: the current box, size and zoom
-	return _AQUA_SAT_DRAPE_CACHE[key] = S
+	_AQUA_SAT_PIC[] = (key, Wr, S)
+	return (Wr, S)
 end
 
 # The drape's RGBA: the satellite colours `S` (H x W x 3) with the land/water mask `dm` ((ny, nx),
@@ -215,11 +98,20 @@ end
 # `dm` was inferred `Any` and this loop dispatched dynamically on every one of its W*H pixels:
 # 1.2 s per slice at Res 4 on a 765x476 tank, which is what froze the < / > hold with "Sat img" on.
 # Here every argument is concrete and the loop is tens of milliseconds.
-function _aqua_sat_rgba(S::Array{UInt8,3}, dm::BitMatrix, nx::Int, ny::Int)::Array{UInt8,3}
+#
+# WHICH NODE A TEXEL SHOWS depends on the grid's REGISTRATION (SACRED_LAW.md, derived-from-a-grid
+# geometry): the texture spans the grid's `range`, which is node to node for a gridline grid (texel u
+# lands on node u*(nx-1), nearest) and cell EDGE to cell edge for a pixel-registered one (texel u lies
+# inside cell floor(u*nx)). Using the gridline rule on a pixel grid put the cut half a cell off.
+# `gmtvtk_image_set_alpha_mask_h` (90_c_api.cpp) samples with exactly this rule.
+_aqua_sat_node(u::Float64, n::Int, pixreg::Bool)::Int =
+	pixreg ? clamp(floor(Int, u * n) + 1, 1, n) : clamp(round(Int, u * (n - 1)) + 1, 1, n)
+
+function _aqua_sat_rgba(S::Array{UInt8,3}, dm::BitMatrix, nx::Int, ny::Int, pixreg::Bool)::Array{UInt8,3}
 	H, W = size(S, 1), size(S, 2)
 	A = Array{UInt8,3}(undef, H, W, 4)
-	ixs = [clamp(round(Int, (c - 0.5) / W * (nx - 1)) + 1, 1, nx) for c in 1:W]
-	iys = [clamp(round(Int, (r - 0.5) / H * (ny - 1)) + 1, 1, ny) for r in 1:H]
+	ixs = [_aqua_sat_node((c - 0.5) / W, nx, pixreg) for c in 1:W]
+	iys = [_aqua_sat_node((r - 0.5) / H, ny, pixreg) for r in 1:H]
 	@inbounds for c in 1:W, r in 1:H
 		A[r, c, 1] = S[r, c, 1];  A[r, c, 2] = S[r, c, 2];  A[r, c, 3] = S[r, c, 3]
 		A[r, c, 4] = dm[iys[r], ixs[c]] ? 0xff : 0x00
@@ -250,58 +142,28 @@ function _aqua_sat_drape!(scene::Ptr{Cvoid}, st::_AquaState, G::Union{GMTgrid,No
 	Gw = G === nothing ? _aqua_layer(st, st.cur) : G
 	Gw === nothing && return nothing
 	nx, ny = _grid_dims(st.bat)
-	f = get(_AQUA_SAT_FACTOR, st, 1.0)
-	W, H = max(2, round(Int, nx * f)), max(2, round(Int, ny * f))
-	if W * H > _AQUA_SAT_MAXPIX                    # capped, aspect kept
-		sc = sqrt(_AQUA_SAT_MAXPIX / (W * H));  W = max(2, round(Int, W * sc));  H = max(2, round(Int, H * sc))
-	end
-	zoom = _aqua_sat_zoom(st.bat, f)
+	W, H, zoom = _aqua_sat_size(st)
 	if !full && get(_AQUA_SAT_BUILT, st, (0, 0, 0)) == (W, H, zoom)
 		mask = _aqua_pack_landmask(_aqua_indland(st.bat.z, Gw.z), _grid_layout_code(Gw), Int(nx), Int(ny))
-		ccall(_fn(:gmtvtk_image_set_alpha_mask_h), Cint, (Ptr{Cvoid}, Cstring, Ptr{UInt8}, Cint, Cint),
-		      scene, AQUA_SAT_NAME, mask, Cint(nx), Cint(ny)) != 0 && return nothing
+		ccall(_fn(:gmtvtk_image_set_alpha_mask_h), Cint, (Ptr{Cvoid}, Cstring, Ptr{UInt8}, Cint, Cint, Cint),
+		      scene, AQUA_SAT_NAME, mask, Cint(nx), Cint(ny), Cint(st.bat.registration == 1)) != 0 && return nothing
 		# no such texture any more (removed from Scene Objects, say): build it whole below
 	end
 	delete!(_AQUA_SAT_BUILT, st)
-	S = _aqua_sat_drape_rgb(st.bat, W, H, zoom)
+	_, S = _aqua_sat_fetch(st.bat, W, H, zoom)
 	dm = _aqua_indland(_zmat(st.bat), _zmat(Gw))   # (iy, ix), row 1 = SOUTH: true = dry land
-	A = _aqua_sat_rgba(S, dm, nx, ny)
+	A = _aqua_sat_rgba(S, dm, nx, ny, st.bat.registration == 1)
 	r = st.bat.range
 	I = GMT.mat2img(A; x = [Float64(r[1]), Float64(r[2])], y = [Float64(r[3]), Float64(r[4])])
 	I.layout = "BCBa"
 	if !_update_image_pixels!(scene, AQUA_SAT_NAME, I)
 		_add_image_to_scene(scene, I, AQUA_SAT_NAME; promote = false, record = false)
+		_aqua_own!(scene, st.path, AQUA_SAT_NAME)
 		ccall(_fn(:gmtvtk_set_object_visible), Cint, (Ptr{Cvoid}, Cstring, Cint), scene, AQUA_SAT_NAME, Cint(1))
 		ccall(_fn(:gmtvtk_image_set_draped_h), Cint, (Ptr{Cvoid}, Cstring, Cint), scene, AQUA_SAT_NAME, Cint(1))
 	end
 	_AQUA_SAT_BUILT[st] = (W, H, zoom)
 	return nothing
-end
-
-# THE 3-D DRAPE IS NOT BOUND TO THE NODES. The per-node albedo above feeds the 2-D composite, which is
-# one pixel per node by construction. A texture draped on the land SURFACE has no such limit, so it is
-# fetched finer (two zoom levels) and warped onto the grid's box at up to 4x the node count. Cached on
-# the box and the texture size; the tiles themselves live in GMT's cache.
-const _AQUA_SAT_TEX_MAX = 4096
-const _AQUA_SAT_HI_CACHE = Dict{Tuple{NTuple{4,Float64},Int,Int},GMTimage}()
-
-function _aqua_sat_hires(bat::GMTgrid)::GMTimage
-	nx, ny = _grid_dims(bat)
-	box = (Float64(bat.range[1]), Float64(bat.range[2]), Float64(bat.range[3]), Float64(bat.range[4]))
-	f = clamp(_AQUA_SAT_TEX_MAX ÷ max(nx, ny), 1, 4)
-	W, Hh = nx * f, ny * f
-	key = (box, W, Hh)
-	haskey(_AQUA_SAT_HI_CACHE, key) && return _AQUA_SAT_HI_CACHE[key]
-	z = min(_aqua_sat_zoom(bat) + 2, 19)
-	I = lock(_TILE_LOCK) do
-		GMT.mosaic([box[1], box[2]], [box[3], box[4]]; zoom = z, cache = "gmt")
-	end
-	# ONTO THE BOX THE SURFACE'S TEXTURE COORDINATES SPAN: u,v run 0..1 over x0..x1 / y0..y1 (the
-	# grid's range, makeGridFromArray), so the picture's outer edges are exactly that range.
-	opts = ["-t_srs", "EPSG:4326",
-	        "-te", string(box[1]), string(box[3]), string(box[2]), string(box[4]),
-	        "-ts", string(W), string(Hh), "-r", "bilinear"]
-	return _AQUA_SAT_HI_CACHE[key] = GMT.gdalwarp(_to_band_planar(I), opts)
 end
 
 # The node reflectance `R` ((ny, nx), row 1 = SOUTH) at every pixel of a W x Hh texture over the same
@@ -327,13 +189,13 @@ end
 """
     _aqua_sat_lit(st, G, model, p) -> GMTimage
 
-The satellite mosaic at texture resolution (`_aqua_sat_hires`), lit by grid `G`'s reflectance
+THE satellite image (`_aqua_sat_fetch`, at the one size `_aqua_sat_size`), lit by grid `G`'s reflectance
 (`_hs_reflectance`, with `model` and the sun in `p` — method 1 is lit as 2, as in the composite)
 through the same `grdimage -I` painter `_aqua_side_picture` uses. `G` must stand on the bathymetry's
 nodes. Laid south-first, labelled "BCBa", the convention `_drape_buf` reads a grid-derived image by.
 """
 function _aqua_sat_lit(st::_AquaState, G::GMTgrid, model::Int, p::Dict{String,String})::GMTimage
-	J = _aqua_sat_hires(st.bat)
+	J, _ = _aqua_sat_fetch(st.bat, _aqua_sat_size(st)...)       # the ONE picture, never a finer copy
 	_, _, W, Hh, _ = _pixaccess_img(J)
 	m = (model in (2, 3, 4)) ? model : 2
 	az = _get(p, "azim") == "" ? "45" : _get(p, "azim")

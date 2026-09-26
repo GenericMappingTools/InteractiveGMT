@@ -200,7 +200,8 @@ function aqf_realpress(h, dir, down)
 		@assert ccall(GmtvtkTest._test_fn(:gmtvtk_aqua_arrow_screen_test), Cint,
 		              (Ptr{Cvoid}, Cint, Ptr{Cint}, Ptr{Cint}), h, Cint(dir), x, y) == 1
 		aqf_pump(10)
-		ccall((:SetCursorPos, "user32"), Cint, (Cint, Cint), x[], y[]);  sleep(0.2)
+		ccall((:SetCursorPos, "user32"), Cint, (Cint, Cint), x[], y[])
+		sleep(0.6)                                # the foreground switch finishes before the press lands
 		buf = zeros(UInt16, 256)
 		hw = ccall((:WindowFromPoint, "user32"), Ptr{Cvoid}, (NTuple{2,Cint},), (x[], y[]))
 		ccall((:GetWindowTextW, "user32"), Cint, (Ptr{Cvoid}, Ptr{UInt16}, Cint),

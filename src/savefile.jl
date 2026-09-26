@@ -327,6 +327,12 @@ function _forget_window!(scene::Ptr{Cvoid})
 		delete!(d, scene)
 	end
 	delete!(_BM1_SCENES, scene)          # a Set, not a Dict -- same purge, its own call
+	# THE TSUNAMI STATE. Pure Julia data (every buffer it hands the viewer is copied there:
+	# gmtvtk_aqua_set_bathy_h -> gridCopyToCM, the layer pushes likewise). Left behind, a new window
+	# opened at the same address — the off-screen staging windows above all — was taken for that dead
+	# tank: `_on_hillshade` saw `haskey(_AQUA, scene)` and lit the staging window's grids with the
+	# closed file's state.
+	delete!(_AQUA, scene)
 	# THE TWO WINDOWS AQUAMOTO HOLDS BY POINTER. The off-screen staging window goes with the last real
 	# window (70_window.cpp), and the "Water side"/"Land side" popup goes whenever the user closes it —
 	# either way the Ref here would keep pointing at a freed Scene, and the next build would hand that
@@ -334,6 +340,11 @@ function _forget_window!(scene::Ptr{Cvoid})
 	# to guess about. The staging window's caches describe what STOOD IN IT, so they go with it.
 	scene == _AQUA_STAGE_WIN[] && _aqua_stage_forget!()
 	scene == _AQUA_POPUP_WIN[] && (_AQUA_POPUP_WIN[] = C_NULL)
+	# …and the SEA-BED staging window, which was never cleared: the next render would have handed a
+	# freed Scene to `_on_hillshade`. Its caches describe what stood in it, so they go with it.
+	if scene == _AQUA_BATHY_WIN[]
+		_AQUA_BATHY_WIN[] = C_NULL;  _AQUA_BATHY_LOADED[] = nothing;  _AQUA_BATHY_SHOT[] = nothing
+	end
 	return
 end
 

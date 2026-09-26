@@ -91,8 +91,18 @@ static inline bool haveExternRGB(const ExternShade &e) {
 // the user wants the dock's own light back, so the control must bite instead of sitting inert
 // under a baked GMT reflectance (SACRED_LAW: a shared control never becomes a no-op). The caller
 // re-runs applyShading itself.
+static ExtraObj *activeExtraOf(Scene *s);                   // 50_scene.cpp: the active grid, when an extra
 static inline void dropExternShade(Scene *s) {
 	if (!s) return;
+	// …and the ACTIVE extra's own reflectance (ExtraObj::shadeIn), when the dock is working on one.
+	// In ADDITION to the window's two, never instead: the tank's looks are set at file open while its
+	// companion grids are still the active layer, and skipping the window's slots then changed the
+	// tank's light (measured on the pixel baseline).
+	if (ExtraObj *X = activeExtraOf(s)) {         // another grid is the target: ITS light only
+		X->shadeIn = ExternShade();
+		activeLook(s).noShade = false;
+		return;
+	}
 	s->shadeIn     = ExternShade();
 	s->shadeInLand = ExternShade();   // both sides, or the dock would move one image and not the other
 	activeLook(s).noShade = false;   // asking for a light ends "Remove illumination" on THAT layer
@@ -135,6 +145,19 @@ static inline bool externShadeOwns(const Scene *s, const std::string &layer) {
 static inline std::string layerNameOfActor(Scene *s, vtkActor *a) {
 	const int idx = a ? extraIndexOfActor(s, a) : -1;
 	return (idx >= 0) ? s->extras[idx].name : s->surfName;
+}
+
+// THE REFLECTANCE THAT LIGHTS THIS ACTOR'S LAYER, or null. A grid extra reads ITS OWN slot
+// (ExtraObj::shadeIn) and nothing else; the base reads the window's slot, when it was computed for
+// the base. An extra used to read the window's slot whenever it carried the extra's name — the same
+// slot that is the TANK's water light in an Aquamoto window, so the two overwrote each other.
+static inline const ExternShade *externShadeOfActor(Scene *s, vtkActor *a) {
+	const int idx = a ? extraIndexOfActor(s, a) : -1;
+	if (idx >= 0) {
+		const ExternShade &X = s->extras[idx].shadeIn;
+		return haveExternShade(X) ? &X : nullptr;
+	}
+	return externShadeOwns(s, s->surfName) ? &s->shadeIn : nullptr;
 }
 
 struct ReliefLight {
@@ -1210,8 +1233,17 @@ static void hillshadeMapper(Scene *s, vtkActor *act) {
 	// the hillshade question, because it is not a light: a tsunami's dry nodes must wear the land bar's
 	// colours whether or not the window is currently hillshading. Nothing else in this app gets a
 	// non-null here.
+	// …and ONLY for the tsunami layer's OWN actors (the base surface and its tiles). `aquaLandColors`
+	// answers from the WINDOW's tsunami state, so every other grid in an Aquamoto window whose nodes
+	// matched — the file's own "bathymetry" row above all — came back wearing the tank's picture: the
+	// sea floor painted with the WATER's colours, and "Water transparency" showing through to nothing.
+	// An actor that belongs to an extra is that extra's, and is coloured as the plain grid it is.
 	std::vector<unsigned char> isLand;
-	vtkSmartPointer<vtkUnsignedCharArray> landCol = pd ? aquaLandColors(s, pd, isLand) : nullptr;
+	bool ownedByExtra = false;
+	for (auto &ex : s->extras)
+		if (ex.actor.Get() == act || ex.drape.Get() == act) { ownedByExtra = true; break; }
+	vtkSmartPointer<vtkUnsignedCharArray> landCol =
+		(pd && !ownedByExtra) ? aquaLandColors(s, pd, isLand) : nullptr;
 
 	// DAY / NIGHT keeps the bake alive when no relief shade is selected: the night side still has to
 	// be darkened, and the only place a surface's colour can be modulated per NODE is here. The whole
@@ -1303,7 +1335,8 @@ static void hillshadeMapper(Scene *s, vtkActor *act) {
 	// surface and for every LOD tile without either of them knowing its own grid index range.
 	// …and ONLY if that reflectance was computed for THIS actor's layer. Any other layer's light is
 	// not this layer's business (see externShadeOwns).
-	const bool ext = externShadeOwns(s, layerNameOfActor(s, act));
+	const ExternShade *extE = externShadeOfActor(s, act);   // THIS layer's own light, or none
+	const bool ext = extE != nullptr;
 	// A tsunami surface normally never reaches this loop: it wears the layer picture (above). This is
 	// only the case of no picture to wear yet, and then its nodes get their two bars' colours, unlit —
 	// there is no second tsunami light here.
@@ -1333,7 +1366,7 @@ static void hillshadeMapper(Scene *s, vtkActor *act) {
 			// colours only (see above)
 		}
 		else if (ext || lk.useHillshade) {
-			if (ext) { double p[3]; pts->GetPoint(i, p); ei = externShadeAt(s, p[0], p[1]); }
+			if (ext) { double p[3]; pts->GetPoint(i, p); ei = externShadeAt(*extE, p[0], p[1]); }
 			if (lk.useHillshade)                                         // colour only when the look is unlit
 				applyReliefShade(L, nv, c, std::isnan(ei) ? nullptr : &ei);  // SHARED shade (extern / grdimage / Lambert)
 		}
@@ -1371,7 +1404,10 @@ static void applySurfStyle(Scene *s, vtkActor *a) {
 	// depend on the window look: that look is written when a side is aimed, and flipping the actor
 	// between lit and unlit re-rendered BOTH halves of the tank on a one-side act. Keyed off the layer
 	// having two surfaces (`aquaBathyZ`), never off a light.
-	if (!s->aquaBathyZ.empty() && !s->aquaLandMask.empty()) {
+	// …THE TANK's surfaces, not every actor in a tsunami window: a grid opened into it (layer0.grd) is
+	// an extra with its own look, and it was forced unlit here — loaded dark, and no illumination
+	// method could ever reach it (SACRED_LAW.md: one grid never touches another).
+	if (!s->aquaBathyZ.empty() && !s->aquaLandMask.empty() && extraIndexOfActor(s, a) < 0) {
 		prop->SetInterpolationToFlat();
 		prop->SetAmbient(1.0); prop->SetDiffuse(0.0); prop->SetSpecular(0.0);
 		prop->SetAmbientColor(1.0, 1.0, 1.0);
@@ -1616,8 +1652,12 @@ static void sceneSetReliefLook(Scene *s, int look, bool keepExternShade = false)
 	// lit the water with it and left the land on whatever it had — the two halves permanently out of
 	// step, and the method the user chose never applied to land at all.
 	// Only the three LOOK flags are copied: each side's own sun, gain and ambience stay its own.
-	for (AquaSideShade *A : { &s->aquaWaterShade, &s->aquaLandShade })
-		if (A->valid) { A->useHillshade = lkA.useHillshade; A->hillGrd = lkA.hillGrd; A->litBake = lkA.litBake; }
+	// …and ONLY when the look is the TANK's — the active layer is not another grid. A look picked for
+	// a grid opened into a tsunami window (layer0.grd) used to be copied onto both tank sides too, so
+	// lighting that grid re-lit the tank (SACRED_LAW.md: one grid never touches another).
+	if (!activeExtraOf(s))
+		for (AquaSideShade *A : { &s->aquaWaterShade, &s->aquaLandShade })
+			if (A->valid) { A->useHillshade = lkA.useHillshade; A->hillGrd = lkA.hillGrd; A->litBake = lkA.litBake; }
 	applyShading(s);                     // …which re-syncs the dock and re-bakes a flat image
 	if (s->syncFlatEnable) s->syncFlatEnable();   // which sliders are live depends on the chosen look
 }

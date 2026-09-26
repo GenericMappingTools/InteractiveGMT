@@ -125,7 +125,7 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_symbol_set_world_size_h, :gmtvtk_fit_camera_for_orbit_h,
 	:gmtvtk_add_curtain_h, :gmtvtk_add_curtain_file_h,
 	:gmtvtk_view_points, :gmtvtk_promote_points_h, :gmtvtk_selection_count, :gmtvtk_get_selection,
-	:gmtvtk_set_object_visible, :gmtvtk_set_axes_shown_h, :gmtvtk_restack_grid_h, :gmtvtk_refit_view_h,
+	:gmtvtk_set_object_visible, :gmtvtk_set_axes_shown_h, :gmtvtk_set_extra_owner_h, :gmtvtk_restack_grid_h, :gmtvtk_refit_view_h,
 	:gmtvtk_view_fv, :gmtvtk_promote_fv_h, :gmtvtk_set_julia_eval, :gmtvtk_set_table, :gmtvtk_log_error, :gmtvtk_log_info,
 	:gmtvtk_error_box, :gmtvtk_get_xfac,
 	:gmtvtk_take_messages, :gmtvtk_shutdown, :gmtvtk_set_headless,   # Qt's own warnings -> the failure sink; ordered teardown
@@ -199,7 +199,7 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_set_image_resize_callback, :gmtvtk_resize_set_size, :gmtvtk_set_floodfill_callback,
 	:gmtvtk_set_classify_callback, :gmtvtk_classify_set_classes,
 	:gmtvtk_image_set_palette_h, :gmtvtk_image_set_has_orig_h,
-	:gmtvtk_set_image_flip_callback, :gmtvtk_image_set_pixels_h, :gmtvtk_image_set_alpha_mask_h,
+	:gmtvtk_set_image_flip_callback, :gmtvtk_image_set_pixels_h, :gmtvtk_image_set_alpha_mask_h, :gmtvtk_set_shade_intensity_named_h,
 	:gmtvtk_set_rgbexplore_callback, :gmtvtk_rgbexp_set_thumbs, :gmtvtk_image_set_rgb_h,
 	:gmtvtk_set_mask_flag_h, :gmtvtk_image_probe_h, :gmtvtk_scene_row_click_h,
 	:gmtvtk_set_clipgrid_callback, :gmtvtk_set_empilhador_callback, :gmtvtk_set_gridcalc_callback, :gmtvtk_set_grdtrend_callback, :gmtvtk_set_grdlandmask_callback, :gmtvtk_set_grdfilter_callback, :gmtvtk_set_grdfft_callback, :gmtvtk_set_grdhisteq_callback, :gmtvtk_set_xyz2grd_callback, :gmtvtk_set_grdfill_callback, :gmtvtk_set_trend2d_callback, :gmtvtk_set_cptbuild_callback,
