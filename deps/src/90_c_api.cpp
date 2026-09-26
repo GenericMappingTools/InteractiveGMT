@@ -9366,20 +9366,40 @@ GMTVTK_API int gmtvtk_add_surface_h(void *handle, const float *z, int nx, int ny
 	if (!sceneAlive(s) || !z || nx < 2 || ny < 2)
 		return 0;
 	double zmin = 0.0, zmax = 1.0;
-	// ONE mesh, built ONCE, shaded ONCE. Do not put per-view re-meshing here: an attempt at it
-	// (an LOD that swapped the mapper's polydata on every camera event and re-ran applySurfStyle ->
-	// hillshadeMapper's per-point bake on every swap) turned a grid's illumination into work that
-	// repeated for the whole time the user was zooming. Grid illumination is computed from the GRID,
-	// once; the mesh is not allowed to make it happen again.
-	auto pd = makeGridFromArray(z, nx, ny, x0, x1, y0, y1, zmin, zmax, false, /*wantTC=*/true, zlayout,
-	                            s->aquaWindow);
-
-	vtkNew<vtkPolyDataNormals> norms;
-	norms->SetInputData(pd);
-	norms->SetFeatureAngle(90.0); norms->SplittingOff(); norms->ConsistencyOn();
-
 	ExtraObj ex;
 	const bool hasImg = (img && iw > 0 && ih > 0 && ibands > 0);
+	// THE SAME SURFACE A BASE GRID GETS. A plain grid opened FIRST is the base: a zoom pyramid of
+	// makeGridTile tiles (each real node its own square when the grid has NaNs, a NaN node no square,
+	// normals from each node's real full-res neighbours), refined as the camera moves. Opened SECOND it
+	// used to be ONE makeGridFromArray mesh instead — a corner mesh that drops every cell touching a NaN,
+	// lit by vtkPolyDataNormals, thinned to a node budget and never refined — so the same SST file lost
+	// data at every cloud edge, was lit differently and stayed blurred on zoom, depending only on load
+	// ORDER (SACRED_LAW.md). A plain grid now gets the base's pyramid (ExtraObj::lodRoot, refineExtraLod):
+	// same quadtree, same refine test, same tile builder and switches. Its one bake runs only when the
+	// set of tiles on screen changes, and that set is bounded by the screen, not by the grid.
+	// A draped grid (hasImg) keeps makeGridFromArray: it needs texture coords, and the base's drape
+	// path uses that same builder too. The layer's z is copied ONCE here and moved into ex.gridZ below.
+	const bool plainGrid = !hasImg;
+	std::vector<float> cm;
+	vtkSmartPointer<vtkPolyData> pd;
+	if (plainGrid) {
+		gridCopyToCM(cm, z, nx, ny, zlayout);        // THE one copy (grid memory-layout law)
+		zmin = 1e30; zmax = -1e30;
+		for (float v : cm) if (!std::isnan(v)) { if (v < zmin) zmin = v; if (v > zmax) zmax = v; }
+		if (zmin > zmax) { zmin = 0.0; zmax = 1.0; }
+		for (float v : cm) if (std::isnan(v)) { ex.gridHasNaN = true; break; }
+		const double dx = (x1 - x0) / (nx - 1), dy = (y1 - y0) / (ny - 1);   // sceneSetGridLayer's spacing
+		ex.lodRoot = buildQuadNode(0, nx - 1, 0, ny - 1, 0, x0, dx, y0, dy);   // the base's own pyramid
+		ex.lodPD = vtkSmartPointer<vtkPolyData>::New();                       // tiles land here (refineExtraLod)
+		pd = ex.lodPD;
+	}
+	else
+		pd = makeGridFromArray(z, nx, ny, x0, x1, y0, y1, zmin, zmax, false, /*wantTC=*/true, zlayout,
+		                       s->aquaWindow);
+
+	vtkNew<vtkPolyDataNormals> norms;              // the draped path's normals (makeGridTile bakes its own)
+	norms->SetInputData(pd);
+	norms->SetFeatureAngle(90.0); norms->SplittingOff(); norms->ConsistencyOn();
 	if (image_only && hasImg) {
 		// A dropped IMAGE: no elevation, so it must NOT sit at z=0 slicing the relief. It rides a
 		// horizontal plane that defaults to ON TOP of the surface (z = zmax + a small gap) and can be
@@ -9414,8 +9434,8 @@ GMTVTK_API int gmtvtk_add_surface_h(void *handle, const float *z, int nx, int ny
 		// reads the mapper's input directly; handing it an unexecuted filter output means no normals,
 		// which is how an added layer ended up unshaded and blown out by PBR while the base beside it
 		// was shaded correctly. One shape of mapper input for every grid, base or extra.
-		norms->Update();
-		map->SetInputData(norms->GetOutput());
+		if (plainGrid) map->SetInputData(pd);         // normals baked by makeGridTile, as on a base tile
+		else { norms->Update(); map->SetInputData(norms->GetOutput()); }
 		configureGridMapper(map, lut, zmin, zmax, ctfRange);
 		ex.actor = vtkSmartPointer<vtkActor>::New();
 		ex.actor->SetMapper(map);
@@ -9434,7 +9454,10 @@ GMTVTK_API int gmtvtk_add_surface_h(void *handle, const float *z, int nx, int ny
 		// Make this dropped grid a FULL layer: keep its full-res z (readout source when it is the active
 		// grid) and its own LUT + z range (so the colorbar can be retargeted to it). applyGridStacking()
 		// below puts it on top -> refreshGridColorbar() makes it the active grid + shows its colorbar.
-		gridCopyToCM(ex.gridZ, z, nx, ny, zlayout);
+		if (plainGrid) ex.gridZ = std::move(cm);      // already copied once, above
+		else           gridCopyToCM(ex.gridZ, z, nx, ny, zlayout);
+		if (!plainGrid)
+			for (float v : ex.gridZ) if (std::isnan(v)) { ex.gridHasNaN = true; break; }
 		ex.gnx = nx; ex.gny = ny;
 		ex.gx0 = x0; ex.gx1 = x1; ex.gy0 = y0; ex.gy1 = y1;
 		ex.zmin = zmin; ex.zmax = zmax; ex.lut = lut; ex.geog = geographic ? 1 : 0;
@@ -9502,6 +9525,7 @@ GMTVTK_API int gmtvtk_add_surface_h(void *handle, const float *z, int nx, int ny
 		// the layer it happens to have been dropped on top of. Built here, at the ONE place an extra
 		// raster comes into existence, so no add path can ever produce a raster without axes of its own.
 		ExtraObj &ne = s->extras.back();
+		if (ne.lodRoot) refineExtraLod(s, ne);   // its first tiles, for the current camera (it has geometry from birth)
 		if (ne.isImage) axesSetFrame(ne.ax, ne.bx0, ne.bx1, ne.by0, ne.by1, ne.zpos, ne.zpos, geographic ? 1 : 0);
 		else            axesSetFrame(ne.ax, ne.gx0, ne.gx1, ne.gy0, ne.gy1, ne.zmin, ne.zmax, ne.geog);
 		// Starts HIDDEN like the raster itself: the caller's gmtvtk_show_new_element_h is what puts

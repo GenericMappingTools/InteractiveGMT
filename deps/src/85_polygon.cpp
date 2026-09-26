@@ -1305,6 +1305,8 @@ static void nestDeleteGrid(Scene *s, int chainIdx1) {
 		if (s->extras[e].name != gn) continue;
 		if (s->ren && s->extras[e].actor) s->ren->RemoveActor(s->extras[e].actor);
 		if (s->ren && s->extras[e].drape) s->ren->RemoveActor(s->extras[e].drape);
+		if (s->ren && s->extras[e].nanPlane) s->ren->RemoveActor(s->extras[e].nanPlane);   // and its NaN backdrop
+		extraLodFree(s->extras[e]);                                                         // and its zoom pyramid
 		axesDestroy(s, s->extras[e].ax);      // the raster's own axes go with the raster
 		s->extras.erase(s->extras.begin() + e);
 	}

@@ -2833,12 +2833,23 @@ static void evictLRU(Scene *s) {
 // working set, both runs converged on the same resident geometry, and culling only added a way for
 // a viewport change that does not touch the camera to leave a hole. The zoom stall was never here
 // -- see makeGridCTF (10_geometry.cpp) for where the time actually went.
-static void refineNode(Scene *s, QuadNode *n, vtkCamera *cam, const double camPos[3],
-					   double vpH, double tanHalfFov, double parScale, bool parallel, double tau) {
-	// node centre in SCALED world (the assembly applies xfac on X, zfac*ve on Z)
-	const double zmid = 0.5 * (s->zmin + s->zmax) * s->zfac * s->ve;
-	const double pc[3] = { n->cx * s->xfac, n->cy, zmid };
-	const double sp = n->worldSpacing * std::max(s->xfac, 1.0);    // scaled node gap
+// THE LOD DECISION, ONCE, for every grid pyramid in the window — the base's tiles and each grid extra's
+// alike. `zmidW` is the layer's mid-height in SCALED world (its own z range x its own z scale), `xfac`
+// the window's x aspect. `show(n)` puts a node's tile on screen at this LOD, `drop(n)` takes it off; the
+// test itself — screen size of the node gap against `tau` pixels — is the same for everyone.
+template <class Drop>
+static void dropSubtreeG(QuadNode *n, Drop &drop) {
+	if (!n) return;
+	drop(n);
+	for (int k = 0; k < 4; ++k) dropSubtreeG(n->child[k], drop);
+}
+template <class Show, class Drop>
+static void refineNodeG(QuadNode *n, const double camPos[3], double vpH, double tanHalfFov, double parScale,
+                        bool parallel, double tau, double zmidW, double xfac, uint64_t frame,
+                        Show &show, Drop &drop) {
+	// node centre in SCALED world (the layer's transform applies xfac on X, its z scale on Z)
+	const double pc[3] = { n->cx * xfac, n->cy, zmidW };
+	const double sp = n->worldSpacing * std::max(xfac, 1.0);       // scaled node gap
 	double px;
 	if (parallel) {
 		px = (parScale > 0.0) ? sp * vpH / (2.0 * parScale) : 1e9;
@@ -2849,13 +2860,23 @@ static void refineNode(Scene *s, QuadNode *n, vtkCamera *cam, const double camPo
 		px = sp * vpH / (2.0 * dist * tanHalfFov);
 	}
 	if (n->leaf || px <= tau) {
-		ensureNodeActor(s, n); n->lastUsed = s->lodFrame;   // draw at this LOD
-		for (int k = 0; k < 4; ++k) dropSubtree(s, n->child[k]);   // shed finer detail
+		show(n); n->lastUsed = frame;                               // draw at this LOD
+		for (int k = 0; k < 4; ++k) dropSubtreeG(n->child[k], drop);   // shed finer detail
 	}
 	else {
-		dropNodeActor(s, n);                                 // too coarse -> recurse
-		for (int k = 0; k < 4; ++k) refineNode(s, n->child[k], cam, camPos, vpH, tanHalfFov, parScale, parallel, tau);
+		drop(n);                                                    // too coarse -> recurse
+		for (int k = 0; k < 4; ++k)
+			refineNodeG(n->child[k], camPos, vpH, tanHalfFov, parScale, parallel, tau, zmidW, xfac, frame, show, drop);
 	}
+}
+
+static void refineNode(Scene *s, QuadNode *n, vtkCamera *cam, const double camPos[3],
+					   double vpH, double tanHalfFov, double parScale, bool parallel, double tau) {
+	(void)cam;
+	auto show = [s](QuadNode *q) { ensureNodeActor(s, q); };
+	auto drop = [s](QuadNode *q) { dropNodeActor(s, q); };
+	const double zmid = 0.5 * (s->zmin + s->zmax) * s->zfac * s->ve;
+	refineNodeG(n, camPos, vpH, tanHalfFov, parScale, parallel, tau, zmid, s->xfac, s->lodFrame, show, drop);
 }
 
 // Release every cached tile in a subtree. The LOD cache is keyed to the GEOMETRY, so when the z it
@@ -2981,6 +3002,99 @@ static void refineQuadtree(Scene *s) {
 
 static void onLodCamera(vtkObject*, unsigned long, void *cd, void*) {
 	refineQuadtree(static_cast<Scene*>(cd));               // the BASE surface's tile pyramid
+}
+
+// ── A GRID EXTRA'S PYRAMID ─────────────────────────────────────────────────────────────────────────
+// The same quadtree (buildQuadNode), the same refine test (refineNodeG), the same tile builder with the
+// same switches (makeGridTile: pixelCells for a grid with NaNs, holeRim in a tsunami window) and the
+// same LRU budget as the base's tiles — so a grid is drawn the same whether it was opened first or not.
+// The one difference is where tiles go: the base puts one actor per tile in an assembly; an extra keeps
+// its ONE actor (the handle every layer operation talks to) and refills that actor's input with the
+// tiles on screen. Its colours come from applySurfStyle, the one bake, whenever that set changes.
+static void quadFreeTree(QuadNode *n) {
+	if (!n) return;
+	for (int k = 0; k < 4; ++k) quadFreeTree(n->child[k]);
+	delete n;
+}
+static void extraLodFree(ExtraObj &ex) {
+	quadFreeTree(ex.lodRoot);
+	ex.lodRoot = nullptr;
+	ex.lodShown.clear();
+	ex.lodBytes = 0;
+}
+static void collectTiles(QuadNode *n, std::vector<QuadNode *> &out, bool shownOnly) {
+	if (!n) return;
+	if (n->tilePD && (!shownOnly || n->inScene)) out.push_back(n);
+	for (int k = 0; k < 4; ++k) collectTiles(n->child[k], out, shownOnly);
+}
+
+// Re-fit ONE grid extra's tiles to the current camera. Returns true when what it shows changed.
+static bool refineExtraLod(Scene *s, ExtraObj &ex) {
+	if (!s || !s->ren || !ex.lodRoot || !ex.lodPD || !ex.actor || ex.gridZ.empty() || ex.gnx < 2 || ex.gny < 2)
+		return false;
+	vtkCamera *cam = s->ren->GetActiveCamera();
+	if (!cam) return false;
+	double camPos[3]; cam->GetPosition(camPos);
+	int *sz = s->ren->GetSize(); const double vpH = (sz && sz[1] > 0) ? sz[1] : 600.0;
+	const bool parallel = cam->GetParallelProjection() != 0;
+	const double tanHalf = std::tan(vtkMath::RadiansFromDegrees(cam->GetViewAngle() * 0.5));
+	ex.lodFrame++;
+	const double dx = (ex.gx1 - ex.gx0) / (ex.gnx - 1), dy = (ex.gy1 - ex.gy0) / (ex.gny - 1);
+	const bool pix = ex.gridHasNaN && !s->aquaWindow;           // the base's own switch (ensureNodeActor)
+	auto show = [&](QuadNode *q) {
+		if (!q->tilePD) {
+			q->tilePD = makeGridTile(ex.gridZ.data(), ex.gnx, ex.gny, q->i0, q->i1, q->j0, q->j1,
+			                         ex.gx0, dx, ex.gy0, dy, ex.zmin, q->step, s->aquaWindow, pix);
+			const vtkIdType npts = q->tilePD->GetNumberOfPoints();
+			const vtkIdType ncel = q->tilePD->GetNumberOfCells();
+			q->bytes = (size_t)npts * (12 + 4 + 12) + (size_t)ncel * 20;   // as ensureNodeActor counts it
+			ex.lodBytes += q->bytes;
+		}
+		q->inScene = true;
+	};
+	auto drop = [](QuadNode *q) { q->inScene = false; };
+	const double zmid = 0.5 * (ex.zmin + ex.zmax) * sceneZRefForExtra(s, ex) * ex.ve;
+	refineNodeG(ex.lodRoot, camPos, vpH, tanHalf, cam->GetParallelScale(), parallel, /*tau=*/4.0,
+	            zmid, s->xfac, ex.lodFrame, show, drop);
+
+	std::vector<QuadNode *> shown;
+	collectTiles(ex.lodRoot, shown, true);
+	const bool changed = (shown != ex.lodShown);
+	if (changed) {
+		vtkNew<vtkAppendPolyData> app;
+		for (QuadNode *q : shown) app->AddInputData(q->tilePD);
+		if (!shown.empty()) {
+			app->Update();
+			ex.lodPD->ShallowCopy(app->GetOutput());
+		}
+		else
+			ex.lodPD->Initialize();
+		ex.lodPD->Modified();
+		ex.lodShown = shown;
+		applySurfStyle(s, ex.actor.Get());         // the one bake: the new tiles wear this layer's look
+	}
+	// Off-screen tiles are kept for a quick zoom back, up to the same budget the base's tiles use.
+	if (ex.lodBytes > s->lodBudgetBytes) {
+		std::vector<QuadNode *> res;
+		collectTiles(ex.lodRoot, res, false);
+		std::sort(res.begin(), res.end(), [](QuadNode *a, QuadNode *b) { return a->lastUsed < b->lastUsed; });
+		for (QuadNode *q : res) {
+			if (ex.lodBytes <= s->lodBudgetBytes) break;
+			if (q->inScene) continue;                // never evict a tile on screen
+			ex.lodBytes = (ex.lodBytes >= q->bytes) ? ex.lodBytes - q->bytes : 0;
+			q->tilePD = nullptr; q->bytes = 0;
+		}
+	}
+	return changed;
+}
+
+// Every VISIBLE grid extra's pyramid, re-fitted. Called from the render's StartEvent (AxisLabelCB), the
+// one door every camera move AND every visibility toggle passes through: a layer checked back on after
+// the camera moved is fitted on the very frame it reappears.
+static void refineExtraLods(Scene *s) {
+	if (!s) return;
+	for (auto &ex : s->extras)
+		if (ex.lodRoot && ex.actor && ex.actor->GetVisibility() != 0) refineExtraLod(s, ex);
 }
 
 // THE ONE SETTER of Scene::aquaWindow (10_geometry.cpp): this window is a TSUNAMI one -- the Aquamoto

@@ -983,7 +983,9 @@ static void sceneRemoveExtraAt(Scene *s, size_t idx) {
 	ExtraObj &ex = s->extras[idx];
 	if (s->ren && ex.actor) s->ren->RemoveActor(ex.actor);
 	if (s->ren && ex.drape) s->ren->RemoveActor(ex.drape);
-	axesDestroy(s, ex.ax);          // its OWN axes die with it — box, ticks, numbers, titles. Nothing
+	if (s->ren && ex.nanPlane) s->ren->RemoveActor(ex.nanPlane);   // its NaN backdrop goes with it
+	extraLodFree(ex);                                              // …and its zoom pyramid
+	axesDestroy(s, ex.ax);         // its OWN axes die with it — box, ticks, numbers, titles. Nothing
 	                                 // of a deleted raster may outlive its handle (SACRED_LAW.md
 	                                 // "removal undoes what add did"): the old window-level cube left
 	                                 // a stale box behind that no row could ever clear again.

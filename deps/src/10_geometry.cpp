@@ -618,6 +618,22 @@ struct ExtraObj {
 	int    gnx = 0, gny = 0;
 	double gx0 = 0, gx1 = 1, gy0 = 0, gy1 = 1;
 	double zmin = 0, zmax = 0;               // this grid's own z range (drives its colorbar)
+	// THIS GRID'S OWN NaN BACKDROP — the same quad Scene::nanPlane is for the base, built and kept by
+	// the same nanPlaneSync. A grid's holes wear the NaN fill colour whether it was opened first (the
+	// base) or second (an extra); only the base ever had one, so load ORDER decided the colour of a hole.
+	vtkSmartPointer<vtkActor>       nanPlane;
+	vtkSmartPointer<vtkPlaneSource> nanPlaneSrc;
+	bool   gridHasNaN = false;               // set where this layer's z is stored (gmtvtk_add_surface_h)
+	// THIS GRID'S OWN ZOOM PYRAMID — the base's tiled LOD (QuadNode, buildQuadNode, the same refine
+	// test), so a grid opened second sharpens on zoom exactly like one opened first. The actor stays ONE
+	// actor (everything that styles, stacks, hides or globes a layer talks to it); its mapper reads
+	// `lodPD`, which refineExtraLod refills with the tiles the camera needs whenever that set changes.
+	// Plain grids only (a draped grid keeps its single mesh, as the base's drape path does).
+	QuadNode *lodRoot = nullptr;             // owned; freed by extraLodFree when the layer is removed
+	vtkSmartPointer<vtkPolyData> lodPD;      // the actor's mapper input: the visible tiles, appended
+	std::vector<QuadNode *> lodShown;        // the tiles lodPD currently holds (change detector)
+	uint64_t lodFrame = 0;                   // bumped each refine; tiles store lastUsed
+	size_t lodBytes = 0;                     // resident tile geometry, against Scene::lodBudgetBytes
 	vtkSmartPointer<vtkScalarsToColors> lut; // this grid's colour map (for the retargeted colorbar)
 	// The CPT CONTROL NODES this layer's lut was built from — the same pair the base keeps in
 	// Scene::baseCz / baseCrgb, and kept for the same reason: a lut can be USED but not REBUILT from,
@@ -997,6 +1013,7 @@ struct Scene {
 	vtkSmartPointer<vtkActor>             nanPlane;
 	vtkSmartPointer<vtkPlaneSource>       nanPlaneSrc;
 	bool                                  gridHasNaN = false;   // set where the z layer is stored
+	double                                clipBounds[6] = { 1, -1, 1, -1, 1, -1 };   // visible bounds the depth range was last fitted to (syncClipToVisible)
 	// The BASE surface's OWN axes (SACRED_LAW.md Raster-own-axes law -- see AxesSet above). This is
 	// the PRIMARY raster's set, not "the window's axes": it is owned by the base surface's own master
 	// handle exactly as every ExtraObj owns `ex.ax`, and nothing else in the window may frame, hide or
@@ -2834,6 +2851,42 @@ static inline void surfSetScale(Scene *s, double x, double y, double z) {
 // handler, so a colour change reaches it like it reaches every LUT. It carries the SURFACE's own
 // scale (read off the surface prop, never recomputed here) and is pushed a hair below it, so the
 // order is right in a tilted view and in the flat 2-D one, where the surface's Z scale is 0.
+// ONE GRID's NaN backdrop: build it on first need, then keep it at the grid's own extent and floor,
+// riding its owner's scale, in the Preferences NaN colour. The base and every grid extra go through
+// this same function (nanPlaneUpdate below), so a hole looks the same whichever order grids arrived in.
+static void nanPlaneSync(Scene *s, vtkSmartPointer<vtkActor> &plane, vtkSmartPointer<vtkPlaneSource> &src,
+                         bool want, vtkProp3D *owner, double gx0, double gx1, double gy0, double gy1,
+                         double zf) {                // zf: the grid floor, where NaN nodes' geometry is pinned
+	if (!want || !owner) {
+		if (plane) plane->SetVisibility(0);
+		return;
+	}
+	if (!plane) {
+		src = vtkSmartPointer<vtkPlaneSource>::New();
+		src->SetResolution(1, 1);
+		vtkNew<vtkPolyDataMapper> map;
+		map->SetInputConnection(src->GetOutputPort());
+		map->ScalarVisibilityOff();                 // a flat colour, never a scalar mapped through a LUT
+		plane = vtkSmartPointer<vtkActor>::New();
+		plane->SetMapper(map);
+		plane->GetProperty()->LightingOff();        // a hole is not a surface: no light may touch it
+		plane->PickableOff();
+		s->ren->AddActor(plane);
+	}
+	src->SetOrigin(gx0, gy0, zf);
+	src->SetPoint1(gx1, gy0, zf);
+	src->SetPoint2(gx0, gy1, zf);
+	src->Modified();
+	double sc[3] = { 1.0, 1.0, 1.0 };
+	owner->GetScale(sc);
+	plane->SetScale(sc[0], sc[1], sc[2]);
+	// Position is applied AFTER the scale, so this offset survives a Z scale of 0 (flat 2-D) — where
+	// plane and surface would otherwise be coplanar and fight for the depth buffer.
+	plane->SetPosition(0.0, 0.0, -0.002 * (gx1 - gx0) * (sc[0] != 0.0 ? sc[0] : 1.0));
+	plane->GetProperty()->SetColor(s->nanColor[0], s->nanColor[1], s->nanColor[2]);
+	plane->SetVisibility(1);
+}
+
 static void nanPlaneUpdate(Scene *s) {
 	if (!s || !s->ren) return;
 	vtkProp3D *sp = surfProp(s);
@@ -2850,35 +2903,17 @@ static void nanPlaneUpdate(Scene *s) {
 	const bool want = s->gridHasNaN && s->flat2d && !s->aquaWindow && !s->globe && !s->imageOnly &&
 	                  !s->gridPlaceholder && sp != nullptr && sp->GetVisibility() != 0 &&
 	                  s->gx1 > s->gx0 && s->gy1 > s->gy0;
-	if (!want) {
-		if (s->nanPlane) s->nanPlane->SetVisibility(0);
-		return;
+	nanPlaneSync(s, s->nanPlane, s->nanPlaneSrc, want, sp, s->gx0, s->gx1, s->gy0, s->gy1, s->zmin);
+	// EVERY GRID, NOT ONLY THE BASE. A grid opened second is an extra, and it has holes exactly like
+	// the one opened first: the same flat-2-D-only / no-tsunami-window / owner-visible rule, the same
+	// sync, its own quad at its own extent and floor, riding its own actor's scale.
+	for (auto &ex : s->extras) {
+		if (ex.isImage || ex.isMesh || !ex.actor) continue;
+		const bool wantEx = ex.gridHasNaN && s->flat2d && !s->aquaWindow && !s->globe &&
+		                    ex.actor->GetVisibility() != 0 && ex.gx1 > ex.gx0 && ex.gy1 > ex.gy0;
+		nanPlaneSync(s, ex.nanPlane, ex.nanPlaneSrc, wantEx, ex.actor.Get(),
+		             ex.gx0, ex.gx1, ex.gy0, ex.gy1, ex.zmin);
 	}
-	if (!s->nanPlane) {
-		s->nanPlaneSrc = vtkSmartPointer<vtkPlaneSource>::New();
-		s->nanPlaneSrc->SetResolution(1, 1);
-		vtkNew<vtkPolyDataMapper> map;
-		map->SetInputConnection(s->nanPlaneSrc->GetOutputPort());
-		map->ScalarVisibilityOff();                 // a flat colour, never a scalar mapped through a LUT
-		s->nanPlane = vtkSmartPointer<vtkActor>::New();
-		s->nanPlane->SetMapper(map);
-		s->nanPlane->GetProperty()->LightingOff();  // a hole is not a surface: no light may touch it
-		s->nanPlane->PickableOff();
-		s->ren->AddActor(s->nanPlane);
-	}
-	const double zf = s->zmin;                      // the grid floor: where NaN nodes' geometry is pinned
-	s->nanPlaneSrc->SetOrigin(s->gx0, s->gy0, zf);
-	s->nanPlaneSrc->SetPoint1(s->gx1, s->gy0, zf);
-	s->nanPlaneSrc->SetPoint2(s->gx0, s->gy1, zf);
-	s->nanPlaneSrc->Modified();
-	double sc[3] = { 1.0, 1.0, 1.0 };
-	sp->GetScale(sc);
-	s->nanPlane->SetScale(sc[0], sc[1], sc[2]);
-	// Position is applied AFTER the scale, so this offset survives a Z scale of 0 (flat 2-D) — where
-	// plane and surface would otherwise be coplanar and fight for the depth buffer.
-	s->nanPlane->SetPosition(0.0, 0.0, -0.002 * (s->gx1 - s->gx0) * (sc[0] != 0.0 ? sc[0] : 1.0));
-	s->nanPlane->GetProperty()->SetColor(s->nanColor[0], s->nanColor[1], s->nanColor[2]);
-	s->nanPlane->SetVisibility(1);
 }
 
 // ── the 3-D view's camera gestures, in ONE place ─────────────────────────────────────────────────
@@ -3146,6 +3181,8 @@ struct QuadNode {
 	double worldSpacing = 0;          // true-coord node gap at this node's step
 	QuadNode *child[4] = { nullptr, nullptr, nullptr, nullptr };
 	vtkSmartPointer<vtkActor> actor;  // built geometry; null = not resident (nothing cached)
+	vtkSmartPointer<vtkPolyData> tilePD;   // a GRID EXTRA's tile geometry (its pyramid has no actor per
+	                                        // tile: the layer's one actor shows the appended tiles)
 	// Is this node's actor currently PART OF THE SCENE? Distinct from `actor != null`, which only
 	// says the geometry exists. Coarsening takes a tile OUT of the assembly but KEEPS it built, so
 	// zooming back in re-adds it instead of re-meshing it (see dropNodeActor / ensureNodeActor).
@@ -4979,9 +5016,32 @@ static void rebuildAxisLabels(Scene *s) {
 // Renderer StartEvent -> keep the axis labels on the camera-near edges as the view rotates.
 static void followZoomAnnotations(Scene *s);   // 50_scene.cpp: keep screen-constant contour labels + their line holes sized to the view
 
+// THE DEPTH RANGE FOLLOWS WHAT IS SHOWN. The camera's clipping range is fitted to the props visible
+// when it was last reset; a layer checked back on whose drawn relief is taller (the SST at its own z
+// scale, after layer0's) fell outside it and was clipped away whole, leaving only its NaN backdrop —
+// "unchecking layer0 makes the SST invisible". The Scene Objects rows toggle actors directly, so no
+// setter sees every show/hide; the render does. Refit only when the visible bounds really changed.
+static void syncClipToVisible(Scene *s) {
+	if (!s || !s->ren) return;
+	double b[6];
+	s->ren->ComputeVisiblePropBounds(b);
+	if (!vtkMath::AreBoundsInitialized(b)) return;
+	bool same = true;
+	for (int k = 0; k < 6; ++k) if (b[k] != s->clipBounds[k]) { same = false; break; }
+	if (same) return;
+	for (int k = 0; k < 6; ++k) s->clipBounds[k] = b[k];
+	s->ren->ResetCameraClippingRange(b);
+}
+
+static void refineExtraLods(Scene *s);   // 70_window.cpp: every visible grid extra's zoom pyramid
+static void extraLodFree(ExtraObj &ex);  // 70_window.cpp: release it (layer removal)
+
 static void AxisLabelCB(vtkObject*, unsigned long, void *cd, void*) {
 	Scene *s = static_cast<Scene*>(cd);
+	refineExtraLods(s);                        // a grid opened second sharpens on zoom like the first
 	rebuildAxisLabels(s);
+	nanPlaneUpdate(s);                         // each grid's NaN backdrop follows ITS grid's checkbox, like its axes
+	syncClipToVisible(s);                      // …and the depth range follows what is visible (after the backdrop)
 	followZoomAnnotations(s);                  // cheap: gated on a real change in world-per-pixel
 	updateTitleZoom(s);                        // cheap: gated on the composed title really changing
 }
