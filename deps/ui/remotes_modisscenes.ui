@@ -1,0 +1,811 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>RemoteSModisScenes</class>
+ <widget class="QDialog" name="RemoteSModisScenes">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>367</width>
+    <height>573</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>MODIS scenes (Terra / Aqua)</string>
+  </property>
+  <widget class="QTabWidget" name="tabs">
+   <property name="geometry">
+    <rect>
+     <x>4</x>
+     <y>4</y>
+     <width>359</width>
+     <height>531</height>
+    </rect>
+   </property>
+   <property name="currentIndex">
+    <number>0</number>
+   </property>
+   <widget class="QWidget" name="tab_scenes">
+    <attribute name="title">
+     <string>Scenes</string>
+    </attribute>
+    <widget class="QGroupBox" name="gb_sat">
+     <property name="geometry">
+      <rect>
+       <x>5</x>
+       <y>7</y>
+       <width>345</width>
+       <height>128</height>
+      </rect>
+     </property>
+     <property name="title">
+      <string>Satellite and orbital elements</string>
+     </property>
+     <widget class="QLabel" name="lbl_sat">
+      <property name="geometry">
+       <rect>
+        <x>11</x>
+        <y>27</y>
+        <width>48</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string>Satellite</string>
+      </property>
+     </widget>
+     <widget class="QComboBox" name="p_sat">
+      <property name="geometry">
+       <rect>
+        <x>65</x>
+        <y>27</y>
+        <width>269</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="refresh" stdset="0">
+       <bool>true</bool>
+      </property>
+      <item>
+       <property name="text">
+        <string>AQUA</string>
+       </property>
+      </item>
+      <item>
+       <property name="text">
+        <string>TERRA</string>
+       </property>
+      </item>
+     </widget>
+     <widget class="QLabel" name="lbl_tlesrc">
+      <property name="geometry">
+       <rect>
+        <x>11</x>
+        <y>59</y>
+        <width>48</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string>Elements</string>
+      </property>
+     </widget>
+     <widget class="QComboBox" name="p_tlesrc">
+      <property name="geometry">
+       <rect>
+        <x>65</x>
+        <y>59</y>
+        <width>269</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="toolTip">
+       <string>Where the orbit comes from. Celestrak: downloaded automatically, no file needed, but only the CURRENT elements, which are good for a few weeks around today. Space-Track history: for any past date, the satellite's element sets of that month, downloaded once with your Space-Track login (Accounts tab) and kept on disk, so a month is never asked for twice. TLE file: a file of element sets of your own. For both, the set whose epoch is nearest the date is used.</string>
+      </property>
+      <property name="refresh" stdset="0">
+       <bool>true</bool>
+      </property>
+      <item>
+       <property name="text">
+        <string>Celestrak (current elements)</string>
+       </property>
+      </item>
+      <item>
+       <property name="text">
+        <string>TLE file (the set nearest the date)</string>
+       </property>
+      </item>
+      <item>
+       <property name="text">
+        <string>Space-Track history (the set nearest the date)</string>
+       </property>
+      </item>
+     </widget>
+     <widget class="QLabel" name="lbl_tlefile">
+      <property name="geometry">
+       <rect>
+        <x>11</x>
+        <y>91</y>
+        <width>48</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string>TLE file</string>
+      </property>
+     </widget>
+     <widget class="QLineEdit" name="p_tlefile">
+      <property name="geometry">
+       <rect>
+        <x>65</x>
+        <y>91</y>
+        <width>239</width>
+        <height>26</height>
+       </rect>
+      </property>
+     </widget>
+     <widget class="QToolButton" name="browse_p_tlefile">
+      <property name="geometry">
+       <rect>
+        <x>310</x>
+        <y>94</y>
+        <width>24</width>
+        <height>20</height>
+       </rect>
+      </property>
+      <property name="toolTip">
+       <string>Choose a TLE file</string>
+      </property>
+      <property name="text">
+       <string>...</string>
+      </property>
+      <property name="filter" stdset="0">
+       <string>TLE files (*.tle *.txt *.dat);;All files (*)</string>
+      </property>
+     </widget>
+    </widget>
+    <widget class="QGroupBox" name="gb_scenes">
+     <property name="geometry">
+      <rect>
+       <x>5</x>
+       <y>141</y>
+       <width>345</width>
+       <height>92</height>
+      </rect>
+     </property>
+     <property name="title">
+      <string>Scene footprints</string>
+     </property>
+     <widget class="QLabel" name="lbl_start">
+      <property name="geometry">
+       <rect>
+        <x>11</x>
+        <y>27</y>
+        <width>57</width>
+        <height>22</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string>Start (UTC)</string>
+      </property>
+     </widget>
+     <widget class="QDateTimeEdit" name="p_start">
+      <property name="geometry">
+       <rect>
+        <x>70</x>
+        <y>27</y>
+        <width>130</width>
+        <height>22</height>
+       </rect>
+      </property>
+      <property name="toolTip">
+       <string>Start of the time window. MODIS scenes are 5-minute granules, so it is rounded to the nearest 5 minutes.</string>
+      </property>
+      <property name="displayFormat">
+       <string>yyyy-MM-dd HH:mm</string>
+      </property>
+      <property name="calendarPopup">
+       <bool>true</bool>
+      </property>
+      <property name="timeSpec">
+       <enum>Qt::TimeSpec::UTC</enum>
+      </property>
+      <property name="refresh" stdset="0">
+       <bool>true</bool>
+      </property>
+     </widget>
+     <widget class="QLabel" name="lbl_minutes">
+      <property name="geometry">
+       <rect>
+        <x>208</x>
+        <y>27</y>
+        <width>43</width>
+        <height>22</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string>Minutes</string>
+      </property>
+     </widget>
+     <widget class="QSpinBox" name="p_minutes">
+      <property name="geometry">
+       <rect>
+        <x>256</x>
+        <y>27</y>
+        <width>78</width>
+        <height>22</height>
+       </rect>
+      </property>
+      <property name="toolTip">
+       <string>Length of the time window. Each 5 minutes is one scene.</string>
+      </property>
+      <property name="minimum">
+       <number>5</number>
+      </property>
+      <property name="maximum">
+       <number>1440</number>
+      </property>
+      <property name="singleStep">
+       <number>5</number>
+      </property>
+      <property name="value">
+       <number>10</number>
+      </property>
+     </widget>
+     <widget class="QPushButton" name="run_scenes">
+      <property name="geometry">
+       <rect>
+        <x>11</x>
+        <y>55</y>
+        <width>323</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="toolTip">
+       <string>Draw the areas the MODIS scenes of that time window cover. On an empty window a map with coastlines is made for them; otherwise they are laid over what is shown.</string>
+      </property>
+      <property name="text">
+       <string>Plot scene footprints</string>
+      </property>
+      <property name="busy" stdset="0">
+       <string>Propagating the orbit and building the scenes…</string>
+      </property>
+     </widget>
+    </widget>
+    <widget class="QGroupBox" name="gb_find">
+     <property name="geometry">
+      <rect>
+       <x>5</x>
+       <y>239</y>
+       <width>345</width>
+       <height>160</height>
+      </rect>
+     </property>
+     <property name="title">
+      <string>Find the scenes that cover a point</string>
+     </property>
+     <widget class="QLabel" name="lbl_lon">
+      <property name="geometry">
+       <rect>
+        <x>11</x>
+        <y>27</y>
+        <width>42</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string>Lon</string>
+      </property>
+     </widget>
+     <widget class="QLineEdit" name="p_lon">
+      <property name="geometry">
+       <rect>
+        <x>59</x>
+        <y>27</y>
+        <width>110</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string>-8</string>
+      </property>
+     </widget>
+     <widget class="QLabel" name="lbl_lat">
+      <property name="geometry">
+       <rect>
+        <x>180</x>
+        <y>27</y>
+        <width>32</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string>Lat</string>
+      </property>
+     </widget>
+     <widget class="QLineEdit" name="p_lat">
+      <property name="geometry">
+       <rect>
+        <x>218</x>
+        <y>27</y>
+        <width>116</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string>36</string>
+      </property>
+     </widget>
+     <widget class="QLabel" name="lbl_days">
+      <property name="geometry">
+       <rect>
+        <x>11</x>
+        <y>59</y>
+        <width>42</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string>Days</string>
+      </property>
+     </widget>
+     <widget class="QSpinBox" name="p_days">
+      <property name="geometry">
+       <rect>
+        <x>59</x>
+        <y>61</y>
+        <width>110</width>
+        <height>22</height>
+       </rect>
+      </property>
+      <property name="toolTip">
+       <string>How many days to search from the start time; negative = that many days BEFORE it.</string>
+      </property>
+      <property name="minimum">
+       <number>-30</number>
+      </property>
+      <property name="maximum">
+       <number>30</number>
+      </property>
+      <property name="value">
+       <number>-2</number>
+      </property>
+     </widget>
+     <widget class="QLabel" name="lbl_daynight">
+      <property name="geometry">
+       <rect>
+        <x>180</x>
+        <y>59</y>
+        <width>36</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string>When</string>
+      </property>
+     </widget>
+     <widget class="QComboBox" name="p_daynight">
+      <property name="geometry">
+       <rect>
+        <x>218</x>
+        <y>59</y>
+        <width>116</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <item>
+       <property name="text">
+        <string>Day passes</string>
+       </property>
+      </item>
+      <item>
+       <property name="text">
+        <string>Night passes</string>
+       </property>
+      </item>
+      <item>
+       <property name="text">
+        <string>Any time</string>
+       </property>
+      </item>
+     </widget>
+     <widget class="QLabel" name="lbl_product">
+      <property name="geometry">
+       <rect>
+        <x>11</x>
+        <y>91</y>
+        <width>42</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string>Product</string>
+      </property>
+     </widget>
+     <widget class="QComboBox" name="p_product">
+      <property name="geometry">
+       <rect>
+        <x>59</x>
+        <y>91</y>
+        <width>275</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <item>
+       <property name="text">
+        <string>Sea surface temperature (L2 SST)</string>
+       </property>
+      </item>
+      <item>
+       <property name="text">
+        <string>Chlorophyll-a (L2 OC)</string>
+       </property>
+      </item>
+     </widget>
+     <widget class="QPushButton" name="run_find">
+      <property name="geometry">
+       <rect>
+        <x>11</x>
+        <y>123</y>
+        <width>323</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string>Find scenes</string>
+      </property>
+      <property name="busy" stdset="0">
+       <string>Searching the passes over the point…</string>
+      </property>
+     </widget>
+    </widget>
+    <widget class="QLabel" name="lbl_found">
+     <property name="geometry">
+      <rect>
+       <x>5</x>
+       <y>405</y>
+       <width>345</width>
+       <height>16</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Scene files (OB.DAAC names)</string>
+     </property>
+    </widget>
+    <widget class="QTextBrowser" name="p_found">
+     <property name="geometry">
+      <rect>
+       <x>5</x>
+       <y>425</y>
+       <width>345</width>
+       <height>70</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>The scene files at NASA's OB.DAAC. Click one to download it in your browser (an Earthdata login is needed).</string>
+     </property>
+     <property name="horizontalScrollBarPolicy">
+      <enum>Qt::ScrollBarPolicy::ScrollBarAlwaysOn</enum>
+     </property>
+     <property name="lineWrapMode">
+      <enum>QTextEdit::LineWrapMode::NoWrap</enum>
+     </property>
+     <property name="openExternalLinks">
+      <bool>true</bool>
+     </property>
+     <property name="scrollRight" stdset="0">
+      <bool>true</bool>
+     </property>
+    </widget>
+   </widget>
+   <widget class="QWidget" name="tab_account">
+    <attribute name="title">
+     <string>Accounts</string>
+    </attribute>
+    <widget class="QGroupBox" name="gb_ed">
+     <property name="geometry">
+      <rect>
+       <x>5</x>
+       <y>7</y>
+       <width>345</width>
+       <height>250</height>
+      </rect>
+     </property>
+     <property name="title">
+      <string>NASA Earthdata login</string>
+     </property>
+     <widget class="QLabel" name="lbl_ed_info">
+      <property name="geometry">
+       <rect>
+        <x>11</x>
+        <y>24</y>
+        <width>323</width>
+        <height>50</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string>Downloading the scene files from OB.DAAC needs a free NASA Earthdata account. No account yet? &lt;a href=&quot;https://urs.earthdata.nasa.gov/users/new&quot;&gt;Register here&lt;/a&gt;.</string>
+      </property>
+      <property name="textFormat">
+       <enum>Qt::TextFormat::RichText</enum>
+      </property>
+      <property name="alignment">
+       <set>Qt::AlignmentFlag::AlignLeading|Qt::AlignmentFlag::AlignLeft|Qt::AlignmentFlag::AlignTop</set>
+      </property>
+      <property name="wordWrap">
+       <bool>true</bool>
+      </property>
+      <property name="openExternalLinks">
+       <bool>true</bool>
+      </property>
+     </widget>
+     <widget class="QLabel" name="lbl_ed_user">
+      <property name="geometry">
+       <rect>
+        <x>11</x>
+        <y>82</y>
+        <width>60</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string>Login</string>
+      </property>
+     </widget>
+     <widget class="QLineEdit" name="p_ed_user">
+      <property name="geometry">
+       <rect>
+        <x>77</x>
+        <y>82</y>
+        <width>257</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="toolTip">
+       <string>Your Earthdata user name (not the e-mail address).</string>
+      </property>
+     </widget>
+     <widget class="QLabel" name="lbl_ed_pass">
+      <property name="geometry">
+       <rect>
+        <x>11</x>
+        <y>114</y>
+        <width>60</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string>Password</string>
+      </property>
+     </widget>
+     <widget class="QLineEdit" name="p_ed_pass">
+      <property name="geometry">
+       <rect>
+        <x>77</x>
+        <y>114</y>
+        <width>257</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="echoMode">
+       <enum>QLineEdit::EchoMode::Password</enum>
+      </property>
+     </widget>
+     <widget class="QCheckBox" name="show_p_ed_pass">
+      <property name="geometry">
+       <rect>
+        <x>77</x>
+        <y>146</y>
+        <width>257</width>
+        <height>22</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string>Show the password</string>
+      </property>
+     </widget>
+     <widget class="QPushButton" name="run_savelogin">
+      <property name="geometry">
+       <rect>
+        <x>11</x>
+        <y>176</y>
+        <width>323</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="toolTip">
+       <string>Write the login and password to the machine urs.earthdata.nasa.gov entry of .netrc in your home folder, the file curl, wget and GDAL read for Earthdata downloads. Every other entry of the file is kept.</string>
+      </property>
+      <property name="text">
+       <string>Save login</string>
+      </property>
+      <property name="busy" stdset="0">
+       <string>Saving the Earthdata login…</string>
+      </property>
+     </widget>
+     <widget class="QLabel" name="lbl_ed_where">
+      <property name="geometry">
+       <rect>
+        <x>11</x>
+        <y>208</y>
+        <width>323</width>
+        <height>34</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string/>
+      </property>
+      <property name="alignment">
+       <set>Qt::AlignmentFlag::AlignLeading|Qt::AlignmentFlag::AlignLeft|Qt::AlignmentFlag::AlignTop</set>
+      </property>
+      <property name="wordWrap">
+       <bool>true</bool>
+      </property>
+     </widget>
+    </widget>
+    <widget class="QGroupBox" name="gb_st">
+     <property name="geometry">
+      <rect>
+       <x>5</x>
+       <y>263</y>
+       <width>345</width>
+       <height>232</height>
+      </rect>
+     </property>
+     <property name="title">
+      <string>Space-Track login (orbital elements of past dates)</string>
+     </property>
+     <widget class="QLabel" name="lbl_st_info">
+      <property name="geometry">
+       <rect>
+        <x>11</x>
+        <y>24</y>
+        <width>323</width>
+        <height>34</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string>For the "Space-Track history" elements. Free account: &lt;a href=&quot;https://www.space-track.org/auth/createAccount&quot;&gt;register here&lt;/a&gt;.</string>
+      </property>
+      <property name="textFormat">
+       <enum>Qt::TextFormat::RichText</enum>
+      </property>
+      <property name="alignment">
+       <set>Qt::AlignmentFlag::AlignLeading|Qt::AlignmentFlag::AlignLeft|Qt::AlignmentFlag::AlignTop</set>
+      </property>
+      <property name="wordWrap">
+       <bool>true</bool>
+      </property>
+      <property name="openExternalLinks">
+       <bool>true</bool>
+      </property>
+     </widget>
+     <widget class="QLabel" name="lbl_st_user">
+      <property name="geometry">
+       <rect>
+        <x>11</x>
+        <y>62</y>
+        <width>60</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string>Login</string>
+      </property>
+     </widget>
+     <widget class="QLineEdit" name="p_st_user">
+      <property name="geometry">
+       <rect>
+        <x>77</x>
+        <y>62</y>
+        <width>257</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="toolTip">
+       <string>Your Space-Track login (the e-mail address you registered with).</string>
+      </property>
+     </widget>
+     <widget class="QLabel" name="lbl_st_pass">
+      <property name="geometry">
+       <rect>
+        <x>11</x>
+        <y>94</y>
+        <width>60</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string>Password</string>
+      </property>
+     </widget>
+     <widget class="QLineEdit" name="p_st_pass">
+      <property name="geometry">
+       <rect>
+        <x>77</x>
+        <y>94</y>
+        <width>257</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="echoMode">
+       <enum>QLineEdit::EchoMode::Password</enum>
+      </property>
+     </widget>
+     <widget class="QCheckBox" name="show_p_st_pass">
+      <property name="geometry">
+       <rect>
+        <x>77</x>
+        <y>124</y>
+        <width>257</width>
+        <height>22</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string>Show the password</string>
+      </property>
+     </widget>
+     <widget class="QPushButton" name="run_savest">
+      <property name="geometry">
+       <rect>
+        <x>11</x>
+        <y>152</y>
+        <width>323</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="toolTip">
+       <string>Write the login and password to the machine www.space-track.org entry of .netrc in your home folder, beside the Earthdata one. Every other entry of the file is kept.</string>
+      </property>
+      <property name="text">
+       <string>Save login</string>
+      </property>
+      <property name="busy" stdset="0">
+       <string>Saving the Space-Track login…</string>
+      </property>
+     </widget>
+     <widget class="QLabel" name="lbl_st_where">
+      <property name="geometry">
+       <rect>
+        <x>11</x>
+        <y>184</y>
+        <width>323</width>
+        <height>40</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string/>
+      </property>
+      <property name="alignment">
+       <set>Qt::AlignmentFlag::AlignLeading|Qt::AlignmentFlag::AlignLeft|Qt::AlignmentFlag::AlignTop</set>
+      </property>
+      <property name="wordWrap">
+       <bool>true</bool>
+      </property>
+     </widget>
+    </widget>
+   </widget>
+  </widget>
+  <widget class="QLabel" name="lbl_status">
+   <property name="geometry">
+    <rect>
+     <x>11</x>
+     <y>539</y>
+     <width>345</width>
+     <height>30</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string/>
+   </property>
+   <property name="alignment">
+    <set>Qt::AlignmentFlag::AlignLeading|Qt::AlignmentFlag::AlignLeft|Qt::AlignmentFlag::AlignTop</set>
+   </property>
+   <property name="wordWrap">
+    <bool>true</bool>
+   </property>
+  </widget>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

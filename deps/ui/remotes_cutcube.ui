@@ -1,0 +1,235 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>RemoteSCutcube</class>
+ <widget class="QDialog" name="RemoteSCutcube">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>480</width>
+    <height>250</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>Band cube</string>
+  </property>
+  <widget class="QGroupBox" name="gb_input">
+   <property name="geometry">
+    <rect>
+     <x>11</x>
+     <y>11</y>
+     <width>458</width>
+     <height>160</height>
+    </rect>
+   </property>
+   <property name="title">
+    <string>Stack the bands of one scene into a cube</string>
+   </property>
+   <widget class="QLabel" name="lbl_names">
+    <property name="geometry">
+     <rect>
+      <x>11</x>
+      <y>27</y>
+      <width>54</width>
+      <height>26</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Band files</string>
+    </property>
+   </widget>
+   <widget class="QLineEdit" name="p_names">
+    <property name="geometry">
+     <rect>
+      <x>71</x>
+      <y>27</y>
+      <width>346</width>
+      <height>26</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>The band files, ';'-separated (pick several at once with the button). Landsat file names get their band descriptions automatically.</string>
+    </property>
+    <property name="refresh" stdset="0">
+     <bool>true</bool>
+    </property>
+   </widget>
+   <widget class="QToolButton" name="browse_p_names">
+    <property name="geometry">
+     <rect>
+      <x>423</x>
+      <y>30</y>
+      <width>24</width>
+      <height>20</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>Choose the band files</string>
+    </property>
+    <property name="text">
+     <string>...</string>
+    </property>
+    <property name="multi" stdset="0">
+     <bool>true</bool>
+    </property>
+    <property name="filter" stdset="0">
+     <string>Band files (*.tif *.TIF *.jp2);;All files (*)</string>
+    </property>
+   </widget>
+   <widget class="QLabel" name="lbl_region">
+    <property name="geometry">
+     <rect>
+      <x>11</x>
+      <y>59</y>
+      <width>54</width>
+      <height>26</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Region</string>
+    </property>
+   </widget>
+   <widget class="QLineEdit" name="p_region">
+    <property name="geometry">
+     <rect>
+      <x>71</x>
+      <y>59</y>
+      <width>376</width>
+      <height>26</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>W/E/S/N in the files' own coordinates (e.g. UTM metres). Empty = the whole scene.</string>
+    </property>
+   </widget>
+   <widget class="QLabel" name="lbl_sentinel">
+    <property name="geometry">
+     <rect>
+      <x>11</x>
+      <y>91</y>
+      <width>54</width>
+      <height>26</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Sentinel-2</string>
+    </property>
+   </widget>
+   <widget class="QComboBox" name="p_sentinel">
+    <property name="geometry">
+     <rect>
+      <x>71</x>
+      <y>91</y>
+      <width>376</width>
+      <height>26</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>Sentinel-2 file names cannot be recognised on their own: say which resolution these bands are, so their descriptions can be assigned.</string>
+    </property>
+    <item>
+     <property name="text">
+      <string>No (Landsat or other)</string>
+     </property>
+    </item>
+    <item>
+     <property name="text">
+      <string>10 m bands</string>
+     </property>
+    </item>
+    <item>
+     <property name="text">
+      <string>20 m bands</string>
+     </property>
+    </item>
+    <item>
+     <property name="text">
+      <string>60 m bands</string>
+     </property>
+    </item>
+   </widget>
+   <widget class="QLabel" name="lbl_save">
+    <property name="geometry">
+     <rect>
+      <x>11</x>
+      <y>123</y>
+      <width>54</width>
+      <height>26</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Save as</string>
+    </property>
+   </widget>
+   <widget class="QLineEdit" name="p_save">
+    <property name="geometry">
+     <rect>
+      <x>71</x>
+      <y>123</y>
+      <width>346</width>
+      <height>26</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>The cube file to write (GeoTIFF); it is then opened in this window.</string>
+    </property>
+   </widget>
+   <widget class="QToolButton" name="browse_p_save">
+    <property name="geometry">
+     <rect>
+      <x>423</x>
+      <y>126</y>
+      <width>24</width>
+      <height>20</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>Save the cube as</string>
+    </property>
+    <property name="text">
+     <string>...</string>
+    </property>
+    <property name="save" stdset="0">
+     <bool>true</bool>
+    </property>
+    <property name="filter" stdset="0">
+     <string>GeoTIFF (*.tif *.tiff)</string>
+    </property>
+   </widget>
+  </widget>
+  <widget class="QLabel" name="lbl_status">
+   <property name="geometry">
+    <rect>
+     <x>11</x>
+     <y>177</y>
+     <width>458</width>
+     <height>30</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string/>
+   </property>
+   <property name="wordWrap">
+    <bool>true</bool>
+   </property>
+  </widget>
+  <widget class="QPushButton" name="run_compute">
+   <property name="geometry">
+    <rect>
+     <x>388</x>
+     <y>213</y>
+     <width>81</width>
+     <height>26</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>Build cube</string>
+   </property>
+   <property name="busy" stdset="0">
+    <string>Cutting and stacking the bands…</string>
+   </property>
+  </widget>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

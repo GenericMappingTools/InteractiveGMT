@@ -2082,6 +2082,12 @@ GMTVTK_API void gmtvtk_set_satellite_callback(JuliaSatelliteFn fn) {
 	g_juliaSatellite = fn;
 }
 
+// Register the Satellite > Remote sensing callback (every RemoteSDialog). fn(scene, params, out, cap)
+// with the request/directive blocks documented at JuliaRemoteSFn (30_app.cpp). nullptr to detach.
+GMTVTK_API void gmtvtk_set_remotes_callback(JuliaRemoteSFn fn) {
+	g_juliaRemoteS = fn;
+}
+
 // Register the FFT tool callback (Mag/Grav > FFT tool, Image > FFT Spectrum, Grid Tools > Spectrum).
 // fn(scene, params) with params = "op;grid1;grid2;newRows;newCols;coords;detrend;value" runs the
 // spectrum/correlation/field-transform asked for and adds its result to `scene`. nullptr to detach.
@@ -7155,6 +7161,50 @@ GMTVTK_API int gmtvtk_widget_enabled_test(const char *name) {
 		if (QWidget *w = tl->findChild<QWidget *>(n))
 			return w->isEnabled() ? 1 : 0;
 	return -1;
+}
+
+// test hook: IS THE TOP-LEVEL WINDOW OF THIS OBJECT NAME VISIBLE AND THE ACTIVE (front) ONE?
+// 1 = active, 0 = visible but not active, -1 = no such visible window. How "a dialog opens in front
+// of the iGMT window, not behind it" is asserted on the window system's own answer.
+GMTVTK_API int gmtvtk_window_active_test(const char *name) {
+	if (!name || !*name) return -1;
+	const QString n = QString::fromUtf8(name);
+	for (QWidget *tl : QApplication::topLevelWidgets())
+		if (tl->objectName() == n && tl->isVisible())
+			return tl->isActiveWindow() ? 1 : 0;
+	return -1;
+}
+
+// test hook: WHERE A .ui's LAYOUTS PUT EVERY WIDGET. Loads the file off screen at its own size and
+// writes one line per named widget: "name parent x y w h" (geometry relative to its parent widget),
+// the dialog itself first. Used to turn a layout-managed .ui into absolute geometry.
+GMTVTK_API int gmtvtk_ui_geometry_dump_test(const char *path, char *out, int cap) {
+	if (!path || !out || cap <= 0) return 0;
+	out[0] = '\0';
+	QUiLoader loader;
+	QFile f(QString::fromUtf8(path));
+	if (!f.open(QFile::ReadOnly)) return 0;
+	QWidget *w = loader.load(&f, nullptr);
+	f.close();
+	if (!w) return 0;
+	w->setAttribute(Qt::WA_DontShowOnScreen);
+	w->show();
+	QApplication::processEvents(QEventLoop::AllEvents, 50);
+	QString s = QString("%1 - 0 0 %2 %3 min %4 %5\n").arg(w->objectName()).arg(w->width()).arg(w->height())
+	            .arg(w->minimumSizeHint().width()).arg(w->minimumSizeHint().height());
+	for (QWidget *c : w->findChildren<QWidget *>()) {
+		const QString n = c->objectName();
+		if (n.isEmpty() || n.startsWith("qt_")) continue;
+		const QRect g = c->geometry();
+		s += QString("%1 %2 %3 %4 %5 %6\n").arg(n, c->parentWidget() ? c->parentWidget()->objectName() : QString("-"))
+		     .arg(g.x()).arg(g.y()).arg(g.width()).arg(g.height());
+	}
+	delete w;
+	const QByteArray b = s.toUtf8();
+	const int n = std::min<int>(b.size(), cap - 1);
+	memcpy(out, b.constData(), n);
+	out[n] = '\0';
+	return 1;
 }
 
 // test hook: PUT THE η(x) FIGURE UP (or take it down), through the Cinema tab's own box — the one

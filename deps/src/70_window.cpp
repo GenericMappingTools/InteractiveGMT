@@ -13582,6 +13582,348 @@ void SatelliteDialog::forget() {
 }
 
 // ============================================================================================
+// Satellite > Remote sensing — EVERY dialog of that submenu (src/RemoteS/remotes_gui.jl over
+// InteractiveGMT.RemoteS). One class, because the dialog knows no tool: it loads
+// deps/ui/remotes_<tool>.ui at RUNTIME via QUiLoader, sends every widget named `p_*` to Julia as
+// key=value, and applies the directives Julia answers with (items/set/label/enable/status —
+// JuliaRemoteSFn, 30_app.cpp). So a tool is its .ui plus one Julia function, and the .ui stays the
+// single source of truth that Designer keeps editing. The conventions a .ui uses:
+//   * `p_<name>`             a parameter (QLineEdit, QComboBox, QCheckBox/QRadioButton, QSpinBox,
+//                            QDoubleSpinBox, QDateTimeEdit) — or an output (QPlainTextEdit, QLabel)
+//   * dynamic property `refresh`=true   a change of that widget asks Julia to update the dialog
+//   * `browse_<p_widget>`    a QToolButton that fills that line edit from a file dialog; dynamic
+//                            properties `filter`, `save` (bool), `multi` (bool, ';'-joined names)
+//   * `run_<verb>`           a QPushButton that sends what=<verb>; dynamic property `busy` = the
+//                            busy notice text (SACRED_LAW.md no-dead-time: every run raises it)
+//   * `lbl_status`           the one-line status label
+class RemoteSDialog {
+public:
+	QDialog *dlg = nullptr;
+	Scene   *scn = nullptr;
+	std::string tool;
+	QLabel *lblStatus = nullptr;
+	bool parked = false;
+	bool reallyClose = false;
+	bool applying = false;           // directives being applied: widget signals are not user changes
+
+	void forget();
+	~RemoteSDialog() { forget(); }
+
+	void unpark() {
+		if (!dlg) return;
+		parked = false;
+		unparkTool(scn, dlg);
+		dlg->setWindowState(dlg->windowState() & ~Qt::WindowMinimized);
+		dlg->showNormal();
+		dlg->raise();
+		dlg->activateWindow();
+	}
+
+	std::function<void(const QPoint &)> parkedMenu() {
+		return [this](const QPoint &g) {
+			QMenu m;
+			QAction *aShow = m.addAction("Show");
+			m.addSeparator();
+			QAction *aDel = m.addAction("Delete");
+			QAction *pick = m.exec(g);
+			if (pick == aShow) unpark();
+			else if (pick == aDel) {
+				reallyClose = true;
+				unparkTool(scn, dlg);
+				forget();                // stop answering for this Scene NOW; deleteLater only posts
+				dlg->deleteLater();
+			}
+		};
+	}
+
+	// Every way out (X, Minimise, Esc) lands here; idempotent so parking twice leaves one row.
+	bool parkNow() {
+		if (reallyClose || !dlg || !sceneAlive(scn)) return false;
+		if (parked) { dlg->hide(); return true; }
+		parked = true;
+		dlg->hide();
+		parkTool(scn, dlg, dlg->windowTitle(), IC_Rect,
+		         "Closed " + dlg->windowTitle() + " — double-click to bring it back, click for Show / Delete",
+		         [this]() { unpark(); }, parkedMenu());
+		return true;
+	}
+
+	void say(const QString &m) {
+		if (lblStatus) lblStatus->setText(m);
+		if (scn && scn->win) scn->win->statusBar()->showMessage(m, 4000);
+	}
+
+	// The request block: the tool, the verb, and every p_* widget as it stands.
+	QString collect(const QString &what) const {
+		QString kv = QString("tool=%1\nwhat=%2\n").arg(QString::fromStdString(tool), what);
+		if (!dlg) return kv;
+		for (QWidget *w : dlg->findChildren<QWidget *>()) {
+			const QString n = w->objectName();
+			if (!n.startsWith("p_")) continue;
+			if (auto *dt = qobject_cast<QDateTimeEdit *>(w))
+				kv += n + "=" + dt->dateTime().toString("yyyy-MM-ddTHH:mm:ss") + "\n";
+			else if (auto *le = qobject_cast<QLineEdit *>(w))
+				kv += n + "=" + le->text().trimmed() + "\n";
+			else if (auto *cb = qobject_cast<QComboBox *>(w)) {
+				kv += n + "=" + cb->currentText() + "\n";
+				kv += n + "_idx=" + QString::number(cb->currentIndex()) + "\n";
+			}
+			else if (auto *ds = qobject_cast<QDoubleSpinBox *>(w))
+				kv += n + "=" + QString::number(ds->value(), 'g', 12) + "\n";
+			else if (auto *sb = qobject_cast<QSpinBox *>(w))
+				kv += n + "=" + QString::number(sb->value()) + "\n";
+			else if (auto *ab = qobject_cast<QAbstractButton *>(w)) {
+				if (ab->isCheckable()) kv += n + "=" + QString(ab->isChecked() ? "1" : "0") + "\n";
+			}
+		}
+		return kv;
+	}
+
+	// Apply Julia's answer, one directive per line.
+	void apply(const QString &ans) {
+		applying = true;
+		for (const QString &line : ans.split('\n', Qt::SkipEmptyParts)) {
+			if (line.startsWith("status=")) { say(line.mid(7)); continue; }
+			const int c = line.indexOf(':');
+			const int e = line.indexOf('=');
+			if (c <= 0 || e <= c) continue;
+			const QString kind = line.left(c);
+			const QString name = line.mid(c + 1, e - c - 1);
+			QString v = line.mid(e + 1);
+			QWidget *w = dlg ? dlg->findChild<QWidget *>(name) : nullptr;
+			if (!w) continue;
+			if (kind == "enable") { w->setEnabled(v == "1"); continue; }
+			if (kind == "label") {
+				if (auto *lb = qobject_cast<QLabel *>(w)) lb->setText(v);
+				else if (auto *ab = qobject_cast<QAbstractButton *>(w)) ab->setText(v);
+				continue;
+			}
+			if (kind == "items") {
+				const QStringList it = v.isEmpty() ? QStringList() : v.split('\t');
+				if (auto *cb = qobject_cast<QComboBox *>(w)) {
+					QSignalBlocker b(cb);
+					cb->clear();
+					cb->addItems(it);
+				}
+				else if (auto *lw = qobject_cast<QListWidget *>(w)) {
+					lw->clear();
+					lw->addItems(it);
+				}
+				continue;
+			}
+			if (kind != "set") continue;
+			if (auto *cb = qobject_cast<QComboBox *>(w)) {
+				bool ok = false;
+				const int i = v.toInt(&ok);
+				if (ok) cb->setCurrentIndex(i);
+				else    cb->setCurrentText(v);
+			}
+			else if (auto *dt = qobject_cast<QDateTimeEdit *>(w)) {
+				// Date and time as WALL-CLOCK values in the editor's own time spec (a UTC editor stays
+				// UTC): an offset-less ISO string parses as LOCAL time, and handing that QDateTime over
+				// would shift the shown value by the local offset.
+				const QDateTime t = QDateTime::fromString(v, Qt::ISODate);
+				if (t.isValid()) { dt->setDate(t.date()); dt->setTime(t.time()); }
+			}
+			else if (auto *le = qobject_cast<QLineEdit *>(w)) le->setText(v);
+			else if (auto *pt = qobject_cast<QPlainTextEdit *>(w)) pt->setPlainText(v.replace('\t', '\n'));
+			// A rich-text output (QTextBrowser: links the user can click) takes the answer as HTML.
+			else if (auto *te = qobject_cast<QTextEdit *>(w)) {
+				te->setHtml(v);
+				// "scrollRight" (.ui): right-justified lines longer than the box open scrolled to their
+				// END, where the file names are. After the layout pass, when the bar knows its range.
+				if (te->property("scrollRight").toBool())
+					QTimer::singleShot(0, te, [te] {
+						te->horizontalScrollBar()->setValue(te->horizontalScrollBar()->maximum());
+					});
+			}
+			else if (auto *ds = qobject_cast<QDoubleSpinBox *>(w)) ds->setValue(v.toDouble());
+			else if (auto *sb = qobject_cast<QSpinBox *>(w)) sb->setValue(v.toInt());
+			else if (auto *ab = qobject_cast<QAbstractButton *>(w)) ab->setChecked(v == "1");
+			else if (auto *lb = qobject_cast<QLabel *>(w)) lb->setText(v);
+		}
+		applying = false;
+	}
+
+	// ONE way into Julia for every request. A run raises the app's busy notice (SACRED_LAW.md
+	// no-dead-time); init/refresh are questions about the dialog itself and get the wait cursor.
+	bool request(const QString &what, bool run, const QString &busy = QString()) {
+		if (!g_juliaRemoteS) { say("Remote sensing: callback not registered."); return false; }
+		const QString kv = collect(what);
+		std::vector<char> buf(1 << 18);
+		buf[0] = '\0';
+		if (run) showBusyDialog((busy.isEmpty() ? QString("Working…") : busy).toUtf8().constData());
+		else     QApplication::setOverrideCursor(Qt::WaitCursor);
+		const int ok = g_juliaRemoteS(scn, kv.toUtf8().constData(), buf.data(), (int)buf.size());
+		if (run) closeBusyDialog();
+		else     QApplication::restoreOverrideCursor();
+		const QString ans = QString::fromUtf8(buf.data());
+		if (!ok) {
+			say(ans.isEmpty() ? QString("Remote sensing: failed, and the Julia side said nothing about why.") : ans.trimmed());
+			return false;
+		}
+		apply(ans);
+		return true;
+	}
+
+	void refresh() {
+		if (applying) return;
+		request("refresh", false);
+	}
+
+	RemoteSDialog(QWidget *parent, Scene *scene, const std::string &toolName) {
+		scn = scene;
+		tool = toolName;
+		QUiLoader loader;
+		QFile f(gmtvtkUiDir() + "/remotes_" + QString::fromStdString(tool) + ".ui");
+		if (!f.open(QFile::ReadOnly)) {
+			qWarning("RemoteSDialog: cannot open %s", qUtf8Printable(f.fileName()));
+			return;
+		}
+		dlg = qobject_cast<QDialog *>(loader.load(&f, parent));
+		f.close();
+		if (!dlg) { qWarning("RemoteSDialog: QUiLoader failed to load the .ui"); return; }
+		dlg->setAttribute(Qt::WA_DeleteOnClose);
+		dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint | Qt::WindowMinimizeButtonHint);
+		dlg->setWindowModality(Qt::NonModal);
+		QDialog *d = dlg;   // local copy — the member can't be lambda-captured
+		lblStatus = d->findChild<QLabel *>("lbl_status");
+
+		for (QWidget *w : d->findChildren<QWidget *>()) {
+			const QString n = w->objectName();
+			// A change that makes Julia update the dialog (a new file -> its bands, a new index -> its
+			// band roles). Only on widgets the .ui marks; everything else waits for a run button.
+			if (n.startsWith("p_") && w->property("refresh").toBool()) {
+				if (auto *dt = qobject_cast<QDateTimeEdit *>(w))
+					QObject::connect(dt, &QDateTimeEdit::editingFinished, [this] { refresh(); });
+				else if (auto *le = qobject_cast<QLineEdit *>(w))
+					QObject::connect(le, &QLineEdit::editingFinished, [this] { refresh(); });
+				else if (auto *cb = qobject_cast<QComboBox *>(w))
+					QObject::connect(cb, QOverload<int>::of(&QComboBox::currentIndexChanged), [this](int) { refresh(); });
+				else if (auto *ab = qobject_cast<QAbstractButton *>(w))
+					QObject::connect(ab, &QAbstractButton::toggled, [this](bool) { refresh(); });
+				else if (auto *sb = qobject_cast<QAbstractSpinBox *>(w))
+					QObject::connect(sb, &QAbstractSpinBox::editingFinished, [this] { refresh(); });
+			}
+			// browse_<target>: a file dialog for that line edit, through the app's directory MRU.
+			if (n.startsWith("browse_")) {
+				auto *bt = qobject_cast<QAbstractButton *>(w);
+				QLineEdit *le = d->findChild<QLineEdit *>(n.mid(7));
+				if (!bt || !le) continue;
+				fileBoxDoubleClick(le, bt);
+				QObject::connect(bt, &QAbstractButton::clicked, [this, d, bt, le] {
+					const QString filter = bt->property("filter").toString().isEmpty()
+					                     ? QString("All files (*)") : bt->property("filter").toString();
+					const QString title = bt->toolTip().isEmpty() ? QString("Choose a file") : bt->toolTip();
+					QString fn;
+					if (bt->property("save").toBool())
+						fn = QFileDialog::getSaveFileName(d, title, prefStartDir(), filter);
+					else if (bt->property("multi").toBool())
+						fn = QFileDialog::getOpenFileNames(d, title, prefStartDir(), filter).join(';');
+					else
+						fn = QFileDialog::getOpenFileName(d, title, prefStartDir(), filter);
+					if (fn.isEmpty()) return;
+					rememberStartDir(fn.section(';', 0, 0));
+					le->setText(fn);
+					if (le->property("refresh").toBool()) refresh();
+				});
+			}
+			// show_<target>: a check box that shows a password box's text in clear while checked.
+			if (n.startsWith("show_")) {
+				auto *cb = qobject_cast<QCheckBox *>(w);
+				QLineEdit *le = d->findChild<QLineEdit *>(n.mid(5));
+				if (cb && le)
+					QObject::connect(cb, &QCheckBox::toggled, le, [le](bool on) {
+						le->setEchoMode(on ? QLineEdit::Normal : QLineEdit::Password);
+					});
+			}
+			// run_<verb>: the action buttons. Only these compute (standing rule).
+			if (n.startsWith("run_")) {
+				auto *pb = qobject_cast<QPushButton *>(w);
+				if (!pb) continue;
+				const QString verb = n.mid(4);
+				QObject::connect(pb, &QPushButton::clicked, [this, pb, verb] {
+					request(verb, true, pb->property("busy").toString());
+				});
+			}
+		}
+
+		// The wrapper dies WITH its dialog (the row's "Delete" frees the QDialog).
+		QObject::connect(d, &QObject::destroyed, d, [this]() { delete this; });
+		// Close parks, minimise parks (the shared filter), Esc/reject parks — same as every parkable tool.
+		struct CloseParks : QObject {
+			RemoteSDialog *rd;
+			CloseParks(QObject *p, RemoteSDialog *r) : QObject(p), rd(r) {}
+			bool eventFilter(QObject *o, QEvent *e) override {
+				if (rd && e->type() == QEvent::Close && rd->parkNow()) {
+					e->ignore();
+					return true;
+				}
+				return QObject::eventFilter(o, e);
+			}
+		};
+		d->installEventFilter(new CloseParks(d, this));
+		parkOnMinimise(d, [this]() { parkNow(); });
+		QObject::connect(d, &QDialog::rejected, d, [this]() { parkNow(); });
+
+		// Every tooltip of the .ui wrapped to a readable width — the same pass every tool dialog gets
+		// (addManualButton runs it; this dialog has no manual page, so it is called directly).
+		wrapTooltips(d);
+		// The prefill ("init") is asked for by the opener, AFTER the dialog is up and in front.
+	}
+};
+
+// One dialog per (window, tool): re-opening the entry raises the one already up, settings intact.
+static std::map<std::pair<Scene *, std::string>, RemoteSDialog *> g_remotesDlgs;
+
+void RemoteSDialog::forget() {
+	for (auto it = g_remotesDlgs.begin(); it != g_remotesDlgs.end(); )
+		it = (it->second == this) ? g_remotesDlgs.erase(it) : std::next(it);
+}
+
+// The Remote sensing submenu's entries all come through here. A window created and shown while the
+// menu popup still holds its input grab never reaches the screen (the Compute Euler entry's finding),
+// so the open WAITS for the popup to be gone. Then: create or restore, make sure it is on a screen,
+// show + raise + activate, and only then the prefill — whose first call pays the Julia JIT.
+static void openRemoteSDialogNow(QWidget *win, Scene *s, const std::string &tool) {
+	if (!sceneAlive(s)) return;
+	auto it = g_remotesDlgs.find({s, tool});
+	if (it != g_remotesDlgs.end() && it->second && it->second->dlg) { it->second->unpark(); return; }
+	warmupTool("remotes");
+	RemoteSDialog *rd = new RemoteSDialog(win, s, tool);
+	if (!rd->dlg) {
+		delete rd;
+		QMessageBox::warning(win, "Remote sensing",
+		                     QString("Could not load %1/remotes_%2.ui").arg(gmtvtkUiDir(), QString::fromStdString(tool)));
+		return;
+	}
+	g_remotesDlgs[{s, tool}] = rd;
+	QDialog *d = rd->dlg;
+	// The .ui's own geometry puts it at (0,0) of the primary screen: over the viewer instead.
+	d->move(win->frameGeometry().center() - QPoint(d->width() / 2, d->height() / 2));
+	d->show();
+	d->raise();
+	d->activateWindow();
+	QApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
+	rd->request("init", false);   // prefill (the window's own file, its bands, the tool's lists)
+}
+
+static void openRemoteSDialog(QWidget *win, Scene *s, const std::string &tool) {
+	// Self-rescheduling until no popup holds the input grab (~1 s of tries at most, then it opens
+	// anyway — never silently give up on the user's click).
+	auto tries = std::make_shared<int>(0);
+	auto step = std::make_shared<std::function<void()>>();
+	*step = [win, s, tool, tries, step]() {
+		if (QApplication::activePopupWidget() && ++*tries < 30) {
+			QTimer::singleShot(30, win, *step);
+			return;
+		}
+		openRemoteSDialogNow(win, s, tool);
+	};
+	QTimer::singleShot(0, win, *step);
+}
+
+// ============================================================================================
 // grdfft (GMT menu) — the 2-D FFT of the window's grid: operate in the frequency domain and come
 // back (a grid), or estimate the power spectrum (a table). Loaded at RUNTIME via QUiLoader from
 // deps/ui/grdfft_dialog.ui.
@@ -28262,6 +28604,17 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		warmupTool("oceancolor");
 		new OceanColorDialog(win, s);
 	});
+	// Remote sensing — the RemoteS port (src/RemoteS/). ONE addMenu at the end of this menu; every
+	// entry is the same generic dialog over its own .ui (RemoteSDialog, above).
+	QMenu *mRs = mSat->addMenu("Remote sensing");
+	mRs->addAction("Spectral indices…",           [win, s]() { openRemoteSDialog(win, s, "indices"); });
+	mRs->addAction("True color…",                 [win, s]() { openRemoteSDialog(win, s, "truecolor"); });
+	mRs->addAction("Landsat calibration…",        [win, s]() { openRemoteSDialog(win, s, "calibration"); });
+	mRs->addAction("Supervised classification…",  [win, s]() { openRemoteSDialog(win, s, "classify"); });
+	mRs->addAction("Band cube (cut)…",            [win, s]() { openRemoteSDialog(win, s, "cutcube"); });
+	mRs->addAction("MODIS L2 swath to grid…",     [win, s]() { openRemoteSDialog(win, s, "modisl2"); });
+	mRs->addSeparator();
+	mRs->addAction("MODIS scenes (Terra/Aqua)…",  [win, s]() { openRemoteSDialog(win, s, "modisscenes"); });
 
 	// --- Tools menu: open the standalone X,Y plot tool (blank; ready for File>Open or Julia) ----
 	QMenu *mTools = win->menuBar()->addMenu("&Tools");

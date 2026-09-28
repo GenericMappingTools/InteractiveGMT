@@ -1,0 +1,225 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>RemoteSModisL2</class>
+ <widget class="QDialog" name="RemoteSModisL2">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>460</width>
+    <height>250</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>MODIS L2 swath to grid</string>
+  </property>
+  <widget class="QGroupBox" name="gb_input">
+   <property name="geometry">
+    <rect>
+     <x>11</x>
+     <y>11</y>
+     <width>438</width>
+     <height>160</height>
+    </rect>
+   </property>
+   <property name="title">
+    <string>Swath file (data at the sensor, lon/lat arrays)</string>
+   </property>
+   <widget class="QLabel" name="lbl_file">
+    <property name="geometry">
+     <rect>
+      <x>11</x>
+      <y>27</y>
+      <width>54</width>
+      <height>26</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>File</string>
+    </property>
+   </widget>
+   <widget class="QLineEdit" name="p_file">
+    <property name="geometry">
+     <rect>
+      <x>71</x>
+      <y>27</y>
+      <width>326</width>
+      <height>26</height>
+     </rect>
+    </property>
+    <property name="refresh" stdset="0">
+     <bool>true</bool>
+    </property>
+   </widget>
+   <widget class="QToolButton" name="browse_p_file">
+    <property name="geometry">
+     <rect>
+      <x>403</x>
+      <y>30</y>
+      <width>24</width>
+      <height>20</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>Choose the L2 file</string>
+    </property>
+    <property name="text">
+     <string>...</string>
+    </property>
+    <property name="filter" stdset="0">
+     <string>netCDF / HDF (*.nc *.nc4 *.hdf *.h5);;All files (*)</string>
+    </property>
+   </widget>
+   <widget class="QLabel" name="lbl_var">
+    <property name="geometry">
+     <rect>
+      <x>11</x>
+      <y>59</y>
+      <width>54</width>
+      <height>26</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Array</string>
+    </property>
+   </widget>
+   <widget class="QComboBox" name="p_var">
+    <property name="geometry">
+     <rect>
+      <x>71</x>
+      <y>59</y>
+      <width>356</width>
+      <height>26</height>
+     </rect>
+    </property>
+   </widget>
+   <widget class="QLabel" name="lbl_quality">
+    <property name="geometry">
+     <rect>
+      <x>11</x>
+      <y>91</y>
+      <width>54</width>
+      <height>26</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Quality</string>
+    </property>
+   </widget>
+   <widget class="QComboBox" name="p_quality">
+    <property name="geometry">
+     <rect>
+      <x>71</x>
+      <y>91</y>
+      <width>356</width>
+      <height>26</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>MODIS files only: the quality flag the kept pixels may have.</string>
+    </property>
+    <item>
+     <property name="text">
+      <string>Best only (0)</string>
+     </property>
+    </item>
+    <item>
+     <property name="text">
+      <string>Best + intermediate (≤ 1)</string>
+     </property>
+    </item>
+    <item>
+     <property name="text">
+      <string>All (≤ 2)</string>
+     </property>
+    </item>
+   </widget>
+   <widget class="QLabel" name="lbl_inc">
+    <property name="geometry">
+     <rect>
+      <x>11</x>
+      <y>123</y>
+      <width>54</width>
+      <height>26</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Increment</string>
+    </property>
+   </widget>
+   <widget class="QLineEdit" name="p_inc">
+    <property name="geometry">
+     <rect>
+      <x>71</x>
+      <y>123</y>
+      <width>154</width>
+      <height>26</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>Grid spacing in degrees. Empty = estimated from the swath's own spacing.</string>
+    </property>
+   </widget>
+   <widget class="QLabel" name="lbl_region">
+    <property name="geometry">
+     <rect>
+      <x>231</x>
+      <y>123</y>
+      <width>37</width>
+      <height>26</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Region</string>
+    </property>
+   </widget>
+   <widget class="QLineEdit" name="p_region">
+    <property name="geometry">
+     <rect>
+      <x>274</x>
+      <y>123</y>
+      <width>153</width>
+      <height>26</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>W/E/S/N. Empty = the swath's extent.</string>
+    </property>
+   </widget>
+  </widget>
+  <widget class="QLabel" name="lbl_status">
+   <property name="geometry">
+    <rect>
+     <x>11</x>
+     <y>177</y>
+     <width>438</width>
+     <height>30</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string/>
+   </property>
+   <property name="wordWrap">
+    <bool>true</bool>
+   </property>
+  </widget>
+  <widget class="QPushButton" name="run_compute">
+   <property name="geometry">
+    <rect>
+     <x>368</x>
+     <y>213</y>
+     <width>81</width>
+     <height>26</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>Grid it</string>
+   </property>
+   <property name="busy" stdset="0">
+    <string>Interpolating the swath onto a grid…</string>
+   </property>
+  </widget>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

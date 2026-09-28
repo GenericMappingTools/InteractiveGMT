@@ -151,6 +151,8 @@ include("gmtedit.jl")    # Geophysics > Magnetics > gmtedit: the MGD77 track edi
 include("isocs.jl")      # parse Mirone data/isocs/*.dat isochron header -> write via shapenc
 include("palettes.jl")   # Image > Color Palettes: the six palette families + CPT I/O (port of Mirone color_palettes.m)
 include("bandslist.jl")  # Image > Load Bands: multiband/.vrt band picker (port of Mirone bands_list.m)
+include("RemoteS/RemoteS.jl") # submodule InteractiveGMT.RemoteS: port of RemoteS.jl (indices, Landsat, MODIS L2, orbits)
+include("RemoteS/remotes_gui.jl") # Satellite > Remote sensing: the dialogs over that submodule
 
 export gmtscript, gmtreplay,
        view_grid, view_image, view_points, view_fv, view_demo, iview,

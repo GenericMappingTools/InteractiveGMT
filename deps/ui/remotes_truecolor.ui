@@ -1,0 +1,197 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>RemoteSTruecolor</class>
+ <widget class="QDialog" name="RemoteSTruecolor">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>440</width>
+    <height>266</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>True color</string>
+  </property>
+  <widget class="QGroupBox" name="gb_input">
+   <property name="geometry">
+    <rect>
+     <x>11</x>
+     <y>11</y>
+     <width>418</width>
+     <height>190</height>
+    </rect>
+   </property>
+   <property name="title">
+    <string>Band cube</string>
+   </property>
+   <widget class="QLabel" name="lbl_file">
+    <property name="geometry">
+     <rect>
+      <x>11</x>
+      <y>27</y>
+      <width>32</width>
+      <height>26</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>File</string>
+    </property>
+   </widget>
+   <widget class="QLineEdit" name="p_file">
+    <property name="geometry">
+     <rect>
+      <x>49</x>
+      <y>27</y>
+      <width>328</width>
+      <height>26</height>
+     </rect>
+    </property>
+    <property name="refresh" stdset="0">
+     <bool>true</bool>
+    </property>
+   </widget>
+   <widget class="QToolButton" name="browse_p_file">
+    <property name="geometry">
+     <rect>
+      <x>383</x>
+      <y>30</y>
+      <width>24</width>
+      <height>20</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>Choose the band cube</string>
+    </property>
+    <property name="text">
+     <string>...</string>
+    </property>
+    <property name="filter" stdset="0">
+     <string>Rasters (*.tif *.tiff *.nc *.vrt *.img *.jp2);;All files (*)</string>
+    </property>
+   </widget>
+   <widget class="QLabel" name="lbl_r">
+    <property name="geometry">
+     <rect>
+      <x>11</x>
+      <y>59</y>
+      <width>32</width>
+      <height>26</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Red</string>
+    </property>
+   </widget>
+   <widget class="QComboBox" name="p_r">
+    <property name="geometry">
+     <rect>
+      <x>49</x>
+      <y>59</y>
+      <width>358</width>
+      <height>26</height>
+     </rect>
+    </property>
+   </widget>
+   <widget class="QLabel" name="lbl_g">
+    <property name="geometry">
+     <rect>
+      <x>11</x>
+      <y>91</y>
+      <width>32</width>
+      <height>26</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Green</string>
+    </property>
+   </widget>
+   <widget class="QComboBox" name="p_g">
+    <property name="geometry">
+     <rect>
+      <x>49</x>
+      <y>91</y>
+      <width>358</width>
+      <height>26</height>
+     </rect>
+    </property>
+   </widget>
+   <widget class="QLabel" name="lbl_bl">
+    <property name="geometry">
+     <rect>
+      <x>11</x>
+      <y>123</y>
+      <width>32</width>
+      <height>26</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Blue</string>
+    </property>
+   </widget>
+   <widget class="QComboBox" name="p_bl">
+    <property name="geometry">
+     <rect>
+      <x>49</x>
+      <y>123</y>
+      <width>358</width>
+      <height>26</height>
+     </rect>
+    </property>
+   </widget>
+   <widget class="QCheckBox" name="p_stretch">
+    <property name="geometry">
+     <rect>
+      <x>11</x>
+      <y>155</y>
+      <width>396</width>
+      <height>24</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>Automatic histogram stretch of each band (off: a plain min-max scale to 0-255).</string>
+    </property>
+    <property name="text">
+     <string>Automatic contrast stretch</string>
+    </property>
+    <property name="checked">
+     <bool>true</bool>
+    </property>
+   </widget>
+  </widget>
+  <widget class="QLabel" name="lbl_status">
+   <property name="geometry">
+    <rect>
+     <x>11</x>
+     <y>207</y>
+     <width>418</width>
+     <height>16</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string/>
+   </property>
+   <property name="wordWrap">
+    <bool>true</bool>
+   </property>
+  </widget>
+  <widget class="QPushButton" name="run_compute">
+   <property name="geometry">
+    <rect>
+     <x>348</x>
+     <y>229</y>
+     <width>81</width>
+     <height>26</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>Compose</string>
+   </property>
+   <property name="busy" stdset="0">
+    <string>Composing the RGB image…</string>
+   </property>
+  </widget>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

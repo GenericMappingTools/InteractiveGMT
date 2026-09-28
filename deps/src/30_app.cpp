@@ -456,6 +456,17 @@ static JuliaSentinelHubFn g_juliaSentinelHub = nullptr;
 typedef int (*JuliaSatelliteFn)(void *scene, const char *params, char *out, int cap);
 static JuliaSatelliteFn g_juliaSatellite = nullptr;
 
+// Satellite > Remote sensing (src/RemoteS/remotes_gui.jl over InteractiveGMT.RemoteS). ONE callback
+// for every dialog of that submenu (RemoteSDialog, 70_window.cpp), same shape as the Satellite one.
+// The dialog is GENERIC: it knows no tool. Request, NEWLINE-separated "key=value":
+//   tool=<name of the .ui: remotes_<tool>.ui>,  what=init|refresh|<suffix of the run_ button>
+//   <p_widget>=<value> for every widget named p_* (combos add <p_widget>_idx=<0-based index>)
+// Answer, one directive per line, applied to the dialog as they come:
+//   items:<w>=a<TAB>b  set:<w>=<v>  label:<w>=<text>  enable:<w>=0|1  status=<text>
+// Returns 1 on success, 0 on failure (then `out` is the error text).
+typedef int (*JuliaRemoteSFn)(void *scene, const char *params, char *out, int cap);
+static JuliaRemoteSFn g_juliaRemoteS = nullptr;
+
 // The FFT tool (Mag/Grav > FFT tool, Image > FFT Spectrum, Grid Tools > Spectrum). One request
 // string does every operation: "op;grid1;grid2;newRows;newCols;coords;detrend;value" -- see
 // _on_fftstuff (src/fftstuff.jl) for what each field means. Returns 1 on success, 0 on failure.
@@ -2129,29 +2140,27 @@ static void addManualButton(QDialog *dlg, QBoxLayout *row, const QString &module
 	addManualButton(dlg, row, [moduleName]() { return moduleName; });
 }
 
-// Reflow every tooltip in a dialog onto SHORT LINES. Qt lays a plain-text tooltip out on one line
-// however long it is, which on a sentence of explanation gives a ribbon stretching past the screen
-// edge and is unreadable. A tooltip that is RICH text wraps, so each one is turned into rich text
-// with explicit breaks at word boundaries. Tooltips that already carry markup are left alone, and
-// so are short ones (nothing to wrap). One function, applied where every .ui dialog finishes, so no
-// dialog has to remember to do it — and none of them carries <br> in its .ui.
+// Reflow every tooltip in a dialog into a readable PARAGRAPH. Qt lays a plain-text tooltip out on one
+// line however long it is, which on a sentence of explanation gives a ribbon stretching past the
+// screen edge and is unreadable. A RICH-text tooltip is word-wrapped by Qt itself, so each long one is
+// turned into rich text held in a table of a fixed width — about `cols` characters of the tooltip
+// font — and Qt breaks it ONCE, at word boundaries, to fit that width.
+// NO hand-inserted line breaks: they used to be put in at `cols` characters, and Qt then wrapped each
+// of those lines AGAIN at its own tooltip width, which is narrower on a large font — every line lost
+// its last word to a line of its own ("automatically," / "good" / "a"). One wrap, done by the layout
+// engine, cannot do that. Tooltips that already carry markup are left alone, and so are short ones.
+// One function, applied where every .ui dialog finishes, so no dialog has to remember to do it.
 static void wrapTooltips(QWidget *root, int cols = 64) {
 	if (!root) return;
+	const int px = QFontMetrics(QToolTip::font()).averageCharWidth() * cols;
 	QList<QWidget *> all = root->findChildren<QWidget *>();
 	all.prepend(root);
 	for (QWidget *w : all) {
 		const QString t = w->toolTip();
 		if (t.isEmpty() || t.size() <= cols) continue;
 		if (t.startsWith("<") || t.contains("<br", Qt::CaseInsensitive)) continue;   // already rich
-		QString out;
-		int line = 0;
-		for (const QString &word : t.split(QRegularExpression("\\s+"), Qt::SkipEmptyParts)) {
-			if (line > 0 && line + 1 + word.size() > cols) { out += "<br>"; line = 0; }
-			else if (line > 0)                             { out += ' ';    line += 1; }
-			out += word.toHtmlEscaped();
-			line += word.size();
-		}
-		w->setToolTip("<html>" + out + "</html>");
+		const QString text = t.simplified().toHtmlEscaped();
+		w->setToolTip(QString("<table width=\"%1\"><tr><td>%2</td></tr></table>").arg(px).arg(text));
 	}
 }
 

@@ -85,6 +85,7 @@ const _TEST_SYMBOLS = (
 	:gmtvtk_aqua_show_eta_test,       # put the eta(x) figure up through the Cinema tab's own box
 	:gmtvtk_aqua_set_prof_range_test, # the Cinema profile x0/length boxes (the span the host is asked for)
 	:gmtvtk_widget_enabled_test,      # is a named widget enabled? (the benchmark lock, on the widget)
+	:gmtvtk_window_active_test,       # is a named top-level window the active (front) one?
 
 	:gmtvtk_platecalc_open_dialog_test, :gmtvtk_platecalc_close_dialog_test,
 	:gmtvtk_platecalc_delete_dialog_test, :gmtvtk_platecalc_parked_test,

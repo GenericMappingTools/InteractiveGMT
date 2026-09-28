@@ -88,6 +88,7 @@ function _ensure_callbacks()
 	                    ("ecv",         _register_ecv),
 	                    ("sentinelhub", _register_sentinelhub),
 	                    ("satellite",   _register_satellite),   # Satellite > Satellite orbits (satellite.jl)
+	                    ("remotes",     _register_remotes),     # Satellite > Remote sensing (RemoteS/remotes_gui.jl)
 	                    ("fftstuff",    _register_fftstuff),
 	                    ("gravmag3d",   _register_gravmag3d),
 	                    ("grdgravmag3d",_register_grdgravmag3d),

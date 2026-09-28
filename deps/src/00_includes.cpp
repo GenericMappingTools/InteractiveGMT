@@ -134,6 +134,7 @@
 #include <QContextMenuEvent>
 #include <QUrl>
 #include <QDesktopServices>
+#include <QTextBrowser>
 
 #include <QVTKOpenGLNativeWidget.h>
 

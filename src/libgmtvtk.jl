@@ -303,6 +303,7 @@ const _LIB_OPTIONAL = (
 	:gmtvtk_set_meca_sdr_h,    # focal mechanisms: attach each event's strike/dip/rake to its ball
 	:gmtvtk_set_sentinelhub_callback, # Copernicus > Sentinel Hub imagery (src/sentinelhub.jl)
 	:gmtvtk_set_satellite_callback,   # Satellite > Satellite orbits (src/satellite.jl)
+	:gmtvtk_set_remotes_callback,     # Satellite > Remote sensing (src/RemoteS/remotes_gui.jl)
 	# SGP4/SDP4 satellite propagation (deps/src/satellite.cpp over the vendored
 	# deps/src/sat_code/, a second translation unit of this DLL exactly like mbgrid.c).
 	# OPTIONAL rather than in _LIB_SYMBOLS above only because the C side is new: it
