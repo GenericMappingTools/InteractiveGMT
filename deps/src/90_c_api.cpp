@@ -7218,6 +7218,10 @@ struct TestWindowParker : QObject {
 };
 GMTVTK_API int gmtvtk_hide_windows_test(int on) {
 	if (!QApplication::instance()) return -1;
+	// This DLL's own ensureApp() looks only at ITS g_app, which is still null here: the first test hook
+	// that calls it would build a SECOND QApplication, and every window after that would bypass the
+	// filter below (it lives on the first one). Adopt the application that already exists instead.
+	if (!g_app) g_app = qobject_cast<QApplication *>(QApplication::instance());
 	static TestWindowParker *p = nullptr;
 	if (!p) { p = new TestWindowParker; QApplication::instance()->installEventFilter(p); }
 	const int was = p->on ? 1 : 0;
