@@ -49,6 +49,7 @@
 		   vmid = marks[max(1, length(marks) ÷ 2)], vend = slider(h), cur = st.cur + 1)
 	end
 
+	aqf_on_screen() do                     # the real mouse needs the window on the screen
 	mktempdir() do dir
 		# 40 steps: enough that a working hold cannot run out of slices inside the hold window.
 		nc = aqf_make_tsunami_nc(joinpath(dir, "tsu_transport.nc"); nt = 40)
@@ -76,6 +77,7 @@
 			aqf_close(f.h)
 		end
 	end
+	end
 end
 
 # THE SAME HOLD WITH "Sat img" ON, ON A REAL-SIZE TANK. With the satellite drape on, every slice also
@@ -93,6 +95,7 @@ end
 	check(h, name, on) = ccall(GmtvtkTest._test_fn(:gmtvtk_aqua_check_test), Cint,
 	                           (Ptr{Cvoid}, Cstring, Cint), h, name, Cint(on))
 
+	aqf_on_screen() do                     # the real mouse needs the window on the screen
 	mktempdir() do dir
 		nc = aqf_make_tsunami_nc(joinpath(dir, "tsu_sat.nc"); nx = 765, ny = 476, nt = 40, coast = true)
 		f = iview()
@@ -130,6 +133,7 @@ end
 		finally
 			aqf_close(f.h)
 		end
+	end
 	end
 end
 

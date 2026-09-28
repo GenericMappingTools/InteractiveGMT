@@ -115,6 +115,28 @@ using Test
 # name, and the two verdict testsets at the bottom PRINT whatever nobody claimed and fail on it.
 InteractiveGMT._TEST_MODE[] = true
 
+# THE GUI TIER RUNS OFF THE USER'S SCREEN. Every window the run opens is parked beyond the edge of
+# the desktop as it appears (gmtvtk_hide_windows_test, the test DLL), where it still renders, so the
+# pixel checks read the same frames and nobody's screen flickers for eight minutes. The only items
+# that bring their window back are the two that press the REAL mouse (test-aquamoto-transport-gui.jl),
+# for as long as they press. INTERACTIVEGMT_TEST_SHOW=1 leaves every window on screen, to watch a run.
+const _SHOW_GUI = lowercase(strip(get(ENV, "INTERACTIVEGMT_TEST_SHOW", "0"), [' ', '"', '\''])) in ("1", "true", "yes", "on")
+if _RUN_GUI && !_SHOW_GUI
+	let name = Sys.iswindows() ? "gmtvtk_test.dll" : Sys.isapple() ? "libgmtvtk_test.dylib" : "libgmtvtk_test.so",
+	    libs = filter(isfile, [joinpath(InteractiveGMT._PKGROOT, "deps", "build", name),
+	                           joinpath(first(Base.DEPOT_PATH), "gmtvtk_runtime", "deps", "build", name)])
+		ok = try
+			ccall(InteractiveGMT._fn(:gmtvtk_app_init), Cint, ()) == 1 && !isempty(libs) &&
+				ccall(InteractiveGMT.Libdl.dlsym(InteractiveGMT.Libdl.dlopen(first(libs)), :gmtvtk_hide_windows_test),
+				      Cint, (Cint,), 1) >= 0
+		catch e
+			@warn "tests: could not park the GUI windows off screen" exception = (e,)
+			false
+		end
+		ok || @warn "tests: the GUI windows will be ON SCREEN this run"
+	end
+end
+
 @run_package_tests verbose=true filter = ti ->
 	(_RUN_GUI || !(:gui in ti.tags)) && (_RUN_NET || !(:net in ti.tags)) &&
 	(isempty(_ONLY) || occursin(_ONLY, ti.name)) &&

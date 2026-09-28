@@ -56,6 +56,19 @@ function _on_drop(scene::Ptr{Cvoid}, path::AbstractString)::Cvoid
 			_ge_open_dropped(scene, String(path))
 			return
 		end
+		# A Level-2 SWATH (an OB.DAAC MODIS/VIIRS/OLCI L2 file: data at the sensor, with its own
+		# lon/lat arrays) is not a grid either: it has to be gridded, which is what Satellite > Remote
+		# sensing > "MODIS L2 swath to grid" does. It opens THAT tool with the file loaded and its
+		# increment and region filled (the same open the Region tab's download uses); nothing is
+		# gridded until its Grid it is pressed. Deferred to the next event-loop turn, like Aquamoto's.
+		if _rs_is_l2_swath(String(path))
+			ccall(_fn(:gmtvtk_remotes_queue_open), Cvoid, (Ptr{Cvoid}, Cstring, Cstring), scene, "modisl2", String(path))
+			try
+				ccall(_fn(:gmtvtk_add_recent), Cvoid, (Cstring, Cint), abspath(String(path)), Cint(0))
+			catch
+			end
+			return
+		end
 		# Already shown in a live window -> raise that window and ignore the duplicate drop.
 		_open_window_for(path) != C_NULL && return
 		empty = ccall(_fn(:gmtvtk_has_surface), Cint, (Ptr{Cvoid},), scene) == 0

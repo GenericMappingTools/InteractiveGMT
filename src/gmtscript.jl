@@ -945,16 +945,19 @@ end
 function _script_emit_geography(ctx::ScriptCtx, r::ElementRecipe)
 	p = split(get(r.params, "req", ""), '/')
 	length(p) >= 2 || return nothing
-	kind = String(p[1]); res = Symbol(strip(String(p[2])))
+	# "borders:<class>" / "rivers:<class>": the GMT -N / -I class rides after the colon.
+	full = String(p[1]); res = Symbol(strip(String(p[2])))
+	kind, cls = occursin(':', full) ? String.(split(full, ':'; limit = 2)) : (full, "1")
 	kind in ("coast", "borders", "rivers") || return nothing     # point layers land as symbol layers
+	typ = something(tryparse(Int, cls), cls)
 	# Line-properties edits are captured into the recipe at save time by the session's own pen
 	# capture; use them when present so an edited coastline exports as edited.
 	getp(k, d) = (v = get(r.params, k, nothing); v === nothing ? d : parse(Float64, string(v)))
 	pen = (round(getp("pen_w", 1.0); sigdigits=3), _script_rgb(getp("pen_r", 0.0), getp("pen_g", 0.0), getp("pen_b", 0.0)))
 	kw = Pair{Symbol,Any}[:res => res]
 	kind == "coast"   && push!(kw, :shore => pen)
-	kind == "borders" && push!(kw, :borders => (type=1, pen=pen))
-	kind == "rivers"  && push!(kw, :rivers => (type=1, pen=pen))
+	kind == "borders" && push!(kw, :borders => (type=typ, pen=pen))
+	kind == "rivers"  && push!(kw, :rivers => (type=typ, pen=pen))
 	return ScriptStep("$(r.name)  (geography, $kind)", DataBind[], :coast, nothing, kw, true)
 end
 

@@ -79,9 +79,36 @@ end # @testmodule
 			@test trig(entry) == 1
 			IG._pump_once()
 		end
-		# A dialog comes up IN FRONT of the iGMT window, never behind it: the last one opened is active.
+		# A dialog comes up IN FRONT of the iGMT window, never behind it: the last one opened is active...
 		@test ccall(_test_fn(:gmtvtk_window_active_test), Cint, (Cstring,), "RemoteSModisScenes") == 1
+		# ...and every one is OWNED by the iGMT window, so Windows can never put it behind that window.
+		for nm in ("RemoteSIndices", "RemoteSTruecolor", "RemoteSCalibration", "RemoteSClassify",
+		           "RemoteSCutcube", "RemoteSModisL2", "RemoteSModisScenes")
+			@test ccall(_test_fn(:gmtvtk_window_owned_test), Cint, (Cstring,), nm) == 1
+		end
 	finally
+		ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), f.h)
+	end
+end
+
+@testitem "Remote sensing: Enter in a text box never runs the tool (MODIS L2 swath to grid)" tags=[:gui, :remotes] setup=[RemoteSGui, GmtvtkTest] begin
+	IG = InteractiveGMT
+	_test_fn = GmtvtkTest._test_fn
+	f = view_grid(IG.GMT.peaks())
+	real = IG._RS_TOOLS["modisl2"]
+	asked = String[]
+	IG._RS_TOOLS["modisl2"] = (s, d, io) -> (push!(asked, get(d, "what", "")); true)
+	try
+		@test ccall(_test_fn(:gmtvtk_menu_trigger_test), Cint, (Ptr{Cvoid}, Cstring), f.h, "MODIS L2 swath to grid") == 1
+		for _ in 1:5; IG._pump_once(); end
+		@test "init" in asked                                   # the dialog is up and talking
+		for w in ("p_file", "p_inc", "p_rg_w", "p_rg_n")
+			@test ccall(_test_fn(:gmtvtk_press_return_test), Cint, (Cstring, Cstring), "RemoteSModisL2", w) == 1
+			IG._pump_once()
+		end
+		@test !("compute" in asked)                             # only the Grid it button grids
+	finally
+		IG._RS_TOOLS["modisl2"] = real
 		ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), f.h)
 	end
 end

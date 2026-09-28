@@ -72,12 +72,7 @@ function grid_at_sensor(fname::String, sds_name::String=""; quality::Int=0, V::B
 	(sds_name == "") && error("Must provide the band name to process. Try grid_at_sensor(\"\", list=true) to print available bands")
 
 	# Get the arrays  SUBDATASET names
-	sds_z  = helper_find_sds(sds_name, info, ind_EOLs)		# Return the full SUBDATASET name (a string)
-	x_name::String = ((val = find_in_dict(d, [:xarray])[1]) !== nothing) ? string(val) : "longitude"
-	y_name::String = ((val = find_in_dict(d, [:yarray])[1]) !== nothing) ? string(val) : "latitude"
-	sds_qual = (is_MODIS) ? helper_find_sds("qual_" * sds_name, info, ind_EOLs) : ""
-	sds_lon = helper_find_sds(x_name, info, ind_EOLs)
-	sds_lat = helper_find_sds(y_name, info, ind_EOLs)
+	sds_z, sds_qual, sds_lon, sds_lat = _sensor_sds(sds_name, d, info, ind_EOLs, is_MODIS)
 
 	# Get the arrays with the data
 	band::Int = ((val = find_in_dict(d, [:band])[1]) !== nothing) ? Int(val) : 1
@@ -91,13 +86,7 @@ function grid_at_sensor(fname::String, sds_name::String=""; quality::Int=0, V::B
 	lon, lat, z_vals, inc, proj4 = get_xyz_qual(sds_lon, sds_lat, sds_z, quality, sds_qual, inc, band, t_srs, nodata, V)
 
 	if (opt_R == "" && !haskey(d, :xyz) && !haskey(d, :dataset))	# If != "" believe it makes sense as a -R option
-		inc_txt = split("$(inc[1])", '.')[2]	# To count the number of decimal digits to use in rounding
-		nd = length(inc_txt)					# and the number of decimals count
-		min_lon, max_lon = extrema(lon)
-		min_lat, max_lat = extrema(lat)
-		west  = round(min_lon; digits=nd);	east  = west  + round(Int, (max_lon - west)  / inc[1]) * inc[1]
-		south = round(min_lat; digits=nd);	north = south + round(Int, (max_lat - south) / inc[2]) * inc[2]
-		opt_R = @sprintf("%.10g/%.10g/%.10g/%.10g", west, east, south, north)
+		opt_R = @sprintf("%.10g/%.10g/%.10g/%.10g", _sensor_region(lon, lat, inc)...)
 	else
 		opt_R = opt_R[4:end]					# Because it already came with " -R....." from parse_R()
 	end
@@ -111,6 +100,42 @@ function grid_at_sensor(fname::String, sds_name::String=""; quality::Int=0, V::B
 	end
 	O.proj4 = proj4
 	return O
+end
+
+# The full SUBDATASET names of the data array, its MODIS quality array ("" if none) and the lon/lat arrays.
+function _sensor_sds(sds_name::String, d::Dict, info::String, ind_EOLs::Vector{UnitRange{Int64}}, is_MODIS::Bool)
+	sds_z  = helper_find_sds(sds_name, info, ind_EOLs)		# Return the full SUBDATASET name (a string)
+	x_name::String = ((val = find_in_dict(d, [:xarray])[1]) !== nothing) ? string(val) : "longitude"
+	y_name::String = ((val = find_in_dict(d, [:yarray])[1]) !== nothing) ? string(val) : "latitude"
+	sds_qual = (is_MODIS) ? helper_find_sds("qual_" * sds_name, info, ind_EOLs) : ""
+	return sds_z, sds_qual, helper_find_sds(x_name, info, ind_EOLs), helper_find_sds(y_name, info, ind_EOLs)
+end
+
+# The -R grid_at_sensor grids on when none is given: the data's extent, W and S rounded to the
+# increment's decimals, E and N a whole number of increments away.
+function _sensor_region(lon::AbstractArray{<:Real}, lat::AbstractArray{<:Real}, inc::Vector{Float64})::NTuple{4,Float64}
+	inc_txt = split("$(inc[1])", '.')[2]	# To count the number of decimal digits to use in rounding
+	nd = length(inc_txt)					# and the number of decimals count
+	min_lon, max_lon = extrema(lon)
+	min_lat, max_lat = extrema(lat)
+	west  = round(min_lon; digits=nd);	east  = west  + round(Int, (max_lon - west)  / inc[1]) * inc[1]
+	south = round(min_lat; digits=nd);	north = south + round(Int, (max_lat - south) / inc[2]) * inc[2]
+	return Float64(west), Float64(east), Float64(south), Float64(north)
+end
+
+"""
+    inc, (W, E, S, N) = sensor_limits(fname, sds_name; quality=0, inc=[0.0, 0.0])
+
+The increment and the region `grid_at_sensor(fname, sds_name; quality, inc)` grids on when it is
+given no region — the same arrays read, the same quality filter, the same estimate (when `inc` is
+zeros) — without the gridding.
+"""
+function sensor_limits(fname::String, sds_name::String; quality::Int=0,
+                       inc::Vector{Float64}=[0.0, 0.0])::Tuple{Vector{Float64},NTuple{4,Float64}}
+	info, ind_EOLs, is_MODIS = _subdatasets_info(fname)
+	sds_z, sds_qual, sds_lon, sds_lat = _sensor_sds(sds_name, Dict{Symbol,Any}(), info, ind_EOLs, is_MODIS)
+	lon, lat, _, inc, _ = get_xyz_qual(sds_lon, sds_lat, sds_z, quality, sds_qual, inc)
+	return inc, _sensor_region(lon, lat, inc)
 end
 
 # gdalinfo of a file, retried once after a GMT reset (something still screws it time to time).

@@ -289,14 +289,45 @@ end
 
 # --- MODIS L2 swath to grid ---------------------------------------------------------------------
 
+# Is `path` a Level-2 swath (what "MODIS L2 swath to grid" grids)? By CONTENT, not name: an OB.DAAC
+# L2 file says so itself (global processing_level = L2) and carries the swath's navigation_data
+# longitude/latitude arrays. A plain netCDF grid, a Level-3 map or an Aquamoto file answers false.
+function _rs_is_l2_swath(path::String)::Bool
+	lowercase(splitext(path)[2]) in (".nc", ".nc4", ".h5", ".hdf", ".he5") || return false
+	isfile(path) || return false
+	s = try GMT.gdalinfo(path) catch; return false end
+	s isa AbstractString || return false
+	return occursin(r"NC_GLOBAL#processing_level=L2\b", s) &&
+	       occursin("navigation_data/longitude", s) && occursin("navigation_data/latitude", s)
+end
+
 function _rs_modisl2(scene::Ptr{Cvoid}, d::Dict{String,String}, io::IOBuffer)::Bool
 	what = _rs_get(d, "what")
 	file = _rs_get(d, "p_file")
 	if what == "init" || what == "refresh"
+		# A new file fills the arrays AND the increment + region "Grid it" would use on its own
+		# (RS.sensor_limits: grid_at_sensor's own estimate). Nothing is gridded until "Grid it".
 		vars = (isempty(file) || !isfile(file)) ? String[] : RS.sds_names(file)
 		_rs_items(io, "p_var", vars)
-		isempty(vars) || _rs_set(io, "p_var", something(findfirst(v -> v in ("sst", "chlor_a"), vars), 1) - 1)
-		_rs_status(io, isempty(vars) ? "Choose a MODIS (or other swath) L2 netCDF file." : "$(length(vars)) arrays in the file.")
+		if isempty(vars)
+			_rs_status(io, "Choose a MODIS (or other swath) L2 netCDF file.")
+			return true
+		end
+		k = something(findfirst(v -> v in ("sst", "chlor_a"), vars), 1)
+		_rs_set(io, "p_var", k - 1)
+		note = try
+			# ONE increment for x and y, 0.02 degrees as the first choice (the swath's own spacing gives
+			# unequal dx/dy); the region is rounded on it, as grid_at_sensor rounds on the increment.
+			inc, (W, E, S, N) = RS.sensor_limits(file, vars[k]; quality = _rs_idx(d, "p_quality"), inc = [0.02, 0.02])
+			_rs_set(io, "p_inc", string(inc[1]))
+			for (w, v) in (("p_rg_w", W), ("p_rg_e", E), ("p_rg_s", S), ("p_rg_n", N))
+				_rs_set(io, w, string(round(v, sigdigits = 10)))   # W + n*inc: no -0.21999999999999886 in a box
+			end
+			" Increment and region are those of the swath of \"$(vars[k])\"; edit them, then press Grid it."
+		catch e
+			" (Could not estimate the increment and region: $(sprint(showerror, e)))"
+		end
+		_rs_status(io, "$(length(vars)) arrays in the file." * note)
 		return true
 	end
 	what == "compute" || error("unknown request: $what")
@@ -305,9 +336,15 @@ function _rs_modisl2(scene::Ptr{Cvoid}, d::Dict{String,String}, io::IOBuffer)::B
 	isempty(var) && error("Pick the array to grid.")
 	kw = Pair{Symbol,Any}[]
 	inc = _rs_get(d, "p_inc")
-	isempty(inc) || push!(kw, :inc => parse(Float64, inc))
-	reg = _rs_get(d, "p_region")
-	isempty(reg) || push!(kw, :region => reg)
+	isempty(inc) || push!(kw, :inc => RS._inc_arg(String(inc)))
+	lims = [_rs_get(d, w) for w in ("p_rg_w", "p_rg_e", "p_rg_s", "p_rg_n")]
+	if all(!isempty, lims)
+		W, E, S, N = (parse(Float64, x) for x in lims)
+		(W < E && S < N) || error("The region must have W < E and S < N.")
+		push!(kw, :region => join(lims, '/'))
+	elseif any(!isempty, lims)
+		error("Give all four limits of the region, or none (then the swath's extent is used).")
+	end
 	G = RS.grid_at_sensor(file, var; quality = _rs_idx(d, "p_quality"), kw...)
 	G isa GMTgrid || error("got a $(typeof(G)), not a grid")
 	name = "$(var) — $(splitext(basename(file))[1])"
@@ -404,18 +441,22 @@ function _rs_tle_pairs(txt::String)::Vector{Tuple{String,String}}
 end
 
 # Every set on disk for `norad`, after making sure the months around `when` (±3 days) are there.
-function _rs_st_history(norad::String, when::DateTime, user::String, pass::String)::String
+_rs_st_history(norad::String, when::DateTime, user::String, pass::String)::String =
+	_rs_st_history(norad, when - GMT.Dates.Day(3), when + GMT.Dates.Day(3), user, pass)
+
+# ...and for a whole period: the months covering [t0, t1].
+function _rs_st_history(norad::String, t0::DateTime, t1::DateTime, user::String, pass::String)::String
 	dir = _rs_st_dir();  mkpath(dir)
 	ftle, fmon = joinpath(dir, "$(norad).tle"), joinpath(dir, "$(norad).months")
 	done = isfile(fmon) ? Set(String.(split(read(fmon, String)))) : Set{String}()
 	have = isfile(ftle) ? _rs_tle_pairs(read(ftle, String)) : Tuple{String,String}[]
 	seen = Set(p[1] for p in have)
 	today = GMT.Dates.Date(RS.now(RS.UTC))
-	# The months around `when` still to ask for: not complete on disk, not in the future, and (the
+	# The months of [t0, t1] still to ask for: not complete on disk, not in the future, and (the
 	# current month) not asked in the last 2 h.
 	need = Tuple{GMT.Dates.Date,GMT.Dates.Date}[]
-	d = GMT.Dates.firstdayofmonth(GMT.Dates.Date(when - GMT.Dates.Day(3)))
-	while d <= GMT.Dates.Date(when + GMT.Dates.Day(3))
+	d = GMT.Dates.firstdayofmonth(GMT.Dates.Date(t0))
+	while d <= GMT.Dates.Date(t1)
 		d1 = GMT.Dates.lastdayofmonth(d)
 		key = GMT.Dates.format(d, "yyyy-mm")
 		!(key in done) && d <= today && time() - get(_RS_ST_RECENT, "$(norad) $(key)", -Inf) > 7200.0 &&
@@ -442,20 +483,26 @@ end
 
 # The TLE for `sat` nearest to `when` (JD), from the chosen source, and its epoch.
 function _rs_modis_tle(d::Dict{String,String}, sat::String, when::Float64)::Tuple{TLE, Float64}
+	t = datetime(when)
+	tles, eps = _rs_tle_sets(d, sat, t - GMT.Dates.Day(3), t + GMT.Dates.Day(3))
+	k = argmin(abs.(eps .- when))
+	return tles[k], eps[k]
+end
+
+# Every element set of `sat` the chosen source has for [t0, t1], and their epochs (JD).
+function _rs_tle_sets(d::Dict{String,String}, sat::String, t0::DateTime, t1::DateTime)::Tuple{Vector{TLE},Vector{Float64}}
 	src = _rs_get(d, "p_tlesrc")
 	txt = if startswith(src, "TLE file")
 		_rs_need_file(_rs_get(d, "p_tlefile"), "TLE file")
 	elseif startswith(src, "Space-Track")
 		u, p = _rs_netrc_get(_rs_netrc_path(), _RS_ST)
-		_rs_st_history(_RS_NORAD[sat], datetime(when), u, p)
+		_rs_st_history(_RS_NORAD[sat], t0, t1, u, p)
 	else
 		_tle_fetch(_RS_CELESTRAK)
 	end
 	tles = filter(t -> _rs_norad(t) == _RS_NORAD[sat], read_tle(txt))
 	isempty(tles) && error("No $(sat) (NORAD $(_RS_NORAD[sat])) element set in that source.")
-	eps = Float64[_rs_tle_epoch(t) for t in tles]
-	k = argmin(abs.(eps .- when))
-	return tles[k], eps[k]
+	return tles, Float64[_rs_tle_epoch(t) for t in tles]
 end
 
 # The scene files as clickable download links: OB.DAAC's getfile + the file name, the address its own
@@ -537,6 +584,136 @@ function _rs_scene_links(names::Vector{String}, p0::Int = -1)::Tuple{String,Int,
 	end
 	return isempty(rows) ? "" : "<div align=\"right\">" * join(rows, "<br>") * "</div>", nmiss, nunread
 end
+
+# --- Region tab: every scene over a rectangle in a period, as a download script ------------------
+# NASA's CMR granule search does the spatial and day/night selection on its side, from each file's own
+# footprint: only the region's files come back (a month of Terra SST over Iberia: 0.7 s), exact names,
+# no orbit and no orbital elements involved. OB.DAAC files each product in two collections, the
+# reprocessed one and the near-real-time one; both are asked and the reprocessed file wins.
+
+const _RS_CMR = "https://cmr.earthdata.nasa.gov/search/granules.json"
+# The Region tab's sensors — those of the Oceancolor dialog — as (Satellite combo text, CMR collection
+# stem, products). Collection = stem * "_" * product [* "_NRT"]; verified in CMR 2026-09-28. OLCI has
+# no thermal bands (no SST) and is taken at its reduced resolution (ERR, 1.2 km), as Oceancolor does.
+const _RS_CMR_SENSORS = Tuple{String,String,Vector{String}}[
+	("Aqua (MODIS)",       "MODISA_L2",       ["SST", "OC"]),
+	("Terra (MODIS)",      "MODIST_L2",       ["SST", "OC"]),
+	("Suomi-NPP (VIIRS)",  "VIIRSN_L2",       ["SST", "OC"]),
+	("NOAA-20 (VIIRS)",    "VIIRSJ1_L2",      ["SST", "OC"]),
+	("Sentinel-3A (OLCI)", "OLCIS3A_L2_ERR",  ["OC"]),
+	("Sentinel-3B (OLCI)", "OLCIS3B_L2_ERR",  ["OC"]),
+]
+_rs_cmr_collection(stem::String, prod::String, nrt::Bool)::String = stem * "_" * prod * (nrt ? "_NRT" : "")
+
+# Every granule name of `coll` over the box in [t0, t1], paged 2000 at a time (CMR-Search-After).
+function _rs_cmr_names(coll::String, W::Float64, E::Float64, S::Float64, N::Float64,
+                       t0::String, t1::String, dn::String)::Vector{String}
+	url = "$(_RS_CMR)?short_name=$(coll)&bounding_box=$(W),$(S),$(E),$(N)&temporal=$(t0),$(t1)&page_size=2000" *
+	      (isempty(dn) ? "" : "&day_night_flag=$(dn)")
+	names = String[];  after = ""
+	while true
+		out = IOBuffer()
+		r = Downloads.request(url; output = out, headers = isempty(after) ? Pair{String,String}[] : ["CMR-Search-After" => after])
+		r.status == 200 || error("NASA's CMR answered HTTP $(r.status) for $(coll).")
+		page = String[m.captures[1] for m in eachmatch(r"\"producer_granule_id\":\"([^\"]+)\"", String(take!(out)))]
+		append!(names, page)
+		nxt = [v for (k, v) in r.headers if lowercase(k) == "cmr-search-after"]
+		(length(page) < 2000 || isempty(nxt)) && break
+		after = nxt[1]
+	end
+	return names
+end
+
+# One OB.DAAC file to `path`, logged in with the Earthdata entry of .netrc: getfile redirects to
+# urs.earthdata.nasa.gov, and curl answers it from the netrc there (what wget --auth-no-challenge
+# does in the scripts), with the session cookie kept along the redirect chain. Written to a ".part"
+# file and checked to be netCDF/HDF5 before it takes the name: a refused login sends back a web page.
+function _rs_download(url::String, path::String)::Nothing
+	nrc = _rs_netrc_path()
+	u, p = _rs_netrc_get(nrc, _RS_URS)
+	(isempty(u) || isempty(p)) && error("Downloading needs your Earthdata login: save it in the Accounts tab.")
+	C = Downloads.Curl
+	dl = Downloads.Downloader()
+	dl.easy_hook = (easy, info) -> begin
+		C.setopt(easy, C.CURLOPT_NETRC, C.CURL_NETRC_OPTIONAL)
+		C.setopt(easy, C.CURLOPT_NETRC_FILE, nrc)
+		C.setopt(easy, C.CURLOPT_COOKIEFILE, "")
+		C.setopt(easy, C.CURLOPT_UNRESTRICTED_AUTH, 1)
+	end
+	part = path * ".part";  tl = Ref(0.0)
+	prog(total, now) = (time() - tl[] > 0.25 && total > 0) &&
+		(tl[] = time(); _rs_prog(round(Int, 100 * now / total),
+		                         "Downloading $(basename(path)): $(round(now / 2^20, digits = 1)) of $(round(total / 2^20, digits = 1)) MB"))
+	try
+		Downloads.download(url, part; downloader = dl, progress = prog)
+		head = open(io -> read(io, 4), part)
+		(head == UInt8[0x89, 0x48, 0x44, 0x46] || head[1:3] == UInt8[0x43, 0x44, 0x46]) ||
+			error("OB.DAAC did not send a netCDF file (a refused Earthdata login sends a web page): check the login in the Accounts tab.")
+		mv(part, path; force = true)
+	finally
+		isfile(part) && rm(part; force = true)
+	end
+	return nothing
+end
+
+# The script's download line, in the form of the user's own geta.bat.
+function _rs_wget_line(name::String, user::String, pass::String)::String
+	if Sys.iswindows()
+		q(s) = "\"" * replace(s, "%" => "%%") * "\""
+		return "wget -nc --waitretry=5 --retry-on-http-error=429 --user=$(q(user)) --password=$(q(pass)) --auth-no-challenge=on $(_RS_OBDAAC)$(name)"
+	end
+	sq(s) = "'" * replace(s, "'" => "'\\''") * "'"
+	return "wget -nc --waitretry=5 --retry-on-http-error=429 --user=$(sq(user)) --password=$(sq(pass)) --auth-no-challenge=on $(_RS_OBDAAC)$(name)"
+end
+
+function _rs_region_run(d::Dict{String,String}, io::IOBuffer)::Bool
+	W, E, S, N = (_rs_num(d, k, NaN) for k in ("p_rg_w", "p_rg_e", "p_rg_s", "p_rg_n"))
+	any(isnan, (W, E, S, N)) && error("Give the four limits of the region.")
+	(W < E && S < N) || error("The region must have W < E and S < N.")
+	day0 = GMT.Dates.Date(DateTime(_rs_get(d, "p_rg_from")))
+	day1 = GMT.Dates.Date(DateTime(_rs_get(d, "p_rg_to")))
+	day0 <= day1 || error("The period ends before it starts.")
+	script = _rs_get(d, "p_rg_script")          # empty: the script opens in a text window instead
+	eu, ep = _rs_netrc_get(_rs_netrc_path(), _RS_URS)
+	(isempty(eu) || isempty(ep)) && error("The script needs your Earthdata login: save it in the Accounts tab.")
+	prod = startswith(_rs_get(d, "p_rg_product"), "Chlor") ? "OC" : "SST"
+	lab = _rs_get(d, "p_rg_sat", "Aqua (MODIS)")
+	k = findfirst(t -> t[1] == lab, _RS_CMR_SENSORS)
+	k === nothing && error("Unknown satellite \"$(lab)\".")
+	sat, stem, prods = _RS_CMR_SENSORS[k]
+	prod in prods || error("$(sat) has no $(prod) product (OLCI has no thermal bands): choose Chlorophyll-a.")
+	w = _rs_get(d, "p_rg_daynight")
+	dn = startswith(w, "Day") ? "day" : startswith(w, "Night") ? "night" : ""
+	t0, t1 = "$(day0)T00:00:00Z", "$(day1)T23:59:59Z"
+
+	_rs_prog(20, "Asking NASA's CMR for the $(sat) $(prod) scenes over the region…")
+	got = asyncmap(nrt -> _rs_cmr_names(_rs_cmr_collection(stem, prod, nrt), W, E, S, N, t0, t1, dn), (false, true))
+	_rs_prog(90, "Writing the script…")
+	# One file per scene: the reprocessed one when both exist (the NRT name is the same with ".NRT").
+	byscene = Dict{String,String}()
+	for n in Iterators.flatten(got)
+		key = replace(n, ".NRT.nc" => ".nc")
+		old = get(byscene, key, "")
+		(isempty(old) || (occursin(".NRT.", old) && !occursin(".NRT.", n))) && (byscene[key] = n)
+	end
+	names = sort!(collect(values(byscene)), rev = true)
+
+	head = Sys.iswindows() ? "@echo off" : "#!/bin/sh"
+	lines = vcat(head, String[_rs_wget_line(n, eu, ep) for n in names])
+	if isempty(script)
+		# No file named: the whole script in a text window (tabs = new lines on the wire), saved from there.
+		println(io, "editor:", Sys.iswindows() ? "getmodis.bat" : "getmodis.sh", "=", join(lines, '\t'))
+		where = "shown in the text window: save it from there"
+	else
+		eol = Sys.iswindows() ? "\r\n" : "\n"
+		write(script, join(lines, eol) * eol)
+		Sys.iswindows() || chmod(script, 0o755)
+		where = "written to $(script)"
+	end
+	_rs_status(io, "$(length(names)) $(sat) $(prod) scene(s) over $(W)/$(E)/$(S)/$(N), $(day0) to $(day1), $(where).")
+	return true
+end
+
 
 function _rs_links_note(nmiss::Int, nunread::Int)::String
 	s = nmiss > 0 ? " $(nmiss) not (yet) at OB.DAAC: not processed yet, or no ocean in it." : ""
@@ -630,7 +807,35 @@ function _rs_modisscenes(scene::Ptr{Cvoid}, d::Dict{String,String}, io::IOBuffer
 		_rs_status(io, "$(nm) login saved in $(f) (machine $(mach)).")
 		return true
 	end
+	if what == "download"
+		url, path = _rs_get(d, "dl_url"), _rs_get(d, "dl_path")
+		(isempty(url) || isempty(path)) && error("No file to download.")
+		_rs_prog_show("Downloading $(basename(path))…")
+		try
+			_rs_download(url, path)
+		finally
+			_rs_prog_close()
+		end
+		_rs_status(io, "Downloaded $(path) ($(round(filesize(path) / 2^20, digits = 1)) MB).")
+		return true
+	end
+	if what == "rgwindow" || (what == "init" && !_rs_empty(scene))
+		st = _scene_state(scene)
+		if haskey(st, "x0") && st["x1"] > st["x0"] && st["y1"] > st["y0"]
+			for (w, k) in (("p_rg_w", "x0"), ("p_rg_e", "x1"), ("p_rg_s", "y0"), ("p_rg_n", "y1"))
+				_rs_set(io, w, string(round(Float64(st[k]), digits = 4)))
+			end
+		elseif what == "rgwindow"
+			error("The window shows nothing yet: type the limits.")
+		end
+		what == "rgwindow" && return true
+	end
 	if what == "init"
+		# The Region tab opens on the last complete month. Its script box stays as the .ui has it: empty
+		# means "show the script in a text window".
+		m1 = GMT.Dates.firstdayofmonth(GMT.Dates.Date(RS.now(RS.UTC))) - GMT.Dates.Day(1)
+		_rs_set(io, "p_rg_from", "$(GMT.Dates.firstdayofmonth(m1))T00:00:00")
+		_rs_set(io, "p_rg_to", "$(m1)T00:00:00")
 		f = _rs_netrc_path()
 		for (pre, lbl, mach, _) in accts
 			u, p, why = try
@@ -648,7 +853,9 @@ function _rs_modisscenes(scene::Ptr{Cvoid}, d::Dict{String,String}, io::IOBuffer
 		what == "init" && _rs_status(io, "Elements are good for a few days around their epoch: for a past date use \"Space-Track history\" (login in the Accounts tab) or a TLE file; the set nearest the date is taken.")
 		return true
 	end
-	_rs_prog_show(byfile ? "Reading the TLE file…" : startswith(src, "Space-Track") ?
+	what == "region" || what == "scenes" || what == "find" || error("unknown request: $what")
+	_rs_prog_show(what == "region" ? "Asking NASA's CMR for the scenes over the region…" :
+	              byfile ? "Reading the TLE file…" : startswith(src, "Space-Track") ?
 	              "Reading the $(sat) element history (Space-Track, or the copy already on disk)…" :
 	              "Reading the orbital elements from Celestrak…")
 	try
@@ -661,6 +868,7 @@ end
 # "scenes" and "find", under the progress dialog _rs_modisscenes put up: elements 0-10, orbit 10-30,
 # the OB.DAAC names 30-100.
 function _rs_modis_run(scene::Ptr{Cvoid}, d::Dict{String,String}, io::IOBuffer, what::String, sat::String)::Bool
+	what == "region" && return _rs_region_run(d, io)   # its own Satellite list
 	when = _rs_modis_when(d)
 	tle, ep = _rs_modis_tle(d, sat, jd(when))
 	_rs_prog(10, "Propagating the $(sat) orbit…")
@@ -724,7 +932,10 @@ function _on_remotes(scene::Ptr{Cvoid}, params::Cstring, out::Ptr{UInt8}, cap::C
 		_rs_get(d, "what") in ("init", "refresh") || warm_wait("remotes")
 		io = IOBuffer()
 		f(scene, d, io)
-		_sat_reply(out, cap, String(take!(io)))
+		ans = String(take!(io))
+		# Never a silently cut answer (a download script missing its last lines looks complete).
+		sizeof(ans) < cap || error("The answer ($(sizeof(ans)) bytes) does not fit the dialog's $(cap)-byte buffer.")
+		_sat_reply(out, cap, ans)
 		return Cint(1)
 	catch e
 		try; _tool_failed(scene, "Remote sensing" * (isempty(tool) ? "" : " ($tool)"), e); catch; end

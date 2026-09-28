@@ -86,6 +86,9 @@ const _TEST_SYMBOLS = (
 	:gmtvtk_aqua_set_prof_range_test, # the Cinema profile x0/length boxes (the span the host is asked for)
 	:gmtvtk_widget_enabled_test,      # is a named widget enabled? (the benchmark lock, on the widget)
 	:gmtvtk_window_active_test,       # is a named top-level window the active (front) one?
+	:gmtvtk_hide_windows_test,        # park the run's windows off the user's screen (runtests.jl)
+	:gmtvtk_press_return_test,        # press Return in a named widget of a named window
+	:gmtvtk_window_owned_test,        # is a named top-level window OWNED (can never go behind its owner)?
 
 	:gmtvtk_platecalc_open_dialog_test, :gmtvtk_platecalc_close_dialog_test,
 	:gmtvtk_platecalc_delete_dialog_test, :gmtvtk_platecalc_parked_test,

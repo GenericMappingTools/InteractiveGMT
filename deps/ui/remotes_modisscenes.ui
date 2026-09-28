@@ -464,12 +464,28 @@
       <rect>
        <x>5</x>
        <y>405</y>
-       <width>345</width>
+       <width>141</width>
        <height>16</height>
       </rect>
      </property>
      <property name="text">
-      <string>Scene files (OB.DAAC names)</string>
+      <string>Scene files names</string>
+     </property>
+    </widget>
+    <widget class="QCheckBox" name="p_l2open">
+     <property name="geometry">
+      <rect>
+       <x>189</x>
+       <y>403</y>
+       <width>151</width>
+       <height>20</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>Checked: clicking a file downloads it here (Earthdata login of the Accounts tab), asks where to save it, and opens it in &quot;MODIS L2 swath to grid&quot; ready to grid. Unchecked: the link opens in your web browser.</string>
+     </property>
+     <property name="text">
+      <string>Open after download</string>
      </property>
     </widget>
     <widget class="QTextBrowser" name="p_found">
@@ -494,6 +510,483 @@
       <bool>true</bool>
      </property>
      <property name="scrollRight" stdset="0">
+      <bool>true</bool>
+     </property>
+    </widget>
+   </widget>
+   <widget class="QWidget" name="tab_region">
+    <attribute name="title">
+     <string>Region</string>
+    </attribute>
+    <widget class="QGroupBox" name="gb_rg_region">
+     <property name="geometry">
+      <rect>
+       <x>5</x>
+       <y>7</y>
+       <width>345</width>
+       <height>142</height>
+      </rect>
+     </property>
+     <property name="title">
+      <string>Region</string>
+     </property>
+     <widget class="QLabel" name="lbl_rg_n">
+      <property name="geometry">
+       <rect>
+        <x>37</x>
+        <y>27</y>
+        <width>26</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="frameShape">
+       <enum>QFrame::Shape::Box</enum>
+      </property>
+      <property name="text">
+       <string>N</string>
+      </property>
+      <property name="alignment">
+       <set>Qt::AlignmentFlag::AlignCenter</set>
+      </property>
+     </widget>
+     <widget class="QLabel" name="lbl_rg_w">
+      <property name="geometry">
+       <rect>
+        <x>11</x>
+        <y>53</y>
+        <width>26</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="frameShape">
+       <enum>QFrame::Shape::Box</enum>
+      </property>
+      <property name="text">
+       <string>W</string>
+      </property>
+      <property name="alignment">
+       <set>Qt::AlignmentFlag::AlignCenter</set>
+      </property>
+     </widget>
+     <widget class="QLabel" name="lbl_rg_e">
+      <property name="geometry">
+       <rect>
+        <x>63</x>
+        <y>53</y>
+        <width>26</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="frameShape">
+       <enum>QFrame::Shape::Box</enum>
+      </property>
+      <property name="text">
+       <string>E</string>
+      </property>
+      <property name="alignment">
+       <set>Qt::AlignmentFlag::AlignCenter</set>
+      </property>
+     </widget>
+     <widget class="QLabel" name="lbl_rg_s">
+      <property name="geometry">
+       <rect>
+        <x>37</x>
+        <y>79</y>
+        <width>26</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="frameShape">
+       <enum>QFrame::Shape::Box</enum>
+      </property>
+      <property name="text">
+       <string>S</string>
+      </property>
+      <property name="alignment">
+       <set>Qt::AlignmentFlag::AlignCenter</set>
+      </property>
+     </widget>
+     <widget class="QLineEdit" name="p_rg_n">
+      <property name="geometry">
+       <rect>
+        <x>150</x>
+        <y>28</y>
+        <width>130</width>
+        <height>24</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string>45</string>
+      </property>
+      <property name="alignment">
+       <set>Qt::AlignmentFlag::AlignCenter</set>
+      </property>
+     </widget>
+     <widget class="QLineEdit" name="p_rg_w">
+      <property name="geometry">
+       <rect>
+        <x>100</x>
+        <y>54</y>
+        <width>114</width>
+        <height>24</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string>-25</string>
+      </property>
+      <property name="alignment">
+       <set>Qt::AlignmentFlag::AlignCenter</set>
+      </property>
+     </widget>
+     <widget class="QLineEdit" name="p_rg_e">
+      <property name="geometry">
+       <rect>
+        <x>220</x>
+        <y>54</y>
+        <width>114</width>
+        <height>24</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string>0</string>
+      </property>
+      <property name="alignment">
+       <set>Qt::AlignmentFlag::AlignCenter</set>
+      </property>
+     </widget>
+     <widget class="QLineEdit" name="p_rg_s">
+      <property name="geometry">
+       <rect>
+        <x>150</x>
+        <y>80</y>
+        <width>130</width>
+        <height>24</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string>20</string>
+      </property>
+      <property name="alignment">
+       <set>Qt::AlignmentFlag::AlignCenter</set>
+      </property>
+     </widget>
+     <widget class="QPushButton" name="run_rgwindow">
+      <property name="geometry">
+       <rect>
+        <x>11</x>
+        <y>110</y>
+        <width>323</width>
+        <height>24</height>
+       </rect>
+      </property>
+      <property name="toolTip">
+       <string>Fill the four limits with the region the window is showing.</string>
+      </property>
+      <property name="text">
+       <string>Use the window's limits</string>
+      </property>
+     </widget>
+    </widget>
+    <widget class="QGroupBox" name="gb_rg_period">
+     <property name="geometry">
+      <rect>
+       <x>5</x>
+       <y>155</y>
+       <width>345</width>
+       <height>152</height>
+      </rect>
+     </property>
+     <property name="title">
+      <string>Period</string>
+     </property>
+     <widget class="QLabel" name="lbl_rg_sat">
+      <property name="geometry">
+       <rect>
+        <x>11</x>
+        <y>27</y>
+        <width>55</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string>Satellite</string>
+      </property>
+     </widget>
+     <widget class="QComboBox" name="p_rg_sat">
+      <property name="geometry">
+       <rect>
+        <x>70</x>
+        <y>27</y>
+        <width>264</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="toolTip">
+       <string>The sensors of the Oceancolor dialog. Sentinel-3 OLCI has no thermal bands: chlorophyll only, at its reduced (1.2 km, ERR) resolution.</string>
+      </property>
+      <item>
+       <property name="text">
+        <string>Aqua (MODIS)</string>
+       </property>
+      </item>
+      <item>
+       <property name="text">
+        <string>Terra (MODIS)</string>
+       </property>
+      </item>
+      <item>
+       <property name="text">
+        <string>Suomi-NPP (VIIRS)</string>
+       </property>
+      </item>
+      <item>
+       <property name="text">
+        <string>NOAA-20 (VIIRS)</string>
+       </property>
+      </item>
+      <item>
+       <property name="text">
+        <string>Sentinel-3A (OLCI)</string>
+       </property>
+      </item>
+      <item>
+       <property name="text">
+        <string>Sentinel-3B (OLCI)</string>
+       </property>
+      </item>
+     </widget>
+     <widget class="QLabel" name="lbl_rg_from">
+      <property name="geometry">
+       <rect>
+        <x>11</x>
+        <y>57</y>
+        <width>50</width>
+        <height>22</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string>From</string>
+      </property>
+     </widget>
+     <widget class="QDateEdit" name="p_rg_from">
+      <property name="geometry">
+       <rect>
+        <x>70</x>
+        <y>57</y>
+        <width>110</width>
+        <height>22</height>
+       </rect>
+      </property>
+      <property name="toolTip">
+       <string>First day of the period (UTC), included.</string>
+      </property>
+      <property name="displayFormat">
+       <string>yyyy-MM-dd</string>
+      </property>
+      <property name="calendarPopup">
+       <bool>true</bool>
+      </property>
+     </widget>
+     <widget class="QLabel" name="lbl_rg_to">
+      <property name="geometry">
+       <rect>
+        <x>194</x>
+        <y>57</y>
+        <width>24</width>
+        <height>22</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string>To</string>
+      </property>
+     </widget>
+     <widget class="QDateEdit" name="p_rg_to">
+      <property name="geometry">
+       <rect>
+        <x>224</x>
+        <y>57</y>
+        <width>110</width>
+        <height>22</height>
+       </rect>
+      </property>
+      <property name="toolTip">
+       <string>Last day of the period (UTC), included.</string>
+      </property>
+      <property name="displayFormat">
+       <string>yyyy-MM-dd</string>
+      </property>
+      <property name="calendarPopup">
+       <bool>true</bool>
+      </property>
+     </widget>
+     <widget class="QLabel" name="lbl_rg_daynight">
+      <property name="geometry">
+       <rect>
+        <x>11</x>
+        <y>87</y>
+        <width>50</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string>When</string>
+      </property>
+     </widget>
+     <widget class="QComboBox" name="p_rg_daynight">
+      <property name="geometry">
+       <rect>
+        <x>70</x>
+        <y>87</y>
+        <width>264</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <item>
+       <property name="text">
+        <string>Any time</string>
+       </property>
+      </item>
+      <item>
+       <property name="text">
+        <string>Day passes</string>
+       </property>
+      </item>
+      <item>
+       <property name="text">
+        <string>Night passes</string>
+       </property>
+      </item>
+     </widget>
+     <widget class="QLabel" name="lbl_rg_product">
+      <property name="geometry">
+       <rect>
+        <x>11</x>
+        <y>119</y>
+        <width>50</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string>Product</string>
+      </property>
+     </widget>
+     <widget class="QComboBox" name="p_rg_product">
+      <property name="geometry">
+       <rect>
+        <x>70</x>
+        <y>119</y>
+        <width>264</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <item>
+       <property name="text">
+        <string>Sea surface temperature (L2 SST)</string>
+       </property>
+      </item>
+      <item>
+       <property name="text">
+        <string>Chlorophyll-a (L2 OC)</string>
+       </property>
+      </item>
+     </widget>
+    </widget>
+    <widget class="QGroupBox" name="gb_rg_out">
+     <property name="geometry">
+      <rect>
+       <x>5</x>
+       <y>313</y>
+       <width>345</width>
+       <height>94</height>
+      </rect>
+     </property>
+     <property name="title">
+      <string>Download script</string>
+     </property>
+     <widget class="QLabel" name="lbl_rg_script">
+      <property name="geometry">
+       <rect>
+        <x>11</x>
+        <y>27</y>
+        <width>50</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string>File</string>
+      </property>
+     </widget>
+     <widget class="QLineEdit" name="p_rg_script">
+      <property name="geometry">
+       <rect>
+        <x>40</x>
+        <y>27</y>
+        <width>265</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="toolTip">
+       <string>The script to write: a .bat file on Windows, a shell script elsewhere. One wget line per scene, newest first; run it in the folder where the files should land. Left empty, the script opens in a text window, to be saved from there wherever you want.</string>
+      </property>
+     </widget>
+     <widget class="QToolButton" name="browse_p_rg_script">
+      <property name="geometry">
+       <rect>
+        <x>310</x>
+        <y>30</y>
+        <width>24</width>
+        <height>20</height>
+       </rect>
+      </property>
+      <property name="toolTip">
+       <string>Save the download script as</string>
+      </property>
+      <property name="text">
+       <string>...</string>
+      </property>
+      <property name="save" stdset="0">
+       <bool>true</bool>
+      </property>
+      <property name="filter" stdset="0">
+       <string>Scripts (*.bat *.sh);;All files (*)</string>
+      </property>
+     </widget>
+     <widget class="QPushButton" name="run_region">
+      <property name="geometry">
+       <rect>
+        <x>11</x>
+        <y>59</y>
+        <width>323</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="toolTip">
+       <string>Ask NASA's CMR for every scene of the chosen satellite whose footprint covers the region in the period, and write the download script.</string>
+      </property>
+      <property name="text">
+       <string>Find the scenes and write the script</string>
+      </property>
+      <property name="busy" stdset="0">
+       <string>Finding the scenes over the region…</string>
+      </property>
+     </widget>
+    </widget>
+    <widget class="QLabel" name="lbl_rg_info">
+     <property name="geometry">
+      <rect>
+       <x>5</x>
+       <y>415</y>
+       <width>345</width>
+       <height>80</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>The scenes are found by NASA's own search (CMR), from each file's footprint, so no orbital elements are needed and every sensor of the list works the same. The Earthdata login of the Accounts tab is written into the script.</string>
+     </property>
+     <property name="alignment">
+      <set>Qt::AlignmentFlag::AlignLeading|Qt::AlignmentFlag::AlignLeft|Qt::AlignmentFlag::AlignTop</set>
+     </property>
+     <property name="wordWrap">
       <bool>true</bool>
      </property>
     </widget>
@@ -665,7 +1158,7 @@
        </rect>
       </property>
       <property name="text">
-       <string>For the "Space-Track history" elements. Free account: &lt;a href=&quot;https://www.space-track.org/auth/createAccount&quot;&gt;register here&lt;/a&gt;.</string>
+       <string>For the &quot;Space-Track history&quot; elements. Free account: &lt;a href=&quot;https://www.space-track.org/auth/createAccount&quot;&gt;register here&lt;/a&gt;.</string>
       </property>
       <property name="textFormat">
        <enum>Qt::TextFormat::RichText</enum>
@@ -703,7 +1196,7 @@
        </rect>
       </property>
       <property name="toolTip">
-       <string>Your Space-Track login (the e-mail address you registered with).</string>
+       <string>Your Space-Track login: the e-mail address you log in to the website with.</string>
       </property>
      </widget>
      <widget class="QLabel" name="lbl_st_pass">

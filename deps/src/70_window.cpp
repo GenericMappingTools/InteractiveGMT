@@ -13596,6 +13596,54 @@ void SatelliteDialog::forget() {
 //   * `run_<verb>`           a QPushButton that sends what=<verb>; dynamic property `busy` = the
 //                            busy notice text (SACRED_LAW.md no-dead-time: every run raises it)
 //   * `lbl_status`           the one-line status label
+// A generated script shown in an EDITABLE window, to be saved wherever the user wants (Remote sensing
+// > MODIS scenes, Region tab, when no script file was named). Copy, Save as…, Close. `name` is the
+// file name the Save dialog proposes; a shell script is saved executable.
+static void rsShowScriptEditor(QWidget *parent, const QString &name, const QString &text) {
+	auto *dlg = new QDialog(nullptr);
+	dlg->setAttribute(Qt::WA_DeleteOnClose);
+	dlg->setWindowTitle("Download script — " + name);
+	dlg->setWindowIcon(appIcon());
+	auto *lay = new QVBoxLayout(dlg);
+	auto *box = new QPlainTextEdit(text, dlg);
+	box->setLineWrapMode(QPlainTextEdit::NoWrap);
+	QFont mono("Consolas");
+	mono.setStyleHint(QFont::Monospace);
+	box->setFont(mono);
+	lay->addWidget(box, 1);
+	auto *row = new QHBoxLayout();
+	auto *copy = new QPushButton("Copy", dlg);
+	auto *save = new QPushButton("Save as…", dlg);
+	auto *close = new QPushButton("Close", dlg);
+	row->addStretch(1);
+	row->addWidget(copy);
+	row->addWidget(save);
+	row->addWidget(close);
+	lay->addLayout(row);
+	QObject::connect(copy, &QPushButton::clicked, dlg, [box]() { QApplication::clipboard()->setText(box->toPlainText()); });
+	QObject::connect(close, &QPushButton::clicked, dlg, &QDialog::close);
+	QObject::connect(save, &QPushButton::clicked, dlg, [dlg, box, name]() {
+		const QString fn = QFileDialog::getSaveFileName(dlg, "Save the download script", prefStartDir(name),
+		                                                "Scripts (*.bat *.sh);;All files (*)");
+		if (fn.isEmpty()) return;
+		rememberStartDir(fn);
+		QFile f(fn);
+		if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) {     // Text: CRLF on Windows, as a .bat wants
+			QMessageBox::warning(dlg, "Save", "Could not write " + fn);
+			return;
+		}
+		QTextStream(&f) << box->toPlainText();
+		f.close();
+		if (fn.endsWith(".sh"))
+			f.setPermissions(f.permissions() | QFileDevice::ExeOwner | QFileDevice::ExeGroup | QFileDevice::ExeOther);
+		dlg->setWindowTitle("Download script — " + fn);
+	});
+	dlg->resize(parent ? std::min(1000, parent->width() + 200) : 1000, 560);
+	dlg->show(); dlg->raise(); dlg->activateWindow();
+}
+
+static void rsOpenL2With(Scene *s, const QString &file);   // below, after the dialogs' registry
+
 class RemoteSDialog {
 public:
 	QDialog *dlg = nullptr;
@@ -13650,7 +13698,7 @@ public:
 
 	void say(const QString &m) {
 		if (lblStatus) lblStatus->setText(m);
-		if (scn && scn->win) scn->win->statusBar()->showMessage(m, 4000);
+		if (sceneAlive(scn) && scn->win) scn->win->statusBar()->showMessage(m, 4000);
 	}
 
 	// The request block: the tool, the verb, and every p_* widget as it stands.
@@ -13690,6 +13738,8 @@ public:
 			const QString kind = line.left(c);
 			const QString name = line.mid(c + 1, e - c - 1);
 			QString v = line.mid(e + 1);
+			// editor:<file name>=<text, tabs = new lines> -- a window of its own, not a widget of the dialog.
+			if (kind == "editor") { rsShowScriptEditor(dlg, name, v.replace('\t', '\n')); continue; }
 			QWidget *w = dlg ? dlg->findChild<QWidget *>(name) : nullptr;
 			if (!w) continue;
 			if (kind == "enable") { w->setEnabled(v == "1"); continue; }
@@ -13747,10 +13797,14 @@ public:
 
 	// ONE way into Julia for every request. A run raises the app's busy notice (SACRED_LAW.md
 	// no-dead-time); init/refresh are questions about the dialog itself and get the wait cursor.
-	bool request(const QString &what, bool run, const QString &busy = QString()) {
+	// `extra`: more key=value lines, for what is not a p_* widget (a clicked link, a chosen path).
+	bool request(const QString &what, bool run, const QString &busy = QString(), const QString &extra = QString()) {
+		// A window being closed tears its child dialogs down, and a text box losing focus on the way out
+		// fires editingFinished -> refresh: never call Julia (or touch the window) for a dying Scene.
+		if (!sceneAlive(scn)) return false;
 		if (!g_juliaRemoteS) { say("Remote sensing: callback not registered."); return false; }
-		const QString kv = collect(what);
-		std::vector<char> buf(1 << 18);
+		const QString kv = collect(what) + extra;
+		std::vector<char> buf(1 << 23);    // 8 MB: a year's download script comes back through here
 		buf[0] = '\0';
 		if (run) showBusyDialog((busy.isEmpty() ? QString("Working…") : busy).toUtf8().constData());
 		else     QApplication::setOverrideCursor(Qt::WaitCursor);
@@ -13784,7 +13838,10 @@ public:
 		f.close();
 		if (!dlg) { qWarning("RemoteSDialog: QUiLoader failed to load the .ui"); return; }
 		dlg->setAttribute(Qt::WA_DeleteOnClose);
-		dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint | Qt::WindowMinimizeButtonHint);
+		// Qt::Dialog, NOT Qt::Window: on Windows only a dialog-type window is OWNED by its parent, and an
+		// owned window can never go behind it. As a plain Qt::Window the dialog came up behind the iGMT
+		// window whenever anything re-activated that window after the open.
+		dlg->setWindowFlags(Qt::Dialog | Qt::WindowCloseButtonHint | Qt::WindowMinimizeButtonHint);
 		dlg->setWindowModality(Qt::NonModal);
 		QDialog *d = dlg;   // local copy — the member can't be lambda-captured
 		lblStatus = d->findChild<QLabel *>("lbl_status");
@@ -13851,6 +13908,9 @@ public:
 		// The wrapper dies WITH its dialog (the row's "Delete" frees the QDialog).
 		QObject::connect(d, &QObject::destroyed, d, [this]() { delete this; });
 		// Close parks, minimise parks (the shared filter), Esc/reject parks — same as every parkable tool.
+		// And ENTER NEVER RUNS ANYTHING: a Return a text box leaves unused reaches the dialog, whose
+		// default-button handling would press the first push button ("Grid it", "Compute"…) —
+		// autoDefault(false) does not stop it (NswingDialog, 2026-07-10). Only a click runs a tool.
 		struct CloseParks : QObject {
 			RemoteSDialog *rd;
 			CloseParks(QObject *p, RemoteSDialog *r) : QObject(p), rd(r) {}
@@ -13859,12 +13919,36 @@ public:
 					e->ignore();
 					return true;
 				}
+				if (e->type() == QEvent::KeyPress) {
+					const int k = static_cast<QKeyEvent *>(e)->key();
+					if (k == Qt::Key_Return || k == Qt::Key_Enter) { e->accept(); return true; }
+				}
 				return QObject::eventFilter(o, e);
 			}
 		};
 		d->installEventFilter(new CloseParks(d, this));
 		parkOnMinimise(d, [this]() { parkNow(); });
 		QObject::connect(d, &QDialog::rejected, d, [this]() { parkNow(); });
+
+		// A links panel (p_found) with its "open in MODIS L2 swath to grid" box (p_l2open): the dialog
+		// handles every click. Box off -> the web browser, as before. Box on -> ask where to save, let
+		// Julia download it with the Earthdata login, then open it in the L2 dialog, ready to grid.
+		if (auto *tb = d->findChild<QTextBrowser *>("p_found")) {
+			QCheckBox *cb = d->findChild<QCheckBox *>("p_l2open");
+			tb->setOpenLinks(false);
+			tb->setOpenExternalLinks(false);
+			QObject::connect(tb, &QTextBrowser::anchorClicked, d, [this, d, cb](const QUrl &u) {
+				if (!cb || !cb->isChecked()) { QDesktopServices::openUrl(u); return; }
+				const QString name = u.fileName();
+				const QString fn = QFileDialog::getSaveFileName(d, "Save the scene file", prefStartDir(name),
+				                                                "netCDF (*.nc);;All files (*)");
+				if (fn.isEmpty()) return;
+				rememberStartDir(fn);
+				if (request("download", true, "Downloading " + name + "…",
+				            "dl_url=" + u.toString() + "\ndl_path=" + fn + "\n"))
+					rsOpenL2With(scn, fn);
+			});
+		}
 
 		// Every tooltip of the .ui wrapped to a readable width — the same pass every tool dialog gets
 		// (addManualButton runs it; this dialog has no manual page, so it is called directly).
@@ -13906,6 +13990,17 @@ static void openRemoteSDialogNow(QWidget *win, Scene *s, const std::string &tool
 	d->activateWindow();
 	QApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
 	rd->request("init", false);   // prefill (the window's own file, its bands, the tool's lists)
+}
+
+// "MODIS L2 swath to grid" opened (or brought back) with `file` in its File box, and refreshed: the
+// arrays, the increment and the region fill in. It grids only when the user presses Grid it.
+static void rsOpenL2With(Scene *s, const QString &file) {
+	if (!sceneAlive(s) || !s->win) return;
+	openRemoteSDialogNow(s->win, s, "modisl2");
+	auto it = g_remotesDlgs.find({s, "modisl2"});
+	if (it == g_remotesDlgs.end() || !it->second || !it->second->dlg) return;
+	if (auto *le = it->second->dlg->findChild<QLineEdit *>("p_file")) le->setText(file);
+	it->second->refresh();
 }
 
 static void openRemoteSDialog(QWidget *win, Scene *s, const std::string &tool) {
@@ -27921,6 +28016,12 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 			// leave bare terrain the instant it spins. A globe asks for the WHOLE EARTH, once; the far
 			// side is hidden by the view (globeClipPlane), not by never having been fetched.
 			if (!s->globe) visibleRegion(W, E, S, N);
+			// The LINE features (coastlines, political boundaries, rivers) are drawn only INSIDE THE
+			// ACTIVE AXES: fetched for that frame's own limits and trimmed there (_geo_dataset), never
+			// for the wider view, whose lines ran out past the box. Point layers keep the view region.
+			const bool lineKind = kind == "coast" || kind.startsWith("borders:") || kind.startsWith("rivers:");
+			if (lineKind && !s->globe)
+				if (AxesSet *A = axesForActive(s)) { W = A->x0; E = A->x1; S = A->y0; N = A->y1; }
 			// Trailing field = Preferences "Coastlines color" (Black|White) for the line features
 			// (coast/borders/rivers); point datasets ignore it and keep their own symbol colours.
 			const QString req = QString("%1/%2/%3/%4/%5/%6/%7").arg(kind).arg(res)
@@ -27952,20 +28053,22 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	addResMenu(mGeo, "Plot coastline", "coast");
 
 	QMenu *mPB = mGeo->addMenu("Plot political boundaries");
-	addResMenu(mPB, "National boundaries");
-	addResMenu(mPB, "State boundaries (US)");
-	addResMenu(mPB, "All boundaries");
+	// "<kind>:<class>" = GMT coast -N (boundaries) / -I (rivers) class; the Julia side names each layer
+	// after its entry here (_GEO_LINE_NAMES, geography.jl).
+	addResMenu(mPB, "National boundaries",   "borders:1");
+	addResMenu(mPB, "State boundaries (US)", "borders:2");
+	addResMenu(mPB, "All boundaries",        "borders:a");
 
 	QMenu *mRiv = mGeo->addMenu("Plot rivers");
-	addResMenu(mRiv, "Permanent major rivers");
-	addResMenu(mRiv, "Additional major rivers");
-	addResMenu(mRiv, "Additional rivers");
-	addResMenu(mRiv, "Intermittent rivers - major");
-	addResMenu(mRiv, "Intermittent rivers - additional");
-	addResMenu(mRiv, "Intermittent rivers - minor");
-	addResMenu(mRiv, "All rivers and canals");
-	addResMenu(mRiv, "All permanent rivers");
-	addResMenu(mRiv, "All intermittent rivers");
+	addResMenu(mRiv, "Permanent major rivers",           "rivers:1");
+	addResMenu(mRiv, "Additional major rivers",          "rivers:2");
+	addResMenu(mRiv, "Additional rivers",                "rivers:3");
+	addResMenu(mRiv, "Intermittent rivers - major",      "rivers:5");
+	addResMenu(mRiv, "Intermittent rivers - additional", "rivers:6");
+	addResMenu(mRiv, "Intermittent rivers - minor",      "rivers:7");
+	addResMenu(mRiv, "All rivers and canals",            "rivers:a");
+	addResMenu(mRiv, "All permanent rivers",             "rivers:r");
+	addResMenu(mRiv, "All intermittent rivers",          "rivers:i");
 
 	// GADM (GMT.jl's `gadm`): a country's administrative units, from gadm.org — the same kind of
 	// geographic vector overlay as the GSHHG features above, but named rather than clipped to the

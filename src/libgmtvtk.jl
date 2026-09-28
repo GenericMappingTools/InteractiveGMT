@@ -304,6 +304,8 @@ const _LIB_OPTIONAL = (
 	:gmtvtk_set_sentinelhub_callback, # Copernicus > Sentinel Hub imagery (src/sentinelhub.jl)
 	:gmtvtk_set_satellite_callback,   # Satellite > Satellite orbits (src/satellite.jl)
 	:gmtvtk_set_remotes_callback,     # Satellite > Remote sensing (src/RemoteS/remotes_gui.jl)
+	:gmtvtk_app_init,                 # create the Qt application without a window (the test run's window filter)
+	:gmtvtk_remotes_queue_open,       # a dropped L2 swath opens "MODIS L2 swath to grid" with it (drop.jl)
 	# SGP4/SDP4 satellite propagation (deps/src/satellite.cpp over the vendored
 	# deps/src/sat_code/, a second translation unit of this DLL exactly like mbgrid.c).
 	# OPTIONAL rather than in _LIB_SYMBOLS above only because the C side is new: it

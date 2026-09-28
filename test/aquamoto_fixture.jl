@@ -192,6 +192,18 @@ aqf_object(h, kind::Symbol, name::AbstractString) = InteractiveGMT._find_object_
 # and auto-repeated through the layers after the finger was off. Only a real press/release shows it.
 # The ALT tap lets the window take the foreground (Windows refuses SetForegroundWindow otherwise),
 # and the item checks the arrow really is the window under the cursor before it trusts anything.
+# Real mouse input needs the window ON the screen: the run parks its windows off it (runtests.jl), so
+# an item that presses for real runs its body inside this, and the parking comes back as it was.
+function aqf_on_screen(body)
+	hide = GmtvtkTest._test_fn(:gmtvtk_hide_windows_test)
+	was = ccall(hide, Cint, (Cint,), 0)
+	try
+		return body()
+	finally
+		was == 1 && ccall(hide, Cint, (Cint,), 1)
+	end
+end
+
 function aqf_realpress(h, dir, down)
 	if down
 		ccall((:keybd_event, "user32"), Cvoid, (UInt8, UInt8, UInt32, UInt), 0x12, 0, 0, 0)

@@ -128,8 +128,15 @@ end
 		# 'c' recentres the rotation point on what is under the pointer. It is alive here because the
 		# demo NAMES its pick targets (Scene::pickTargets) rather than owning a base surface, and
 		# because the key runs the same camRecenterAtCursor the middle-click does.
-		focal0 = drive()[49:51]
-		focal1 = drive("keyC")[49:51]
+		# The key reads the REAL cursor, which cannot be put on a window parked off the desktop by the
+		# test run (runtests.jl): the window is on screen for this one press, then parked again.
+		hide = _test_fn(:gmtvtk_hide_windows_test)
+		was = ccall(hide, Cint, (Cint,), 0)
+		focal0, focal1 = try
+			drive()[49:51], drive("keyC")[49:51]
+		finally
+			was == 1 && ccall(hide, Cint, (Cint,), 1)
+		end
 		@test focal1 != focal0
 		@test all(abs.(focal1) .< 1.0)          # landed on the model, not off in space
 		for (name, val) in (("dipSlider",0),("dipSlider",90),("azimuthSlider",360),

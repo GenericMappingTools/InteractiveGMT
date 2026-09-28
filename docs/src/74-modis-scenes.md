@@ -90,6 +90,35 @@ minutes, so pressing the button again is immediate.
 A progress window follows the three steps: reading the elements, propagating the orbit, and asking
 OB.DAAC for the names, one step per scene answered, with the seconds waited counting up.
 
+## Region
+
+Every scene over a **rectangle** in a **period** — a month, a year — written as a **download
+script**, one `wget` line per file, newest first. Satellite and Elements are the Scenes tab's.
+
+- **Region** — the W, E, S, N limits (in the same N/W/E/S cross as *Rectangle limits*).
+  **Use the window's limits** copies the region the window shows; the tab also opens on it when the
+  window already shows something.
+- **From**, **To** — the first and the last day, both included (UTC). The tab opens on the last
+  complete month.
+- **When**, **Product** — as in *Find scenes*.
+- **File** — the script to write: a `.bat` file on Windows, an executable shell script elsewhere.
+  Run it in the folder where the files should land; `wget -nc` skips a file already there, so an
+  interrupted download is resumed by running it again. **Left empty**, the script opens in a text
+  window instead, where it can be edited, copied, or saved wherever you want.
+
+The scenes are found by **NASA's CMR** granule search, the catalogue behind OB.DAAC: it selects, on
+NASA's side, the files whose own footprint covers the rectangle in the period, and the day or night
+ones by each file's flag. No orbit is computed and no orbital elements are needed, so any past
+period works, and a year over a region takes a few seconds. OB.DAAC keeps each product in two
+collections, reprocessed and near-real-time (`MODIST_L2_SST` and `MODIST_L2_SST_NRT`, `MODISA_…` for
+Aqua, `…_OC…` for chlorophyll); both are asked and, when a scene is in both, the reprocessed file is
+the one written.
+
+The Earthdata login of the Accounts tab is written **into the script** (`--user`, `--password`),
+so the script holds the password in plain text: keep it to yourself. The links use
+`https://oceandata.sci.gsfc.nasa.gov/getfile/`; the `…/cmr/getfile/` address also works, but it
+only redirects to that one.
+
 ## Accounts
 
 Two free accounts, each saved as one entry of the file **`.netrc`** in your home folder — the
@@ -100,7 +129,7 @@ machine urs.earthdata.nasa.gov
     login <your Earthdata user name>
     password <your Earthdata password>
 machine www.space-track.org
-    login <your Space-Track e-mail>
+    login <your Space-Track login e-mail>
     password <your Space-Track password>
 ```
 
@@ -149,6 +178,4 @@ account after repeated failed logins: if the login is refused, check it on the w
 
 ## Current limits
 
-- The *Space-Track history* source is new: its query path has not yet been exercised against a
-  real account.
 - *MODIS L2 swath to grid* has not yet been tried on a real MODIS L2 file.

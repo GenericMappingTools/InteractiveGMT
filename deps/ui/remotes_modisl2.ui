@@ -7,7 +7,7 @@
     <x>0</x>
     <y>0</y>
     <width>460</width>
-    <height>250</height>
+    <height>370</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -157,33 +157,148 @@
      </rect>
     </property>
     <property name="toolTip">
-     <string>Grid spacing in degrees. Empty = estimated from the swath's own spacing.</string>
+     <string>Grid spacing in degrees, the same for x and y. 0.02 when a file is chosen. Empty = estimated from the swath's own spacing.</string>
     </property>
    </widget>
-   <widget class="QLabel" name="lbl_region">
+  </widget>
+  <widget class="QGroupBox" name="gb_region">
+   <property name="geometry">
+    <rect>
+     <x>11</x>
+     <y>177</y>
+     <width>438</width>
+     <height>114</height>
+    </rect>
+   </property>
+   <property name="title">
+    <string>Region (filled from the swath; all four empty = the swath's extent)</string>
+   </property>
+   <widget class="QLabel" name="lbl_rg_n">
     <property name="geometry">
      <rect>
-      <x>231</x>
-      <y>123</y>
-      <width>37</width>
+      <x>37</x>
+      <y>27</y>
+      <width>26</width>
       <height>26</height>
      </rect>
+    </property>
+    <property name="frameShape">
+     <enum>QFrame::Shape::Box</enum>
     </property>
     <property name="text">
-     <string>Region</string>
+     <string>N</string>
+    </property>
+    <property name="alignment">
+     <set>Qt::AlignmentFlag::AlignCenter</set>
     </property>
    </widget>
-   <widget class="QLineEdit" name="p_region">
+   <widget class="QLabel" name="lbl_rg_w">
     <property name="geometry">
      <rect>
-      <x>274</x>
-      <y>123</y>
-      <width>153</width>
+      <x>11</x>
+      <y>53</y>
+      <width>26</width>
       <height>26</height>
      </rect>
     </property>
-    <property name="toolTip">
-     <string>W/E/S/N. Empty = the swath's extent.</string>
+    <property name="frameShape">
+     <enum>QFrame::Shape::Box</enum>
+    </property>
+    <property name="text">
+     <string>W</string>
+    </property>
+    <property name="alignment">
+     <set>Qt::AlignmentFlag::AlignCenter</set>
+    </property>
+   </widget>
+   <widget class="QLabel" name="lbl_rg_e">
+    <property name="geometry">
+     <rect>
+      <x>63</x>
+      <y>53</y>
+      <width>26</width>
+      <height>26</height>
+     </rect>
+    </property>
+    <property name="frameShape">
+     <enum>QFrame::Shape::Box</enum>
+    </property>
+    <property name="text">
+     <string>E</string>
+    </property>
+    <property name="alignment">
+     <set>Qt::AlignmentFlag::AlignCenter</set>
+    </property>
+   </widget>
+   <widget class="QLabel" name="lbl_rg_s">
+    <property name="geometry">
+     <rect>
+      <x>37</x>
+      <y>79</y>
+      <width>26</width>
+      <height>26</height>
+     </rect>
+    </property>
+    <property name="frameShape">
+     <enum>QFrame::Shape::Box</enum>
+    </property>
+    <property name="text">
+     <string>S</string>
+    </property>
+    <property name="alignment">
+     <set>Qt::AlignmentFlag::AlignCenter</set>
+    </property>
+   </widget>
+   <widget class="QLineEdit" name="p_rg_n">
+    <property name="geometry">
+     <rect>
+      <x>100</x>
+      <y>28</y>
+      <width>327</width>
+      <height>24</height>
+     </rect>
+    </property>
+    <property name="alignment">
+     <set>Qt::AlignmentFlag::AlignCenter</set>
+    </property>
+   </widget>
+   <widget class="QLineEdit" name="p_rg_w">
+    <property name="geometry">
+     <rect>
+      <x>100</x>
+      <y>54</y>
+      <width>160</width>
+      <height>24</height>
+     </rect>
+    </property>
+    <property name="alignment">
+     <set>Qt::AlignmentFlag::AlignCenter</set>
+    </property>
+   </widget>
+   <widget class="QLineEdit" name="p_rg_e">
+    <property name="geometry">
+     <rect>
+      <x>267</x>
+      <y>54</y>
+      <width>160</width>
+      <height>24</height>
+     </rect>
+    </property>
+    <property name="alignment">
+     <set>Qt::AlignmentFlag::AlignCenter</set>
+    </property>
+   </widget>
+   <widget class="QLineEdit" name="p_rg_s">
+    <property name="geometry">
+     <rect>
+      <x>100</x>
+      <y>80</y>
+      <width>327</width>
+      <height>24</height>
+     </rect>
+    </property>
+    <property name="alignment">
+     <set>Qt::AlignmentFlag::AlignCenter</set>
     </property>
    </widget>
   </widget>
@@ -191,7 +306,7 @@
    <property name="geometry">
     <rect>
      <x>11</x>
-     <y>177</y>
+     <y>297</y>
      <width>438</width>
      <height>30</height>
     </rect>
@@ -207,7 +322,7 @@
    <property name="geometry">
     <rect>
      <x>368</x>
-     <y>213</y>
+     <y>333</y>
      <width>81</width>
      <height>26</height>
     </rect>

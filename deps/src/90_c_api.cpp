@@ -1013,6 +1013,14 @@ GMTVTK_API int gmtvtk_progress_show(int max, const char *title) {
 // gmtvtk_progress_show (application-modal, for a tight synchronous loop), this leaves the main window fully
 // interactive — used for a long asynchronous run (NSWING) whose advance is pushed from a Julia Timer via
 // gmtvtk_progress_update while the run proceeds on a separate task. Returns 1 on success, 0 on failure.
+// Create the Qt application (the SAME one the first window would), without opening anything. For a
+// host that must act on the application before any window exists — the test run installs its
+// window filter here. Returns 1 when the application exists.
+GMTVTK_API int gmtvtk_app_init() {
+	ensureApp();
+	return QApplication::instance() ? 1 : 0;
+}
+
 GMTVTK_API int gmtvtk_progress_show_async(int max, const char *title) {
 	if (g_progressMirror) { g_progressMirror->setRange(0, max > 0 ? max : 0); g_progressMirror->setValue(0); }
 	// ensureApp, not a bail-out: the FIRST grid of a session is exactly the slow one worth reporting,
@@ -2086,6 +2094,16 @@ GMTVTK_API void gmtvtk_set_satellite_callback(JuliaSatelliteFn fn) {
 // with the request/directive blocks documented at JuliaRemoteSFn (30_app.cpp). nullptr to detach.
 GMTVTK_API void gmtvtk_set_remotes_callback(JuliaRemoteSFn fn) {
 	g_juliaRemoteS = fn;
+}
+
+// Open a Remote sensing tool with `file` in its File box (today: "modisl2", MODIS L2 swath to grid),
+// on the NEXT event-loop turn — the file-drop callback that asks is itself running inside a Qt event
+// and must return before the dialog calls back into Julia (same deferral as gmtvtk_aqua_queue_open).
+GMTVTK_API void gmtvtk_remotes_queue_open(void *scene, const char *tool, const char *file) {
+	Scene *s = static_cast<Scene *>(scene);
+	if (!sceneAlive(s) || !tool || !file || std::string(tool) != "modisl2") return;
+	const QString f = QString::fromUtf8(file);
+	QTimer::singleShot(0, s->win, [s, f]() { if (sceneAlive(s)) rsOpenL2With(s, f); });
 }
 
 // Register the FFT tool callback (Mag/Grav > FFT tool, Image > FFT Spectrum, Grid Tools > Spectrum).
@@ -7166,6 +7184,56 @@ GMTVTK_API int gmtvtk_widget_enabled_test(const char *name) {
 // test hook: IS THE TOP-LEVEL WINDOW OF THIS OBJECT NAME VISIBLE AND THE ACTIVE (front) ONE?
 // 1 = active, 0 = visible but not active, -1 = no such visible window. How "a dialog opens in front
 // of the iGMT window, not behind it" is asserted on the window system's own answer.
+// test hook: KEEP THE TEST RUN'S WINDOWS OFF THE USER'S SCREEN. One application-wide filter (both
+// DLLs share Qt, so it sees the production DLL's windows too): every top-level window, as it is shown
+// or moved onto the desktop, is parked beyond the left edge of the virtual desktop. Windows go on
+// rendering there, so a pixel read-back sees the same frame. on=0 brings every parked window back
+// where it was — for the few items that press the REAL mouse, which needs the window on screen.
+// Menus, combo lists and tooltips are left alone. Returns the PREVIOUS state (0/1), so an item that
+// switches it off can put back exactly what it found; -1 without an application.
+struct TestWindowParker : QObject {
+	bool on = false;
+	static QRect desk() {
+		QScreen *sc = QGuiApplication::primaryScreen();
+		return sc ? sc->virtualGeometry() : QRect(0, 0, 1920, 1080);
+	}
+	static bool eligible(QWidget *w) {
+		if (!w || !w->isWindow()) return false;
+		const Qt::WindowType t = w->windowType();
+		return t != Qt::Popup && t != Qt::ToolTip && t != Qt::Desktop;
+	}
+	void park(QWidget *w) {
+		const QRect d = desk();
+		if (!d.intersects(w->frameGeometry())) return;       // already off the desktop
+		w->setProperty("igmtParkedFrom", w->pos());
+		w->move(d.left() - w->frameGeometry().width() - 1000, d.top());
+	}
+	bool eventFilter(QObject *o, QEvent *e) override {
+		if (on && (e->type() == QEvent::Show || e->type() == QEvent::Move)) {
+			QWidget *w = qobject_cast<QWidget *>(o);
+			if (eligible(w) && w->isVisible()) park(w);
+		}
+		return QObject::eventFilter(o, e);
+	}
+};
+GMTVTK_API int gmtvtk_hide_windows_test(int on) {
+	if (!QApplication::instance()) return -1;
+	static TestWindowParker *p = nullptr;
+	if (!p) { p = new TestWindowParker; QApplication::instance()->installEventFilter(p); }
+	const int was = p->on ? 1 : 0;
+	p->on = (on != 0);
+	for (QWidget *w : QApplication::topLevelWidgets()) {
+		if (!TestWindowParker::eligible(w) || !w->isVisible()) continue;
+		if (p->on) p->park(w);
+		else if (w->property("igmtParkedFrom").isValid()) {
+			w->move(w->property("igmtParkedFrom").toPoint());
+			w->setProperty("igmtParkedFrom", QVariant());
+		}
+	}
+	QApplication::processEvents();
+	return was;
+}
+
 GMTVTK_API int gmtvtk_window_active_test(const char *name) {
 	if (!name || !*name) return -1;
 	const QString n = QString::fromUtf8(name);
@@ -7173,6 +7241,45 @@ GMTVTK_API int gmtvtk_window_active_test(const char *name) {
 		if (tl->objectName() == n && tl->isVisible())
 			return tl->isActiveWindow() ? 1 : 0;
 	return -1;
+}
+
+// test hook: IS THIS TOP-LEVEL WINDOW OWNED BY ANOTHER WINDOW, in the window system's own sense (Windows:
+// GetWindow(GW_OWNER)) — an owned window can never go behind its owner. 1 owned, 0 not, -1 no such window
+// (or not Windows).
+#ifdef _WIN32
+extern "C" __declspec(dllimport) void *__stdcall GetWindow(void *hwnd, unsigned int cmd);   // user32; GW_OWNER = 4
+#endif
+GMTVTK_API int gmtvtk_window_owned_test(const char *name) {
+	if (!name) return -1;
+	for (QWidget *tl : QApplication::topLevelWidgets()) {
+		if (tl->objectName() != QString::fromUtf8(name) || !tl->isVisible()) continue;
+#ifdef _WIN32
+		return GetWindow(reinterpret_cast<void *>(tl->winId()), 4u) ? 1 : 0;
+#else
+		return -1;
+#endif
+	}
+	return -1;
+}
+
+// test hook: PRESS RETURN IN A WIDGET of a visible top-level window, both found by object name, the way
+// a keyboard does it (QApplication::sendEvent: an ignored key goes on up to the parents, dialog
+// included). 1 = sent, 0 = no such window/widget.
+GMTVTK_API int gmtvtk_press_return_test(const char *window, const char *widget) {
+	if (!window || !widget) return 0;
+	for (QWidget *tl : QApplication::topLevelWidgets()) {
+		if (tl->objectName() != QString::fromUtf8(window) || !tl->isVisible()) continue;
+		QWidget *w = tl->findChild<QWidget *>(QString::fromUtf8(widget));
+		if (!w) return 0;
+		w->setFocus();
+		QKeyEvent press(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier, "\r");
+		QKeyEvent release(QEvent::KeyRelease, Qt::Key_Return, Qt::NoModifier, "\r");
+		QApplication::sendEvent(w, &press);
+		QApplication::sendEvent(w, &release);
+		QApplication::processEvents();
+		return 1;
+	}
+	return 0;
 }
 
 // test hook: WHERE A .ui's LAYOUTS PUT EVERY WIDGET. Loads the file off screen at its own size and

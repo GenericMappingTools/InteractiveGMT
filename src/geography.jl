@@ -8,13 +8,34 @@
 # As with the console / drop / basemap callbacks, the @cfunction and its registration are RUNTIME
 # values, created in __init__ (a precompiled @cfunction is invalid), never at module top level.
 
-# GSHHG dataset for a (kind, resolution, region). Only "coast" is wired today; political
-# boundaries / rivers reuse this once their menus pass a kind. `res` is :l/:i/:h/:f.
+# GSHHG line features: "coast", "borders:<class>" (GMT coast -N: 1 national, 2 state, a all) and
+# "rivers:<class>" (coast -I: 1,2,3,5,6,7, a, r, i), each named for its Geography menu entry.
+const _GEO_LINE_NAMES = Dict{String,String}(
+	"coast" => "Coastlines",
+	"borders:1" => "National boundaries", "borders:2" => "State boundaries (US)", "borders:a" => "All boundaries",
+	"rivers:1" => "Permanent major rivers", "rivers:2" => "Additional major rivers", "rivers:3" => "Additional rivers",
+	"rivers:5" => "Intermittent rivers - major", "rivers:6" => "Intermittent rivers - additional",
+	"rivers:7" => "Intermittent rivers - minor", "rivers:a" => "All rivers and canals",
+	"rivers:r" => "All permanent rivers", "rivers:i" => "All intermittent rivers")
+
+# GSHHG dataset for a (kind, resolution, region), TRIMMED to the region: the menu sends the active
+# axes' limits, and nothing may be drawn outside them. `coast -M` clips shorelines at -R itself, but
+# hands back every border and river segment that merely crosses it WHOLE, so all three go through
+# the same rectangle clip (GMT.clipbyrect, GDAL). `res` is :l/:i/:h/:f/:a.
 function _geo_dataset(kind::AbstractString, res::Symbol, W, E, S, N)
 	R = (W, E, S, N)
-	kind == "coast" && return GMT.coast(R=R, D=res, M=true)
-	@warn "geography: unknown feature kind '$kind'"
-	return nothing
+	base, cls = occursin(':', kind) ? split(kind, ':'; limit = 2) : (kind, "")
+	D = base == "coast"   ? GMT.coast(R = R, D = res, M = true) :
+	    base == "borders" ? GMT.coast(R = R, D = res, N = String(cls), M = true) :
+	    base == "rivers"  ? GMT.coast(R = R, D = res, I = String(cls), M = true) : nothing
+	D === nothing && (@warn "geography: unknown feature kind '$kind'"; return nothing)
+	(D isa GMTdataset || (D isa Vector && !isempty(D))) || return nothing
+	# Segments that hold points only (a class with no feature in the region comes back as one empty
+	# dataset, which clipbyrect cannot take); it takes the segment vector only.
+	segs = filter(s -> s.data !== nothing && size(s.data, 1) > 0, D isa GMTdataset ? [D] : D)
+	isempty(segs) && return nothing
+	C = GMT.clipbyrect(segs, Float64[W, E, S, N])
+	return (C === nothing || isempty(C)) ? nothing : C
 end
 
 # Generic reader for a Mirone/NOAA point dataset overlaid by the Geography menu (volcanoes,
@@ -206,7 +227,7 @@ end
 # The Scene Objects layer name a geography `kind` produces (source-identity naming). Used both when
 # adding the layer and when recording its session recipe, so Save Session can find the live overlay.
 function _geo_layer_name(kind::AbstractString)::String
-	kind == "coast"     ? "Coastlines"          :
+	haskey(_GEO_LINE_NAMES, kind) ? _GEO_LINE_NAMES[kind] :
 	kind == "borders"   ? "Boundaries"          :
 	kind == "rivers"    ? "Rivers"              :
 	kind == "volcano"   ? "Volcanoes"           :
