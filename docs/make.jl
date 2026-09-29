@@ -18,6 +18,7 @@ const titles = Dict(
     "62-elastic-deformation.md" => "Tutorial: Elastic Deformation",
     "64-nested-grids.md" => "Tutorial: Nested Grids",
     "66-nswing.md" => "Tutorial: Running NSWING",
+    "67-moho-spada.md" => "Tutorial: Moho Topography",
     "70-tools.md" => "Tools",
     "71-earthregions.md" => "Earth Regions",
     "72-ecmwf.md" => "Copernicus / ECMWF",
