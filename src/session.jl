@@ -278,10 +278,8 @@ function _session_pack_generated(scene::Ptr{Cvoid}, r::ElementRecipe, used::Set{
 end
 
 # THE writer for "put this live scene object on disk as a sidecar": grids -> netCDF (GMT.gmtwrite),
-# everything else (images) -> GDAL, driver by extension. One function, because there are now two
-# callers that must agree on the format choice — Save Session's zip member above, and the GMT.jl
-# script export's `script_data/` directory (gmtscript.jl), which is the same operation aimed at a
-# different destination.
+# everything else (images) -> GDAL, driver by extension. (The GMT.jl script export no longer writes
+# sidecars: its standalone zip is built in memory, gmtscript.jl `_script_save_standalone`.)
 _serialize_object(obj, path::String) =
 	(obj isa GMTgrid || obj isa GMTdataset || obj isa Vector{<:GMTdataset}) ?
 		GMT.gmtwrite(path, obj) : GMT.gdalwrite(path, obj)

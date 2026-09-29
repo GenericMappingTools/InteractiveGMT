@@ -171,9 +171,10 @@ export gmtscript, gmtreplay,
 # the user — e.g. the first focal plot paid ~3.4 s of JIT vs 0.5 s of real work (2026-07-04,
 # 133-event ISF; beachball geometry alone was 1.5 s). RUN what is GMT-free; ccall-bearing glue
 # gets `precompile` directives only (compiled, never executed — the DLL is absent here).
-#=
+##
 @setup_workload begin
 	@compile_workload begin
+		#=
 		# Focal mechanisms: beachball geometry on two real mechanisms (one-plane Aki derivation
 		# + two-plane general oblique) so every internal helper comes out compiled.
 		for (s1, d1, r1, s2, d2, r2) in ((120.0, 45.0, -30.0, NaN, NaN, NaN),
@@ -186,9 +187,37 @@ export gmtscript, gmtreplay,
 		                         Vector{Float64}, Vector{Float64}, Vector{Float64}, Vector{Float64},
 		                         Vector{Float64}, Vector{Float64}, Vector{Float64}, Vector{Float64},
 		                         Vector{Float64}, Vector{Float64}, Vector{String}, Vector{Int}))
+		=#
+
+		# --- Satellite > Remote sensing (RemoteS/remotes_gui.jl) -------------------------------------
+		# B. RUN: the dialog-OPEN path. Every tool's "init" goes through the real callback body with no
+		#    scene (C_NULL) and no DLL — parse request, fill combos/labels/status into the reply buffer.
+		#=
+		let buf = zeros(UInt8, 1 << 16)
+			for tool in ("indices", "truecolor", "calibration", "classify", "cutcube")
+				req = "tool=$tool\nwhat=init\n"
+				GC.@preserve req buf _on_remotes(C_NULL, Base.unsafe_convert(Cstring, req), pointer(buf), Cint(length(buf)))
+			end
+		end
+		=#
+
+		# C. COMPILE ONLY: file-, network- or DLL-bound paths (Landsat MTL, L2 swaths, CMR/Space-Track,
+		#    delivery into a window). Compiled, never executed.
+		##
+		for f in (_rs_indices, _rs_truecolor, _rs_calibration, _rs_classify, _rs_cutcube, _rs_modisl2, _rs_modisscenes)
+			precompile(f, (Ptr{Cvoid}, Dict{String,String}, IOBuffer))
+		end
+		precompile(_rs_deliver, (Ptr{Cvoid}, GMTimage{UInt8,3}, String, String))
+		precompile(_rs_deliver, (Ptr{Cvoid}, GMTgrid{Float32,2}, String, String))
+		precompile(_rs_is_l2_swath, (String,))
+		precompile(RemoteS.grid_at_sensor, (String, String))
+		for fn in (RemoteS.dn2radiance, RemoteS.dn2reflectance, RemoteS.dn2temperature, RemoteS.reflectance_surf)
+			precompile(Tuple{typeof(Core.kwcall), NamedTuple{(:band, :mtl), Tuple{Int, String}}, typeof(fn), String})
+		end
+		##
 	end
 end
-=#
+##
 
 # Load the viewer DLL + register the Julia-console callback. RUNTIME ONLY — a dlopen handle, the
 # dlsym pointers and the @cfunction are all runtime values that cannot be baked into a precompiled

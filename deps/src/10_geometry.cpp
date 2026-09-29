@@ -16,6 +16,9 @@ struct FoldTitleBar : QWidget {
 	QString title;
 	bool    folded    = false;
 	int     openWidth = 0;            // dock width remembered at fold time, restored on un-fold
+	// Open bar's minimum = just its glyphs, the title elided into whatever width is left. Set for the
+	// Scene Objects dock, whose opening width (3 cm, objDockOpenWidthPx) is narrower than its title.
+	bool    compactMin = false;
 	std::function<void()> onClick;
 	// Undock / re-dock button, painted at the right end of the OPEN bar (the same glyph and the same
 	// job as the "Panels" dock's own float button). A custom title bar widget swallows the press Qt
@@ -35,7 +38,13 @@ struct FoldTitleBar : QWidget {
 		                + (onFloat ? fm.horizontalAdvance(QString::fromUtf8("\xE2\x9D\x90")) + 12 : 0);
 		return folded ? QSize(thick, along) : QSize(along, thick);
 	}
-	QSize minimumSizeHint() const override { return sizeHint(); }
+	QSize minimumSizeHint() const override {
+		if (!compactMin || folded) return sizeHint();
+		QFontMetrics fm(font());
+		const int thick = fm.height() + 8;
+		return QSize(fm.horizontalAdvance(QStringLiteral("▾ ")) + 12
+		             + (onFloat ? fm.horizontalAdvance(QString::fromUtf8("\xE2\x9D\x90")) + 12 : 0), thick);
+	}
 	void mousePressEvent(QMouseEvent *e) override {
 		// The float glyph first (it sits inside the bar, so a plain "anywhere folds" test would
 		// swallow it), then the fold anywhere else on the bar.
@@ -50,10 +59,12 @@ struct FoldTitleBar : QWidget {
 									 : QStringLiteral("▾"); // ▾ open
 		if (!folded) {
 			const int y = (height() + fm.ascent() - fm.descent()) / 2;
-			p.drawText(6, y, glyph + " " + title);
+			const QString fg = QString::fromUtf8("\xE2\x9D\x90");
+			const int fw = onFloat ? fm.horizontalAdvance(fg) + 8 : 0;
+			// Elided to the room left of the float glyph: a no-op at the bar's full sizeHint, and what
+			// keeps a compactMin bar readable at a narrower width.
+			p.drawText(6, y, fm.elidedText(glyph + " " + title, Qt::ElideRight, width() - 6 - fw - 8));
 			if (onFloat) {                                  // undock / re-dock glyph, right end
-				const QString fg = QString::fromUtf8("\xE2\x9D\x90");
-				const int fw = fm.horizontalAdvance(fg) + 8;
 				floatRect = QRect(width() - fw - 4, 0, fw, height());
 				p.drawText(floatRect, Qt::AlignCenter, fg);
 			}
@@ -73,6 +84,19 @@ struct FoldTitleBar : QWidget {
 		}
 	}
 };
+
+// THE width the Scene Objects dock opens at: 3 cm on the screen it is on (user's rule: it never opens
+// wider). Every place that opens the dock at a width the CODE chooses takes it from here — the first
+// content, an un-fold with no remembered width, a park that reveals a folded dock.
+static int objDockOpenWidthPx(QWidget *w) {
+	QScreen *sc = w ? w->screen() : QGuiApplication::primaryScreen();
+	// Qt computes this from the screen's LOGICAL size (size() / physicalSize()), so it is already in the
+	// units widget widths are in. Never divide it by devicePixelRatio: at 200% scaling that halved the
+	// dock to 1.5 cm.
+	double dpi = sc ? sc->physicalDotsPerInchX() : 96.0;
+	if (!(dpi > 50.0 && dpi < 600.0)) dpi = sc ? sc->logicalDotsPerInchX() : 96.0;  // a bogus EDID
+	return qRound(3.0 / 2.54 * dpi);
+}
 
 // GRAPHICAL ELEMENT: the "julia>" console input line, with REPL-style command history on the Up /
 // Down arrows. Up walks back through what was run in THIS window, Down walks forward again and past

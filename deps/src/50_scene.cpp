@@ -3646,8 +3646,7 @@ static void rebuildSceneObjects(Scene *s) {
 		if (!nm.isEmpty()) s->objExpanded.erase(nm.toStdString());
 	});
 
-	// Default open width of the dock: 1.4x its own minimum — the width its contents actually need,
-	// plus half again of room. Applied ONCE per window, the first time the panel has anything in it
+	// Default open width of the dock: 3 cm (objDockOpenWidthPx, the user's rule). Applied ONCE per window, the first time the panel has anything in it
 	// (a later manual resize is the user's and is never overridden), and never while the panel is
 	// folded, where the fold strip owns the width. It lives here, not at window creation, because an
 	// empty launcher's panel is still empty then: that window used to keep its folded strip width for
@@ -3662,7 +3661,7 @@ static void rebuildSceneObjects(Scene *s) {
 			QMainWindow *mw = s->win;
 			QDockWidget *dk = s->objDock;
 			QTimer::singleShot(0, dk, [mw, dk]() {
-				mw->resizeDocks({dk}, {qRound(dk->minimumSizeHint().width() * 1.4)}, Qt::Horizontal);
+				mw->resizeDocks({dk}, {objDockOpenWidthPx(dk)}, Qt::Horizontal);
 			});
 		}
 	}

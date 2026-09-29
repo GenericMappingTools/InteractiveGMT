@@ -1065,6 +1065,32 @@ GMTVTK_API void gmtvtk_progress_update(int value) {
 	}
 }
 
+// File > Plot with GMT.jl… — the script editor's text, in memory both ways (no file behind it).
+// show: open (or refresh) this window's editor holding `text` (UTF-8). Returns 1 when shown.
+GMTVTK_API int gmtvtk_script_editor_show_h(void *handle, const char *text) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !text) return 0;
+	buildScriptEditor(s, QString::fromUtf8(text));
+	return 1;
+}
+
+// text: the editor's CURRENT text (what the user edited), UTF-8. Two-phase: call with buf=NULL to get
+// the byte count, then with a buffer of at least count+1. Returns the byte count, 0 when there is no
+// editor for this window.
+GMTVTK_API int gmtvtk_script_editor_text_h(void *handle, char *buf, int cap) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s)) return 0;
+	QDialog *d = scriptEditorRegistry().value(s, nullptr);
+	QPlainTextEdit *ed = d ? d->findChild<QPlainTextEdit *>() : nullptr;
+	if (!ed) return 0;
+	const QByteArray u = ed->toPlainText().toUtf8();
+	if (buf && cap > u.size()) {
+		memcpy(buf, u.constData(), u.size());
+		buf[u.size()] = '\0';
+	}
+	return (int)u.size();
+}
+
 // Close and destroy the progress dialog. Safe to call when none exists.
 GMTVTK_API void gmtvtk_progress_close() {
 	// The mirror belongs to the run that registered it: fill it, then let it go, so the NEXT tool's

@@ -268,6 +268,7 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_gmtedit_message,
 	:gmtvtk_progress_show, :gmtvtk_progress_show_async, :gmtvtk_progress_update,
 	:gmtvtk_progress_status, :gmtvtk_progress_close,
+	:gmtvtk_script_editor_show_h, :gmtvtk_script_editor_text_h,   # File > Plot with GMT.jl editor text
 	# MBGRID (deps/src/mbgrid.c, a second C translation unit inside the SAME DLL — see
 	# GMTVTK_SRC in deps/CMakeLists.txt). Resolved here with everything else: there is ONE
 	# symbol resolver for this library, and a build too old to carry these is stale for the

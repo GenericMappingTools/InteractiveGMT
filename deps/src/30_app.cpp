@@ -1635,6 +1635,16 @@ public:
 // the pointer leaves that rect — i.e. when the mouse moves on, which is the only thing that should
 // end it. Installed once on the QApplication (like EnterDefocusFilter), so every tooltip in every
 // dialog behaves the same and no dialog has to remember anything.
+// THE tooltip paragraph: a long plain tooltip as rich text in a table ~`cols` tooltip-font characters
+// wide, so Qt word-wraps it ONCE (see wrapTooltips below for why never hand-inserted breaks). Short
+// tooltips and ones that already carry markup come back unchanged.
+static QString wrappedTooltip(const QString &t, int cols = 64) {
+	if (t.isEmpty() || t.size() <= cols) return t;
+	if (t.startsWith("<") || t.contains("<br", Qt::CaseInsensitive)) return t;   // already rich
+	const int px = QFontMetrics(QToolTip::font()).averageCharWidth() * cols;
+	return QString("<table width=\"%1\"><tr><td>%2</td></tr></table>").arg(px).arg(t.simplified().toHtmlEscaped());
+}
+
 class StickyTooltipFilter : public QObject {
 public:
 	using QObject::QObject;
@@ -1645,7 +1655,9 @@ public:
 				auto *he = static_cast<QHelpEvent *>(ev);
 				// One hour: long enough to be "until the mouse moves", finite so a tooltip can never
 				// outlive the widget it belongs to.
-				QToolTip::showText(he->globalPos(), w->toolTip(), w, w->rect(), 60 * 60 * 1000);
+				// Wrapped HERE, where every tooltip of the application is shown, so no dialog — present
+				// or future — can show one as a ribbon by forgetting to call wrapTooltips.
+				QToolTip::showText(he->globalPos(), wrappedTooltip(w->toolTip()), w, w->rect(), 60 * 60 * 1000);
 				return true;                       // ours now: Qt must not show its own short-lived one
 			}
 		}
@@ -2152,15 +2164,12 @@ static void addManualButton(QDialog *dlg, QBoxLayout *row, const QString &module
 // One function, applied where every .ui dialog finishes, so no dialog has to remember to do it.
 static void wrapTooltips(QWidget *root, int cols = 64) {
 	if (!root) return;
-	const int px = QFontMetrics(QToolTip::font()).averageCharWidth() * cols;
 	QList<QWidget *> all = root->findChildren<QWidget *>();
 	all.prepend(root);
 	for (QWidget *w : all) {
 		const QString t = w->toolTip();
-		if (t.isEmpty() || t.size() <= cols) continue;
-		if (t.startsWith("<") || t.contains("<br", Qt::CaseInsensitive)) continue;   // already rich
-		const QString text = t.simplified().toHtmlEscaped();
-		w->setToolTip(QString("<table width=\"%1\"><tr><td>%2</td></tr></table>").arg(px).arg(text));
+		const QString r = wrappedTooltip(t, cols);
+		if (r != t) w->setToolTip(r);
 	}
 }
 

@@ -116,8 +116,7 @@ end
 @testitem "gmtscript: -JZ height from the viewer's own scale factors" tags=[:unit, :fast, :gmtscript] begin
 	M = InteractiveGMT
 	ctx() = M.ScriptCtx(C_NULL, (-3.0, 3.0, -3.0, 3.0), true, :merc, 15.0, (135.0, 30.0), nothing,
-	                    "script_data", false, Set{String}(), Dict{String,Int}(), String[],
-	                    false, 0, 96.0)
+	                    false, Dict{String,Int}(), String[], false, 0, 96.0)
 	st  = Dict{String,Any}("zmin" => -6.0, "zmax" => 6.0)          # 12 units of z over 6 of x
 	stf = Dict{String,Any}("zfac" => 0.5, "xfac" => 1.0, "ve" => 1.0)
 	# figsize * (zext*zfac*ve) / (xext*xfac) = 15 * (12*0.5) / 6 = 15
@@ -143,8 +142,7 @@ end
 	@test M._script_pt_sym(10.0 * 96 / 72) == 10.0
 	@test M._script_ptstr_sym(8.0 * 96 / 72) == "8.0p"
 	ctx = M.ScriptCtx(C_NULL, (-3.0, 3.0, -3.0, 3.0), true, :merc, 15.0, nothing, nothing,
-	                  "script_data", false, Set{String}(), Dict{String,Int}(), String[],
-	                  false, 0, 162.0)
+	                  false, Dict{String,Int}(), String[], false, 0, 162.0)
 	@test M._script_pt_w(9.0, ctx) == 4.0                 # 4 pt at 162 dpi is stored as 9 px
 	@test M._script_ptstr_w(9.0, ctx) == "4.0p"
 	# The factor is the WINDOW's, not the figure's: a different figsize must not change a thickness.

@@ -27070,20 +27070,16 @@ static void sceneResetToGroundState(Scene *s) {
 	applyVE(s);
 }
 
-// File > Export GMT.jl script… — the window's display as GMT.jl code, in an EDITABLE box with Save
+// File > Plot with GMT.jl… — the window's display as GMT.jl code, in an EDITABLE box with Save
 // and Run.
 //
-// Why it is backed by a real file instead of holding the text in memory: a script whose layers came
-// out of the window (rather than off disk) reads them back through
-// `joinpath(@__DIR__, "script_data", …)`, and `@__DIR__` only means anything for a file that
-// `include` is reading. So Julia generates the script into a per-window working directory
-// (`_script_prepare_for_editor`, gmtscript.jl), we show THAT file's text, and Run writes the box's
-// current text back over it and `include`s it — which is what makes Run run what the user EDITED,
-// not what was generated. Save copies the same edited file plus its `script_data/` to the chosen
-// destination (`_script_save_bundle`), so what gets kept actually runs.
-//
-// All of it goes through the console eval bridge (`g_juliaEval`) — the same one the ruler and the
-// focal dialog use. No dedicated C callback: one bridge, one eval path (SACRED_LAW.md).
+// The text lives IN THE BOX — no file behind it, nothing temporary (a temp-file bridge is banned):
+//   * open: the menu asks Julia (`_script_open_editor`, gmtscript.jl) to build the script; Julia hands
+//     the text back through gmtvtk_script_editor_show_h, which calls buildScriptEditor below;
+//   * Run:  asks Julia to `_script_run` it; Julia PULLS the box's current text through
+//     gmtvtk_script_editor_text_h, so what runs is what the user EDITED;
+//   * Save: writes the box's text to the file the user picks, here, and nothing beside it.
+// Layers that exist only in memory are fetched by the script from the live window.
 // One script editor per window, so closing it can PARK it as a Scene Objects handle (like the X,Y
 // plot, the Contours dialog, the Aquamoto viewer) instead of throwing the user's edits away. Keyed by
 // Scene*, cleared when the dialog is really destroyed.
@@ -27148,37 +27144,41 @@ public:
 	}
 };
 
+// The menu action. Already open (or parked): bring THAT one back rather than opening a second and
+// losing the edits. Otherwise ask Julia to build the script, which arrives in buildScriptEditor.
 static void showScriptEditor(Scene *s, QMainWindow *win) {
+	(void)win;
 	if (!g_juliaEval) {
-		if (s->win) s->win->statusBar()->showMessage("Export GMT.jl script: the Julia bridge is not registered", 3000);
+		if (s->win) s->win->statusBar()->showMessage("Plot with GMT.jl: the Julia bridge is not registered", 3000);
 		return;
 	}
-	// Already open (or parked): bring THAT one back rather than opening a second and losing the edits.
 	if (scriptEditorRegistry().value(s, nullptr) != nullptr) { scriptEditorUnpark(s); return; }
-	// Ask Julia to build the script; it prints the path of the file it wrote. The scene is passed as
-	// an explicit pointer literal rather than leaning on the console's `fig` binding, which belongs to
-	// whichever window was last eval'd in and is not necessarily this one.
-	const QString gen = QString("print(InteractiveGMT._script_prepare_for_editor(Ptr{Nothing}(UInt(%1))))")
+	// The scene is passed as an explicit pointer literal rather than leaning on the console's `fig`
+	// binding, which belongs to whichever window was last eval'd in and is not necessarily this one.
+	const QString gen = QString("InteractiveGMT._script_open_editor(Ptr{Nothing}(UInt(%1)))")
 	                    .arg((qulonglong)(quintptr)s);
-	std::vector<char> pbuf(4096);
-	int n = g_juliaEval(s, gen.toStdString().c_str(), pbuf.data(), (int)pbuf.size());
-	if (n <= 0) {
-		const QString err = QString::fromUtf8(pbuf.data(), n < 0 ? -n : 0);
-		sceneLogError(s, err.isEmpty() ? QString("Export GMT.jl script: could not build the script") : err);
-		if (s->win) s->win->statusBar()->showMessage("Export GMT.jl script failed — see the Errors tab", 4000);
-		return;
+	std::vector<char> pbuf(1 << 14);
+	// Generating can take a long time (every layer is inspected, lit surfaces are captured at full
+	// resolution): the user is told what the wait is for, never left with a dead window.
+	showBusyDialog("Building the GMT.jl script from this window...");
+	const int n = g_juliaEval(s, gen.toStdString().c_str(), pbuf.data(), (int)pbuf.size());
+	closeBusyDialog();
+	if (n < 0) {
+		sceneLogError(s, QString::fromUtf8(pbuf.data(), -n));
+		if (s->win) s->win->statusBar()->showMessage("Plot with GMT.jl failed — see the Errors tab", 4000);
 	}
-	const QString path = QString::fromUtf8(pbuf.data(), n).trimmed();
-	QFile f(path);
-	if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) {
-		sceneLogError(s, QString("Export GMT.jl script: cannot read %1").arg(path));
-		return;
-	}
-	const QString text = QString::fromUtf8(f.readAll());
-	f.close();
+}
 
-	QDialog *dlg = new QDialog(win);
-	dlg->setWindowTitle("GMT.jl script — " + QFileInfo(path).fileName());
+// The editor itself, holding `text`. Called by gmtvtk_script_editor_show_h with what Julia generated.
+static void buildScriptEditor(Scene *s, const QString &text) {
+	if (!s || !sceneAlive(s) || !s->win) return;
+	if (QDialog *old = scriptEditorRegistry().value(s, nullptr)) {      // re-generated: refresh the text
+		if (QPlainTextEdit *ed = old->findChild<QPlainTextEdit *>()) ed->setPlainText(text);
+		scriptEditorUnpark(s);
+		return;
+	}
+	QDialog *dlg = new QDialog(s->win);
+	dlg->setWindowTitle("Plot with GMT.jl");
 	dlg->setAttribute(Qt::WA_DeleteOnClose);
 	scriptEditorRegistry().insert(s, dlg);
 	dlg->installEventFilter(new ScriptEditorParkOnClose(dlg, s));   // X -> park, never destroy
@@ -27195,28 +27195,29 @@ static void showScriptEditor(Scene *s, QMainWindow *win) {
 	QPushButton *bSave = new QPushButton("&Save…", dlg);
 	// Enter must not fire a button while the user is typing in the editor.
 	for (QPushButton *b : { bRun, bSave }) b->setAutoDefault(false);
+	// LOWER-LEFT: what Save produces. Run ignores it.
+	QCheckBox *cbStandalone = new QCheckBox("Standalone", dlg);
+	cbStandalone->setChecked(false);
+	cbStandalone->setToolTip("When checked, Save writes a .zip holding the script plus every data file it "
+	                         "needs, so it runs with GMT.jl alone, without iGMT. Layers loaded from files "
+	                         "are read from their full original paths; layers that exist only in this "
+	                         "window go into the zip's data/ folder. When unchecked, Save writes just the "
+	                         "script, which fetches those layers from this live iGMT window. Run is not "
+	                         "affected.");
+	row->addWidget(cbStandalone);
 	row->addStretch(1);
 	row->addWidget(bRun);
 	row->addWidget(bSave);
 	lay->addLayout(row);
 	dlg->resize(820, 600);
 
-	// Write the box's current text back over the working file — every button starts here, so Save and
-	// Run always act on what is on screen, never on the originally generated text.
-	auto flush = [ed, path]() -> bool {
-		QFile w(path);
-		if (!w.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text)) return false;
-		w.write(ed->toPlainText().toUtf8());
-		w.close();
-		return true;
-	};
-
-	QObject::connect(bRun, &QPushButton::clicked, [s, dlg, path, flush]() {
-		if (!flush()) { sceneLogError(s, "Run: could not write the script to disk"); return; }
+	QObject::connect(bRun, &QPushButton::clicked, [s]() {
+		if (!g_juliaEval) return;
 		if (s->win) s->win->statusBar()->showMessage("Running the script…", 2000);
-		// `include` (not eval of the text): it gives the script a real __DIR__, so its script_data/
-		// reads resolve exactly as they will for the saved copy.
-		const QString cmd = QString("include(raw\"%1\")").arg(path);
+		// `_script_run` pulls the box's CURRENT text (gmtvtk_script_editor_text_h) and runs it statement
+		// by statement, showing each one in a status window while it executes.
+		const QString cmd = QString("InteractiveGMT._script_run(Ptr{Nothing}(UInt(%1)))")
+		                    .arg((qulonglong)(quintptr)s);
 		std::vector<char> buf(1 << 16);
 		const int rn = g_juliaEval(s, cmd.toStdString().c_str(), buf.data(), (int)buf.size());
 		if (rn < 0) {
@@ -27227,30 +27228,47 @@ static void showScriptEditor(Scene *s, QMainWindow *win) {
 			if (rn > 0) sceneLogError(s, QString::fromUtf8(buf.data(), rn));
 			if (s->win) s->win->statusBar()->showMessage("Script ran", 3000);
 		}
-		(void)dlg;
 	});
 
-	QObject::connect(bSave, &QPushButton::clicked, [s, dlg, path, flush]() {
-		if (!flush()) { sceneLogError(s, "Save: could not write the script to disk"); return; }
+	// Save writes the box's text to the file the user picks — that one file, nothing beside it. With
+	// "Standalone" checked it is a .zip instead, built by Julia (`_script_save_standalone`) in memory.
+	QObject::connect(bSave, &QPushButton::clicked, [s, dlg, ed, cbStandalone]() {
+		if (cbStandalone->isChecked()) {
+			QString dest = QFileDialog::getSaveFileName(dlg, "Save standalone GMT.jl script",
+			                                            prefStartDir("igmt_script.zip"), "Zip archive (*.zip)");
+			if (dest.isEmpty() || !g_juliaEval) return;
+			if (!dest.endsWith(".zip", Qt::CaseInsensitive)) dest += ".zip";
+			rememberStartDir(dest);
+			const QString cmd = QString("InteractiveGMT._script_save_standalone(Ptr{Nothing}(UInt(%1)), raw\"%2\")")
+			                    .arg((qulonglong)(quintptr)s).arg(QDir::toNativeSeparators(dest));
+			std::vector<char> buf(1 << 14);
+			showBusyDialog("Writing the standalone script and its data...");
+			const int sn = g_juliaEval(s, cmd.toStdString().c_str(), buf.data(), (int)buf.size());
+			closeBusyDialog();
+			if (sn < 0) {
+				sceneLogError(s, QString::fromUtf8(buf.data(), -sn));
+				if (s->win) s->win->statusBar()->showMessage("Save FAILED — see the Errors tab", 5000);
+			}
+			else if (s->win) s->win->statusBar()->showMessage("Saved " + dest, 4000);
+			return;
+		}
 		QString dest = QFileDialog::getSaveFileName(dlg, "Save GMT.jl script", prefStartDir("igmt_script.jl"),
 		                                            "Julia script (*.jl)");
 		if (dest.isEmpty()) return;
 		if (!dest.endsWith(".jl", Qt::CaseInsensitive)) dest += ".jl";
 		rememberStartDir(dest);
-		const QString cmd = QString("print(InteractiveGMT._script_save_bundle(raw\"%1\", raw\"%2\"))")
-		                    .arg(path).arg(dest);
-		std::vector<char> buf(4096);
-		const int sn = g_juliaEval(s, cmd.toStdString().c_str(), buf.data(), (int)buf.size());
-		if (sn < 0) {
-			sceneLogError(s, QString::fromUtf8(buf.data(), -sn));
+		QFile w(dest);
+		if (!w.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text)) {
+			sceneLogError(s, QString("Save: cannot write %1").arg(dest));
 			if (s->win) s->win->statusBar()->showMessage("Save FAILED — see the Errors tab", 5000);
+			return;
 		}
-		else {
-			sceneLogError(s, QString("Saved GMT.jl script -> %1").arg(dest));
-			if (s->win) s->win->statusBar()->showMessage("Saved " + dest, 4000);
-		}
+		w.write(ed->toPlainText().toUtf8());
+		w.close();
+		if (s->win) s->win->statusBar()->showMessage("Saved " + dest, 4000);
 	});
 
+	wrapTooltips(dlg);                  // every dialog's tooltips as a readable paragraph (no manual button here)
 	dlg->show();                        // non-modal: the window stays usable while the script is edited
 }
 
@@ -27811,7 +27829,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		// Export the window as GMT.jl code — an EDITABLE script in a dialog with Save and Run, not a
 		// bare file dialog (showScriptEditor, below). Built from the same provenance the session save
 		// reads (gmtscript.jl), so the two can never disagree about what this window is made of.
-		mFile->addAction("&Export GMT.jl script…", [win, s]() { showScriptEditor(s, win); });
+		mFile->addAction("&Plot with GMT.jl…", [win, s]() { showScriptEditor(s, win); });
 		mFile->addSeparator();
 		// Ctrl+V: paste the clipboard INTO this window — an image becomes a new image object, a
 		// numeric table a line/polygon overlay (or X,Y series), a copied FILE opens as if dropped.
@@ -29660,7 +29678,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 			bar->updateGeometry();                        // sizeHint flips orientation
 			bar->update();
 			const int w = fold ? bar->sizeHint().width()
-							   : (bar->openWidth > 0 ? bar->openWidth : 220);
+							   : (bar->openWidth > 0 ? bar->openWidth : objDockOpenWidthPx(d));
 			// resizeDocks only moves docks INSIDE the main window; a floating dock is a top-level
 			// window and must be resized as one, or folding it leaves a thin strip rattling around
 			// inside a full-width window that never shrank.
@@ -29670,6 +29688,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		return bar;
 	};
 	s->objFoldBar = makeFoldable(objDock, s->objPanel, "Scene Objects");  // keep the bar so an empty launcher can start folded
+	s->objFoldBar->compactMin = true;                        // its title must not hold the dock above 3 cm
 	// Undock / re-dock button on the fold bar. A custom title bar widget swallows the press Qt turns
 	// into a drag, so this glyph is the dock's ONLY tear-off affordance -- and it goes through the
 	// same dockToggleFloat every other panel's float button uses, so it comes home the same way.
@@ -29874,7 +29893,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		// fold-bar state BEFORE the first paint (so it never renders expanded for a frame); the
 		// strip-width resizeDocks is deferred to just after win->show() (only bites once laid out).
 		if (s->objFoldBar) {
-			s->objFoldBar->openWidth = 220;        // width to restore when the user un-folds
+			s->objFoldBar->openWidth = 0;          // nothing remembered: un-folds at 3 cm (objDockOpenWidthPx)
 			s->objPanel->setVisible(false);        // hide body -> dock can shrink to the strip
 			s->objFoldBar->folded = true;
 			s->objFoldBar->updateGeometry();       // sizeHint flips to the thin vertical strip

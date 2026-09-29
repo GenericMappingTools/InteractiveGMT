@@ -30,17 +30,18 @@ struct ScriptVar
 end
 
 # How a layer's data reaches the script — one rung of the T1→T2→T3 ladder. `expr` is the text the
-# script uses to obtain it; `sidecar` is non-empty only for T2/T3, naming the file the text renderer
-# must write beside the script (the live sink never writes anything).
+# script uses to obtain it. NOTHING is ever written to disk for it: a layer that exists only in memory
+# is fetched from the LIVE WINDOW by the script (`:live`/`:capture`). There used to be a `sidecar`
+# field here and a `script_data/` directory written beside the script — a temporary-file bridge, which
+# is banned outright. Do not bring it back.
 struct DataBind
 	var::ScriptVar
-	tier::Symbol            # :file | :command | :data | :capture | :cpt
+	tier::Symbol            # :file | :command | :live | :capture | :cpt
 	expr::String
-	sidecar::String
 	mk::Any                 # :cpt only — the makecpt kwargs, so the live sink builds the very same
 	                        # palette by CALLING makecpt, never by eval'ing the text it rendered
 end
-DataBind(var, tier, expr, sidecar) = DataBind(var, tier, expr, sidecar, nothing)
+DataBind(var, tier, expr) = DataBind(var, tier, expr, nothing)
 
 # One GMT.jl call plus whatever has to be bound before it.
 struct ScriptStep
@@ -61,9 +62,7 @@ mutable struct ScriptCtx
 	figsize::Float64
 	view::Union{Nothing,NTuple{2,Float64}}
 	zsize::Union{Nothing,Float64}
-	datadir::String
 	recompute::Bool
-	used::Set{String}                    # sidecar ids taken so far (see _session_sidecar_id)
 	nvar::Dict{String,Int}               # per-prefix counters for generated variable names
 	notes::Vector{String}                # "not exported" lines for the script header
 	needs_base64::Bool                   # a displayed image is fetched -> the script needs InteractiveGMT
@@ -234,40 +233,45 @@ end
 #                 RE-RUNS it, which is what makes the script editable rather than a data loader.
 #                 Off by default: a recorded command can reference temporary paths that outlive
 #                 nothing, so promoting it is the caller's decision, not a silent default.
-#   T2 :data    — the layer only exists in memory: hand the live object over (live sink) / write one
-#                 sidecar beside the script (text sink).
-#   T3 :capture — no data object at all: capture the layer as a georeferenced GMTimage, in memory,
-#                 through `_capture_rect_image` (grid.jl) — the SAME capture Roi Crop uses, which
-#                 prefers the data-space bake at native grid resolution and only falls back to a
-#                 screen grab. Never a second capture path of our own.
+#   T2 :live    — the layer only exists in memory: the script FETCHES that object from the live window
+#                 (`_find_object`, the same lookup the emitter itself used). Nothing is written.
+#   T3 :capture — no data object at all: the script asks the live window for its displayed pixels
+#                 (`_display_image`, through `_script_capture_call`). Nothing is written.
 function _script_bind!(ctx::ScriptCtx, r::ElementRecipe, obj)
-	isimg = r.kind in (:image, :dropimage)
-	prefix = isimg ? "I" : "G"
+	kind = _script_obj_kind(r)
+	prefix = kind === :image ? "I" : "G"
 	if r.origin === :file && !isempty(r.source) && isfile(r.source)
 		var = _script_var!(ctx, prefix, obj)
-		return DataBind(var, :file, "gmtread($(_lit(r.source)))", "")
+		# The FULL path of the file the window loaded, so the script (and its standalone copy, which
+		# keeps this line as it is) reads that very file from wherever it is run.
+		return DataBind(var, :file, "gmtread($(_lit(abspath(r.source))))")
 	end
 	if ctx.recompute
 		cmd = _script_command(obj)
 		if _script_command_usable(cmd)
 			var = _script_var!(ctx, prefix, obj)
-			return DataBind(var, :command, "gmt($(_lit(cmd)))", "")
+			return DataBind(var, :command, "gmt($(_lit(cmd)))")
 		elseif !isempty(cmd)
 			push!(ctx.notes, "recompute skipped for '$(isempty(r.name) ? "(base)" : r.name)': its command references files that are gone")
 		end
 	end
+	ctx.needs_base64 = true          # both remaining rungs reach into the window -> the script needs InteractiveGMT
 	if obj !== nothing
 		var = _script_var!(ctx, prefix, obj)
-		id = _session_sidecar_id(isempty(r.name) ? String(var.name) : r.name, isimg ? ".tif" : ".nc", ctx.used)
-		return DataBind(var, :data, "gmtread(joinpath(@__DIR__, $(_lit(ctx.datadir)), $(_lit(id))))", id)
+		expr = "InteractiveGMT._find_object(Ptr{Nothing}(UInt(" * string(UInt(ctx.scene)) * ")), " *
+		       "$(_lit(kind)), $(_lit(r.name)))"
+		return DataBind(var, :live, expr)
 	end
 	x0, x1, y0, y1 = ctx.region
 	I = _capture_rect_image(ctx.scene, x0, x1, y0, y1; coords=true)
 	var = _script_var!(ctx, "I", I)
-	id = _session_sidecar_id(isempty(r.name) ? String(var.name) : r.name, ".tif", ctx.used)
 	push!(ctx.notes, "layer '$(isempty(r.name) ? "(base)" : r.name)' had no data object — RASTERIZED (a picture, not a reproduction)")
-	return DataBind(var, :capture, "gmtread(joinpath(@__DIR__, $(_lit(ctx.datadir)), $(_lit(id))))", id)
+	return DataBind(var, :capture, _script_capture_call(ctx.scene, x0, x1, y0, y1))
 end
+
+# The registry kind a raster recipe's object is stored under — ONE answer for the emitter's lookup and
+# for the script's live fetch of the same object.
+_script_obj_kind(r::ElementRecipe)::Symbol = r.kind in (:image, :dropimage, :basemap) ? :image : :grid
 
 # ── per-element emitters ─────────────────────────────────────────────────────────────────────
 # The kinds that put a raster on screen. Same list Save Session replays rasters-first with, for the
@@ -298,7 +302,7 @@ function _script_cpt!(ctx::ScriptCtx, r::ElementRecipe, G::GMTgrid)
 	var = _script_var!(ctx, "C", nothing)
 	mk = (cmap=Symbol(tag), range=zr, continuous=true)
 	expr = "makecpt(cmap=$(_lit(mk.cmap)), range=$(_lit(mk.range)), continuous=true)"
-	return DataBind(var, :cpt, expr, "", mk)
+	return DataBind(var, :cpt, expr, mk)
 end
 
 # What the window is DOING to this layer's colours, and where the layer sits: `repro` says whether GMT
@@ -378,15 +382,14 @@ function _script_rasterize!(ctx::ScriptCtx, r::ElementRecipe, disp, isgrid::Bool
 	push!(ctx.notes, "'$label': its displayed colours ($why) are not expressible in GMT, " *
 	                 "so the pixels on screen were captured and are drawn as an image")
 	# The displayed pixels are ALREADY IN MEMORY. They fill a GMTimage and that object is handed to GMT
-	# directly — never written to disk and read back (`sidecar` stays empty, which is what stops the
-	# renderer serializing it; saving it is a future OPTION, not the behaviour).
+	# directly — never written to disk and read back.
 	#
 	# The script does NOT carry pixels and does NOT read a file. It asks the LIVE WINDOW for its
 	# displayed image, by the address the window already is: `_capture_rect_image` wraps the viewer's
 	# own RGB buffer and returns a georeferenced GMTimage. One short line, no data, no disk.
 	var = _script_var!(ctx, "I", I)
 	ctx.needs_base64 = true          # the script needs InteractiveGMT to reach the window
-	return DataBind(var, :capture, _script_capture_call(ctx.scene, x0, x1, y0, y1), "")
+	return DataBind(var, :capture, _script_capture_call(ctx.scene, x0, x1, y0, y1))
 end
 
 """
@@ -500,7 +503,7 @@ function _script_body_view!(ctx::ScriptCtx, cube::Bool)
 	                 "so nothing in it is editable or re-projectable")
 	var = _script_var!(ctx, "I", I)
 	ctx.needs_base64 = true                            # the script asks the live window for the pixels
-	bind = DataBind(var, :capture, _script_view_capture_call(ctx.scene), "")
+	bind = DataBind(var, :capture, _script_view_capture_call(ctx.scene))
 	# `alpha_color` (-Q) is what makes GMT honour the capture's alpha band: without it the image is
 	# plotted opaque and the viewer's background comes back as a rectangle around the body.
 	kw = Pair{Symbol,Any}[:region  => ScriptVar(:REG, ctx.region),
@@ -672,15 +675,14 @@ function _overlay_layer(scene::Ptr{Cvoid}, name::String, want3d::Bool=false)
 end
 
 # Bind a plotted vector layer: the live dataset for `gmtreplay`, and for the script a CALL that fetches
-# the same thing from the window. No sidecar, no file — `sidecar` stays empty, which is what stops the
-# renderer serializing anything.
+# the same thing from the window. No file, ever.
 function _script_bind_live_vector!(ctx::ScriptCtx, fn::String, name::String, want3d::Bool,
                                    ds::Vector{<:GMTdataset})
 	var = _script_var!(ctx, "D", length(ds) == 1 ? ds[1] : ds)
 	ctx.needs_base64 = true          # the script reaches into the window -> it needs InteractiveGMT
 	expr = "InteractiveGMT.$fn(Ptr{Nothing}(UInt(" * string(UInt(ctx.scene)) * ")), " *
 	       "$(_lit(name)), $(_lit(want3d)))"
-	return DataBind(var, :live, expr, "")
+	return DataBind(var, :live, expr)
 end
 
 # Same, for the two fetches whose key is not (name, want3d): text labels are keyed by their STYLE and
@@ -690,13 +692,13 @@ function _script_bind_live_text!(ctx::ScriptCtx, szpx::Int, rgb::String, ds::Vec
 	ctx.needs_base64 = true
 	expr = "InteractiveGMT._text_labels(Ptr{Nothing}(UInt(" * string(UInt(ctx.scene)) * ")), " *
 	       "$(szpx), $(_lit(rgb)))"
-	return DataBind(var, :live, expr, "")
+	return DataBind(var, :live, expr)
 end
 function _script_bind_live_curtain!(ctx::ScriptCtx, which::Int, ds::Vector{<:GMTdataset})
 	var = _script_var!(ctx, "D", length(ds) == 1 ? ds[1] : ds)
 	ctx.needs_base64 = true
 	expr = "InteractiveGMT._curtain_outline(Ptr{Nothing}(UInt(" * string(UInt(ctx.scene)) * ")), $(which))"
-	return DataBind(var, :live, expr, "")
+	return DataBind(var, :live, expr)
 end
 
 "One user-drawn polygon/polyline/rect/circle, by name, in true coordinates."
@@ -1144,14 +1146,13 @@ end
 
 # ── the emitter ──────────────────────────────────────────────────────────────────────────────
 """
-	_script_emit(h; figsize=15.0, recompute=false, datadir="script_data")
+	_script_emit(h; figsize=15.0, recompute=false)
 
 Walk the window's provenance recipes (`_SESSION_LOG`) and produce the ordered call list plus the
 resolved figure-wide context. Pure: nothing is written and the window is not touched, except for a
 T3 capture, which reads the render window.
 """
-function _script_emit(h::Ptr{Cvoid}; figsize::Real=15.0, recompute::Bool=false,
-                      datadir::String="script_data", backdrop::Bool=false)
+function _script_emit(h::Ptr{Cvoid}; figsize::Real=15.0, recompute::Bool=false, backdrop::Bool=false)
 	st, stf = _script_state(h)
 	get(st, "alive", 0) == 1 || error("gmtscript: that window is closed")
 	crs = _window_crs(h)
@@ -1159,7 +1160,7 @@ function _script_emit(h::Ptr{Cvoid}; figsize::Real=15.0, recompute::Bool=false,
 	ctx = ScriptCtx(h, (Float64(get(st, "x0", 0)), Float64(get(st, "x1", 0)),
 	                    Float64(get(st, "y0", 0)), Float64(get(st, "y1", 0))),
 	                geog, _script_proj(geog), Float64(figsize), nothing, nothing,
-	                String(datadir), recompute, Set{String}(), Dict{String,Int}(), String[], false, 0, 96.0)
+	                recompute, Dict{String,Int}(), String[], false, 0, 96.0)
 	ctx.dpi = _script_dpi(h, stf)
 	ctx.view  = _script_view(st, stf)
 	ctx.zsize = _script_zsize(ctx, st, stf)
@@ -1179,8 +1180,8 @@ function _script_emit(h::Ptr{Cvoid}; figsize::Real=15.0, recompute::Bool=false,
 		x0, x1, y0, y1 = ctx.region
 		I = _capture_rect_image(h, x0, x1, y0, y1; coords=true)
 		var = _script_var!(ctx, "I", I)
-		id  = _session_sidecar_id("backdrop", ".tif", ctx.used)
-		bind = DataBind(var, :capture, "gmtread(joinpath(@__DIR__, $(_lit(ctx.datadir)), $(_lit(id))))", id)
+		ctx.needs_base64 = true                        # the script asks the live window for the pixels
+		bind = DataBind(var, :capture, _script_capture_call(h, x0, x1, y0, y1))
 		push!(ctx.notes, "BACKDROP MODE: this is a PICTURE of the window, not a reproduction — nothing in it is editable or re-projectable")
 		kw = Pair{Symbol,Any}[:region => ScriptVar(:REG, ctx.region), :proj => ScriptVar(:PROJ, ctx.proj),
 		                      :figsize => ScriptVar(:FIGSIZE, ctx.figsize),
@@ -1206,7 +1207,7 @@ function _script_emit(h::Ptr{Cvoid}; figsize::Real=15.0, recompute::Bool=false,
 		key = (r.kind, r.name)
 		key in seen && continue
 		push!(seen, key)
-		obj = _find_object(h, r.kind in (:image, :dropimage, :basemap) ? :image : :grid, r.name)
+		obj = _find_object(h, _script_obj_kind(r), r.name)
 		step = _script_emit_raster!(ctx, r, obj, isempty(steps))
 		push!(steps, step)
 		for b in step.binds
@@ -1304,17 +1305,12 @@ function _script_header(ctx::ScriptCtx)
 end
 
 """
-	_script_render_text(steps, ctx; outdir="") -> String
+	_script_render_text(steps, ctx) -> String
 
-Render the call list as a standalone script. With `outdir`, every layer bound to a sidecar (T2/T3)
-is written into `outdir/<datadir>/` — the only point at which this feature touches the disk. Without
-it the same text is produced and nothing is written (a preview: the `gmtread` lines still show what
-the script would read).
+Render the call list as a standalone script. Pure text: nothing is written anywhere. A layer that
+exists only in memory is fetched by the script from the live window, never from a file.
 """
-function _script_render_text(steps::Vector{ScriptStep}, ctx::ScriptCtx; outdir::String="")
-	write_data = !isempty(outdir)
-	datapath = write_data ? joinpath(String(outdir), ctx.datadir) : ""
-	(write_data && any(s -> any(b -> !isempty(b.sidecar), s.binds), steps)) && mkpath(datapath)
+function _script_render_text(steps::Vector{ScriptStep}, ctx::ScriptCtx)
 	io = IOBuffer()
 	print(io, _script_header(ctx))
 	for s in steps
@@ -1324,25 +1320,38 @@ function _script_render_text(steps::Vector{ScriptStep}, ctx::ScriptCtx; outdir::
 				println(io, "# ", b.var.name, ": the window's displayed pixels, taken from the live ",
 				        "window as a GMTimage — nothing embedded, nothing written to disk")
 			b.tier === :live &&
-				println(io, "# ", b.var.name, ": plotted in the viewer, never on disk — fetched from the ",
-				        "live window as a GMTdataset")
-			(write_data && !isempty(b.sidecar)) && _serialize_object(b.var.value, joinpath(datapath, b.sidecar))
+				println(io, "# ", b.var.name, ": exists only in the viewer, never on disk — fetched from ",
+				        "the live window")
 			println(io, String(b.var.name), " = ", b.expr)
 		end
 		println(io, _script_render_call(s))
 	end
 	println(io)
 	println(io, "showfig()")
-	return String(take!(io))
+	return _script_space_comments(String(take!(io)))
+end
+
+# Every comment that opens a block starts after an empty line, so the script reads as groups of
+# commands, each under its own heading. Done once, on the finished text, so no emitter has to
+# remember it; consecutive comment lines (the header, a step heading and its layer note) stay together.
+function _script_space_comments(txt::String)::String
+	out = String[]
+	for l in split(txt, '\n')
+		if startswith(lstrip(l), '#') && !isempty(out)
+			prev = strip(out[end])
+			(isempty(prev) || startswith(prev, '#')) || push!(out, "")
+		end
+		push!(out, String(l))
+	end
+	return join(out, '\n')
 end
 
 """
 	gmtscript(fig; path="", figsize=15, recompute=false) -> String
 
-Reproduce the window's display as a standalone GMT.jl script and return its text. With `path`, the
-script is written there and any in-memory layer is materialized once into a `script_data/` directory
-beside it; without `path`, nothing is written (layers that would need a sidecar still render their
-`gmtread` line, so the text alone shows what the script would be).
+Reproduce the window's display as a GMT.jl script and return its text. With `path`, the script — and
+nothing else — is written there. A layer that exists only in memory is fetched by the script from the
+live window, so such a script runs while that window is open.
 
 `recompute=true` emits the recorded GMT command for a computed grid instead of its data, which makes
 the script editable — see docs/GMTSCRIPT_PLAN.md, tier T1. It is skipped, with a note, for any grid
@@ -1355,62 +1364,199 @@ function gmtscript(fig; path::String="", figsize::Real=15.0, recompute::Bool=fal
                    backdrop::Bool=false)
 	h = _fig_handle(fig)
 	steps, ctx = _script_emit(h; figsize=figsize, recompute=recompute, backdrop=backdrop)
-	isempty(path) && return _script_render_text(steps, ctx)          # preview: nothing written
-	txt = _script_render_text(steps, ctx; outdir=dirname(abspath(String(path))))
-	write(String(path), txt)
+	txt = _script_render_text(steps, ctx)
+	isempty(path) || write(String(path), txt)                       # the caller's own file, nothing beside it
 	return txt
 end
 
-# ── File > Export GMT.jl script… (the editor dialog) ─────────────────────────────────────────
-# The menu opens an EDITABLE script in a dialog with Save and Run, not a file dialog. Both buttons
-# have to work on a script that is REALLY THERE on disk, because a script whose layers come from
-# sidecars reads them through `joinpath(@__DIR__, "script_data", …)`: `@__DIR__` only means anything
-# for a file that `include` is reading. So the dialog is backed by a real working directory from the
-# moment it opens — the text in the box is the text of that file — and Run is `include` of it. That
-# is also what makes Run run what the user EDITED rather than what was generated.
-#
-# There is no separate C callback for any of this: the dialog talks to Julia through the console eval
-# bridge (`g_juliaEval`), the same one the ruler and the focal dialog use. One bridge, one eval path.
-
-# One working directory per window, reused across opens so Run/Save do not scatter temp trees.
-const _SCRIPT_WORKDIR = Dict{Ptr{Cvoid},String}()
+# ── File > Plot with GMT.jl… (the editor dialog) ─────────────────────────────────────────────
+# The menu opens the script in an EDITABLE box with Run and Save…. The text lives IN THE BOX — there is
+# no file behind it, no working directory, nothing temporary:
+#   * open: Julia builds the text and hands it to the dialog (`gmtvtk_script_editor_show_h`);
+#   * Run:  Julia pulls the box's CURRENT text back (`gmtvtk_script_editor_text_h`, two-phase buffer),
+#           so what runs is what the user EDITED, and runs it statement by statement;
+#   * Save: the C++ side writes the box's text to the file the user picks — that file and nothing else.
+# Every layer that exists only in memory is fetched by the script from the live window, so nothing has
+# to sit beside it. (This used to be backed by a `mktempdir` that was never deleted plus a
+# `script_data/` of sidecars — a temporary-file bridge, banned outright. Do not bring it back.)
 
 """
-	_script_prepare_for_editor(scene) -> path
+	_script_open_editor(scene) -> nothing
 
-Generate the window's script into its working directory (with `script_data/` beside it) and return
-the file's path. Whatever the window could not reproduce is repeated into the Errors console, not
-just buried in the script header — a user exporting a shaded or curtained window should be told while
-they are still looking at it.
+Generate the window's script and show it in the window's script editor. Whatever the window could not
+reproduce is repeated into the Errors console, not just buried in the script header — a user exporting
+a shaded or curtained window should be told while they are still looking at it.
 """
-function _script_prepare_for_editor(scene::Ptr{Cvoid})::String
-	dir = get!(() -> mktempdir(; prefix="igmt_script_", cleanup=false), _SCRIPT_WORKDIR, scene)
-	isdir(dir) || mkpath(dir)
-	path = joinpath(dir, "igmt_script.jl")
+function _script_open_editor(scene::Ptr{Cvoid})::Nothing
 	steps, ctx = _script_emit(scene)
-	write(path, _script_render_text(steps, ctx; outdir=dir))
+	txt = _script_render_text(steps, ctx)
 	for n in ctx.notes
 		_viewer_log_error(scene, "script: $n")
 	end
-	return path
+	ccall(_fn(:gmtvtk_script_editor_show_h), Cint, (Ptr{Cvoid}, Cstring), scene, txt)
+	return nothing
+end
+
+# The editor box's current text: size query, then fill a Julia-owned buffer.
+function _script_editor_text(scene::Ptr{Cvoid})::String
+	n = ccall(_fn(:gmtvtk_script_editor_text_h), Cint, (Ptr{Cvoid}, Ptr{UInt8}, Cint), scene, C_NULL, Cint(0))
+	n <= 0 && return ""
+	buf = Vector{UInt8}(undef, n + 1)
+	ccall(_fn(:gmtvtk_script_editor_text_h), Cint, (Ptr{Cvoid}, Ptr{UInt8}, Cint), scene, buf, Cint(n + 1))
+	return String(buf[1:n])
 end
 
 """
-	_script_save_bundle(src, dest) -> dest
+	_script_run(scene) -> nothing
 
-Save the edited script: copy `src` to `dest` and its `script_data/` directory alongside, so what the
-user keeps is a bundle that actually runs. The dialog writes the editor's text into `src` first, so
-this always copies the EDITED script.
+The dialog's Run: execute the editor's text statement by statement, in `Main`, while a status window
+names the statement being executed and how far along the script is. A GMT call can take seconds; the
+user sees which one it is, never a dead window.
 """
-function _script_save_bundle(src::String, dest::String)::String
-	cp(src, dest; force=true)
-	sdir = joinpath(dirname(src), "script_data")
-	if isdir(sdir)
-		ddir = joinpath(dirname(abspath(dest)), "script_data")
-		mkpath(ddir)
-		for f in readdir(sdir)
-			cp(joinpath(sdir, f), joinpath(ddir, f); force=true)
+function _script_run(scene::Ptr{Cvoid})::Nothing
+	src   = _script_editor_text(scene)
+	lines = split(src, '\n')
+	fname = "Plot with GMT.jl"                  # what an error's stack trace names: there is no file
+	stmts = Tuple{LineNumberNode,Any}[]
+	loc   = LineNumberNode(1, Symbol(fname))
+	for a in Meta.parseall(src; filename = fname).args
+		a isa LineNumberNode ? (loc = a) : push!(stmts, (loc, a))
+	end
+	n = length(stmts)
+	ccall(_fn(:gmtvtk_progress_show_async), Cint, (Cint, Cstring), Cint(n), "Plot with GMT.jl")
+	try
+		for (k, (loc, ex)) in enumerate(stmts)
+			stop = k < n ? stmts[k + 1][1].line - 1 : length(lines)
+			ccall(_fn(:gmtvtk_progress_status), Cvoid, (Cint, Cstring), Cint(k - 1),
+			      "Step $k of $n\n" * _script_stmt_text(lines, loc.line, stop))
+			Core.eval(Main, Expr(:toplevel, loc, ex))
+		end
+	finally
+		ccall(_fn(:gmtvtk_progress_close), Cvoid, ())
+	end
+	return nothing
+end
+
+# ── Save with "Standalone" checked: a zip that runs with GMT.jl alone ────────────────────────
+# The editor's script reaches into the live window for every layer that exists only in memory
+# (`X = InteractiveGMT._find_object(…)`, `_display_image`, `_overlay_layer`, …). A standalone copy
+# cannot: it has to carry that data. So the EDITED text is taken as it is and only those fetch lines
+# are rewritten — each one is evaluated now, its result goes into the zip under `data/`, and the line
+# becomes a `gmtread` of that member. Everything the user edited survives; `using InteractiveGMT` is
+# dropped; any other InteractiveGMT reference left in the text is an error, never a silent dependency.
+#
+# The bytes are made IN MEMORY and the only file written is the zip the user chose — no temporary
+# file anywhere (banned). Rasters go through GDAL's in-memory filesystem; datasets through
+# `_ds_table_bytes`, because GDAL's vector writer drops a dataset's text column (labels).
+
+# One raster as GeoTIFF bytes, through GDAL's in-memory filesystem (/vsimem/ — RAM, not disk).
+function _raster_bytes(obj)::Vector{UInt8}
+	p = "/vsimem/igmt_standalone_" * string(rand(UInt64); base=16) * ".tif"
+	try
+		GMT.gdalwrite(p, obj)
+		len = Ref{UInt64}(0)
+		ptr = ccall((:VSIGetMemFileBuffer, GMT.Gdal.libgdal), Ptr{UInt8}, (Cstring, Ptr{UInt64}, Cint), p, len, 0)
+		ptr == C_NULL && error("GDAL wrote nothing for this layer")
+		return copy(unsafe_wrap(Array, ptr, Int(len[])))
+	finally
+		GMT.Gdal.VSIUnlink(p)
+	end
+end
+
+# One dataset (or a vector of segments) as a GMT multi-segment ASCII table: a `>` header per segment,
+# the numeric columns, then the row's text — what `gmtread` reads back, text column included.
+function _ds_table_bytes(D)::Vector{UInt8}
+	io = IOBuffer()
+	for d in (D isa GMTdataset ? [D] : D)
+		println(io, isempty(d.header) ? ">" : "> " * d.header)
+		M = d.data
+		T = d.text
+		for i in axes(M, 1)
+			join(io, (string(M[i, j]) for j in axes(M, 2)), '\t')
+			(i <= length(T) && !isempty(T[i])) && print(io, '\t', T[i])
+			println(io)
 		end
 	end
+	return take!(io)
+end
+
+# Is this statement `X = InteractiveGMT.f(…)`? Returns (X, call) or nothing.
+function _standalone_fetch(ex)
+	(ex isa Expr && ex.head === :(=) && ex.args[1] isa Symbol) || return nothing
+	rhs = ex.args[2]
+	(rhs isa Expr && rhs.head === :call) || return nothing
+	f = rhs.args[1]
+	(f isa Expr && f.head === :. && f.args[1] === :InteractiveGMT) || return nothing
+	return ex.args[1], rhs
+end
+
+_uses_igmt(ex) = ex === :InteractiveGMT || (ex isa Expr && any(_uses_igmt, ex.args))
+
+"""
+	_script_save_standalone(scene, dest) -> dest
+
+Write `dest` (a .zip): the editor's script, made independent of InteractiveGMT, plus a `data/` folder
+with every layer it used to fetch from the live window. The script depends on GMT.jl only.
+"""
+function _script_save_standalone(scene::Ptr{Cvoid}, dest::String)::String
+	src   = _script_editor_text(scene)
+	isempty(src) && error("Plot with GMT.jl: the script editor is empty")
+	lines = String.(split(src, '\n'))
+	fname = "Plot with GMT.jl"
+	stmts = Tuple{Int,Any}[]
+	for a in Meta.parseall(src; filename = fname).args
+		a isa LineNumberNode ? push!(stmts, (a.line, nothing)) : (stmts[end] = (stmts[end][1], a))
+	end
+	files = Tuple{String,Vector{UInt8}}[]
+	used  = Set{String}()                           # member names taken so far
+	drop  = Set{Int}()                              # lines removed from the text
+	for (k, (l0, ex)) in enumerate(stmts)
+		ex === nothing && continue
+		ex isa Expr && ex.head === :error && error("Plot with GMT.jl: line $l0 does not parse: $(ex.args[1])")
+		l1 = k < length(stmts) ? stmts[k + 1][1] - 1 : length(lines)
+		while l1 > l0 && (isempty(strip(lines[l1])) || startswith(strip(lines[l1]), '#')); l1 -= 1; end
+		if ex isa Expr && ex.head === :using && _uses_igmt(ex)
+			union!(drop, l0:l1)
+			continue
+		end
+		fx = _standalone_fetch(ex)
+		if fx === nothing
+			_uses_igmt(ex) && error("Plot with GMT.jl: line $l0 still needs InteractiveGMT, so it cannot be made standalone")
+			continue
+		end
+		var, call = fx
+		obj = Core.eval(@__MODULE__, call)         # the very fetch the live script makes
+		# The member is named after the element's own Scene Objects name when the fetch carries one
+		# (the same naming Save Session uses), else after the script variable.
+		nm = something(findfirst(a -> a isa String && !isempty(a), call.args[2:end]), 0)
+		stem = nm > 0 ? call.args[nm + 1] : String(var)
+		if obj isa GMTgrid || obj isa GMTimage
+			id, bytes = _session_sidecar_id(stem, ".tif", used), _raster_bytes(obj)
+		elseif obj isa GMTdataset || obj isa AbstractVector{<:GMTdataset}
+			id, bytes = _session_sidecar_id(stem, ".txt", used), _ds_table_bytes(obj)
+		else
+			error("Plot with GMT.jl: line $l0 fetches a $(typeof(obj)), which cannot be saved as data")
+		end
+		push!(files, ("data/" * id, bytes))
+		lines[l0] = "$(var) = gmtread(joinpath(@__DIR__, \"data\", $(repr(id))))"
+		# The generated note above it said "fetched from the live window" — no longer true here.
+		(l0 > 1 && startswith(lines[l0 - 1], "# $(var):")) &&
+			(lines[l0 - 1] = "# $(var): saved with this script (data/$(id)) — it existed only in the iGMT window")
+		union!(drop, (l0 + 1):l1)
+	end
+	out = [l for (i, l) in enumerate(lines) if !(i in drop)]
+	script = splitext(basename(dest))[1] * ".jl"
+	pushfirst!(files, (script, Vector{UInt8}(codeunits(join(out, '\n')))))
+	_zip_write(dest, files)
 	return dest
+end
+
+# The source of one statement as the status window shows it: its first line, marked "…" when the
+# statement runs on, cut to a width a dialog label can hold.
+function _script_stmt_text(lines::Vector{SubString{String}}, i0::Int, i1::Int)::String
+	body = String[String(strip(lines[i])) for i in i0:min(i1, length(lines))
+	              if !isempty(strip(lines[i])) && !startswith(strip(lines[i]), '#')]
+	isempty(body) && return ""
+	t = body[1] * (length(body) > 1 ? " …" : "")
+	return length(t) > 160 ? first(t, 159) * "…" : t
 end
