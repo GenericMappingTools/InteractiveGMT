@@ -27868,14 +27868,17 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	auto setFlat2D   = [s](bool on) { sceneSetFlat2D(s, on); };
 	auto actToggle2D = [s]() { sceneSetFlat2D(s, !s->flat2d); };
 	auto actAbout = [win]() {
-		QMessageBox::about(win, "About",
+		QString txt = QString::fromUtf8(
 			"i'GMT 3-D Viewer\n\nNative Qt UI + VTK 3-D, self-contained.\n\n"
 			"Left-drag: horizontal = rotate (azimuth), vertical = tilt.\n"
 			"Middle-click: set the centre of rotation to that point.\n"
 			"Right-drag / wheel: zoom.\n"
 			"Gizmo handles — amber cone: vert. exaggeration;  tip ring: tilt;  "
-			"compass ring: azimuth.   'x' hides/shows the gizmo.\n\n"
-			"gmtvtk.dll built: " __DATE__ " " __TIME__);
+			"compass ring: azimuth.   'x' hides/shows the gizmo.\n\n");
+		if (!g_aboutHostInfo.isEmpty())
+			txt += g_aboutHostInfo + "\n";
+		txt += "gmtvtk.dll built: " __DATE__ " " __TIME__;
+		QMessageBox::about(win, "About", txt);
 	};
 
 	QMenu *mFile = win->menuBar()->addMenu("&File");

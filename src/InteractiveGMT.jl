@@ -106,7 +106,7 @@ include("clipgrid.jl")   # Grid Tools > Clip Grid: threshold/statistical grid cl
 include("binarize.jl")   # Image > Binarize Image: threshold an image into a B&W mask (port of Mirone thresholdit.m)
 include("digitize.jl")   # a mask handle's "Digitize whites": the white region's outline via GDALPolygonize
 include("potrace/Potrace.jl") # module Potrace: Julia port of potrace 1.16 (bitmap -> curves; SVG/EPS/GMTdataset)
-include("pngquant/PngQuant.jl") # module PngQuant: Julia port of pngquant 3 / libimagequant 4 (RGBA -> 8-bit palette PNG)
+#include("pngquant/PngQuant.jl") # module PngQuant: Julia port of pngquant 3 / libimagequant 4 (RGBA -> 8-bit palette PNG)
 include("vectorwizard.jl")      # Tools > Vector Wizard: trace the picture on display into filled vector layers (Potrace)
 include("imagehisto.jl") # Image > Show Histogram: histogram of the DISPLAYED image (port of Mirone image_histo.m)
 include("imageenhance.jl") # Image > Image Enhance > 1 - Indexed and RGB (port of Mirone image_enhance.m)

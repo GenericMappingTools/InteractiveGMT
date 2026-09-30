@@ -153,7 +153,7 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_set_cpt, :gmtvtk_set_cpt_grid, :gmtvtk_grid_rgb_at, :gmtvtk_raise, :gmtvtk_set_crs,
 	:gmtvtk_set_palette_callback, :gmtvtk_set_bands_callback,
 	:gmtvtk_set_title_h, :gmtvtk_set_surface_name_h,
-	:gmtvtk_set_basemap_callback, :gmtvtk_set_basemap_logo, :gmtvtk_set_basemap_icon,
+	:gmtvtk_set_basemap_callback, :gmtvtk_set_basemap_logo, :gmtvtk_set_basemap_icon, :gmtvtk_set_about_info,
 	:gmtvtk_set_tiles_callback, :gmtvtk_set_tiles_world, :gmtvtk_tiles_set_bg, :gmtvtk_tiles_log,
 	:gmtvtk_tiles_set_footprints,
 	:gmtvtk_set_lidar_callback, :gmtvtk_set_lidar_image, :gmtvtk_lidar_set_tiles, :gmtvtk_lidar_status,
@@ -458,6 +458,13 @@ function _try_load(lib::String)::Union{Nothing,String}
 	return nothing
 end
 
+# The Help > About lines on the host side: GMT's version, where that GMT comes from (GMT_jll or a
+# system-wide install, with the library path) and GMT.jl's own version.
+function _about_info()
+	src = GMT.isJLL ? "GMT_jll" : "system-wide, " * string(GMT.libgmt)
+	return "GMT " * string(GMT.GMTver) * " (" * src * ")\nGMT.jl " * string(pkgversion(GMT))
+end
+
 # Load the viewer: try each candidate in preference order, first one that FULLY loads wins.
 # Idempotent.
 function _load_library()
@@ -484,6 +491,13 @@ function _load_library()
 	# The .ui ship with the package (they are in git), so _PKGROOT/deps/ui is always the right answer.
 	let uidir = joinpath(_PKGROOT, "deps", "ui")
 		isdir(uidir) && ccall(_fn(:gmtvtk_set_ui_dir), Cvoid, (Cstring,), uidir)
+	end
+	# Help > About: which GMT this session runs on. GMT.jl knows it (GMTver, and isJLL for
+	# GMT_jll vs a system-wide install), the viewer does not.
+	try
+		ccall(_fn(:gmtvtk_set_about_info), Cvoid, (Cstring,), _about_info())
+	catch e
+		@debug "InteractiveGMT: could not push the About info" exception=(e,)
 	end
 	# Tear Qt down IN ORDER when this process ends. Without it the QApplication (deliberately never
 	# deleted while running) was still registered as owning the main thread when the C runtime ran

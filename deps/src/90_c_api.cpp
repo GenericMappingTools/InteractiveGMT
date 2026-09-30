@@ -1844,6 +1844,12 @@ GMTVTK_API void gmtvtk_set_basemap_callback(JuliaBaseMapFn fn) {
 	g_juliaBaseMap = fn;
 }
 
+// Set the host-side version lines Help > About shows (GMT version, GMT.jl version, and whether GMT
+// is a system-wide install or GMT_jll). Pushed from Julia at __init__; one or more "\n"-separated lines.
+GMTVTK_API void gmtvtk_set_about_info(const char *txt) {
+	g_aboutHostInfo = QString::fromUtf8(txt ? txt : "");
+}
+
 // Set the path to the world logo image painted in the basemap picker (data/etopo4_logo.jpg).
 GMTVTK_API void gmtvtk_set_basemap_logo(const char *path) {
 	g_basemapLogo = QString::fromUtf8(path ? path : "");
