@@ -20,7 +20,7 @@ module Potrace
 
 using GMT: GMT, GMTdataset
 
-export PotraceParams, PotraceBitmap, PotraceResult, potrace, paths, potrace_svg, potrace_eps, potrace_gmtds
+export PotraceParams, PotraceBitmap, PotraceResult, potrace, paths, potrace_svg, potrace_eps, potrace_pdf, potrace_gmtds
 
 include("types.jl")
 include("decompose.jl")

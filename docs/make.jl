@@ -20,6 +20,12 @@ const titles = Dict(
     "66-nswing.md" => "Tutorial: Running NSWING",
     "67-moho-spada.md" => "Tutorial: Moho Topography",
     "68-gps-sanchez.md" => "Tutorial: GPS Velocities of the Alps",
+    "69-jura.md" => "Tutorial: Jura Mountains 3-D Model",
+    "69b-alpine-data.md" => "Tutorial: Alpine Data Integration",
+    "69c-lapalma.md" => "Tutorial: La Palma Volcano",
+    "69d-visualise.md" => "Tutorial: Slicing a Tomography Model",
+    "69e-netcdf-tomography.md" => "Tutorial: A Tomography Model from netCDF",
+    "69f-ascii-tomography.md" => "Tutorial: A Tomography Model from ASCII",
     "70-tools.md" => "Tools",
     "71-earthregions.md" => "Earth Regions",
     "72-ecmwf.md" => "Copernicus / ECMWF",
@@ -87,7 +93,9 @@ makedocs(;
     authors = "Joaquim Luis <jluis@ualg.pt>",
     repo = Documenter.Remotes.GitHub("GenericMappingTools", "InteractiveGMT"),
     sitename = "InteractiveGMT.jl",
-    format = Documenter.HTML(; canonical = "https://www.generic-mapping-tools.org/InteractiveGMT"),
+    # The API reference is one long page: allow it past Documenter's 200 KiB default
+    format = Documenter.HTML(; canonical = "https://www.generic-mapping-tools.org/InteractiveGMT",
+                             size_threshold = 500 * 2^10),
     pages = list_pages(),
 )
 

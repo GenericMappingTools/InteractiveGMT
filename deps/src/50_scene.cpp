@@ -1178,7 +1178,10 @@ static std::vector<StackItem> gatherStackItems(Scene *s) {
 		if (ex.isImage || !ex.actor) continue;
 		std::vector<vtkActor*> a = { ex.actor.Get() };
 		if (ex.drape) a.push_back(ex.drape.Get());
-		v.push_back({ a, &ex.gstack, false });
+		// On the base's own vertical scale (ExtraObj::zShareBase) it is REAL geometry beside the base
+		// relief (a basement kilometres under its topography): no rank bias — the depth test decides,
+		// or the pile's offset would print the deeper surface over the one above it.
+		v.push_back({ a, &ex.gstack, false, ex.zShareBase });
 	}
 	// The Ctrl+drag profile track is a VECTOR element like any other line: it joins the SAME pile so the
 	// shared "vectors above every raster" rule (applyStacking below) lifts it over grid2 as well — never
@@ -1682,7 +1685,10 @@ static void applyStacking(Scene *s) {
 			vtkPolyDataMapper *mp = vtkPolyDataMapper::SafeDownCast(a->GetMapper());
 			if (!mp) continue;
 			if (solid3D) {
-				// leave depth resolution at the mapper's own default (no bias) -> real occlusion
+				// leave depth resolution at the mapper's own default (no bias) -> real occlusion.
+				// A raster lands here only as a grid on the base's vertical scale; it may have worn a
+				// rank bias before that was switched on, so its bias is cleared, not just left alone.
+				if (!vec) mp->SetRelativeCoincidentTopologyPolygonOffsetParameters(0.0, 0.0);
 			} else if ((realZ || onBody) && !s->flat2d) {
 				// Lying ON the surface, so it still needs a nudge out of the coplanar z-fight — but a
 				// FEW depth increments, not the pile ramp: 20000 of them would put it back through the
@@ -2070,11 +2076,31 @@ static void aquaFileObjectMenu(Scene *s, const QPoint &gp) {
 // Properties menu for a dropped GRID surface (its Scene Objects row). EVERY added element must carry
 // a handle menu — for a grid that is: save it to disk, stack it in the grid pile, or delete it.
 // Reached by a left- OR right-click on the row label.
+// Put a dropped grid on the base's vertical scale, or back on its own (ExtraObj::zShareBase). One
+// function for the menu item and the host export; applyVE re-scales exactly as a VE change does.
+static void extraSetZShare(Scene *s, size_t idx, bool on) {
+	if (!s || idx >= s->extras.size()) return;
+	s->extras[idx].zShareBase = on;
+	applyVE(s);
+	applyVectorStacking(s);          // the pile's depth bias follows the flag (gatherStackItems)
+}
+
 static void gridObjectMenu(Scene *s, vtkProp3D *actor, const QPoint &g) {
 	int idx = extraIndexOfActor(s, actor);
 	if (idx < 0) return;
 	const QString nm = QString::fromStdString(s->extras[idx].name);
 	QMenu m(s->widget);
+	// Same quantity as the window's base relief (a basement under its topography): draw it on the
+	// base's vertical scale. Offered only when there IS a base relief to share with.
+	QAction *aShare = nullptr;
+	if (s->surf && !s->emptyStart && !s->gridZ.empty()) {
+		const QString base = s->surfName.empty() ? QString("the base grid") : QString::fromStdString(s->surfName);
+		aShare = m.addAction("Same vertical scale as " + base);
+		aShare->setCheckable(true);
+		aShare->setChecked(s->extras[idx].zShareBase);
+		aShare->setToolTip("For the same quantity as the base (e.g. two elevations in metres): one vertical scale for both");
+		m.addSeparator();
+	}
 	QAction *aSave  = m.addAction("Save grid…");
 	QAction *aInfo  = m.addAction("Info (grdinfo)…");
 	QAction *aMove  = m.addAction("Move to new window"); // re-open this grid in a fresh iGMT window, then drop it here
@@ -2094,6 +2120,7 @@ static void gridObjectMenu(Scene *s, vtkProp3D *actor, const QPoint &g) {
 	QAction *aDel   = m.addAction("Remove");
 	QAction *c = m.exec(g);
 	if (!c) return;
+	if (aShare && c == aShare) { extraSetZShare(s, (size_t)idx, aShare->isChecked()); return; }
 	if (c == aSave) { saveObjectDialog(s, "grid", nm); return; }
 	if (c == aInfo) { runGridInfo(s, nm); return; }
 	if (aTransplant && c == aTransplant) { runNestedTransplant(s, nm); return; }  // fill blank nested grid
@@ -3168,11 +3195,14 @@ static void rebuildSceneObjects(Scene *s) {
 			// Declared as part of a bigger plot? Then this group is a CHILD of that plot's master row.
 			if (QTreeWidgetItem *mi = masterItemFor(gn)) { ovlMasterSave = curParent; curParent = mi; }
 			const bool cptable = ov.cptColorable;      // a group of per-level lines (contours)
+			const std::string vwKey = ov.vwKey;        // a Vector Wizard trace: saveable as SVG/EPS/PDF
 			// ONE menu on both buttons — left-click properties and right-click context are the same
 			// thing, so they are the same lambda (never two look-alikes).
-			auto grpMenu = [s, gn, cptable](const QPoint &g) {
+			auto grpMenu = [s, gn, cptable, vwKey](const QPoint &g) {
 				QMenu m(s->widget);
 				QAction *aCpt = nullptr, *aBlack = nullptr;
+				QAction *aVw = vwKey.empty() ? nullptr : m.addAction("Save as SVG / EPS / PDF…");
+				if (aVw) m.addSeparator();
 				if (cptable) {
 					// Each line of this group IS one value of the grid, so it can be painted with the
 					// value's own colour out of the grid's colormap. The colours live with the grid on
@@ -3208,6 +3238,7 @@ static void rebuildSceneObjects(Scene *s) {
 				QAction *aRen = m.addAction("Rename…");
 				QAction *aRem = m.addAction("Remove");
 				QAction *pick = m.exec(g);
+				if (aVw && pick == aVw) { vwSaveProduct(s, vwKey); return; }
 				if (pick == aRen) { lineGroupRenamePrompt(s, gn); return; }
 				if (pick == aRem) { overlayDeleteGroup(s, gn); return; }
 				if (aClamp && pick == aClamp) { lineGroupSetClamped(s, gn, aClamp->isChecked()); return; }
@@ -4004,6 +4035,21 @@ static void overlaySetFilled(Scene *s, vtkActor *a, bool on) {
 		if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 		return;
 	}
+}
+
+// "Save as SVG / EPS / PDF…" on a Vector Wizard product (Overlay::vwKey): ask for the file, then the
+// Wizard's own callback writes the trace kept under `key` — the same writers its Save… button uses.
+static void vwSaveProduct(Scene *s, const std::string &key) {
+	if (!s || !sceneAlive(s) || key.empty() || !g_juliaVectorWizard) return;
+	const QString fn = QFileDialog::getSaveFileName(s->win, "Save traced vectors", prefStartDir("traced.svg"),
+		"SVG (*.svg);;Encapsulated PostScript (*.eps);;PDF (*.pdf)");
+	if (fn.isEmpty()) return;
+	rememberStartDir(fn);
+	const QString msg = "saveproduct\n" + fn + "\n" + QString::fromStdString(key);
+	showBusyDialog("Saving…");
+	const int ok = g_juliaVectorWizard(s, nullptr, msg.toUtf8().constData());
+	closeBusyDialog();
+	if (!ok) QMessageBox::warning(s->win, "Vector Wizard", "Save failed — see this window's Errors console.");
 }
 
 // Is `a` the actor of a FILLED overlay? The vector pile asks, to give its triangles the same rank

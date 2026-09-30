@@ -239,6 +239,63 @@ the line width or point size in px (`0` = default). Returns `fig`.
 add!(fig::QtFigure, data; mode::Symbol=:lines, color=nothing, size=0) =
 	_add_overlay!(fig, data, mode, color, size)
 
+"""
+	add!(fig::QtFigure, G::GMTgrid; name="grid", cmap=:auto, drape=nothing, samezscale=false)
+
+Add a second grid to the window `fig` as its own layer, exactly as dropping that grid's file on
+the window would: it gets its own Scene Objects handle, its own colour bar and axes, and becomes
+the layer on display (the others are unchecked; tick them back with [`setvisible!`](@ref)).
+
+`drape` (a `GMTimage` over the grid's box) is painted on this grid's surface instead of its CPT
+colours, as `iview(G; drape=I)` does for the window's own grid.
+
+`samezscale=true` draws it on the vertical scale of `fig`'s own grid, for the SAME quantity (a
+basement surface under the topography, both elevations in metres) — the grid menu's
+*Same vertical scale as …* item. It is set automatically when both grids name the same z unit.
+Returns `fig`.
+"""
+function add!(fig::QtFigure, G::GMTgrid; name::String="grid", cmap=:auto,
+              drape::Union{Nothing,GMTimage}=nothing, samezscale::Bool=false)
+	h = getfield(fig, :h)
+	_add_grid_to_scene(h, G, name; cmap=cmap, drape=drape)
+	# The scale BEFORE the adopt: the adopt frames the camera on the layer as it is drawn, so a layer
+	# re-scaled after it is left outside the view (a flat slice at -511 km on its own scale 1 sat
+	# 511000 units below a camera the shared scale then never went to).
+	samezscale && ccall(_fn(:gmtvtk_grid_share_zscale_h), Cint, (Ptr{Cvoid}, Cstring, Cint), h, name, Cint(1))
+	_adopt_new_element(h, name, G)                      # the file-drop transition: own axes, on display
+	return fig
+end
+
+"""
+	setvisible!(fig, name, on=true; layer="")
+
+Check (`on=true`) or uncheck the Scene Objects row called `name` — the same as clicking its box.
+The window's own grid is the row `"Surface"`. `layer` picks the row inside that layer's group, for
+the rows every layer carries under the same name: `setvisible!(fig, "Axes", false; layer="Basement")`
+hides the basement's own axes. Returns `fig`.
+"""
+function setvisible!(fig::Union{QtFigure,QtImage}, name::String, on::Bool=true; layer::String="")
+	h = getfield(fig, :h)
+	ok = isempty(layer) ?
+		ccall(_fn(:gmtvtk_scene_row_click_h), Cint, (Ptr{Cvoid}, Cstring, Cint), h, name, Cint(on)) :
+		ccall(_fn(:gmtvtk_scene_child_row_click_h), Cint, (Ptr{Cvoid}, Cstring, Cstring, Cint), h, layer, name, Cint(on))
+	ok == 0 && error("setvisible!: no Scene Objects row called \"$name\"" * (isempty(layer) ? "" : " in \"$layer\""))
+	return fig
+end
+
+"""
+	setopacity!(fig, alpha; layer="")
+
+Set a raster layer's opacity, from 0 (invisible) to 1 (opaque): the window's own grid, or the added
+layer called `layer` (its drape fades with it). A half-transparent topography shows what lies under
+it. Returns `fig`.
+"""
+function setopacity!(fig::Union{QtFigure,QtImage}, alpha::Real; layer::String="")
+	ok = ccall(_fn(:gmtvtk_layer_opacity_h), Cint, (Ptr{Cvoid}, Cstring, Cdouble), getfield(fig, :h), layer, Float64(alpha))
+	ok == 0 && error("setopacity!: no raster layer called \"$layer\"")
+	return fig
+end
+
 # Pure crop math for "Roi Crop Tools" (port of Mirone's mirone.m ImageCrop_CB CropaGrid_pure /
 # plain-image-crop cases) — no DLL, no window, so this is what the unit tests exercise directly.
 # GMT.jl's in-memory `crop` (works on both GMTgrid and GMTimage) is the SAME function `GMT.grdcut`

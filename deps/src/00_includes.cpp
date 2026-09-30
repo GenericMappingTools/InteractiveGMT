@@ -186,6 +186,7 @@
 #include <vtkDataSet.h>
 #include <vtkImageData.h>
 #include <vtkRectilinearGrid.h>
+#include <vtkContourFilter.h>        // gmtvtk_add_isosurface_h
 #include <vtkStructuredGrid.h>
 #include <vtkUnstructuredGrid.h>
 #include <vtkMultiBlockDataSet.h>

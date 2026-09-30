@@ -313,6 +313,10 @@ struct Overlay {
 	// even-odd over every segment, so a ring inside a ring is a hole. One actor, so colour, opacity,
 	// visibility, VE, the globe and the vector pile treat outline and fill as one element.
 	bool filled = false;
+	// A Vector Wizard product: the key Julia keeps its trace under (src/vectorwizard.jl), so its menu can
+	// offer "Save as SVG / EPS / PDF…" of that trace. Empty = not one. A key, not the name: a rename
+	// must not orphan it.
+	std::string vwKey;
 	bool noConvertToPoints = false;          // suppresses ONLY "Convert to points"/"Convert to line" in the
 	                                          // context menu, unlike isShapencBoundary which also drops
 	                                          // "Line length…"/"Azimuth…" -- for lines where scattering to
@@ -562,6 +566,7 @@ struct LayerShade {
 	bool   noShade      = false;      // "Remove illumination": NO light at all, plain CPT, unlit.
 	double lightAz = 315.0, lightEl = 45.0;   // THIS layer's sun: azimuth (deg from north, CW) + elevation
 	double roughness = 0.3, metallic = 0.0, ior = 1.5;   // its PBR material (F3D defaults)
+	double opacity = 1.0;             // THIS layer's opacity (gmtvtk_layer_opacity_h); every tile inherits it
 };
 
 // ONE external-reflectance store: a per-node intensity grid computed by GMT in Julia (the
@@ -686,6 +691,11 @@ struct ExtraObj {
 	// NORMALISER (Scene::zfac) stays window-wide on purpose -- see sceneZRef: deriving that per layer
 	// re-scales and re-LIGHTS layers nobody touched, which is the opposite of this same law.
 	double ve = 1.0;
+	// SAME QUANTITY AS THE BASE (a basement surface under the topography, both elevations in metres):
+	// this layer's z maps to world units with the BASE's normaliser (Scene::zfac) instead of its own
+	// z span, so the two stand on one vertical scale. Its VE multiplier stays its own. Set by the grid's
+	// "Same vertical scale as <base>" menu item, or on add when both grids name the same real z unit.
+	bool   zShareBase = false;
 	int    cubeLayers = 0;                   // >1 iff this grid is a 3-D-cube variable (its menu offers
 	                                         // "Cube layers…", opening the slider bound to THIS cube)
 	PaletteLegend palette;                   // images only: an indexed image's class legend (see above)
@@ -925,6 +935,7 @@ static void lineGroupRename(Scene *s, const std::string &oldName, const std::str
 static void lineGroupRenamePrompt(Scene *s, const std::string &gname);   // ask, then rename (menu + dbl-click)
 static void overlayBuildFill(Overlay &ov);                                 // filled overlay's triangles (50_scene.cpp)
 static bool overlayActorFilled(Scene *s, vtkActor *a);                     // ...is this actor one? (50_scene.cpp)
+static void vwSaveProduct(Scene *s, const std::string &key);               // Vector Wizard product -> SVG/EPS/PDF (50_scene.cpp)
 static void lineRenamePrompt(Scene *s, const LineRef &lr);               // ...the same for ONE element's label
 static void applyVectorStacking(Scene *s);                      // shared vector-pile draw-order (50_scene.cpp)
 static void restackVector(Scene *s, int *stackPtr, int op);    // move one vector element through the pile
@@ -1119,6 +1130,11 @@ struct Scene {
 	// with ZERO changes to any of them. false = untouched, normal behaviour (report the real actor).
 	bool   viewBoundsOverride = false;
 	double viewBounds[6] = { 0,0,0,0,0,0 };
+	// ...and WHOSE frame it is, so the pin can be read at the CURRENT scale (viewBoundsFromOwner).
+	// `viewBounds` alone is a snapshot at the VE of the moment it was pinned. false = only the
+	// snapshot exists (a caller that pinned raw numbers, e.g. the fault demo's own scene).
+	bool   viewBoundsLive  = false;
+	int    viewBoundsOwner = 0;              // AxesSet::owner of the pinned set (kAxesOwnerBase / an extra's tag)
 
 	// --- full-resolution DATA layer (decoupled from the render geometry) -----
 	// The grid's z kept once at full res, column-major z[i*gny + j] (GMT layout). Hover readout
@@ -3087,6 +3103,8 @@ static inline void surfGetScale(Scene *s, double sc[3]) {
 static bool activeGridZRange(Scene *s, double &zlo, double &zhi);
 static int  activeGridGeog(Scene *s);
 
+static bool viewBoundsFromOwner(Scene *s, double b[6]);   // below axesScaledBox: the pin, read now
+
 static inline void surfGetBounds(Scene *s, double b[6]) {
 	// GLOBE: the actor's own bounds are already the truth — its geometry has been through globeXf, so
 	// GetBounds() reports the real spherical cap in world XYZ. Both overrides below are lon/lat/z
@@ -3097,7 +3115,9 @@ static inline void surfGetBounds(Scene *s, double b[6]) {
 		else { b[0]=b[2]=b[4] = -s->globeR; b[1]=b[3]=b[5] = s->globeR; }
 		return;
 	}
-	if (s->viewBoundsOverride) { for (int i = 0; i < 6; ++i) b[i] = s->viewBounds[i]; }
+	if (s->viewBoundsOverride) {
+		if (!viewBoundsFromOwner(s, b)) for (int i = 0; i < 6; ++i) b[i] = s->viewBounds[i];
+	}
 	else if (vtkProp3D *p = surfProp(s)) p->GetBounds(b);
 	// SACRED_LAW.md "derived-variable axes law", Z half: a NEW grid is a NEW quantity with its OWN Z
 	// axis and, more likely than not, its OWN UNITS (a gravity anomaly in mGal computed over a
@@ -4456,6 +4476,24 @@ static inline void axesScaledBox(Scene *s, const AxesSet &A, double b[6]) {
 	b[4] = A.z0 * zs;      b[5] = A.z1 * zs;
 }
 
+// The pinned view frame (sceneReframeSet), read NOW: the owning raster's own axes frame, which is kept
+// in data units, at that layer's CURRENT scale. The pin used to be only a snapshot taken at the VE of
+// the moment, so every later VE change left it describing a box the geometry no longer occupies, and
+// every camera placement framed that ghost -- a 1000 km model at VE 0.05 got its parallel camera
+// parked twenty times too far out, where the SSAO pass quantised every flat surface into stripes.
+// false = no live owner (raw numbers were pinned, or the owning layer is gone): use the snapshot.
+static bool viewBoundsFromOwner(Scene *s, double b[6]) {
+	if (!s || !s->viewBoundsLive) return false;
+	const AxesSet *A = nullptr;
+	if (s->viewBoundsOwner == kAxesOwnerBase) A = &s->baseAxes;
+	else
+		for (auto &ex : s->extras) if (ex.tag == s->viewBoundsOwner) { A = &ex.ax; break; }
+	if (!A) return false;
+	axesScaledBox(s, *A, b);
+	if (b[5] <= b[4]) b[5] = b[4] + 1.0;       // degenerate-Z guard, the same one sceneReframeSet applies
+	return true;
+}
+
 // Point a set at ITS OWN raster's limits. THE only way a frame is ever set: a caller names the set
 // it owns and hands it that raster's own numbers — there is no call that can re-frame "the window",
 // so no handle can move another's axes.
@@ -5185,6 +5223,9 @@ static double sceneZRefFor(Scene *s, double zlo, double zhi,
 // every per-layer caller uses, so no call site has to remember which four fields an extra's frame
 // lives in (`gx0..gy1`, the grid's true corners).
 static double sceneZRefForExtra(Scene *s, const ExtraObj &ex) {
+	// The same quantity as the base (ExtraObj::zShareBase) is mapped like the base, or the two would not
+	// stand on one vertical scale: a basement surface would float at the wrong depth under its topography.
+	if (ex.zShareBase && s) return s->zfac;
 	return sceneZRefFor(s, ex.zmin, ex.zmax, ex.gx0, ex.gx1, ex.gy0, ex.gy1);
 }
 

@@ -81,6 +81,15 @@ end
 	@test findfirst("#ff0000", sv)[1] < findfirst("#0000ff", sv)[1]     # painted in the order given
 	io = IOBuffer(); PT.potrace_eps(io, L; background="#ffffff"); ep = String(take!(io))
 	@test occursin("rectfill", ep) && count("setrgbcolor", ep) == 3
+	# PDF: one page the bitmap's size, same fills, and a cross-reference table whose offsets are right
+	io = IOBuffer(); PT.potrace_pdf(io, L; background="#ffffff"); pd = String(take!(io))
+	@test startswith(pd, "%PDF-1.4") && occursin("/MediaBox [0 0 12.0 10.0]", pd)
+	@test count(" rg\n", pd) == 3 && occursin("re f", pd)
+	xs = parse(Int, match(r"startxref\n(\d+)", pd)[1])
+	@test startswith(pd[xs+1:end], "xref")
+	for (k, m) in enumerate(eachmatch(r"(\d{10}) 00000 n ", pd))
+		@test startswith(pd[parse(Int, m[1])+1:end], "$k 0 obj")
+	end
 end
 
 @testitem "Vector Wizard: settings, tones and stacked layers" tags=[:unit, :fast] begin

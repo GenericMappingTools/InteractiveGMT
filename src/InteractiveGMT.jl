@@ -43,6 +43,7 @@ include("drape.jl")
 include("grid.jl")
 include("table.jl")
 include("curtain.jl")
+include("isosurface.jl")
 include("points.jl")
 include("fv.jl")
 include("dispatch.jl")
@@ -105,6 +106,7 @@ include("clipgrid.jl")   # Grid Tools > Clip Grid: threshold/statistical grid cl
 include("binarize.jl")   # Image > Binarize Image: threshold an image into a B&W mask (port of Mirone thresholdit.m)
 include("digitize.jl")   # a mask handle's "Digitize whites": the white region's outline via GDALPolygonize
 include("potrace/Potrace.jl") # module Potrace: Julia port of potrace 1.16 (bitmap -> curves; SVG/EPS/GMTdataset)
+include("pngquant/PngQuant.jl") # module PngQuant: Julia port of pngquant 3 / libimagequant 4 (RGBA -> 8-bit palette PNG)
 include("vectorwizard.jl")      # Tools > Vector Wizard: trace the picture on display into filled vector layers (Potrace)
 include("imagehisto.jl") # Image > Show Histogram: histogram of the DISPLAYED image (port of Mirone image_histo.m)
 include("imageenhance.jl") # Image > Image Enhance > 1 - Indexed and RGB (port of Mirone image_enhance.m)
@@ -158,7 +160,7 @@ include("RemoteS/remotes_gui.jl") # Satellite > Remote sensing: the dialogs over
 
 export gmtscript, gmtreplay,
        view_grid, view_image, view_points, view_fv, view_demo, iview,
-       add!, add_curtain!, add_symbols!, show_table, selection, isalive,
+       add!, setvisible!, setopacity!, add_curtain!, add_isosurface!, add_symbols!, show_table, selection, isalive,
        poly2fv, colorize_by_z!, save_png, wait_windows, stereo!, movie, MovieFrame, orbit!, replace_grid!,
        set_layer!, nlayers, add_label!, add_progress!, remove_annotation!, movie_annotations,
        xyplot, clear!, profile_to_xyplot, xtime!, logscale!, stickplot, xyinfo!, xynowcross!,

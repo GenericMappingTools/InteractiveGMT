@@ -29,6 +29,12 @@ add!
 add_curtain!
 ```
 
+## Iso-surfaces
+
+```@docs
+add_isosurface!
+```
+
 ## Point Clouds
 
 ```@docs

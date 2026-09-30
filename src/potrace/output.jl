@@ -103,17 +103,20 @@ potrace_svg(fname::String, layers::Vector{Pair{String,PotraceResult}}; kw...) =
 # ---------------------------------------------------------------------------------------------
 # EPS
 
-function _eps_curve(io::IO, cv::PrivCurve)
+# One curve as PostScript path operators. PDF's content streams use the same path model with short
+# names, so the PDF writer passes its own (m / l / c) through `ops`.
+function _eps_curve(io::IO, cv::PrivCurve; ops::NTuple{3,String}=("moveto", "lineto", "curveto"))
+	mv, ln, cu = ops
 	m = cv.n
 	p = cv.c[m, 3]
-	println(io, _fnum(p.x), " ", _fnum(p.y), " moveto")
+	println(io, _fnum(p.x), " ", _fnum(p.y), " ", mv)
 	for i = 1:m
 		c1, c2, c3 = cv.c[i, 1], cv.c[i, 2], cv.c[i, 3]
 		if cv.tag[i] == CORNER
-			println(io, _fnum(c2.x), " ", _fnum(c2.y), " lineto ", _fnum(c3.x), " ", _fnum(c3.y), " lineto")
+			println(io, _fnum(c2.x), " ", _fnum(c2.y), " ", ln, " ", _fnum(c3.x), " ", _fnum(c3.y), " ", ln)
 		else
 			println(io, _fnum(c1.x), " ", _fnum(c1.y), " ", _fnum(c2.x), " ", _fnum(c2.y), " ",
-			        _fnum(c3.x), " ", _fnum(c3.y), " curveto")
+			        _fnum(c3.x), " ", _fnum(c3.y), " ", cu)
 		end
 	end
 	return nothing
@@ -170,6 +173,75 @@ end
 potrace_eps(fname::String, res::PotraceResult; kw...) = open(io -> potrace_eps(io, res; kw...), fname, "w")
 potrace_eps(fname::String, layers::Vector{Pair{String,PotraceResult}}; kw...) =
 	open(io -> potrace_eps(io, layers; kw...), fname, "w")
+
+# ---------------------------------------------------------------------------------------------
+# PDF
+
+"""
+    potrace_pdf(fname::String, res::PotraceResult; color="#000000", scale=1.0)
+    potrace_pdf(io::IO, res::PotraceResult; ...)
+    potrace_pdf(fname_or_io, layers::Vector{Pair{String,PotraceResult}}; background=nothing, scale=1.0)
+
+Write the traced curves as a one-page PDF, the page the size of the bitmap (one pixel = `scale` pt).
+Same drawing as `potrace_eps`: each positive path is filled (nonzero) together with the holes that
+follow it, the layers in the order given, over an optional page-filling `background`. The content
+stream is left uncompressed (the C's pdf backend compresses it with zlib; the geometry is the same).
+"""
+potrace_pdf(io::IO, res::PotraceResult; color::String="#000000", scale::Real=1.0) =
+	potrace_pdf(io, [color => res]; scale=scale)
+
+function potrace_pdf(io::IO, layers::Vector{Pair{String,PotraceResult}};
+                     background::Union{Nothing,String}=nothing, scale::Real=1.0)
+	isempty(layers) && error("potrace_pdf: no layers")
+	res = layers[1].second
+	W, H = res.w * scale, res.h * scale
+	# the page content: the same operators as the EPS, in PDF spelling
+	cs = IOBuffer()
+	println(cs, _fnum(Float64(scale)), " 0 0 ", _fnum(Float64(scale)), " 0 0 cm")
+	if background !== nothing
+		r, g, b = _rgb01(background)
+		println(cs, _fnum(r), " ", _fnum(g), " ", _fnum(b), " rg")
+		println(cs, "0 0 ", res.w, " ", res.h, " re f")
+	end
+	for (color, lr) in layers
+		(lr.w == res.w && lr.h == res.h) || error("potrace_pdf: layers of different bitmap sizes")
+		r, g, b = _rgb01(color)
+		println(cs, _fnum(r), " ", _fnum(g), " ", _fnum(b), " rg")
+		p = lr.plist
+		while p !== nothing
+			_eps_curve(cs, p.fcurve; ops=("m", "l", "c"))
+			println(cs, "h")
+			(p.next === nothing || p.next.sign == '+') && println(cs, "f")
+			p = p.next
+		end
+	end
+	content = take!(cs)
+	# the file: five objects and a cross-reference table of their byte offsets
+	out = IOBuffer()
+	off = Int[]
+	print(out, "%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")
+	obj(s) = (push!(off, position(out)); print(out, length(off), " 0 obj\n", s, "\nendobj\n"))
+	obj("<< /Type /Catalog /Pages 2 0 R >>")
+	obj("<< /Type /Pages /Kids [3 0 R] /Count 1 >>")
+	obj("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 $(_fnum(Float64(W))) $(_fnum(Float64(H)))] " *
+	    "/Resources << >> /Contents 4 0 R >>")
+	push!(off, position(out))
+	print(out, "4 0 obj\n<< /Length ", length(content), " >>\nstream\n")
+	write(out, content)
+	print(out, "\nendstream\nendobj\n")
+	obj("<< /Producer (InteractiveGMT, Julia port of potrace 1.16 \\(Peter Selinger 2001-2019\\)) >>")
+	xref = position(out)
+	print(out, "xref\n0 ", length(off) + 1, "\n0000000000 65535 f \n")
+	for o in off
+		print(out, lpad(o, 10, '0'), " 00000 n \n")
+	end
+	print(out, "trailer\n<< /Size ", length(off) + 1, " /Root 1 0 R /Info 5 0 R >>\nstartxref\n", xref, "\n%%EOF\n")
+	write(io, take!(out))
+	return nothing
+end
+potrace_pdf(fname::String, res::PotraceResult; kw...) = open(io -> potrace_pdf(io, res; kw...), fname, "w")
+potrace_pdf(fname::String, layers::Vector{Pair{String,PotraceResult}}; kw...) =
+	open(io -> potrace_pdf(io, layers; kw...), fname, "w")
 
 # ---------------------------------------------------------------------------------------------
 # GMTdataset

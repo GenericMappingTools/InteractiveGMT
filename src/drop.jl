@@ -1562,6 +1562,16 @@ function _add_grid_to_scene(scene::Ptr{Cvoid}, G::GMTgrid, name; cmap=:auto, col
 	# A promoted launcher reuses the SAME handle but its _FIGREG entry is still the QtEmpty launcher.
 	# Re-register it as a grid figure so `fig` (console / colorbar _recolor) carries the grid + works.
 	promote && ok != 0 && _register_fig!(QtFigure(scene, G))
+	# The same quantity as the window's own grid — both name the same real z unit — stands on its
+	# vertical scale (ExtraObj::zShareBase). Grids that name no unit ("z", "") never do this by
+	# themselves: the grid menu's "Same vertical scale as …" is where the user says so.
+	if ok != 0 && !promote
+		base = _find_object(scene, :grid, "")
+		u(g) = lowercase(strip(replace(String(g.z_unit), '\0' => "")))
+		if base isa GMTgrid && base !== G && !(u(G) in ("", "z")) && u(G) == u(base)
+			ccall(_fn(:gmtvtk_grid_share_zscale_h), Cint, (Ptr{Cvoid}, Cstring, Cint), scene, String(name), Cint(1))
+		end
+	end
 	return ok != 0
 end
 

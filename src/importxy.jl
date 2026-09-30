@@ -28,8 +28,8 @@ function _import_xy_points(scene::Ptr{Cvoid}, D::Vector{GMTdataset}, name::Strin
 	return nothing
 end
 
-# Build auto-scaled arrow geometry, then send it through the same overlay builder used by every
-# imported/drawn line. Each arrow is a shaft and two head strokes; no parallel actor type exists.
+# Auto-scaled SOLID arrows (shaft + cone), coloured by magnitude: one arrow symbol layer built by
+# _gv_add_solid (grdvector.jl), the same builder grdvector uses.
 function _import_xy_arrows(scene::Ptr{Cvoid}, D::GMTdataset, name::String)::Nothing
 	return _import_xy_arrows(scene, GMTdataset[D], name)
 end

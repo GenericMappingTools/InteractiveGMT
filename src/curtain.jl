@@ -68,13 +68,14 @@ through `fig`'s scene (a seismic / midwater profile). Returns `fig`.
 - `flipv`  — invert the image's vertical sense (default first scanline → top).
 - `clip`   — cut the curtain's top edge to the grid surface so the wall hugs the relief
   (the image above the seafloor is dropped). Densifies the track to `clip_n` columns and
-  samples `fig.G` along it.
+  samples `fig.G` along it. Give a `GMTgrid` instead of `true` to cut it to THAT surface
+  (e.g. a basement under the topography).
 
 The curtain shares the surface's vertical scale, so it rises/falls with the relief when the
 vertical exaggeration changes, and it appears in the **Scene Objects** panel (hideable).
 """
 function add_curtain!(fig::QtFigure, path; image, zrange, spacing::Symbol=:distance,
-					  flipv::Bool=false, clip::Bool=false, clip_n::Int=300, record::Bool=true)
+					  flipv::Bool=false, clip::Union{Bool,GMTgrid}=false, clip_n::Int=300, record::Bool=true)
 	isalive(fig) || (@warn "figure window is closed; curtain not added"; return fig)
 	px, py = _curtain_xy(path)
 	length(px) >= 2 || error("a curtain needs at least 2 track points; got $(length(px))")
@@ -82,9 +83,10 @@ function add_curtain!(fig::QtFigure, path; image, zrange, spacing::Symbol=:dista
 	(length(zrange) >= 2 && zrange[2] > zrange[1]) ||
 		error("zrange must be (zmin, zmax) with zmax > zmin; got $zrange")
 	topz = C_NULL
-	if clip                                            # cut the top edge to the bathymetry
+	if clip !== false                                  # cut the top edge to the bathymetry (or to `clip`)
 		px, py = _densify_xy(px, py, clip_n)
-		topz = Float64[_sample_grid(fig.G, px[i], py[i]) for i in eachindex(px)]
+		Gc = clip isa GMTgrid ? clip : fig.G
+		topz = Float64[_sample_grid(Gc, px[i], py[i]) for i in eachindex(px)]
 	end
 	u = _curtain_u(px, py, spacing)
 	imgpath = _curtain_texfile(image)
@@ -101,7 +103,7 @@ function add_curtain!(fig::QtFigure, path; image, zrange, spacing::Symbol=:dista
 		track = join(("$(px0[i]),$(py0[i])" for i in eachindex(px0)), "|")
 		params = Dict{String,Any}("track" => track, "zmin" => string(zrange[1]), "zmax" => string(zrange[2]),
 		                          "spacing" => String(spacing), "flipv" => string(flipv),
-		                          "clip" => string(clip), "clip_n" => string(clip_n))
+		                          "clip" => string(clip === true), "clip_n" => string(clip_n))
 		if image isa AbstractString
 			params["image"] = String(image); params["image_origin"] = "file"
 		else

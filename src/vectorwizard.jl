@@ -48,16 +48,19 @@ end
 _vw_has_source(scene::Ptr{Cvoid})::Bool =
 	_find_object_named(scene, :image)[2] isa GMTimage || _find_object_named(scene, :grid)[2] isa GMTgrid
 
-# The picture to trace: the image the caller named, else the window's image, else its grid.
+# The picture to trace: the image the caller named, else the window's image, else its grid. The
+# window's PRIMARY raster is registered unnamed; its Scene Objects name ("surf_name") is what the
+# user sees, so that is the name handed back.
 function _vw_source(scene::Ptr{Cvoid}, wanted::String)
 	if !isempty(wanted)
 		I = _find_object(scene, :image, wanted)
 		(I isa GMTimage) && return wanted, I, "image"
 	end
+	primary() = try String(get(_scene_state(scene), "surf_name", "")) catch; "" end
 	nm, I = _find_object_named(scene, :image)
-	(I isa GMTimage) && return nm, I, "image"
-	nm, G = _find_object_named(scene, :grid)
-	(G isa GMTgrid) && return nm, _vw_grid_picture(scene, nm, G), "grid"
+	(I isa GMTimage) && return (isempty(nm) ? primary() : nm), I, "image"
+	nm, G = _find_object_named(scene, :grid)      # nm as registered: the recipe lookup keys on it
+	(G isa GMTgrid) && return (isempty(nm) ? primary() : nm), _vw_grid_picture(scene, nm, G), "grid"
 	error("this window has no image or grid to trace")
 end
 
@@ -248,11 +251,16 @@ end
 _vw_count(layers) = (sum(l -> length(Potrace.paths(l.second)), layers; init=0))
 
 # The handle of this source's trace: "VW: <name>", the name without its file extension.
-_vw_group(st::_VWState) = "VW: " * (isempty(st.srcname) ? "picture" : splitext(st.srcname)[1])
+# A primary image with no name of its own is the row Scene Objects calls "Image" — so is the trace.
+_vw_group(st::_VWState) = "VW: " * (isempty(st.srcname) ? "Image" : splitext(st.srcname)[1])
 
 # The per-tone overlay names each window's traces use, by handle: the setters below find an overlay
 # BY NAME (first match), so a tone of one trace may never share its name with a tone of another.
 const _VW_NAMES = Dict{Ptr{Cvoid}, Dict{String,Vector{String}}}()
+
+# The trace behind every product in a window, by key (Overlay::vwKey), so its handle can save it as
+# SVG / EPS / PDF later. The key is the handle name it was born with: a rename does not orphan it.
+const _VW_PRODUCTS = Dict{Ptr{Cvoid}, Dict{String,Tuple{_VWState,Union{Nothing,String},Vector{Pair{String,Potrace.PotraceResult}}}}}()
 
 # The traced layers into the window: one FILLED line overlay per tone (the background as the frame
 # rectangle) — a single layer IS the handle; several hang under one group. Replaced, never piled up,
@@ -294,12 +302,14 @@ function _vw_add_to_window(st::_VWState, bg, layers)
 		ccall(_fn(:gmtvtk_set_overlay_style_h), Cint, (Ptr{Cvoid}, Cstring, Cdouble, Cdouble, Cdouble, Cdouble, Cint, Cdouble),
 		      st.scene, nm, c[1], c[2], c[3], 1.0, Cint(0), 1.0)
 		ccall(_fn(:gmtvtk_overlay_set_filled_h), Cint, (Ptr{Cvoid}, Cstring, Cint), st.scene, nm, Cint(1))
+		ccall(_fn(:gmtvtk_overlay_set_vwkey_h), Cint, (Ptr{Cvoid}, Cstring, Cstring), st.scene, nm, grp)
 	end
 	names[grp] = mine
+	get!(() -> valtype(_VW_PRODUCTS)(), _VW_PRODUCTS, st.scene)[grp] = (st, bg, layers)
 	return length(sets)
 end
 
-# Save by extension: .svg / .eps (pixel units, the page is the picture) or a GMT multisegment table
+# Save by extension: .svg / .eps / .pdf (pixel units, the page is the picture) or a GMT multisegment table
 # .txt / .dat (world coordinates, one " -G" polygon per segment, holes " -Ph", the background first).
 function _vw_save(st::_VWState, path::String, bg, layers)
 	ext = lowercase(splitext(path)[2])
@@ -307,6 +317,8 @@ function _vw_save(st::_VWState, path::String, bg, layers)
 		Potrace.potrace_svg(path, layers; background=bg)
 	elseif ext == ".eps" || ext == ".ps"
 		Potrace.potrace_eps(path, layers; background=bg)
+	elseif ext == ".pdf"
+		Potrace.potrace_pdf(path, layers; background=bg)
 	elseif ext == ".txt" || ext == ".dat"
 		out = GMTdataset{Float64,2}[]
 		x0, x1, y0, y1 = st.region
@@ -328,7 +340,7 @@ function _vw_save(st::_VWState, path::String, bg, layers)
 		GMT.gmtwrite(path, out)
 	else
 		# not ".gmt": that is the OGR/GMT format, which has no place for the -G / -Ph headers
-		error("unknown file type '$ext' (use .svg, .eps, .txt or .dat)")
+		error("unknown file type '$ext' (use .svg, .eps, .pdf, .txt or .dat)")
 	end
 	return
 end
@@ -344,6 +356,14 @@ function _on_vectorwizard(scene::Ptr{Cvoid}, dlg::Ptr{Cvoid}, cparams::Cstring):
 		kv = length(ln) >= 3 ? String(ln[3]) : ""
 		if op == "close"
 			delete!(_VWSTATE, dlg)
+			return Cint(1)
+		end
+		if op == "saveproduct"                # a product's own "Save as SVG / EPS / PDF…": arg = path, line 3 = key
+			pr = get(get(_VW_PRODUCTS, scene, valtype(_VW_PRODUCTS)()), strip(kv), nothing)
+			pr === nothing && error("this trace is no longer available (traced in an earlier session?)")
+			path = String(strip(arg))
+			lowercase(splitext(path)[2]) in (".svg", ".eps", ".pdf") || error("save as .svg, .eps or .pdf")
+			_vw_save(pr[1], path, pr[2], pr[3])
 			return Cint(1)
 		end
 		p = _vw_params(kv)

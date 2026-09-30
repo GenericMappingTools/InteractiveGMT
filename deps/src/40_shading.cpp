@@ -1399,6 +1399,7 @@ static void hillshadeMapper(Scene *s, vtkActor *act) {
 static void applySurfStyle(Scene *s, vtkActor *a) {
 	const LayerShade &lk = lookOfActor(s, a);   // THIS layer's own look, never the window's
 	vtkProperty *prop = a->GetProperty();
+	prop->SetOpacity(lk.opacity);              // so a tile meshed or re-added later is as see-through as the rest
 	// AN AQUAMOTO SURFACE IS ALWAYS UNLIT. Its colours are baked PER NODE, per side, by
 	// hillshadeMapper, so the renderer must show them verbatim — and, decisively, the material may not
 	// depend on the window look: that look is written when a side is aimed, and flipping the actor

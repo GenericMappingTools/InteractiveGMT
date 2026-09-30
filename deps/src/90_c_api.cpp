@@ -630,6 +630,31 @@ GMTVTK_API int gmtvtk_overlay_set_filled_h(void *handle, const char *name, int o
 	return (int)hits.size();
 }
 
+// Put the dropped grid called `name` on the base relief's vertical scale (on=1) or back on its own
+// (ExtraObj::zShareBase) — the SAME extraSetZShare its "Same vertical scale as …" menu item runs.
+// Returns 1 if a grid of that name was found.
+GMTVTK_API int gmtvtk_grid_share_zscale_h(void *handle, const char *name, int on) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !name) return 0;
+	for (size_t i = 0; i < s->extras.size(); ++i) {
+		if (s->extras[i].isImage || s->extras[i].name != name) continue;
+		extraSetZShare(s, i, on != 0);
+		if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+		return 1;
+	}
+	return 0;
+}
+
+// Mark the overlay(s) called `name` as the Vector Wizard product kept under `key` (Overlay::vwKey), so
+// their menus offer "Save as SVG / EPS / PDF…". Returns how many matched.
+GMTVTK_API int gmtvtk_overlay_set_vwkey_h(void *handle, const char *name, const char *key) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !name || !key) return 0;
+	int n = 0;
+	for (auto &ov : s->overlays) if (ov.name == name) { ov.vwKey = key; ++n; }
+	return n;
+}
+
 // Read a line OVERLAY's current pen by its Scene Objects name, so Save Session can capture edits the
 // user made AFTER the layer was added (coastlines/borders/rivers are :menu recipes that otherwise
 // replay with the default pen). out = { r, g, b, width_px, style(0 solid/1 dashed/2 dotted), opacity }.
@@ -1321,6 +1346,22 @@ GMTVTK_API int gmtvtk_scene_state(void *handle, char *buf, int cap) {
 		// extra. Without it a caller can read every extra's checked state and not the base's, which is
 		// exactly what a session has to store to put the panel back the way the user left it.
 		kvi("surfvis", (surfProp(s) && surfProp(s)->GetVisibility() != 0) ? 1 : 0);
+		// The renderer's own view volume: the bounds of every VISIBLE prop and the camera's clipping
+		// range. A parallel camera stores depth linearly between the two planes, so one prop far outside
+		// the scene stretches that range and coarsens every depth step inside it.
+		{
+			double vb[6];
+			s->ren->ComputeVisiblePropBounds(vb);
+			kvd("vb_x0", vb[0]); kvd("vb_x1", vb[1]); kvd("vb_y0", vb[2]);
+			kvd("vb_y1", vb[3]); kvd("vb_z0", vb[4]); kvd("vb_z1", vb[5]);
+			double cr[2];
+			s->ren->GetActiveCamera()->GetClippingRange(cr);
+			kvd("clip_near", cr[0]); kvd("clip_far", cr[1]);
+			double sb[6];
+			surfGetBounds(s, sb);                    // what the camera placements frame against
+			kvd("sb_x0", sb[0]); kvd("sb_x1", sb[1]); kvd("sb_y0", sb[2]);
+			kvd("sb_y1", sb[3]); kvd("sb_z0", sb[4]); kvd("sb_z1", sb[5]);
+		}
 		for (size_t i = 0; i < s->extras.size(); ++i) {
 			o += "extra" + std::to_string((int)i) + '=';
 			o += (s->extras[i].isImage ? "image:" : s->extras[i].isMesh ? "mesh:" : "grid:");
@@ -5250,6 +5291,74 @@ GMTVTK_API int gmtvtk_scene_row_click_h(void *handle, const char *label, int on)
 		if (!cb) continue;
 		cb->setChecked(on != 0);            // fires the row's own handler, like a click
 		return 1;
+	}
+	return 0;
+}
+
+// A raster layer's OPACITY (0..1): the window's own grid when `name` is empty or is its own name,
+// else the dropped layer of that name — its surface and, if it has one, its drape together, so a
+// draped map fades as one layer. Returns 1 if a layer was found.
+GMTVTK_API int gmtvtk_layer_opacity_h(void *handle, const char *name, double opacity) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s)) return 0;
+	const double a = std::clamp(opacity, 0.0, 1.0);
+	const std::string nm = name ? name : "";
+	int hit = 0;
+	// The value lives in the layer's LOOK, which applySurfStyle applies to every actor of that layer —
+	// so a level-of-detail tile meshed or re-added later comes back just as see-through. What is on
+	// screen now is set directly, and styleGen moves so cached tiles are restyled when they return.
+	if (nm.empty() || nm == s->surfName) {
+		s->look.opacity = a;
+		if (s->surf) s->surf->GetProperty()->SetOpacity(a);
+		for (auto &t : s->tiles) if (t) t->GetProperty()->SetOpacity(a);
+		if (s->drape) s->drape->GetProperty()->SetOpacity(a);
+		hit = (s->surf || !s->tiles.empty()) ? 1 : 0;
+	}
+	else {
+		for (auto &ex : s->extras) {
+			if (ex.name != nm) continue;
+			ex.look.opacity = a;
+			if (ex.actor) ex.actor->GetProperty()->SetOpacity(a);
+			if (ex.drape) ex.drape->GetProperty()->SetOpacity(a);
+			hit = 1;
+		}
+	}
+	if (hit) ++s->styleGen;
+	if (hit && s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+	return hit;
+}
+
+// The same click, on the row called `label` INSIDE the group row called `group` — the way to reach
+// one layer's own "Axes" or "Color Bar", which every layer's group carries under the same label.
+// Searches the group's whole subtree (groups nest). Returns 1 if a row was clicked.
+GMTVTK_API int gmtvtk_scene_child_row_click_h(void *handle, const char *group, const char *label, int on) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !group || !label || !s->objPanel) return 0;
+	QTreeWidget *tree = s->objPanel->findChild<QTreeWidget*>();
+	if (!tree) return 0;
+	const QString wantGroup = QString::fromUtf8(group), want = QString::fromUtf8(label);
+	auto rowHas = [tree](QTreeWidgetItem *item, const QString &text) {
+		QWidget *w = tree->itemWidget(item, 0);
+		if (!w) return false;
+		for (QLabel *l : w->findChildren<QLabel*>()) if (l->text() == text) return true;
+		return false;
+	};
+	std::function<QCheckBox *(QTreeWidgetItem *)> findIn = [&](QTreeWidgetItem *parent) -> QCheckBox * {
+		for (int i = 0; i < parent->childCount(); ++i) {
+			QTreeWidgetItem *c = parent->child(i);
+			if (rowHas(c, want))
+				if (QWidget *w = tree->itemWidget(c, 0))
+					if (QCheckBox *cb = w->findChild<QCheckBox*>()) return cb;
+			if (QCheckBox *cb = findIn(c)) return cb;
+		}
+		return nullptr;
+	};
+	for (QTreeWidgetItemIterator it(tree); *it; ++it) {
+		if (!rowHas(*it, wantGroup)) continue;
+		if (QCheckBox *cb = findIn(*it)) {
+			cb->setChecked(on != 0);        // the row's own handler, like a click
+			return 1;
+		}
 	}
 	return 0;
 }
@@ -9226,6 +9335,8 @@ static void sceneReframeSet(Scene *s, AxesSet *A, double x0, double x1, double y
 	// are touched, only what the single camera happens to be looking at.
 	s->viewBoundsOverride = true;              // camera/gizmo bounds follow the framed raster
 	for (int i = 0; i < 6; ++i) s->viewBounds[i] = b[i];
+	s->viewBoundsLive  = true;                 // ...at ITS current scale, not this moment's (viewBoundsFromOwner)
+	s->viewBoundsOwner = A->owner;
 	if (moveCamera) cameraFitToScaledBBox(s, b, keepMargin != 0);
 	// The scene's depth extent just changed. Without re-deriving the near/far planes, a camera left
 	// where it was (moveCamera=0, the Z-grow path) keeps a clipping range cut for the OLD bounds and
@@ -9541,6 +9652,76 @@ GMTVTK_API int gmtvtk_add_mesh_h(void *handle, const double *xyz, int nv, const 
 	s->ren->ResetCameraClippingRange();
 	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 	return 1;
+}
+
+// ISO-SURFACE of a 3-D cube (a tomography model, an earthquake-count volume): the surface where the
+// cube's value crosses `level`. It is extracted here and handed to gmtvtk_add_mesh_h VERBATIM, so it
+// IS a mesh layer -- the one mesh element, with its Scene Objects row, properties, Remove and its own
+// VE -- never a second kind of surface with a display path of its own (SACRED_LAW.md).
+//
+// The cube is read WHERE IT LIES (grid memory-layout law): layer k starts at k*nx*ny and is addressed
+// through gridLay(nx, ny, zlayout) exactly like a grid. `xc`/`yc`/`zc` are the NODE coordinates (nx, ny,
+// nz values), so an irregular z (tomography layers) is taken as it is: the cube is a rectilinear grid,
+// not an image. `rgb` is the surface colour (3 bytes), `opacity` 0..1, `geog` != 0 names its axes lon/lat.
+// Returns 1; 0 on a dead window or bad input; -1 when the cube never crosses `level`.
+GMTVTK_API int gmtvtk_add_isosurface_h(void *handle, const float *cube, int nx, int ny, int nz, int zlayout,
+                                       const double *xc, const double *yc, const double *zc,
+                                       double level, const unsigned char *rgb, double opacity, int geog,
+                                       const char *name) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !cube || !xc || !yc || !zc || !rgb || nx < 2 || ny < 2 || nz < 2) return 0;
+	vtkNew<vtkRectilinearGrid> rg;
+	rg->SetDimensions(nx, ny, nz);
+	vtkNew<vtkDoubleArray> ax, ay, az;
+	for (int i = 0; i < nx; i++) ax->InsertNextValue(xc[i]);
+	for (int j = 0; j < ny; j++) ay->InsertNextValue(yc[j]);
+	for (int k = 0; k < nz; k++) az->InsertNextValue(zc[k]);
+	rg->SetXCoordinates(ax);
+	rg->SetYCoordinates(ay);
+	rg->SetZCoordinates(az);
+	vtkNew<vtkFloatArray> val;
+	val->SetNumberOfTuples((vtkIdType)nx * ny * nz);
+	const GridLay lay = gridLay(nx, ny, zlayout);
+	const size_t layer = (size_t)nx * (size_t)ny;
+	vtkIdType p = 0;
+	for (int k = 0; k < nz; k++) {
+		const float *zk = cube + (size_t)k * layer;
+		for (int j = 0; j < ny; j++)
+			for (int i = 0; i < nx; i++) val->SetValue(p++, lay.at(zk, i, j));
+	}
+	rg->GetPointData()->SetScalars(val);
+	vtkNew<vtkContourFilter> cf;
+	cf->SetInputData(rg);
+	cf->SetValue(0, level);
+	cf->ComputeNormalsOff();
+	cf->ComputeScalarsOff();
+	cf->Update();
+	vtkPolyData *pd = cf->GetOutput();
+	vtkCellArray *polys = pd ? pd->GetPolys() : nullptr;
+	const vtkIdType nv = pd ? pd->GetNumberOfPoints() : 0;
+	if (nv == 0 || !polys || polys->GetNumberOfCells() == 0) return -1;
+	std::vector<double> xyz((size_t)nv * 3);
+	for (vtkIdType i = 0; i < nv; i++) pd->GetPoint(i, &xyz[(size_t)i * 3]);
+	std::vector<int> sides, idx;
+	vtkIdType npts;
+	const vtkIdType *ids;
+	for (polys->InitTraversal(); polys->GetNextCell(npts, ids); ) {
+		sides.push_back((int)npts);
+		for (vtkIdType a = 0; a < npts; a++) idx.push_back((int)ids[a]);
+	}
+	// One colour for every face: the mesh door's DIRECT-colour path, which also gives the surface the
+	// mesh's own smoothed normals (split only at sharp creases).
+	std::vector<unsigned char> frgb(sides.size() * 3);
+	for (size_t f = 0; f < sides.size(); f++) {
+		frgb[3 * f] = rgb[0]; frgb[3 * f + 1] = rgb[1]; frgb[3 * f + 2] = rgb[2];
+	}
+	const int ok = gmtvtk_add_mesh_h(handle, xyz.data(), (int)nv, sides.data(), (int)sides.size(), idx.data(),
+	                                 frgb.data(), nullptr, nullptr, nullptr, 0, name);
+	if (ok && !s->extras.empty() && s->extras.back().actor) {
+		s->extras.back().actor->GetProperty()->SetOpacity(std::clamp(opacity, 0.0, 1.0));
+		s->extras.back().geog = geog;          // read by the adopt when it frames this layer's own axes
+	}
+	return ok;
 }
 
 // Open an EMPTY viewer window: a FULL-chrome launcher (menus + toolbar + 2-D map) that simply has

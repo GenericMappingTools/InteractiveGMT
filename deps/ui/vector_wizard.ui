@@ -447,7 +447,7 @@
     </rect>
    </property>
    <property name="toolTip">
-    <string>Trace and write the result to an SVG, EPS or GMT multisegment file</string>
+    <string>Trace and write the result to an SVG, EPS, PDF or GMT multisegment file</string>
    </property>
    <property name="text">
     <string>Save…</string>

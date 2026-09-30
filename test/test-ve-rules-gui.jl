@@ -452,3 +452,47 @@ end
 		ve_close(f.h)
 	end
 end
+
+@testitem "VE law 1 exception: a grid of the SAME quantity shares the base's vertical scale" tags=[:gui, :ve] begin
+	IG = InteractiveGMT
+	include(joinpath(@__DIR__, "ve_helpers.jl"))
+	Gb = ve_grid(zspan = 8000.0)          # base: a topography
+	Gi = ve_grid(zspan = 2000.0)          # same footprint, a quarter of the span (a basement)
+	f = view_grid(Gb, geographic=true)
+	try
+		ve_pump(); h = f.h
+		ve_add_layer(h, Gi, "basement")
+		zfac_base = parse(Float64, string(ve_state_full(h)["zfac"]))
+		own = ve_active_drawn_span(h)
+		@test own ≈ ve_drawn_span_here(h, Gi) rtol=1e-6              # its own mapping by default
+		@test ccall(IG._fn(:gmtvtk_grid_share_zscale_h), Cint, (Ptr{Cvoid}, Cstring, Cint), h, "basement", Cint(1)) == 1
+		ve_pump()
+		# On the base's scale: its 2000 m are drawn with the base's zfac, a quarter of its own height.
+		@test ve_active_drawn_span(h) ≈ ve_zspan(Gi) * zfac_base rtol=1e-6
+		@test ve_active_drawn_span(h) ≈ own / 4 rtol=1e-6
+		ve_set_active(h, 2.0)                                         # its OWN ve still multiplies it
+		@test ve_active_drawn_span(h) ≈ 2 * ve_zspan(Gi) * zfac_base rtol=1e-6
+		@test parse(Float64, string(ve_state_full(h)["ve"])) == 1.0    # and nothing crossed to the base
+		ccall(IG._fn(:gmtvtk_grid_share_zscale_h), Cint, (Ptr{Cvoid}, Cstring, Cint), h, "basement", Cint(0))
+		ve_pump()
+		@test ve_active_drawn_span(h) ≈ 2 * own rtol=1e-6              # back on its own mapping
+	finally
+		ve_close(f.h)
+	end
+	# The public door (add!) and the automatic rule: both grids name the same real z unit -> shared.
+	Gb.z_unit = "m";  Gi.z_unit = "m"
+	f = view_grid(Gb, geographic=true)
+	try
+		ve_pump(); h = f.h
+		zfac_base = parse(Float64, string(ve_state_full(h)["zfac"]))
+		add!(f, Gi; name="basement")
+		ve_pump()
+		@test ve_active_drawn_span(h) ≈ ve_zspan(Gi) * zfac_base rtol=1e-6
+		setvisible!(f, "Surface")                                     # the base row, ticked back on
+		ve_pump()
+		@test ve_show(h, "basement", false) == 1                      # base alone is the active one again
+		@test ve_active_drawn_span(h) ≈ ve_zspan(Gb) * zfac_base rtol=1e-6
+	finally
+		ve_close(f.h)
+	end
+end
