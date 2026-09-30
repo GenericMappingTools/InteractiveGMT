@@ -635,6 +635,48 @@ _script_dataset(segs::Vector{Matrix{Float64}}, want3d::Bool) =
 	[GMT.mat2ds(want3d ? M : M[:, 1:2]) for M in segs if !isempty(M)]
 _script_has_z(segs::Vector{Matrix{Float64}}) = any(M -> !isempty(M) && any(!iszero, view(M, :, 3)), segs)
 
+# A FILLED overlay's rings for GMT: the viewer fills even-odd (a ring inside a ring is a hole), GMT
+# fills each polygon and cuts only the segments headed " -Ph" out of the perimeter they FOLLOW. So
+# each ring's nesting depth (how many other rings contain it) decides: even = a perimeter, odd = a
+# hole, emitted right after the ring that immediately contains it.
+function _script_fill_rings(ds::Vector{<:GMTdataset})
+	n = length(ds)
+	inside(x, y, M) = begin                          # even-odd point in polygon
+		c = false;  m = size(M, 1)
+		j = m
+		@inbounds for i in 1:m
+			xi, yi, xj, yj = M[i, 1], M[i, 2], M[j, 1], M[j, 2]
+			((yi > y) != (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi) && (c = !c)
+			j = i
+		end
+		c
+	end
+	bb = [(extrema(view(D.data, :, 1)), extrema(view(D.data, :, 2))) for D in ds]
+	area(M) = abs(sum(M[i, 1] * M[mod1(i + 1, size(M, 1)), 2] - M[mod1(i + 1, size(M, 1)), 1] * M[i, 2] for i in 1:size(M, 1))) / 2
+	ar = [area(D.data) for D in ds]
+	depth = zeros(Int, n);  parent = zeros(Int, n)
+	for i in 1:n
+		x, y = ds[i].data[1, 1], ds[i].data[1, 2]
+		for j in 1:n
+			(i == j || ar[j] <= ar[i]) && continue
+			(bb[j][1][1] <= x <= bb[j][1][2] && bb[j][2][1] <= y <= bb[j][2][2]) || continue
+			inside(x, y, ds[j].data) || continue
+			depth[i] += 1
+			(parent[i] == 0 || ar[j] < ar[parent[i]]) && (parent[i] = j)
+		end
+	end
+	out = eltype(ds)[]
+	for i in 1:n
+		iseven(depth[i]) || continue
+		ds[i].header = "";  push!(out, ds[i])
+		for k in 1:n
+			(parent[k] == i && isodd(depth[k])) || continue
+			ds[k].header = " -Ph";  push!(out, ds[k])
+		end
+	end
+	return out
+end
+
 # ── plotted vectors come from the LIVE SCENE, never from disk ─────────────────────────────────
 # A plotted symbol layer / line overlay exists only in the viewer's memory — it was never a file, so
 # there is nothing to read back and nothing may be written. These two fetch it straight out of the
@@ -665,11 +707,56 @@ function _symbol_layer(scene::Ptr{Cvoid}, name::String, want3d::Bool=false)
 	return GMTdataset[]
 end
 
+"""
+	_arrow_layer(scene, name, cm_per_unit, want3d=false) -> Vector{GMTdataset}
+
+An ARROW layer (a vector field drawn as solid arrows) as GMT vectors: one segment per colour, rows
+`x y [z] direction length` for `plot(…, S="v…")`, direction in degrees counter-clockwise from +x on
+the map, length in cm on paper (`cm_per_unit` = paper cm per WORLD unit of the window, which is what
+the layer's arrow length is measured in). A layer coloured by magnitude is split into up to 24
+magnitude classes, each wearing the mean colour of its arrows (a segment header carries one -G/-W).
+x is un-baked exactly as in `_symbol_layer`.
+"""
+function _arrow_layer(scene::Ptr{Cvoid}, name::String, cm_per_unit::Float64, want3d::Bool=false)
+	for sl in _parse_symbols_blob(_script_blob(:gmtvtk_serialize_symbols, scene))
+		(sl.name == name && !isempty(sl.uv)) || continue
+		n = size(sl.xyz, 1)
+		xf = ccall(_fn(:gmtvtk_get_xfac), Cdouble, (Ptr{Cvoid},), scene)
+		(isfinite(xf) && xf != 0.0) || (xf = 1.0)
+		mag = [hypot(sl.uv[i, 1], sl.uv[i, 2]) for i in 1:n]
+		mmax = maximum(mag)
+		mmax > 0 || return GMTdataset[]
+		ncls = isempty(sl.rgb) ? 1 : min(24, n)
+		cls = [ncls == 1 ? 1 : clamp(floor(Int, mag[i] / mmax * ncls) + 1, 1, ncls) for i in 1:n]
+		out = GMTdataset[]
+		for c in 1:ncls
+			idx = findall(==(c), cls)
+			isempty(idx) && continue
+			rgb = isempty(sl.rgb) ? (sl.r, sl.g, sl.b) :
+			      Tuple(sum(sl.rgb[i, k] for i in idx) / length(idx) for k in 1:3)
+			col = string(round(Int, 255rgb[1]), "/", round(Int, 255rgb[2]), "/", round(Int, 255rgb[3]))
+			M = Matrix{Float64}(undef, length(idx), want3d ? 5 : 4)
+			for (r, i) in enumerate(idx)
+				M[r, 1] = sl.xyz[i, 1] / xf;  M[r, 2] = sl.xyz[i, 2]
+				want3d && (M[r, 3] = sl.xyz[i, 3])
+				M[r, end-1] = atand(sl.uv[i, 2], sl.uv[i, 1])
+				M[r, end]   = sl.worldSize * mag[i] / mmax * cm_per_unit
+			end
+			D = GMT.mat2ds(M)
+			D.header = " -G$col -W0.5p,$col"
+			push!(out, D)
+		end
+		return out
+	end
+	return GMTdataset[]
+end
+
 "One line/point overlay's segments, by its Scene Objects name, as a multisegment GMTdataset."
 function _overlay_layer(scene::Ptr{Cvoid}, name::String, want3d::Bool=false)
 	for ov in _parse_overlays_blob(_script_blob(:gmtvtk_serialize_overlays, scene))
 		ov.name == name || continue
-		return _script_dataset(ov.segs, want3d)
+		ds = _script_dataset(ov.segs, want3d)
+		return ov.filled ? _script_fill_rings(ds) : ds
 	end
 	return GMTdataset[]
 end
@@ -844,6 +931,7 @@ function _script_emit_overlay!(ctx::ScriptCtx, ov::OverlayRow)
 	want3d  = ctx.view !== nothing && _script_has_z(segs)
 	ds = _script_dataset(segs, want3d)
 	isempty(ds) && return nothing
+	ov.filled && mode == 1 && (ds = _script_fill_rings(ds))   # holes as " -Ph", as the viewer paints them
 	# Plotted, never on disk: fetched from the window at run time.
 	bind = _script_bind_live_vector!(ctx, "_overlay_layer", name, want3d, ds)
 	kw = Pair{Symbol,Any}[]
@@ -851,6 +939,7 @@ function _script_emit_overlay!(ctx::ScriptCtx, ov::OverlayRow)
 		# The actor's line width is in screen PIXELS -> points, or the pen comes out a different weight.
 		push!(kw, :lw => _script_ptstr_w(lw, ctx))
 		push!(kw, :lc => _script_rgb(r, g, b))
+		ov.filled && push!(kw, :fill => _script_rgb(r, g, b))   # filled overlay: area in the line colour
 		st = _script_linestyle(lstyle)
 		st === nothing || push!(kw, :ls => st)
 	else
@@ -885,6 +974,30 @@ function _script_emit_symbols!(ctx::ScriptCtx, sl::SymbolRow, segs::Vector{Matri
 	evis && push!(kw, :ml => (_script_ptstr_w(ew, ctx), _script_rgb(er, eg, eb)))
 	return ScriptStep("$(isempty(name) ? "symbols" : name)  (symbols, $sym)", DataBind[bind],
 	                  want3d ? :plot3 : :plot, bind.var, kw, true)
+end
+
+# An ARROW layer -> plot! with GMT vectors (-Sv), fetched live by `_arrow_layer`. The paper scale is
+# the figure's: `figsize` cm across the region, whose width in WORLD units is (x1-x0)*xfac.
+function _script_emit_arrows!(ctx::ScriptCtx, sl::SymbolRow)
+	x0, x1, _, _ = ctx.region
+	xf = ccall(_fn(:gmtvtk_get_xfac), Cdouble, (Ptr{Cvoid},), ctx.scene)
+	(isfinite(xf) && xf != 0.0) || (xf = 1.0)
+	x1 > x0 || return nothing
+	cm_per_unit = ctx.figsize / ((x1 - x0) * xf)
+	want3d = ctx.view !== nothing && _script_has_z(filter(!isempty, [sl.xyz]))
+	ds = _arrow_layer(ctx.scene, sl.name, cm_per_unit, want3d)
+	isempty(ds) && return nothing
+	var = _script_var!(ctx, "D", length(ds) == 1 ? ds[1] : ds)
+	ctx.needs_base64 = true          # the script reaches into the window -> it needs InteractiveGMT
+	expr = "InteractiveGMT._arrow_layer(Ptr{Nothing}(UInt(" * string(UInt(ctx.scene)) * ")), " *
+	       "$(_lit(sl.name)), $(cm_per_unit), $(_lit(want3d)))"
+	bind = DataBind(var, :live, expr)
+	# Head: filled, as the solid arrow's cone — 0.3 of the LONGEST arrow, shrunk in proportion on the
+	# shorter ones (+n at that longest length), so every arrow keeps the solid glyph's proportions.
+	L = sl.worldSize * cm_per_unit
+	kw = Pair{Symbol,Any}[:S => "v$(round(0.3L, sigdigits=3))c+e+a40+h0.5+n$(round(L, sigdigits=3))c"]
+	name = isempty(sl.name) ? "arrows" : sl.name
+	return ScriptStep("$name  (vector field)", DataBind[bind], want3d ? :plot3 : :plot, bind.var, kw, true)
 end
 
 # One user-drawn polygon/polyline/rect/circle -> plot!. Closed shapes carry their fill colour and
@@ -1120,7 +1233,8 @@ function _script_vector_steps!(ctx::ScriptCtx, h::Ptr{Cvoid}, recipes::Vector{El
 	end
 	for sl in _parse_symbols_blob(_script_blob(:gmtvtk_serialize_symbols, h))
 		sl.visible || continue                       # unchecked row
-		st = _script_emit_symbols!(ctx, sl, filter(!isempty, [sl.xyz]))
+		st = isempty(sl.uv) ? _script_emit_symbols!(ctx, sl, filter(!isempty, [sl.xyz])) :
+		                      _script_emit_arrows!(ctx, sl)
 		st === nothing || push!(ranked, (sl.stack, st))
 	end
 	sort!(ranked; by = t -> t[1], alg = MergeSort)   # stable: equal ranks keep their scene order

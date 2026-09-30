@@ -122,6 +122,7 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_remove_polys_h, :gmtvtk_label_width_world_h, :gmtvtk_set_group_master_h,
 	:gmtvtk_add_overlay_gapped_h, :gmtvtk_world_per_pixel_h, :gmtvtk_dblclick_test,
 	:gmtvtk_add_symbols_h, :gmtvtk_add_symbols_ex_h, :gmtvtk_symbol_set_table_h, :gmtvtk_is_alive,
+	:gmtvtk_add_arrows_h, :gmtvtk_arrows_set_rgb_h, :gmtvtk_arrows_get_uv_h,
 	:gmtvtk_symbol_set_world_size_h, :gmtvtk_fit_camera_for_orbit_h,
 	:gmtvtk_add_curtain_h, :gmtvtk_add_curtain_file_h,
 	:gmtvtk_view_points, :gmtvtk_promote_points_h, :gmtvtk_selection_count, :gmtvtk_get_selection,
@@ -193,6 +194,8 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_set_daynight_h,             # day/night terminator, as a colour factor (src/solar.jl)
 	:gmtvtk_set_import_gmt_callback,
 	:gmtvtk_set_binarize_callback, :gmtvtk_binarize_set_histogram, :gmtvtk_binarize_set_preview,
+	:gmtvtk_set_vectorwizard_callback, :gmtvtk_vectorwizard_set_preview, :gmtvtk_vectorwizard_set_text,
+	:gmtvtk_overlay_set_filled_h,
 	:gmtvtk_set_image_histo_callback, :gmtvtk_histo_set_counts,
 	:gmtvtk_set_image_enhance_callback, :gmtvtk_enhance_set_band, :gmtvtk_enhance_set_window,
 	:gmtvtk_set_rgb_scatter_callback, :gmtvtk_set_forget_callback,

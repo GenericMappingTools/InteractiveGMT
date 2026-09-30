@@ -309,6 +309,10 @@ struct Overlay {
 	// grid colormap" on the group's properties menu, instead of the menu having to recognise the
 	// group by name.
 	bool cptColorable = false;
+	// FILLED: the same actor also paints the area its rings enclose (overlayBuildFill, 50_scene.cpp),
+	// even-odd over every segment, so a ring inside a ring is a hole. One actor, so colour, opacity,
+	// visibility, VE, the globe and the vector pile treat outline and fill as one element.
+	bool filled = false;
 	bool noConvertToPoints = false;          // suppresses ONLY "Convert to points"/"Convert to line" in the
 	                                          // context menu, unlike isShapencBoundary which also drops
 	                                          // "Line length…"/"Azimuth…" -- for lines where scattering to
@@ -413,6 +417,14 @@ struct SymbolLayer {
 	                                           // The points themselves carry x already multiplied by xfac,
 	                                           // which is a FLAT-map quantity; the globe needs the real
 	                                           // lon/lat to put the point on the sphere (symbolApplyZ).
+	std::vector<double> uvOrig;               // ARROW layers only: each point's (east, north) vector, 2 per
+	                                           // point, exactly as plotted. The drawn orientation ("symVec")
+	                                           // is (u, v, 0) on a map and the same vector turned into the
+	                                           // point's local east/north frame on the globe (symbolApplyZ).
+	                                           // Empty = not an arrow layer: nothing is oriented.
+	std::vector<char> arrowGrounded;          // ARROW layers: 1 where the point's z was taken off the relief
+	                                           // (its source had none) and must be re-taken when the arrow
+	                                           // length changes (arrowRegroundLayer, 90_c_api.cpp).
 	int    posMode = 0;                       // which state the points are in right now: 0 = 3-D (real
 	                                           // depth), 1 = flat 2-D (z zeroed), 2 = globe (on the sphere)
 	double posVE   = 0.0;                     // the drawn z scale (zfac*ve) the GLOBE positions were built
@@ -911,6 +923,8 @@ static bool lineGroupNamesShown(Scene *s, const std::string &gname);    // ...an
 static void lineGroupSetNames(Scene *s, const std::string &gname, bool on);
 static void lineGroupRename(Scene *s, const std::string &oldName, const std::string &newName);
 static void lineGroupRenamePrompt(Scene *s, const std::string &gname);   // ask, then rename (menu + dbl-click)
+static void overlayBuildFill(Overlay &ov);                                 // filled overlay's triangles (50_scene.cpp)
+static bool overlayActorFilled(Scene *s, vtkActor *a);                     // ...is this actor one? (50_scene.cpp)
 static void lineRenamePrompt(Scene *s, const LineRef &lr);               // ...the same for ONE element's label
 static void applyVectorStacking(Scene *s);                      // shared vector-pile draw-order (50_scene.cpp)
 static void restackVector(Scene *s, int *stackPtr, int op);    // move one vector element through the pile
@@ -2011,6 +2025,10 @@ static inline void symbolApplyZ(Scene *s, SymbolLayer &sl) {
 	sl.posVE = ve;
 	const bool haveXY = (sl.xyOrig.size() == (size_t)n * 2);
 	const double gx = (s && s->xfac != 0.0) ? s->xfac : 1.0;
+	// An ARROW layer's orientation follows its points: on a map the (east, north) vector is drawn as it
+	// is (x is already baked with xfac, so world X is the east direction); on the globe it is turned
+	// into the point's own east/north tangent directions, taken off the SAME mapping the point uses.
+	vtkDataArray *vec = (sl.uvOrig.size() == (size_t)n * 2) ? pd->GetPointData()->GetArray("symVec") : nullptr;
 	for (vtkIdType i = 0; i < n; ++i) {
 		double p[3];  pts->GetPoint(i, p);
 		const double lon = haveXY ? sl.xyOrig[(size_t)i*2] : p[0] / gx;
@@ -2018,7 +2036,24 @@ static inline void symbolApplyZ(Scene *s, SymbolLayer &sl) {
 		if (want == 2) sceneGeoToWorldVec(s, lon, lat, sl.zOrig[(size_t)i], p);   // VECTOR mapping: same radius as a line
 		else { p[0] = lon * gx;  p[1] = lat;  p[2] = (want == 1) ? 0.0 : sl.zOrig[(size_t)i]; }
 		pts->SetPoint(i, p);
+		if (vec) {
+			const double u = sl.uvOrig[(size_t)i*2], v = sl.uvOrig[(size_t)i*2+1];
+			double w[3] = { u, v, 0.0 };
+			if (want == 2) {
+				const double eps = 1e-3, z = sl.zOrig[(size_t)i];
+				double pe[3], pn[3];
+				sceneGeoToWorldVec(s, lon + eps, lat, z, pe);
+				sceneGeoToWorldVec(s, lon, lat + eps, z, pn);
+				double e[3] = { pe[0]-p[0], pe[1]-p[1], pe[2]-p[2] }, nn[3] = { pn[0]-p[0], pn[1]-p[1], pn[2]-p[2] };
+				const double le = std::sqrt(e[0]*e[0] + e[1]*e[1] + e[2]*e[2]);
+				const double ln = std::sqrt(nn[0]*nn[0] + nn[1]*nn[1] + nn[2]*nn[2]);
+				for (int k = 0; k < 3; ++k)
+					w[k] = (le > 0 ? u * e[k] / le : 0.0) + (ln > 0 ? v * nn[k] / ln : 0.0);
+			}
+			vec->SetTuple(i, w);
+		}
 	}
+	if (vec) vec->Modified();
 	pts->Modified();  pd->Modified();  symTouchSource(sl);
 	sl.posMode = want;
 }

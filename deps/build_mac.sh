@@ -49,7 +49,7 @@ fi
 cmake -S "$here" -B "$cmake_dir" -G Ninja -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_PREFIX_PATH="$prefix;$prefix/opt/vtk;$prefix/opt/qtbase;$prefix/opt/qttools;$prefix/opt/tbb" \
     -DGMTVTK_MACOS_BUNDLE=ON "$@"
-# By name, not `all`: `all` would also drag in gmtvtk_demo, which nothing ships. igmt is the desktop
+# By name, not `all`: `all` would also build the dev-only test_mbgrid/test_satellite. igmt is the desktop
 # launcher (deps/src/launcher.c) — the install step below stages it beside the dylib, so it must
 # exist by then. gmtvtk_test is the test-only twin (same source, GMTVTK_TEST_API defined): it is NOT
 # part of the runtime bundle, but it rides in the rolling archive, because a machine that did not

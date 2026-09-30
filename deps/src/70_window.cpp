@@ -9089,6 +9089,205 @@ static void enhanceReopen(Scene *scene, const char *name) {
 	if (w->dlg && w->ready) w->dlg->show();
 	else delete w;
 }
+
+// ============================================================================================
+// Tools > Vector Wizard — potrace on the picture this window shows (src/vectorwizard.jl does all the
+// work; see JuliaVectorWizardFn, 30_app.cpp). deps/ui/vector_wizard.ui loaded at RUNTIME. The widgets
+// only describe the job; Preview, Trace and Save… are the only things that reach Julia
+// (only-action-button-executes). ONE dialog per window: the menu re-raises it.
+class VectorWizardDialog;
+static std::map<Scene *, VectorWizardDialog *> g_vwDlgs;
+
+class VectorWizardDialog {
+public:
+	QDialog *dlg = nullptr;
+	Scene *scn = nullptr;
+	QLabel *srcLabel = nullptr, *preview = nullptr, *info = nullptr;
+	QComboBox *modeCombo = nullptr, *turnCombo = nullptr;
+	QSpinBox *thrSpin = nullptr, *levSpin = nullptr, *turdSpin = nullptr;
+	QDoubleSpinBox *alphaSpin = nullptr, *tolSpin = nullptr;
+	QCheckBox *invChk = nullptr, *optiChk = nullptr;
+	bool ready = false;
+
+	// Julia pushes the preview here: w*h RGB triplets, row-major, top row first.
+	void setPreview(int w, int h, const unsigned char *rgb) {
+		if (!preview || w <= 0 || h <= 0 || !rgb) return;
+		QImage im = QImage(rgb, w, h, 3 * w, QImage::Format_RGB888).copy();
+		preview->setPixmap(QPixmap::fromImage(im).scaled(preview->size(), Qt::KeepAspectRatio,
+		                                                  Qt::SmoothTransformation));
+	}
+	// MINIMISE parks the dialog as a Scene Objects handle — the shared parkOnMinimise/parkTool/unparkTool
+	// set every parkable tool uses; it comes back (double-click, its checkbox, "Show") with every box set.
+	void unpark() {
+		if (!dlg) return;
+		unparkTool(scn, dlg);
+		dlg->setWindowState(dlg->windowState() & ~Qt::WindowMinimized);
+		dlg->showNormal();
+		dlg->raise();
+		dlg->activateWindow();
+	}
+	std::function<void(const QPoint &)> parkedMenu() {
+		return [this](const QPoint &g) {
+			QMenu m;
+			QAction *aShow = m.addAction("Show");
+			m.addSeparator();
+			QAction *aDel  = m.addAction("Delete");
+			QAction *pick  = m.exec(g);
+			if (pick == aShow) unpark();
+			else if (pick == aDel) { unparkTool(scn, dlg); dlg->close(); }
+		};
+	}
+	void parkNow() {
+		if (!dlg || !sceneAlive(scn)) return;
+		dlg->setWindowState(dlg->windowState() & ~Qt::WindowMinimized);
+		dlg->hide();
+		parkTool(scn, dlg, "Vector Wizard", IC_Image,
+		         "Minimised Vector Wizard — double-click to bring it back, click for Show / Delete",
+		         [this]() { unpark(); }, parkedMenu());
+	}
+
+	// ...and the two text lines: which picture (`which` 0) and what the last op produced (`which` 1).
+	void setText(int which, const char *txt) {
+		QLabel *l = which == 0 ? srcLabel : info;
+		if (l) l->setText(QString::fromUtf8(txt ? txt : ""));
+	}
+
+	// The settings, as the key=value list every op carries.
+	QString params() const {
+		static const char *modes[] = { "bw", "grey", "colour" };
+		const int mi = modeCombo ? std::clamp(modeCombo->currentIndex(), 0, 2) : 0;
+		return QString("mode=%1,thr=%2,inv=%3,n=%4,turd=%5,alpha=%6,opti=%7,tol=%8,turn=%9")
+			.arg(modes[mi])
+			.arg(thrSpin ? thrSpin->value() : 128)
+			.arg(invChk && invChk->isChecked() ? 1 : 0)
+			.arg(levSpin ? levSpin->value() : 8)
+			.arg(turdSpin ? turdSpin->value() : 2)
+			.arg(alphaSpin ? alphaSpin->value() : 1.0)
+			.arg(optiChk && optiChk->isChecked() ? 1 : 0)
+			.arg(tolSpin ? tolSpin->value() : 0.2)
+			.arg(turnCombo ? turnCombo->currentText() : QString("minority"));
+	}
+	// One door to Julia (SACRED_LAW: one operation, one path), and the busy notice lives at it
+	// (no-dead-time law): a trace of a big picture takes seconds.
+	// Returns Julia's answer: 0 failed, 1 done, 2 (init only) "this window has nothing to trace".
+	int send(const QString &op, const QString &arg, const char *busy = nullptr) {
+		if (!sceneAlive(scn)) return 0;                 // the viewer is gone: nothing to read or draw on
+		if (!g_juliaVectorWizard) {
+			QMessageBox::warning(dlg, "Vector Wizard", "Vector Wizard: callback not registered.");
+			return 0;
+		}
+		const QString msg = op + "\n" + arg + "\n" + params();
+		if (busy) showBusyDialog(busy);
+		const int ok = g_juliaVectorWizard(scn, this, msg.toUtf8().constData());
+		if (busy) closeBusyDialog();
+		return ok;
+	}
+	// Threshold/Invert belong to black & white, the tone count to the other two; the tolerance to
+	// curve optimization. UI state only.
+	void syncMode() {
+		const bool bw = modeCombo && modeCombo->currentIndex() == 0;
+		if (thrSpin) thrSpin->setEnabled(bw);
+		if (invChk)  invChk->setEnabled(bw);
+		if (levSpin) levSpin->setEnabled(!bw);
+		if (tolSpin) tolSpin->setEnabled(optiChk && optiChk->isChecked());
+	}
+
+	VectorWizardDialog(QWidget *parent, Scene *scene, const QString &imgName) : scn(scene) {
+		QUiLoader loader;
+		QFile f(gmtvtkUiDir() + "/vector_wizard.ui");
+		if (!f.open(QFile::ReadOnly)) {
+			qWarning("VectorWizardDialog: cannot open %s", qUtf8Printable(f.fileName()));
+			return;
+		}
+		dlg = qobject_cast<QDialog *>(loader.load(&f, parent));
+		f.close();
+		if (!dlg) { qWarning("VectorWizardDialog: QUiLoader failed to load the .ui"); return; }
+		// Owned (Qt::Dialog: never behind the viewer); the minimise button is what PARKS it.
+		dlg->setWindowFlags(Qt::Dialog | Qt::WindowCloseButtonHint | Qt::WindowMinimizeButtonHint);
+		dlg->setWindowModality(Qt::NonModal);
+		dlg->setFixedSize(dlg->size());                                 // the .ui geometry is the size
+		parkOnMinimise(dlg, [this]() { parkNow(); });                  // the shared handler (50_scene.cpp)
+		dlg->setAttribute(Qt::WA_DeleteOnClose);
+		QDialog *d = dlg;
+		srcLabel  = d->findChild<QLabel *>("srcLabel");
+		preview   = d->findChild<QLabel *>("previewLabel");
+		info      = d->findChild<QLabel *>("infoLabel");
+		modeCombo = d->findChild<QComboBox *>("modeCombo");
+		turnCombo = d->findChild<QComboBox *>("turnCombo");
+		thrSpin   = d->findChild<QSpinBox *>("thresholdSpin");
+		levSpin   = d->findChild<QSpinBox *>("levelsSpin");
+		turdSpin  = d->findChild<QSpinBox *>("turdSpin");
+		alphaSpin = d->findChild<QDoubleSpinBox *>("alphaSpin");
+		tolSpin   = d->findChild<QDoubleSpinBox *>("tolSpin");
+		invChk    = d->findChild<QCheckBox *>("invertCheck");
+		optiChk   = d->findChild<QCheckBox *>("optiCheck");
+
+		// Enter in a spin box must never fire an action button (only-action-button-executes).
+		for (QPushButton *b : d->findChildren<QPushButton *>()) { b->setAutoDefault(false); b->setDefault(false); }
+
+		if (modeCombo) QObject::connect(modeCombo, &QComboBox::currentIndexChanged, d, [this](int) { syncMode(); });
+		if (optiChk)   QObject::connect(optiChk, &QCheckBox::toggled, d, [this](bool) { syncMode(); });
+		syncMode();
+
+		if (auto *b = d->findChild<QPushButton *>("previewButton"))
+			QObject::connect(b, &QPushButton::clicked, d, [this]() { send("preview", "", "Grouping the colours…"); });
+		if (auto *b = d->findChild<QPushButton *>("traceButton"))
+			QObject::connect(b, &QPushButton::clicked, d, [this]() {
+				if (!send("trace", "", "Tracing…"))
+					QMessageBox::warning(dlg, "Vector Wizard", "Trace failed — see this window's Errors console.");
+			});
+		if (auto *b = d->findChild<QPushButton *>("saveButton"))
+			QObject::connect(b, &QPushButton::clicked, d, [this]() {
+				const QString fn = QFileDialog::getSaveFileName(dlg, "Save traced vectors", prefStartDir("traced.svg"),
+					"SVG (*.svg);;Encapsulated PostScript (*.eps);;GMT multisegment table (*.txt *.dat)");
+				if (fn.isEmpty()) return;
+				if (!send("save", fn, "Tracing…"))
+					QMessageBox::warning(dlg, "Vector Wizard", "Save failed — see this window's Errors console.");
+			});
+
+		// Shown BEFORE the first Julia call: a blocking init (first-use compile) must not leave the
+		// dialog to appear behind the viewer afterwards.
+		d->show();  d->raise();  d->activateWindow();
+		int got = send("init", imgName, "Reading the picture…");
+		if (got == 2) {
+			// Nothing on screen to trace: ask for a picture, and bring it in through the SAME door as
+			// File > Open (juliaOpenFile), so it lands in this window like any opened file — then trace it.
+			const QString f = QFileDialog::getOpenFileName(d, "Vector Wizard — pick an image (or grid) to trace",
+				prefStartDir(), "Images and grids (*.png *.jpg *.jpeg *.tif *.tiff *.bmp *.gif *.nc *.grd);;All files (*)");
+			if (f.isEmpty()) { delete d;  dlg = nullptr;  return; }   // the user chose not to
+			rememberStartDir(f);
+			const QByteArray utf8 = f.toUtf8();
+			juliaOpenFile(scn, utf8.constData());
+			got = send("init", QString(), "Reading the picture…");
+		}
+		if (got != 1) {
+			QMessageBox::warning(parent, "Vector Wizard", "Could not read a picture to trace — see this window's Errors console.");
+			delete d;  dlg = nullptr;
+			return;
+		}
+		ready = true;
+		g_vwDlgs[scn] = this;
+		QObject::connect(d, &QObject::destroyed, d, [this]() {
+			if (sceneAlive(scn)) unparkTool(scn, dlg);   // a parked dialog deleted from its row
+			for (auto it = g_vwDlgs.begin(); it != g_vwDlgs.end(); )
+				it = (it->second == this) ? g_vwDlgs.erase(it) : std::next(it);
+			if (g_juliaVectorWizard) g_juliaVectorWizard(scn, this, "close\n\n");   // drop Julia's state
+			delete this;
+		});
+	}
+};
+
+// Tools > Vector Wizard: re-raise this window's dialog, or open one on the image on display.
+static void vectorWizardOpen(QWidget *win, Scene *s) {
+	auto it = g_vwDlgs.find(s);
+	if (it != g_vwDlgs.end() && it->second->dlg) {
+		it->second->unpark();          // parked? the row goes away and the SAME dialog comes back
+		return;
+	}
+	auto *w = new VectorWizardDialog(win, s, displayedImageName(s));
+	if (w->dlg && w->ready) w->dlg->show();
+	else delete w;
+}
 // ============================================================================================
 // Image > Image resize — port of Mirone's src_figs/imageresize.m. deps/ui/image_resize.ui carries
 // imageresize_LayoutFcn's absolute geometry (328x261).
@@ -17280,7 +17479,8 @@ public:
 	QLineEdit *xminEdit = nullptr, *xmaxEdit = nullptr, *yminEdit = nullptr, *ymaxEdit = nullptr;
 	QComboBox *incModeCb = nullptr, *scaleModeCb = nullptr, *headsCb = nullptr, *colorCb = nullptr;
 	QCheckBox *useSceneChk = nullptr, *polarChk = nullptr, *azimChk = nullptr, *geogChk = nullptr;
-	QCheckBox *byMagChk = nullptr, *drapeChk = nullptr, *tableChk = nullptr;
+	QCheckBox *byMagChk = nullptr, *drapeChk = nullptr, *tableChk = nullptr, *solidChk = nullptr;
+	QGroupBox *headGb = nullptr;
 	QLabel *incxLb = nullptr, *incyLb = nullptr, *scaleLb = nullptr, *grid1Lb = nullptr;
 	QLabel *headlenLb = nullptr, *headangLb = nullptr, *normLb = nullptr;
 	QLabel *nclassLb = nullptr, *colorLb = nullptr;
@@ -17328,6 +17528,8 @@ public:
 		byMagChk    = d->findChild<QCheckBox *>("chk_bymag");
 		drapeChk    = d->findChild<QCheckBox *>("chk_drape");
 		tableChk    = d->findChild<QCheckBox *>("chk_table");
+		solidChk    = d->findChild<QCheckBox *>("chk_solid");
+		headGb      = d->findChild<QGroupBox *>("gb_head");
 		incxLb      = d->findChild<QLabel *>("lb_incx");
 		incyLb      = d->findChild<QLabel *>("lb_incy");
 		scaleLb     = d->findChild<QLabel *>("lb_scale");
@@ -17384,7 +17586,7 @@ public:
 		addRefGridRow(d, d->findChild<QGridLayout *>("gridLayout_region"),
 		              xminEdit, xmaxEdit, yminEdit, ymaxEdit);
 
-		for (QCheckBox *c : { useSceneChk, azimChk, byMagChk })
+		for (QCheckBox *c : { useSceneChk, azimChk, byMagChk, solidChk })
 			if (c) QObject::connect(c, &QCheckBox::toggled, d, [this](bool) { syncMode(); });
 		for (QComboBox *cb : { incModeCb, scaleModeCb, headsCb })
 			if (cb) QObject::connect(cb, QOverload<int>::of(&QComboBox::currentIndexChanged), d,
@@ -17426,11 +17628,15 @@ public:
 		                    (QWidget *)headlenLb, (QWidget *)headangLb, (QWidget *)normLb })
 			if (w) w->setEnabled(head);
 
+		// A solid arrow is one fixed shape (shaft + cone), and by magnitude it is coloured through a
+		// CONTINUOUS colormap — so the head options and the class count only speak to line arrows.
+		const bool solid = solidChk && solidChk->isChecked();
+		if (headGb) headGb->setEnabled(!solid);
 		const bool bymag = byMagChk && byMagChk->isChecked();
 		if (colorCb)    colorCb->setEnabled(!bymag);
 		if (colorLb)    colorLb->setEnabled(!bymag);
-		if (nclassEdit) nclassEdit->setEnabled(bymag);
-		if (nclassLb)   nclassLb->setEnabled(bymag);
+		if (nclassEdit) nclassEdit->setEnabled(bymag && !solid);
+		if (nclassLb)   nclassLb->setEnabled(bymag && !solid);
 	}
 
 	void runCompute(QDialog *d) {
@@ -17485,6 +17691,7 @@ public:
 		if (!txt(nclassEdit).isEmpty()) kv << "nclass=" + txt(nclassEdit);
 		kv << QString("drape=%1").arg(drapeChk && drapeChk->isChecked() ? 1 : 0);
 		kv << QString("table=%1").arg(tableChk && tableChk->isChecked() ? 1 : 0);
+		kv << QString("solid=%1").arg(solidChk && solidChk->isChecked() ? 1 : 0);
 		if (!txt(nameEdit).isEmpty()) kv << "name=" + txt(nameEdit);
 		if (!txt(outEdit).isEmpty())  kv << "outfile=" + txt(outEdit);
 		if (nR == 4) {
@@ -28784,6 +28991,9 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		auto *w = new LineOpsDialog(win, s);
 		if (w->dlg) w->dlg->show();
 	});
+	// "Vector Wizard": trace the picture on display (an image, or the picture a grid is drawn as)
+	// into filled vector layers with potrace — into this window, or to SVG / EPS / GMT.
+	mTools->addAction("Vector Wizard", [win, s]() { vectorWizardOpen(win, s); });
 	// "Project" (port of Mirone's Projections > GDAL project): reproject the window's raster with
 	// gdalwarp. Needs something to warp, so it is offered only with a raster on screen.
 	mTools->addAction("Project…", [win, s]() {

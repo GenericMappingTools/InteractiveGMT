@@ -50,7 +50,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_C_STANDARD 99)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
-# Declared up here (used below to gate gmtvtk_demo) — see the big comment near the bottom of
+# Declared up here (used below to gate the dev-only test binaries) — see the big comment near the bottom of
 # this file for what it turns on.
 option(GMTVTK_PACKAGE "Bundle all runtime DLLs and enable CPack packaging" OFF)
 
@@ -208,20 +208,10 @@ add_library(gmtvtk SHARED ${GMTVTK_SRC})
 target_link_libraries(gmtvtk PRIVATE Qt6::Widgets Qt6::UiTools TBB::tbb ${VTK_LIBRARIES} ${CMAKE_DL_LIBS})
 vtk_module_autoinit(TARGETS gmtvtk MODULES ${VTK_LIBRARIES})
 
-# Standalone demo executable (shows the synthetic peaks surface via the demo main()) — a dev
-# smoke-test binary only (deps/run.bat), no Julia involved. Skipped entirely for a package build:
-# the redistributable installs the real Julia-driven app (iview_app.jl), not this demo.
+# Dev-only numerics regressions, skipped for a package build.
 if(NOT GMTVTK_PACKAGE)
-  if(WIN32)
-    add_executable(gmtvtk_demo WIN32 ${GMTVTK_SRC})
-  else()
-    add_executable(gmtvtk_demo ${GMTVTK_SRC})
-  endif()
-  target_link_libraries(gmtvtk_demo PRIVATE Qt6::Widgets Qt6::UiTools TBB::tbb ${VTK_LIBRARIES} ${CMAKE_DL_LIBS})
-  vtk_module_autoinit(TARGETS gmtvtk_demo MODULES ${VTK_LIBRARIES})
-
   # Numerics regression for mbgrid.c — pure C, links nothing but libm, runs in well under a second.
-  # Built by the default `all` target, same as gmtvtk_demo; run deps/build/test_mbgrid.
+  # Built by the default `all` target; run deps/build/test_mbgrid.
   add_executable(test_mbgrid src/mbgrid.c src/test_mbgrid.c)
   if(NOT MSVC)
     target_link_libraries(test_mbgrid PRIVATE m)
@@ -344,7 +334,7 @@ endif()
 # (VTK, Qt, TBB) + the Qt platform plugins, so the package runs on a box
 # WITHOUT VTK/Qt installed — PLUS the Julia bridge (src/, Project.toml,
 # deps/ui, data/) and an NSIS installer that drops a Desktop + Start Menu icon
-# launching the real Julia-driven app (iview_app.jl). gmtvtk_demo is skipped
+# launching the real Julia-driven app (iview_app.jl). The dev-only test binaries are skipped
 # entirely above when this is ON — it is never built or shipped in the
 # package. OFF by default (a normal dev build wants none of this).
 #

@@ -978,9 +978,10 @@ end
 	@test occursin("-Sl", IG._gv_command(Dict{String,String}(), "u.grd", "v.grd", 1, 1, 0.0, 4.0, "", 0.33, "18", 0.0))
 end
 
-# The arrow-field IMPORT (File > Open xy(z)) draws the same shape through the same builder. This is
-# the guard on that: two callers, one function — no second spelling of the geometry.
-@testitem "grdvector: the arrow import shares the one arrow builder" tags=[:unit, :fast] begin
+# grdvector's LINE arrows ("Solid 3-D arrows" unticked) are drawn by `_gv_arrow!`, Mirone's
+# loc_quiver shape. (Solid arrows — the dialog's default and File > Open xy(z) > Import Arrow field —
+# go through the one solid builder `_gv_add_solid` instead, exercised by the GUI tier.)
+@testitem "grdvector: the line-arrow shape" tags=[:unit, :fast] begin
 	IG = InteractiveGMT
 	# loc_quiver is exactly _gv_arrow! with a head at the tip and no taper.
 	segs = Matrix{Float64}[]

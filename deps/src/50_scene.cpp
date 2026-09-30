@@ -30,7 +30,7 @@ static int  addSymbols(Scene *s, const double *xyz, int npts, const std::string 
                        double sizePx, int filled, double fr, double fg, double fb,      // THE symbol-layer
                        double er, double eg, double eb, double edgeWidth,               // builder
                        const std::string &name, const char *info, bool oneShot,
-                       const double *sizeScale, const double *ptRGB);
+                       const double *sizeScale, const double *ptRGB, const double *vec = nullptr);
 // 70_window.cpp: THE read-only text popup. `onPickLine`, when given, makes a DOUBLE-CLICK on a line
 // hand that whole line back — how the Earth regions listing lets a region be chosen by clicking it.
 // Returns the popup, so a caller that wants to close it after a pick can.
@@ -1700,9 +1700,15 @@ static void applyStacking(Scene *s) {
 				const double nudge = -4.0;
 				mp->SetRelativeCoincidentTopologyLineOffsetParameters(0.0, nudge);
 				mp->SetRelativeCoincidentTopologyPointOffsetParameter(nudge);
+				// A FILLED overlay's triangles lie where its lines lie: same nudge, or its area
+				// z-fights the surface its outline was just lifted off.
+				if (overlayActorFilled(s, a)) mp->SetRelativeCoincidentTopologyPolygonOffsetParameters(0.0, nudge);
 			} else if (vec) {
 				mp->SetRelativeCoincidentTopologyLineOffsetParameters(0.0, u);
 				mp->SetRelativeCoincidentTopologyPointOffsetParameter(u);
+				// ...and the same rank value, so two coplanar filled layers (a traced picture's
+				// colours) are ordered by the pile exactly like their outlines.
+				if (overlayActorFilled(s, a)) mp->SetRelativeCoincidentTopologyPolygonOffsetParameters(0.0, u);
 			} else {
 				mp->SetRelativeCoincidentTopologyPolygonOffsetParameters(0.0, u);
 			}
@@ -3060,8 +3066,13 @@ static void rebuildSceneObjects(Scene *s) {
 		beginGroupHandle(nm, IC_Image, imgGrpOn,
 		        imgMenu, imgMenu,
 		        "Left- or right-click for properties (save / remove)");
+		// The picture is the drape AND the base surface it lies on: one element, one switch. Hiding the
+		// drape alone left the base mesh on screen in its placeholder CPT colour (a red plate).
 		makeRow("Image", IC_Image, imgVis,                          // Image leaf handle kept as a child
-		        [dp](bool on) { dp->SetVisibility(on ? 1 : 0); }, nullptr,
+		        [s, dp](bool on) {
+			        dp->SetVisibility(on ? 1 : 0);
+			        for (vtkActor *a : surfActors(s)) a->SetVisibility(on ? 1 : 0);
+		        }, nullptr,
 		        "Right-click for properties (save / remove)", imgMenu);
 		if (s->palette.n > 0) paletteRow(&s->palette);
 		axesRow(&s->baseAxes);                             // the primary IMAGE's OWN set
@@ -3883,6 +3894,126 @@ static double sceneWorldPerPixel(Scene *s) {
 	return (std::isfinite(d) && d > 0.0) ? d : 0.0;
 }
 
+// A FILLED overlay (Overlay::filled): its polydata carries triangles next to its line cells, made
+// from its OWN segments by earcut — every segment is a ring (closed by id, dropping a
+// repeated end point), and rings inside rings are holes. The triangles index the overlay's own
+// points, so whatever moves those points (Clamp to ground, a vertex drag) moves the fill with them;
+// anything that changes the SEGMENTS calls this again. Triangulated on a z=0 copy of the points,
+// so a clamped (draped) ring is split by its map outline, not by a best-fit plane through the relief.
+// `filled` off (or points mode) clears the triangles.
+static void overlayBuildFill(Overlay &ov) {
+	if (!ov.baseLine) return;
+	if (!ov.filled || ov.mode != 1) {
+		if (ov.baseLine->GetNumberOfPolys() > 0) { ov.baseLine->SetPolys(nullptr); ov.baseLine->Modified(); }
+		return;
+	}
+	vtkPoints *pts = ov.baseLine->GetPoints();
+	if (!pts) return;
+	const int np = (int)pts->GetNumberOfPoints();
+	vtkNew<vtkPoints> flat; flat->SetDataTypeToDouble(); flat->SetNumberOfPoints(np);
+	for (int i = 0; i < np; ++i) { double p[3]; pts->GetPoint(i, p); flat->SetPoint(i, p[0], p[1], 0.0); }
+	std::vector<int> off = ov.segoff;
+	if ((int)off.size() < 2) off = { 0, np };
+	// The rings: [a, z) id ranges, with bbox and area for the nesting test below.
+	struct Ring { int a, z; double x0, x1, y0, y1, area; };
+	std::vector<Ring> R;
+	for (size_t k = 0; k + 1 < off.size(); ++k) {
+		const int a = off[k];
+		int z = std::min(off[k + 1], np);
+		if (z - a >= 2) {
+			double p0[3], p1[3];
+			flat->GetPoint(a, p0);  flat->GetPoint(z - 1, p1);
+			if (p0[0] == p1[0] && p0[1] == p1[1]) --z;       // the closing copy: close by id instead
+		}
+		if (z - a < 3) continue;                              // fewer than 3 corners encloses nothing
+		Ring r{ a, z, 1e300, -1e300, 1e300, -1e300, 0.0 };
+		for (int i = a; i < z; ++i) {
+			double p[3], q[3];
+			flat->GetPoint(i, p);  flat->GetPoint(i + 1 < z ? i + 1 : a, q);
+			r.x0 = std::min(r.x0, p[0]);  r.x1 = std::max(r.x1, p[0]);
+			r.y0 = std::min(r.y0, p[1]);  r.y1 = std::max(r.y1, p[1]);
+			r.area += p[0] * q[1] - q[0] * p[1];
+		}
+		r.area = std::abs(r.area) / 2;
+		R.push_back(r);
+	}
+	// Even-odd, made explicit: a ring's DEPTH is how many rings contain it (even = an area, odd = a
+	// hole) and its PARENT the smallest one that does. Each area is then triangulated with ITS OWN
+	// holes by earcut. vtkContourTriangulator was the first choice and is quadratic in the holes: a
+	// traced sky with ~400 holes took 10 s for one layer.
+	const int n = (int)R.size();
+	auto inside = [&](double x, double y, const Ring &g) {
+		bool c = false;
+		for (int i = g.a, j = g.z - 1; i < g.z; j = i++) {
+			double pi[3], pj[3];
+			flat->GetPoint(i, pi);  flat->GetPoint(j, pj);
+			if (((pi[1] > y) != (pj[1] > y)) && (x < (pj[0] - pi[0]) * (y - pi[1]) / (pj[1] - pi[1]) + pi[0])) c = !c;
+		}
+		return c;
+	};
+	std::vector<int> depth(n, 0), parent(n, -1);
+	for (int i = 0; i < n; ++i) {
+		double p[3];
+		flat->GetPoint(R[i].a, p);
+		for (int j = 0; j < n; ++j) {
+			if (i == j || R[j].area <= R[i].area) continue;
+			if (p[0] < R[j].x0 || p[0] > R[j].x1 || p[1] < R[j].y0 || p[1] > R[j].y1) continue;
+			if (!inside(p[0], p[1], R[j])) continue;
+			++depth[i];
+			if (parent[i] < 0 || R[j].area < R[parent[i]].area) parent[i] = j;
+		}
+	}
+	std::vector<std::vector<int>> holes(n);
+	for (int i = 0; i < n; ++i) if ((depth[i] & 1) && parent[i] >= 0) holes[parent[i]].push_back(i);
+	vtkNew<vtkCellArray> tris;
+	using Pt = std::array<double, 2>;
+	for (int i = 0; i < n; ++i) {
+		if (depth[i] & 1) continue;                           // a hole: triangulated with its area
+		std::vector<std::vector<Pt>> poly;                    // earcut's input: area ring, then holes
+		std::vector<vtkIdType> ids;                           // earcut's vertex index -> point id
+		auto addRing = [&](const Ring &g) {
+			poly.emplace_back();
+			for (int k = g.a; k < g.z; ++k) {
+				double p[3];
+				flat->GetPoint(k, p);
+				poly.back().push_back({ p[0], p[1] });
+				ids.push_back(k);
+			}
+		};
+		addRing(R[i]);
+		for (int k : holes[i]) addRing(R[k]);
+		const std::vector<uint32_t> t = mapbox::earcut<uint32_t>(poly);
+		for (size_t k = 0; k + 2 < t.size(); k += 3) {
+			const vtkIdType tri[3] = { ids[t[k]], ids[t[k + 1]], ids[t[k + 2]] };
+			tris->InsertNextCell(3, tri);
+		}
+	}
+	ov.baseLine->SetPolys(tris);
+	ov.baseLine->Modified();
+}
+
+// Turn an overlay's fill on/off (its "Fill polygons" menu item, gmtvtk_overlay_set_filled_h). The
+// pile is re-run so the triangles get their rank offset at once.
+static void overlaySetFilled(Scene *s, vtkActor *a, bool on) {
+	if (!s || !a) return;
+	for (auto &ov : s->overlays) {
+		if (ov.actor.Get() != a) continue;
+		ov.filled = on;
+		overlayBuildFill(ov);
+		applyVectorStacking(s);
+		if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+		return;
+	}
+}
+
+// Is `a` the actor of a FILLED overlay? The vector pile asks, to give its triangles the same rank
+// offset as its lines (applyStacking).
+static bool overlayActorFilled(Scene *s, vtkActor *a) {
+	if (!s || !a) return false;
+	for (auto &ov : s->overlays) if (ov.actor.Get() == a) return ov.filled;
+	return false;
+}
+
 // `interiorXYZ`/`nInterior`: SHAPENC "bounded ensemble" support (Mirone convention -- an OUTER
 // boundary polygon wraps a point swarm that's plotted only on demand). Meaningful only when this
 // call is adding the OUT polygon itself: the swarm is stashed on the new Overlay, NOT added to the
@@ -4127,6 +4258,7 @@ static void overlaySetMode(Scene *s, vtkActor *actor, int toPoints) {
 	}
 	pd->Modified();
 	ov->mode = mode;
+	overlayBuildFill(*ov);                    // points enclose nothing; back to a line, a filled one refills
 	ov->actor->GetProperty()->SetRenderPointsAsSpheres(mode == 0);   // round points, like a fresh Points overlay
 	if (s->widget && s->widget->renderWindow())
 		s->widget->renderWindow()->Render();
@@ -4180,6 +4312,7 @@ static void overlayRemoveSegment(Scene *s, Overlay &ov, int segIdx) {
 	}
 	pd->SetPoints(newPts);
 	pd->Modified();
+	overlayBuildFill(ov);                     // the rings changed: a filled overlay's area follows them
 }
 
 // ---- generic screen-constant SYMBOL layers (volcanoes, seismicity, cities, …) ----------------
@@ -4245,6 +4378,20 @@ static vtkSmartPointer<vtkPolyData> makeSymbolGlyph(const std::string &sym, bool
 		else if (sym == "+") { seg(-R, 0, R, 0);  seg(0, -R, 0, R);  }   // plus
 		else                 { seg(-R, 0, R, 0); }                       // dash
 		pd->SetPoints(p); pd->SetLines(ca);
+	}
+	else if (sym == "arrow") {             // flat arrow: the top-down outline of the solid "arrow" below
+		// Same frame as the solid one — tail at the origin, tip at (1,0,0) — so an arrow layer keeps
+		// its anchor and length when the view goes flat. Two CONVEX cells (shaft quad + head triangle):
+		// the whole outline is concave, and a single polygon cell would be fan-filled wrong.
+		filled = true;
+		const double hw = 0.04, tw = 0.12, tb = 0.70;         // shaft half-width, head half-width, head base
+		const vtkIdType a0 = p->InsertNextPoint(0.0, -hw, 0.0), a1 = p->InsertNextPoint(tb, -hw, 0.0);
+		const vtkIdType a2 = p->InsertNextPoint(tb,  hw, 0.0),  a3 = p->InsertNextPoint(0.0,  hw, 0.0);
+		ca->InsertNextCell(4); ca->InsertCellPoint(a0); ca->InsertCellPoint(a1); ca->InsertCellPoint(a2); ca->InsertCellPoint(a3);
+		const vtkIdType h0 = p->InsertNextPoint(tb, -tw, 0.0), h1 = p->InsertNextPoint(1.0, 0.0, 0.0);
+		const vtkIdType h2 = p->InsertNextPoint(tb,  tw, 0.0);
+		ca->InsertNextCell(3); ca->InsertCellPoint(h0); ca->InsertCellPoint(h1); ca->InsertCellPoint(h2);
+		pd->SetPoints(p); pd->SetPolys(ca);
 	}
 	else poly(32, 0.0);                    // unknown -> circle
 	return pd;
@@ -4334,6 +4481,20 @@ static vtkSmartPointer<vtkPolyData> makeSatelliteGlyph() {
 // shades it (addSymbols turns lighting on only for these two codes).
 static vtkSmartPointer<vtkPolyData> makeSolidGlyph(const std::string &sym) {
 	if (sym == "sat") return makeSatelliteGlyph();     // spacecraft body (built above, already normalled)
+	if (sym == "arrow") {               // vector arrow: TAIL at the origin, tip at (1,0,0) — a vector is
+		// drawn FROM its point, so unlike the centred glyphs this one is anchored at its tail. The same
+		// vtkArrowSource the Fault plane demo uses, a little bolder so it reads at field density.
+		vtkNew<vtkArrowSource> arr;
+		arr->SetTipLength(0.30); arr->SetTipRadius(0.12); arr->SetShaftRadius(0.045);
+		arr->SetTipResolution(20); arr->SetShaftResolution(16);
+		vtkNew<vtkTriangleFilter> tri;      // one cell type: mixed cells shade unevenly under the glyph mapper
+		tri->SetInputConnection(arr->GetOutputPort());
+		vtkNew<vtkPolyDataNormals> norms;
+		norms->SetInputConnection(tri->GetOutputPort());
+		norms->ComputePointNormalsOn(); norms->ComputeCellNormalsOff(); norms->SplittingOn();
+		norms->Update();
+		return norms->GetOutput();
+	}
 	if (sym == "u") {                   // cube: vtkCubeSource has no built-in normals -> compute them
 		vtkNew<vtkCubeSource> cube;
 		cube->SetXLength(1.0); cube->SetYLength(1.0); cube->SetZLength(1.0);
@@ -4419,6 +4580,7 @@ static void restackVector(Scene *s, int *stackPtr, int op) { restackStack(s, sta
 static inline std::string symFlatCode(const std::string &sym) {
 	if (sym == "u")   return "s";
 	if (sym == "sat") return "d";
+	if (sym == "arrow") return "arrow";   // an arrow seen from above is still an arrow (makeSymbolGlyph)
 	return "c";
 }
 
@@ -4447,6 +4609,9 @@ static void symbolSetPipeline(Scene *s, SymbolLayer &sl, vtkPolyData *in, bool s
 	// Per-point size factors / colours, as they were handed in (see the array names above).
 	const bool hasScale = (in->GetPointData()->GetScalars() != nullptr);
 	const bool hasRGB   = (in->GetPointData()->GetArray("symRGB") != nullptr);
+	// Per-point DIRECTION (an arrow layer's vectors, "symVec"): the glyph's +X axis is turned onto it.
+	// A layer without it is not oriented at all, exactly as before.
+	const bool hasVec   = (in->GetPointData()->GetArray("symVec") != nullptr);
 	// A glyph that carries BOTH filled polys and outline lines (the concave star) is coloured PER
 	// CELL — fill triangles in the fill colour, the boundary polyline in the edge colour — so the
 	// outline is the star boundary only (no internal triangulation spokes that EdgeVisibility draws).
@@ -4494,7 +4659,12 @@ static void symbolSetPipeline(Scene *s, SymbolLayer &sl, vtkPolyData *in, bool s
 		// layer's base size — the whole point of a scaled-symbol layer, silently lost.
 		if (hasScale) { m->SetScaleArray("symScale");  m->SetScaleModeToScaleByMagnitude(); }
 		else          { m->SetScaleModeToNoDataScaling(); }
-		m->OrientOff();
+		if (hasVec) {
+			m->OrientOn();
+			m->SetOrientationArray("symVec");
+			m->SetOrientationModeToDirection();
+		}
+		else m->OrientOff();
 		m->SetScaleFactor(sl.sizePx > 0.0 ? sl.sizePx : 8.0);   // placeholder; primed + driven per frame
 		if (hasRGB) {
 			m->ScalarVisibilityOn();
@@ -4515,7 +4685,12 @@ static void symbolSetPipeline(Scene *s, SymbolLayer &sl, vtkPolyData *in, bool s
 		// stays screen-constant with each glyph at its own relative size.
 		if (hasScale) gg->SetScaleModeToScaleByScalar();
 		else          gg->SetScaleModeToDataScalingOff();
-		gg->OrientOff();
+		if (hasVec) {                         // input array 1 = the vectors vtkGlyph3D orients by
+			gg->OrientOn();
+			gg->SetVectorModeToUseVector();
+			gg->SetInputArrayToProcess(1, 0, 0, vtkDataObject::FIELD_ASSOCIATION_POINTS, "symVec");
+		}
+		else gg->OrientOff();
 		gg->SetScaleFactor(sl.sizePx > 0.0 ? sl.sizePx : 8.0);   // placeholder; primed + driven per frame
 		g = gg;
 
@@ -4587,6 +4762,76 @@ static bool symbolApplyKind(Scene *s, SymbolLayer &sl) {
 	return true;
 }
 
+// ---- ARROW layers (a vector field drawn as solid arrows: a symbol layer carrying "symVec") ----------
+
+// The height an ARROW stands at when its source has none: the highest relief under its whole length
+// (tail to tip, 25 samples of the active grid), so a straight solid arrow is not buried in the slope
+// it crosses. A draped line followed the ground vertex by vertex; a rigid arrow has to clear it.
+// (lon,lat) TRUE coords, (u,v) its direction, `len` its length in WORLD units (x = lon*xfac).
+static double arrowGroundZ(Scene *s, double lon, double lat, double u, double v, double len) {
+	const double m = std::sqrt(u*u + v*v);
+	const double gx = (s->xfac != 0.0) ? s->xfac : 1.0;
+	const double dlon = (m > 0.0) ? len * u / m / gx : 0.0, dlat = (m > 0.0) ? len * v / m : 0.0;
+	double zmax = -std::numeric_limits<double>::infinity();
+	for (int k = 0; k <= 24; ++k) {
+		const double z = sampleActiveZ(s, lon + dlon * k / 24.0, lat + dlat * k / 24.0);
+		if (std::isfinite(z) && z > zmax) zmax = z;
+	}
+	if (!std::isfinite(zmax)) return 0.0;
+	// …and lifted by the arrow's own head radius (0.12 of its length, makeSolidGlyph "arrow"), turned
+	// from world units into the layer's z units at the current exaggeration, so the axis resting on
+	// the highest ground does not leave half the arrow inside it.
+	const double zc = layerZScale(s, activeOwnerTag(s));
+	return zmax + ((zc > 0.0) ? 0.12 * len / zc : 0.0);
+}
+
+// Re-seat the auto-grounded points of an arrow layer after its length changed (a longer arrow crosses
+// more relief). Points that came with their own z are never touched.
+static void arrowRegroundLayer(Scene *s, SymbolLayer &sl) {
+	const size_t n = sl.zOrig.size();
+	if (sl.arrowGrounded.size() != n || sl.uvOrig.size() != n * 2 || sl.xyOrig.size() != n * 2) return;
+	vtkPolyData *pd = symInputPD(sl);
+	vtkDataArray *sc = pd ? pd->GetPointData()->GetArray("symScale") : nullptr;
+	for (size_t i = 0; i < n; ++i) {
+		if (!sl.arrowGrounded[i]) continue;
+		const double f = sc ? sc->GetComponent((vtkIdType)i, 0) : 1.0;
+		sl.zOrig[i] = arrowGroundZ(s, sl.xyOrig[2*i], sl.xyOrig[2*i+1], sl.uvOrig[2*i], sl.uvOrig[2*i+1],
+		                           sl.worldSize * f);
+	}
+	sl.posMode = -1;                                   // force symbolApplyZ to write the points back
+	symbolApplyZ(s, sl);
+}
+
+// THE recolouring of an arrow layer: `ptRGB` = one RGB (0..1) per arrow (colour by magnitude), or
+// null = drop the per-arrow colours and paint the whole layer (r,g,b). Rebuilt through
+// symbolSetPipeline, THE constructor, so orientation and sizes come along untouched. The export
+// (gmtvtk_arrows_set_rgb_h) and the properties menu both come here.
+static bool arrowLayerSetRGB(Scene *s, SymbolLayer &sl, const double *ptRGB, int npts,
+                             double r, double g, double b) {
+	vtkPolyData *pd = symInputPD(sl);
+	if (!pd) return false;
+	const vtkIdType n = pd->GetNumberOfPoints();
+	if (ptRGB && npts != (int)n) return false;
+	pd->GetPointData()->RemoveArray("symRGB");
+	if (ptRGB) {
+		auto to255 = [](double c) { return (unsigned char)(c < 0 ? 0 : c > 1 ? 255 : c * 255.0 + 0.5); };
+		vtkNew<vtkUnsignedCharArray> cc; cc->SetName("symRGB"); cc->SetNumberOfComponents(3);
+		cc->SetNumberOfTuples(n);
+		for (vtkIdType i = 0; i < n; ++i) {
+			unsigned char t[3] = { to255(ptRGB[3*i]), to255(ptRGB[3*i+1]), to255(ptRGB[3*i+2]) };
+			cc->SetTypedTuple(i, t);
+		}
+		pd->GetPointData()->AddArray(cc);
+	}
+	else {
+		sl.fillRGB[0] = r; sl.fillRGB[1] = g; sl.fillRGB[2] = b;
+	}
+	pd->Modified();
+	symbolSetPipeline(s, sl, pd, sl.solid3D);
+	symbolRescaleCB(nullptr, 0, s, nullptr);
+	return true;
+}
+
 // Stamp N glyphs of one GMT symbol code at N (x,y,z) points (TRUE coords). Screen-constant size:
 // x is pre-baked with xfac so the glyph is NOT x-stretched; the actor carries only the z scale so
 // symbols ride VE. The per-frame observer (installed once) keeps `sizePx` literal at any zoom.
@@ -4601,7 +4846,8 @@ static int addSymbols(Scene *s, const double *xyz, int npts, const std::string &
                       double fr, double fg, double fb,
                       double er, double eg, double eb, double edgeWidth,
                       const std::string &name, const char *info = nullptr, bool oneShot = false,
-                      const double *sizeScale = nullptr, const double *ptRGB = nullptr) {
+                      const double *sizeScale = nullptr, const double *ptRGB = nullptr,
+                      const double *vec) {
 	if (!s || !xyz || npts <= 0) return 0;
 
 	vtkNew<vtkPoints> pts; pts->SetDataTypeToDouble(); pts->Allocate(npts);
@@ -4625,14 +4871,23 @@ static int addSymbols(Scene *s, const double *xyz, int npts, const std::string &
 		}
 		in->GetPointData()->AddArray(cc);
 	}
+	if (vec) {                                         // NAMED array: an arrow layer's directions
+		// (east, north) per point, drawn as (u, v, 0) on a map; symbolApplyZ turns them onto the
+		// sphere's tangent plane on the globe, from `uvOrig` below.
+		vtkNew<vtkDoubleArray> va; va->SetName("symVec"); va->SetNumberOfComponents(3);
+		va->SetNumberOfTuples(npts);
+		for (int i = 0; i < npts; ++i) { double w[3] = { vec[2*i], vec[2*i+1], 0.0 }; va->SetTuple(i, w); }
+		in->GetPointData()->AddArray(va);
+	}
 
 	vtkSmartPointer<vtkActor> a = vtkSmartPointer<vtkActor>::New();
 	s->ren->AddActor(a);
 	SymbolLayer sl;
+	if (vec) sl.uvOrig.assign(vec, vec + (size_t)npts * 2);
 	sl.actor = a;
 	sl.sizePx = (sizePx > 0.0 ? sizePx : 8.0);
 	sl.sym = sym;
-	sl.wantSolid = (sym == "o" || sym == "u" || sym == "sat");   // sphere / cube / spacecraft: a true volume — in 3-D
+	sl.wantSolid = (sym == "o" || sym == "u" || sym == "sat" || sym == "arrow");   // sphere / cube / spacecraft / arrow: a true volume — in 3-D
 	sl.wantFilled = filled;
 	sl.fillRGB[0] = fr; sl.fillRGB[1] = fg; sl.fillRGB[2] = fb;
 	sl.edgeRGB[0] = er; sl.edgeRGB[1] = eg; sl.edgeRGB[2] = eb;
@@ -5115,12 +5370,23 @@ static void symbolLayerMenu(Scene *s, vtkActor *act, const QPoint &gp) {
 			kindActs.push_back(a);
 		}
 	}
-	QMenu *propM = m.addMenu("Symb properties");
-	QAction *fillA = propM->addAction("Fill colour…");
+	// An ARROW layer (a vector field) is not a marker: its shape is the arrow, its size is a length in
+	// the map's units and its colour is either the magnitude through a colormap or one flat colour.
+	// So it gets exactly those three properties, and none of the marker ones (shape, px size, edge).
+	const bool arrowLayer = !sl->uvOrig.empty();
+	if (arrowLayer) tm->menuAction()->setVisible(false);
+	QMenu *propM = m.addMenu(arrowLayer ? "Arrow properties" : "Symb properties");
+	QAction *fillA = propM->addAction(arrowLayer ? "Single colour…" : "Fill colour…");
 	QAction *edgeA = propM->addAction("Edge colour…");
 	QAction *sizeA = propM->addAction("Size (px)…");
 	QAction *sizePtA = propM->addAction("Size (points)…");
 	QAction *ewA   = propM->addAction("Edge width (px)…");
+	QAction *arrCmapA = nullptr, *arrLenA = nullptr;
+	if (arrowLayer) {
+		for (QAction *a : { edgeA, sizeA, sizePtA, ewA }) a->setVisible(false);
+		arrCmapA = propM->addAction("Colour by magnitude…");
+		arrLenA  = propM->addAction("Arrow length…");
+	}
 	m.addSeparator();
 	// Draw-order stacking in the SHARED vector pile (overlays + symbols + polygons): controls who
 	// draws on top where vector elements overlap; they stay on the relief (no z lift). Enabled once
@@ -5299,6 +5565,50 @@ static void symbolLayerMenu(Scene *s, vtkActor *act, const QPoint &gp) {
 		if (pd) symbolSetPipeline(s, *sl, pd, false);
 		symbolRescaleCB(nullptr, 0, s, nullptr);     // prime ScaleFactor on the rebuilt pipeline
 		reRender(); return;
+	}
+	if (arrowLayer && ch == fillA) {                  // one flat colour: drops the per-arrow colours
+		const double *c = sl->fillRGB;
+		QColor q = QColorDialog::getColor(QColor(int(c[0]*255), int(c[1]*255), int(c[2]*255)), s->widget, "Arrow colour");
+		if (q.isValid()) { arrowLayerSetRGB(s, *sl, nullptr, 0, q.redF(), q.greenF(), q.blueF()); reRender(); }
+		return;
+	}
+	if (arrCmapA && ch == arrCmapA) {
+		// The colormap is built on the Julia side (GMT's CPTs) over the layer's own magnitude range
+		// and comes back through gmtvtk_arrows_set_rgb_h — the host owns every CPT in this app.
+		const std::string nm = sl->name;
+		chooseColormap(s, gp, [s, nm](const QString &cm) {
+			if (!g_juliaEval || cm.isEmpty()) return;
+			QString esc = QString::fromStdString(nm);
+			esc.replace("\\", "\\\\").replace("\"", "\\\"");
+			const std::string cmd = "InteractiveGMT._recolor_arrows(Ptr{Cvoid}(UInt(" +
+				std::to_string((unsigned long long)reinterpret_cast<uintptr_t>(s)) + ")), \"" +
+				esc.toStdString() + "\", \"" + cm.toStdString() + "\")";
+			std::vector<char> buf(1 << 12);
+			const int n = g_juliaEval(s, cmd.c_str(), buf.data(), (int)buf.size());
+			if (n < 0) sceneLogError(s, QString::fromUtf8(buf.data(), -n));
+		});
+		return;
+	}
+	if (arrLenA && ch == arrLenA) {                  // live: the arrows grow/shrink as the value changes
+		const double w0 = sl->worldSize;
+		QDialog dlg(s->widget);
+		dlg.setWindowTitle("Arrow length");
+		QFormLayout *form = new QFormLayout(&dlg);
+		QDoubleSpinBox *box = new QDoubleSpinBox(&dlg);
+		box->setRange(1, 1000); box->setSingleStep(10); box->setDecimals(0); box->setSuffix(" %");
+		box->setValue(100);
+		QObject::connect(box, QOverload<double>::of(&QDoubleSpinBox::valueChanged), [s, sl, w0](double v) {
+			sl->worldSize = w0 * v / 100.0;
+			arrowRegroundLayer(s, *sl);                 // a longer arrow crosses more relief
+			symbolRescaleCB(nullptr, 0, s, nullptr);
+			if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+		});
+		form->addRow("Length (% of current)", box);
+		QDialogButtonBox *bb = new QDialogButtonBox(QDialogButtonBox::Close, &dlg);
+		QObject::connect(bb, &QDialogButtonBox::rejected, &dlg, &QDialog::accept);
+		form->addRow(bb);
+		dlg.exec();
+		return;
 	}
 	if (ch == fillA) {
 		double *c = sl->actor->GetProperty()->GetColor();

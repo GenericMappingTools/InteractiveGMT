@@ -185,6 +185,78 @@ function _gv_class_color(k::Int, n::Int)
 	return (clamp(1.5 - abs(4t - 3), 0, 1), clamp(1.5 - abs(4t - 2), 0, 1), clamp(1.5 - abs(4t - 1), 0, 1))
 end
 
+# ---- SOLID arrows: a vector field as ONE symbol layer of 3-D arrows (gmtvtk_add_arrows_h) --------
+# THE drawing of a vector field as solid arrows — the grdvector dialog and File > Open xy(z) >
+# Import Arrow field both come here, so the two can never draw a field two ways. The arrows are the
+# Fault plane demo's vtkArrowSource, one GPU-instanced layer with ONE Scene Objects row, its own
+# properties (single colour / colour by magnitude / length) and Remove.
+#   x, y     tail positions; z = NaN stands the arrow on the displayed relief (the C side takes the
+#            highest ground under its whole length, so a rigid arrow is not buried in a slope)
+#   u, v     the vector (east, north); zero vectors must already be gone
+#   len      WORLD length of the longest arrow (the map's y unit; x is cos-lat compressed by the window)
+#   mags     what "magnitude" means for colour, hover and table — normally hypot(u, v); a fixed-length
+#            field passes unit u, v and its real magnitudes here
+#   cmap     colour by magnitude through this GMT CPT, or `nothing` for one flat `color`
+function _gv_add_solid(scene::Ptr{Cvoid}, x::Vector{Float64}, y::Vector{Float64}, z::Vector{Float64},
+                       u::Vector{Float64}, v::Vector{Float64}, name::String, len::Float64;
+                       mags::Vector{Float64}=hypot.(u, v), cmap=:jet, color=:black)::Nothing
+	n = length(x)
+	n > 0 || error("no vector to draw")
+	(len > 0 && isfinite(len)) || error("arrow length must be a positive number")
+	xyz = Vector{Float64}(undef, 3n); uv = Vector{Float64}(undef, 2n)
+	for k in 1:n
+		xyz[3k-2] = x[k]; xyz[3k-1] = y[k]; xyz[3k] = z[k]
+		uv[2k-1] = u[k];  uv[2k] = v[k]
+	end
+	rgb = cmap === nothing ? nothing : _gv_mag_rgb(mags, cmap)
+	fr, fg, fb = _ovl_color(color, :lines)
+	sc = mags ./ max.(hypot.(u, v), eps())            # back to the real components (fixed-length fields)
+	ur = u .* sc;  vr = v .* sc
+	info = join((string("u = ", round(ur[k], sigdigits=5), "\nv = ", round(vr[k], sigdigits=5),
+	                    "\n|v| = ", round(mags[k], sigdigits=5)) for k in 1:n), '\x1e')
+	ok = GC.@preserve xyz uv rgb ccall(_fn(:gmtvtk_add_arrows_h), Cint,
+		(Ptr{Cvoid}, Ptr{Cdouble}, Ptr{Cdouble}, Cint, Cdouble, Ptr{Cdouble}, Cdouble, Cdouble, Cdouble, Cstring, Cstring),
+		scene, xyz, uv, Cint(n), len, rgb === nothing ? C_NULL : pointer(rgb), fr, fg, fb, name, info)
+	ok == 0 && error("the window refused the arrow field (closed, or nothing drawable)")
+	# The layer's OWN data for "Show data table": the field itself, never a graphical property.
+	fmt(a) = string(round(a, sigdigits=8))
+	rows = join((join((fmt(x[k]), fmt(y[k]), fmt(ur[k]), fmt(vr[k]), fmt(mags[k])), '\x1f') for k in 1:n), '\x1e')
+	ccall(_fn(:gmtvtk_symbol_set_table_h), Cint, (Ptr{Cvoid}, Cstring, Cstring, Cstring),
+	      scene, name, join(("x", "y", "u", "v", "magnitude"), '\x1f'), rows)
+	return nothing
+end
+
+# One RGB (0..1) per arrow: its magnitude through `cmap` spread over [0, max]. The nodes come from the
+# app's ONE CPT builder (`_cpt_nodes_range`) and are read by its ONE lookup (`_cpt_lookup`), so an arrow
+# field is coloured exactly as a grid with the same colormap would be.
+function _gv_mag_rgb(mags::Vector{Float64}, cmap)::Union{Nothing,Vector{Float64}}
+	mmax = maximum(mags)
+	mmax > 0 || return nothing
+	cz, crgb, nn = _cpt_nodes_range(0.0, mmax, cmap)
+	nn == 0 && return nothing
+	out = Vector{Float64}(undef, 3 * length(mags))
+	for (k, m) in enumerate(mags)
+		r, g, b = _cpt_lookup(cz, crgb, nn, m)
+		out[3k-2] = r; out[3k-1] = g; out[3k] = b
+	end
+	return out
+end
+
+# "Colour by magnitude…" on an arrow layer's properties (50_scene.cpp -> console eval): read the
+# layer's vectors back, colour them through `cmap`, hand the colours in. Errors go to the Errors tab.
+function _recolor_arrows(scene::Ptr{Cvoid}, name::String, cmap::String)::Nothing
+	n = ccall(_fn(:gmtvtk_arrows_get_uv_h), Cint, (Ptr{Cvoid}, Cstring, Ptr{Cdouble}, Cint), scene, name, C_NULL, 0)
+	n > 0 || error("no arrow layer called '$name' in this window")
+	uv = Vector{Float64}(undef, 2n)
+	ccall(_fn(:gmtvtk_arrows_get_uv_h), Cint, (Ptr{Cvoid}, Cstring, Ptr{Cdouble}, Cint), scene, name, uv, n)
+	rgb = _gv_mag_rgb([hypot(uv[2k-1], uv[2k]) for k in 1:n], cmap)
+	rgb === nothing && error("colormap '$cmap' could not be built")
+	ok = ccall(_fn(:gmtvtk_arrows_set_rgb_h), Cint, (Ptr{Cvoid}, Cstring, Ptr{Cdouble}, Cint, Cdouble, Cdouble, Cdouble),
+	           scene, name, rgb, Cint(n), 0.0, 0.0, 0.0)
+	ok == 0 && error("could not recolour '$name'")
+	return nothing
+end
+
 # The grdvector command line that would draw this same field in a GMT script. It is written to the
 # window's console, not run: the module makes PostScript, and this dialog makes scene geometry.
 function _gv_command(d::Dict{String,String}, g1::AbstractString, g2::AbstractString,
@@ -269,51 +341,67 @@ function _on_grdvector(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		spacing = min(multx * abs(gdx) * cosmid, multy * abs(gdy))
 		fac, fixedlen = _gv_factor(d, maximum(mag), spacing)
 		heads, alpha, beta, norm = _gv_head(d)
-
-		# Build the geometry. Each arrow's displacement is its (u, v) times the common factor — or,
-		# with the fixed-length scale, its direction alone. The x half carries the extra 1/cos(lat)
-		# on a geographic grid (see `_gv_arrow!`).
-		classes = _on(d, "bymag") ? max(2, min(24, something(tryparse(Int, _get(d, "nclass", "7")), 7))) : 1
-		mlo, mhi = extrema(mag)
-		bag = [Matrix{Float64}[] for _ in 1:classes]
-		maxlen = 0.0
-		for k in eachindex(px)
-			len = fixedlen > 0 ? fixedlen : mag[k] * fac
-			ux = fixedlen > 0 ? pu[k] / mag[k] * len : pu[k] * fac
-			uy = fixedlen > 0 ? pv[k] / mag[k] * len : pv[k] * fac
-			geog && (ux /= max(cosd(py[k]), 0.01))
-			shrink = (norm > 0 && len < norm) ? len / norm : 1.0
-			len > maxlen && (maxlen = len)
-			cls = 1
-			if classes > 1 && mhi > mlo
-				cls = clamp(floor(Int, (mag[k] - mlo) / (mhi - mlo) * classes) + 1, 1, classes)
-			end
-			_gv_arrow!(bag[cls], px[k], py[k], ux, uy, heads, alpha, beta, shrink)
-		end
-
-		# Drape: without it the arrows lie flat at z = 0 (a map overlay, like the coastlines); with it
-		# each vertex is lifted onto the DISPLAYED surface so the field follows the relief.
-		Gd = _on(d, "drape") ? _find_object(scene, :grid, _get(d, "grid")) : nothing
-		lift(m::Matrix{Float64}) = Gd === nothing ? m :
-			hcat(m, [Float64(_sample_grid(Gd, m[r, 1], m[r, 2])) for r in axes(m, 1)])
-
 		name = _get(d, "name", "grdvector")
 		isempty(name) && (name = "grdvector")
-		if classes == 1
-			D = GMTdataset[GMT.mat2ds(lift(m)) for m in bag[1]]
-			_add_dataset_to_scene(scene, D, name; color = _get(d, "color", "black"),
-			                      forceMode = :lines, noConvertToPoints = true)
-		else
-			# One overlay per magnitude class (an overlay carries ONE colour), all under a single
-			# Scene Objects group so the whole field still folds under one row with one checkbox.
-			step = (mhi - mlo) / classes
-			for k in 1:classes
-				isempty(bag[k]) && continue
-				D = GMTdataset[GMT.mat2ds(lift(m)) for m in bag[k]]
-				lab = string(name, " ", round(mlo + (k - 1) * step, sigdigits = 4), " – ",
-				             round(mlo + k * step, sigdigits = 4))
-				_add_dataset_to_scene(scene, D, lab; groupName = name, color = _gv_class_color(k, classes),
+
+		# SOLID arrows (the default; the dialog's "Solid 3-D arrows" box): one layer through the ONE
+		# solid-field builder. Its length is the longest arrow's; a fixed-length scale hands unit
+		# vectors in and keeps the real magnitudes for colour, hover and table.
+		solid = _get(d, "solid", "1") == "1"
+		maxlen = 0.0
+		if solid
+			len = fixedlen > 0 ? fixedlen : maximum(mag) * fac
+			uu = fixedlen > 0 ? pu ./ mag : pu
+			vv = fixedlen > 0 ? pv ./ mag : pv
+			zz = _on(d, "drape") ? fill(NaN, length(px)) : zeros(length(px))
+			_gv_add_solid(scene, px, py, zz, uu, vv, name, len; mags = mag,
+			              cmap = _on(d, "bymag") ? :jet : nothing, color = _get(d, "color", "black"))
+			maxlen = len
+		end
+
+		# LINE arrows (the box unticked). Build the geometry. Each arrow's displacement is its (u, v)
+		# times the common factor — or, with the fixed-length scale, its direction alone. The x half
+		# carries the extra 1/cos(lat) on a geographic grid (see `_gv_arrow!`).
+		if !solid
+			classes = _on(d, "bymag") ? max(2, min(24, something(tryparse(Int, _get(d, "nclass", "7")), 7))) : 1
+			mlo, mhi = extrema(mag)
+			bag = [Matrix{Float64}[] for _ in 1:classes]
+			for k in eachindex(px)
+				len = fixedlen > 0 ? fixedlen : mag[k] * fac
+				ux = fixedlen > 0 ? pu[k] / mag[k] * len : pu[k] * fac
+				uy = fixedlen > 0 ? pv[k] / mag[k] * len : pv[k] * fac
+				geog && (ux /= max(cosd(py[k]), 0.01))
+				shrink = (norm > 0 && len < norm) ? len / norm : 1.0
+				len > maxlen && (maxlen = len)
+				cls = 1
+				if classes > 1 && mhi > mlo
+					cls = clamp(floor(Int, (mag[k] - mlo) / (mhi - mlo) * classes) + 1, 1, classes)
+				end
+				_gv_arrow!(bag[cls], px[k], py[k], ux, uy, heads, alpha, beta, shrink)
+			end
+
+			# Drape: without it the arrows lie flat at z = 0 (a map overlay, like the coastlines); with it
+			# each vertex is lifted onto the DISPLAYED surface so the field follows the relief.
+			Gd = _on(d, "drape") ? _find_object(scene, :grid, _get(d, "grid")) : nothing
+			lift(m::Matrix{Float64}) = Gd === nothing ? m :
+				hcat(m, [Float64(_sample_grid(Gd, m[r, 1], m[r, 2])) for r in axes(m, 1)])
+
+			if classes == 1
+				D = GMTdataset[GMT.mat2ds(lift(m)) for m in bag[1]]
+				_add_dataset_to_scene(scene, D, name; color = _get(d, "color", "black"),
 				                      forceMode = :lines, noConvertToPoints = true)
+			else
+				# One overlay per magnitude class (an overlay carries ONE colour), all under a single
+				# Scene Objects group so the whole field still folds under one row with one checkbox.
+				step = (mhi - mlo) / classes
+				for k in 1:classes
+					isempty(bag[k]) && continue
+					D = GMTdataset[GMT.mat2ds(lift(m)) for m in bag[k]]
+					lab = string(name, " ", round(mlo + (k - 1) * step, sigdigits = 4), " – ",
+					             round(mlo + k * step, sigdigits = 4))
+					_add_dataset_to_scene(scene, D, lab; groupName = name, color = _gv_class_color(k, classes),
+					                      forceMode = :lines, noConvertToPoints = true)
+				end
 			end
 		end
 

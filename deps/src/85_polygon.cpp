@@ -832,7 +832,10 @@ struct EditVerts {
 	}
 	void commit(Scene *s) {
 		if (pg) polyRebuildLine(s, *pg);
-		else if (ov && ov->baseLine) { ov->baseLine->GetPoints()->Modified(); ov->baseLine->Modified(); }
+		else if (ov && ov->baseLine) {
+			ov->baseLine->GetPoints()->Modified(); ov->baseLine->Modified();
+			if (ov->filled) overlayBuildFill(*ov);  // a moved corner can re-shape the area: re-split it
+		}
 	}
 };
 

@@ -332,14 +332,24 @@ end
 	try
 		IG._SCENE_OBJS[f.h] = vcat(get(IG._SCENE_OBJS, f.h, Tuple{Symbol,String,Any}[]),
 		                           Tuple{Symbol,String,Any}[(:grid, "u", U), (:grid, "v", V)])
-		n0 = IG._scene_state(f.h)["n_overlays"]
+		# SOLID arrows (the default): ONE arrow layer for the whole field, one vector per arrow node,
+		# coloured by magnitude when asked.
+		arrows() = filter(sl -> !isempty(sl.uv), IG._parse_symbols_blob(IG._serialize_symbols_raw(f.h)))
 		@test call(["usescene=0", "grid1=u", "grid2=v", "incmode=x", "incx=5",
+		            "scalemode=auto", "bymag=1", "name=flow solid"]) == 1
+		IG._pump_once()
+		al = arrows()
+		@test length(al) == 1 && al[1].name == "flow solid" && al[1].sym == "arrow"
+		@test size(al[1].uv, 1) > 0 && size(al[1].rgb, 1) == size(al[1].uv, 1) && al[1].worldSize > 0
+		# LINE arrows (the dialog's "Solid 3-D arrows" unticked) keep the GMT-style overlay.
+		n0 = IG._scene_state(f.h)["n_overlays"]
+		@test call(["usescene=0", "grid1=u", "grid2=v", "incmode=x", "incx=5", "solid=0",
 		            "scalemode=auto", "heads=e", "color=black", "name=flow"]) == 1
 		IG._pump_once()
 		@test IG._scene_state(f.h)["n_overlays"] == n0 + 1        # ONE overlay for the whole field
 		# By magnitude: one overlay per class, all under the one group name.
 		n1 = IG._scene_state(f.h)["n_overlays"]
-		@test call(["usescene=0", "grid1=u", "grid2=v", "incmode=x", "incx=5", "scalemode=auto",
+		@test call(["usescene=0", "grid1=u", "grid2=v", "incmode=x", "incx=5", "scalemode=auto", "solid=0",
 		            "heads=be", "bymag=1", "nclass=4", "name=flow by |v|", "table=1"]) == 1
 		IG._pump_once()
 		@test IG._scene_state(f.h)["n_overlays"] > n1
@@ -350,7 +360,7 @@ end
 		IG._SCENE_OBJS[f.h] = vcat(IG._SCENE_OBJS[f.h],
 		                           Tuple{Symbol,String,Any}[(:grid, "r", R), (:grid, "th", T)])
 		n2 = IG._scene_state(f.h)["n_overlays"]
-		@test call(["usescene=0", "grid1=r", "grid2=th", "polar=1", "incmode=x", "incx=5",
+		@test call(["usescene=0", "grid1=r", "grid2=th", "polar=1", "incmode=x", "incx=5", "solid=0",
 		            "scalemode=auto", "heads=e", "name=flow polar"]) == 1
 		IG._pump_once()
 		@test IG._scene_state(f.h)["n_overlays"] == n2 + 1

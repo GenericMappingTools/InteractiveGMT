@@ -619,6 +619,17 @@ GMTVTK_API int gmtvtk_add_overlay_ex4_h(void *handle, const double *xyz, int npt
 	return 1;
 }
 
+// Fill (on=1) or unfill the line overlay(s) called `name` — the host's door to the SAME
+// overlaySetFilled the "Fill polygons" menu item runs. Returns how many overlays matched.
+GMTVTK_API int gmtvtk_overlay_set_filled_h(void *handle, const char *name, int on) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !name) return 0;
+	std::vector<vtkActor*> hits;
+	for (auto &ov : s->overlays) if (ov.actor && ov.mode == 1 && ov.name == name) hits.push_back(ov.actor.Get());
+	for (vtkActor *a : hits) overlaySetFilled(s, a, on != 0);
+	return (int)hits.size();
+}
+
 // Read a line OVERLAY's current pen by its Scene Objects name, so Save Session can capture edits the
 // user made AFTER the layer was added (coastlines/borders/rivers are :menu recipes that otherwise
 // replay with the default pen). out = { r, g, b, width_px, style(0 solid/1 dashed/2 dotted), opacity }.
@@ -806,6 +817,74 @@ GMTVTK_API int gmtvtk_add_symbols_ex_h(void *handle, const double *xyz, int npts
 	return addSymbols(s, xyz, npts, std::string(sym ? sym : "c"), sizePx, filled,
 	                  fr, fg, fb, er, eg, eb, edgeWidth, std::string(name ? name : ""), info,
 	                  /*oneShot=*/false, sizeScale, ptRGB);
+}
+
+// Add a VECTOR FIELD as solid 3-D arrows (the Fault plane demo's vtkArrowSource), one symbol layer:
+// `xyz` = npts (x,y,z) TRUE tail positions, a NaN z = "stand on the relief" (arrowGroundZ); `uv` =
+// npts (east, north) components; `length` = the WORLD length of the LONGEST arrow (world y = the data
+// y unit, world x = x*xfac), every other arrow scaled by its magnitude relative to it; `ptRGB` = npts
+// RGB 0..1 (colour by magnitude) or null for the flat colour (r,g,b). Zero-length vectors must not be
+// passed (they have no direction). `info`: per-arrow hover text, as gmtvtk_add_symbols_h. Returns 1.
+GMTVTK_API int gmtvtk_add_arrows_h(void *handle, const double *xyz, const double *uv, int npts,
+                                   double length, const double *ptRGB, double r, double g, double b,
+                                   const char *name, const char *info) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !xyz || !uv || npts <= 0 || !(length > 0.0)) return 0;
+	double mmax = 0.0;
+	for (int i = 0; i < npts; ++i) mmax = std::max(mmax, std::sqrt(uv[2*i]*uv[2*i] + uv[2*i+1]*uv[2*i+1]));
+	if (!(mmax > 0.0)) return 0;
+	std::vector<double> scale((size_t)npts), xyz2(xyz, xyz + (size_t)npts * 3);
+	std::vector<char> grounded((size_t)npts, 0);
+	for (int i = 0; i < npts; ++i) {
+		const double m = std::sqrt(uv[2*i]*uv[2*i] + uv[2*i+1]*uv[2*i+1]);
+		scale[(size_t)i] = std::max(m / mmax, 1e-6);   // addSymbols reads <= 0 as "unscaled"
+		if (!std::isfinite(xyz[3*i+2])) {
+			xyz2[(size_t)i*3+2] = arrowGroundZ(s, xyz[3*i], xyz[3*i+1], uv[2*i], uv[2*i+1], length * scale[(size_t)i]);
+			grounded[(size_t)i] = 1;
+		}
+	}
+	if (!addSymbols(s, xyz2.data(), npts, "arrow", 8.0, 1, r, g, b, 0.0, 0.0, 0.0, /*edgeWidth=*/0.0,
+	                std::string(name ? name : ""), info, false, scale.data(), ptRGB, uv))
+		return 0;
+	SymbolLayer &sl = s->symbols.back();
+	sl.worldSize = length;                             // a vector is measured in the map's units, not px
+	sl.arrowGrounded = std::move(grounded);
+	symbolRescaleCB(nullptr, 0, s, nullptr);
+	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+	return 1;
+}
+
+// Recolour the arrow layer `name`: `ptRGB` = one RGB (0..1) per arrow (colour by magnitude), or null
+// to drop the per-arrow colours and paint the whole layer (r,g,b). Rebuilt through symbolSetPipeline,
+// THE constructor, so orientation and sizes come along untouched.
+GMTVTK_API int gmtvtk_arrows_set_rgb_h(void *handle, const char *name, const double *ptRGB, int npts,
+                                       double r, double g, double b) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !name) return 0;
+	for (size_t li = s->symbols.size(); li-- > 0; ) {
+		SymbolLayer &sl = s->symbols[li];
+		if (sl.name != name || sl.uvOrig.empty()) continue;
+		if (!arrowLayerSetRGB(s, sl, ptRGB, npts, r, g, b)) return 0;
+		if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+		return 1;
+	}
+	return 0;
+}
+
+// Read back the arrow layer `name`'s vectors: fills `uv` (2 per arrow, east/north, as plotted) up to
+// `cap` arrows and returns the arrow count (call with cap 0 to size the buffer). What the host needs
+// to recolour a layer by magnitude through a colormap it builds.
+GMTVTK_API int gmtvtk_arrows_get_uv_h(void *handle, const char *name, double *uv, int cap) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !name) return 0;
+	for (size_t li = s->symbols.size(); li-- > 0; ) {
+		const SymbolLayer &sl = s->symbols[li];
+		if (sl.name != name || sl.uvOrig.empty()) continue;
+		const int n = (int)(sl.uvOrig.size() / 2);
+		if (uv && cap > 0) std::copy(sl.uvOrig.begin(), sl.uvOrig.begin() + 2 * std::min(n, cap), uv);
+		return n;
+	}
+	return 0;
 }
 
 // Add a vertical image "curtain" to a window by its handle (from gmtvtk_view_grid). The
@@ -2414,6 +2493,19 @@ GMTVTK_API void gmtvtk_set_binarize_callback(JuliaBinarizeFn fn) {
 	g_juliaBinarize = fn;
 }
 
+// Tools > Vector Wizard (see JuliaVectorWizardFn, 30_app.cpp): register the Julia side, and the two
+// ways it talks back into the open dialog `dlg` (a VectorWizardDialog*) — the preview picture (w*h
+// RGB triplets, row-major, top row first) and a text line (0 = the source, 1 = the last result).
+GMTVTK_API void gmtvtk_set_vectorwizard_callback(JuliaVectorWizardFn fn) {
+	g_juliaVectorWizard = fn;
+}
+GMTVTK_API void gmtvtk_vectorwizard_set_preview(void *dlg, int w, int h, const unsigned char *rgb) {
+	if (dlg) reinterpret_cast<VectorWizardDialog *>(dlg)->setPreview(w, h, rgb);
+}
+GMTVTK_API void gmtvtk_vectorwizard_set_text(void *dlg, int which, const char *txt) {
+	if (dlg) reinterpret_cast<VectorWizardDialog *>(dlg)->setText(which, txt);
+}
+
 // Push the grey-level histogram into the open Binarize dialog `dlg` (a BinarizeDialog*). `counts` is
 // `n` (256) bin counts, as GMT.jl's histogray gives them. Called SYNCHRONOUSLY from Julia's op
 // "init", so `dlg` is the live dialog.
@@ -3652,7 +3744,8 @@ GMTVTK_API int gmtvtk_layer_display(void *handle, const char *name, char *buf, i
 
 // Serialize the window's line/point OVERLAYS (dropped tables, coastlines, imported vectors) as one
 // line each:
-//   mode;r;g;b;lw;ps;lstyle;stack;visible;group;name;x,y,z|x,y,z>x,y,z|x,y,z\n
+//   mode;r;g;b;lw;ps;lstyle;stack;visible;filled;group;name;x,y,z|x,y,z>x,y,z|x,y,z\n
+// (`filled` = Overlay::filled; a blob written before it existed has 12 fields, see _parse_overlays_blob)
 // ';' separates fields, '>' separates SEGMENTS, '|' separates vertices, ',' separates coordinates —
 // the same nesting GMT's own multisegment tables use. Geometry comes off `baseLine` in RAW DATA
 // coordinates (the VE/x scaling lives on the actor, not in the points), split by the overlay's own
@@ -3682,8 +3775,8 @@ GMTVTK_API int gmtvtk_serialize_overlays(void *handle, char *buf, int cap) {
 				ps = ov.actor->GetProperty()->GetPointSize();
 				vis = ov.actor->GetVisibility() ? 1 : 0;
 			}
-			snprintf(t, sizeof(t), "%d;%.6g;%.6g;%.6g;%.6g;%.6g;%d;%d;%d;",
-			         ov.mode, c[0], c[1], c[2], lw, ps, ov.lineStyle, ov.stack, vis);
+			snprintf(t, sizeof(t), "%d;%.6g;%.6g;%.6g;%.6g;%.6g;%d;%d;%d;%d;",
+			         ov.mode, c[0], c[1], c[2], lw, ps, ov.lineStyle, ov.stack, vis, ov.filled ? 1 : 0);
 			o += t;
 			// Only the FIELD separator and newlines are removed from a name. '|' and '>' are delimiters
 			// INSIDE the vertex field, which comes after both names, so a layer called "Quakes M>5" keeps
@@ -3719,7 +3812,9 @@ GMTVTK_API int gmtvtk_serialize_overlays(void *handle, char *buf, int cap) {
 
 // Serialize the window's SYMBOL layers (volcanoes, seismicity, cities, tide stations, the Symbols
 // draw tool) as one line each:
-//   sym;sizePx;filled;r;g;b;er;eg;eb;ew;evis;stack;visible;oneShot;hasScale;hasRGB;name;<points>\n
+//   sym;sizePx;filled;r;g;b;er;eg;eb;ew;evis;stack;visible;oneShot;hasScale;hasRGB;hasVec;worldSize;name;<points>\n
+// (20 fields; blobs written before arrow layers existed have 18 — no hasVec/worldSize — and the
+// reader, _parse_symbols_blob, tells the two apart by that count.)
 // `sym` is the GMT symbol code the layer was built with, so a consumer can ask GMT for the same
 // glyph instead of inventing one. Points come from the glyph pipeline's input polydata via
 // symInputPD — the accessor that already covers BOTH pipelines (flat vtkGlyph3D and solid3D
@@ -3727,7 +3822,8 @@ GMTVTK_API int gmtvtk_serialize_overlays(void *handle, char *buf, int cap) {
 // Same field/vertex delimiters and two-pass buffer as the serializers above.
 //
 // A point is "x,y,z", and carries its PER-POINT size scale and/or colour when the layer has them —
-// "x,y,z,scale", "x,y,z,r,g,b" or "x,y,z,scale,r,g,b", said once per layer by the `hasScale`/`hasRGB`
+// "x,y,z,scale", "x,y,z,r,g,b" or "x,y,z,scale,r,g,b" (then ",u,v" on an arrow layer), said once per
+// layer by the `hasScale`/`hasRGB`/`hasVec`
 // flags so the reader knows the token width without guessing. Those two arrays ("symScale" active
 // scalars, "symRGB" named array — addSymbols, 50_scene.cpp) are what makes a seismicity layer scale
 // with magnitude and colour with depth; a snapshot without them restores the catalog as uniform dots,
@@ -3759,10 +3855,13 @@ GMTVTK_API int gmtvtk_serialize_symbols(void *handle, char *buf, int cap) {
 			vtkUnsignedCharArray *rgbArr = pd->GetPointData()
 				? vtkUnsignedCharArray::SafeDownCast(pd->GetPointData()->GetArray("symRGB")) : nullptr;
 			if (rgbArr && rgbArr->GetNumberOfComponents() != 3) rgbArr = nullptr;
-			snprintf(t, sizeof(t), "%s;%.6g;%d;%.6g;%.6g;%.6g;%.6g;%.6g;%.6g;%.6g;%d;%d;%d;%d;%d;%d;",
+			// An ARROW layer also carries each point's (east, north) vector and its world length —
+			// without them a restored field would come back as arrows pointing nowhere, at no size.
+			const bool hasVec = (sl.uvOrig.size() == (size_t)pd->GetPoints()->GetNumberOfPoints() * 2);
+			snprintf(t, sizeof(t), "%s;%.6g;%d;%.6g;%.6g;%.6g;%.6g;%.6g;%.6g;%.6g;%d;%d;%d;%d;%d;%d;%d;%.10g;",
 			         sl.sym.c_str(), sl.sizePx, sl.filled ? 1 : 0, c[0], c[1], c[2],
 			         e[0], e[1], e[2], ew, evis, sl.stack, vis, sl.oneShot ? 1 : 0,
-			         scArr ? 1 : 0, rgbArr ? 1 : 0);
+			         scArr ? 1 : 0, rgbArr ? 1 : 0, hasVec ? 1 : 0, sl.worldSize);
 			o += t;
 			std::string nm = sl.name;      // ';' only — see the overlay serializer's `clean` above
 			for (char &ch : nm) if (ch == ';' || ch == '\n' || ch == '\r') ch = '_';
@@ -3787,6 +3886,10 @@ GMTVTK_API int gmtvtk_serialize_symbols(void *handle, char *buf, int cap) {
 					unsigned char rgb[3] = { 0, 0, 0 };
 					rgbArr->GetTypedTuple(i, rgb);
 					snprintf(t, sizeof(t), ",%d,%d,%d", (int)rgb[0], (int)rgb[1], (int)rgb[2]);
+					o += t;
+				}
+				if (hasVec) {
+					snprintf(t, sizeof(t), ",%.10g,%.10g", sl.uvOrig[(size_t)i*2], sl.uvOrig[(size_t)i*2+1]);
 					o += t;
 				}
 				if (i + 1 < np) o += '|';
@@ -11212,10 +11315,4 @@ GMTVTK_API void gmtvtk_xyplot_set_new_callback(JuliaXYNewFn fn) {
 // C++ AND registers the Julia mirror via the new-window callback). Returns the XYPlot *handle.
 GMTVTK_API void *gmtvtk_open_xyplot_from_host(void) {
 	return xyOpenBlankFromHost();
-}
-
-// Standalone executable entry: show the demo surface and block in the loop.
-int main(int, char**) {
-	gmtvtk_view_demo();
-	return g_app ? g_app->exec() : 0;
 }

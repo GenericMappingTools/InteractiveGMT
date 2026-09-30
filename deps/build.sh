@@ -97,7 +97,7 @@ $cmake_exe -S $here -B $cmake_dir -G Ninja -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_CXX_COMPILER=$cxx -DCMAKE_PREFIX_PATH=$conda_prefix \
     -DQt6_DIR=$qt6_dir -DVTK_DIR=$vtk_dir \
     $cxx_link -DGMTVTK_LINUX_BUNDLE=ON $@
-# By name, not `all`: `all` would also drag in gmtvtk_demo, which nothing ships. igmt is the desktop
+# By name, not `all`: `all` would also build the dev-only test_mbgrid/test_satellite. igmt is the desktop
 # launcher (deps/src/launcher.c) — the install step below stages it beside the .so, so it must exist
 # by then. gmtvtk_test is the test-only twin (same source, GMTVTK_TEST_API defined): it is NOT part
 # of the runtime bundle, but it rides in the rolling .so archive, because without it every test that

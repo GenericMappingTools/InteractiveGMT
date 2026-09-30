@@ -1300,6 +1300,15 @@ static void popupLineObjectMenu(Scene *s, const LineRef &lr, const QString &name
 			cl->setToolTip("Drape the element on the surface below it (unchecked = its own z)");
 			QObject::connect(cl, &QAction::triggered, [s, lr](bool on) { lineSetClamped(s, lr, on); });
 		}
+		// A line overlay's rings can be FILLED (a polygon file, a traced picture's colour layer): the
+		// area takes the line colour, a ring inside a ring is a hole. Checkable, a state flipped both ways.
+		if (ovp && ovp->mode == 1) {
+			QAction *fa = m.addAction("Fill polygons");
+			fa->setCheckable(true);
+			fa->setChecked(ovp->filled);
+			fa->setToolTip("Paint the area the rings enclose in the line colour (a ring inside a ring is a hole)");
+			QObject::connect(fa, &QAction::triggered, [s, a](bool on) { overlaySetFilled(s, a, on); });
+		}
 		m.addAction(isNestRect ? "Save rectangle…"
 				  : isFault    ? "Save trace fault…"
 				  : (lr.kind == LK_Polygon && lineClosedRing(s, lr) ? "Save polygon…" : "Save line…"),

@@ -614,6 +614,19 @@ static JuliaClipGridFn g_juliaClipGrid = nullptr;
 typedef int (*JuliaBinarizeFn)(void *scene, void *dlg, const char *params);
 static JuliaBinarizeFn g_juliaBinarize = nullptr;
 
+// Tools > Vector Wizard (potrace, src/potrace + src/vectorwizard.jl). The dialog (VectorWizardDialog,
+// 70_window.cpp, deps/ui/vector_wizard.ui) hands Julia (_on_vectorwizard) three '\n'-separated lines,
+// "op \n arg \n key=value,key=value…":
+//   init    <image name|"">   pick the source (the image on display, else the picture a grid is
+//                             drawn as), push back its description + the first preview
+//   preview                   push back the pixels each layer will be traced from
+//   trace                     trace, add the layers to this window as filled overlays
+//   save    <path>            trace, write SVG / EPS / GMT by the path's extension
+// Julia pushes the preview (gmtvtk_vectorwizard_set_preview) and the status lines
+// (gmtvtk_vectorwizard_set_text) back into `dlg`. Returns 1 on success, 0 on failure.
+typedef int (*JuliaVectorWizardFn)(void *scene, void *dlg, const char *params);
+static JuliaVectorWizardFn g_juliaVectorWizard = nullptr;
+
 // "Image -> Show Histogram" (port of Mirone's src_figs/image_histo.m). The dialog (ImageHistoDialog,
 // 70_window.cpp, deps/ui/image_histo.ui) extracts the pixels the window is DISPLAYING — the only
 // part that must happen in C++, since a grid's rendered colours live in VTK — and hands them here.

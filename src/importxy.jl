@@ -41,25 +41,18 @@ function _import_xy_arrows(scene::Ptr{Cvoid}, D::Vector{GMTdataset}, name::Strin
 	x = @view m[good, 1]; y = @view m[good, 2]
 	u = @view m[good, 3]; v = @view m[good, 4]
 	# Mirone draw_funs.m:loc_quiver autoscaling, exactly. Estimate an effective square grid,
-	# then make the largest vector 0.9 of that grid spacing. U and V receive the SAME scale.
+	# then make the largest vector 0.9 of that grid's diagonal spacing. U and V receive the SAME scale.
 	nside = sqrt(length(x))
 	delx = (maximum(x) - minimum(x)) / nside
 	dely = (maximum(y) - minimum(y)) / nside
 	del2 = delx * delx + dely * dely
-	maxlen = del2 > 0 ? sqrt(maximum((u .* u .+ v .* v) ./ del2)) : 0.0
-	scale = maxlen > 0 ? 0.9 / maxlen : 0.9
-	alpha = 0.33
-	beta = 0.33
-	# THE arrow shape is `_gv_arrow!` (grdvector.jl) — the same one the grdvector dialog draws, with
-	# Mirone's head arms in it. Two callers, one function: this import used to spell the shaft and the
-	# two arms out again here, which is exactly the duplicated-geometry SACRED_LAW.md forbids. The
-	# head at the tip only ("e"), no +n taper (shrink = 1) is what loc_quiver does.
-	segs = Matrix{Float64}[]
-	for k in eachindex(x)
-		_gv_arrow!(segs, x[k], y[k], u[k] * scale, v[k] * scale, "e", alpha, beta, 1.0)
-	end
-	Dsegs = GMTdataset[GMT.mat2ds(seg) for seg in segs]
-	_add_dataset_to_scene(scene, Dsegs, name; forceMode=:lines, noConvertToPoints=true)
+	moving = [u[k] != 0 || v[k] != 0 for k in eachindex(x)]          # a zero vector has no direction
+	any(moving) || error("Import Arrow field: every vector has zero length")
+	len = del2 > 0 ? 0.9 * sqrt(del2) : 0.9
+	# THE solid vector field (`_gv_add_solid`, grdvector.jl) — the same builder the grdvector dialog
+	# draws with: one arrow layer, standing on the relief (NaN z), coloured by magnitude.
+	_gv_add_solid(scene, Float64.(x[moving]), Float64.(y[moving]), fill(NaN, count(moving)),
+	              Float64.(u[moving]), Float64.(v[moving]), name, len)
 	return nothing
 end
 

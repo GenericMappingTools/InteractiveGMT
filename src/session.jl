@@ -531,22 +531,27 @@ end
 
 "One parsed line/point overlay out of `gmtvtk_serialize_overlays`' blob."
 const OverlayRow = @NamedTuple{mode::Int, r::Float64, g::Float64, b::Float64, lw::Float64,
-                               ps::Float64, lstyle::Int, stack::Int, visible::Bool,
+                               ps::Float64, lstyle::Int, stack::Int, visible::Bool, filled::Bool,
                                group::String, name::String, segs::Vector{Matrix{Float64}}}
 
 function _parse_overlays_blob(blob::String)::Vector{OverlayRow}
 	out = OverlayRow[]
 	isempty(blob) && return out
 	for line in split(blob, '\n'; keepempty=false)
-		f = split(line, ';'; limit=12)
-		length(f) < 12 && continue
-		nums = map(i -> tryparse(Float64, f[i]), 1:9)
+		# 13 fields since filled overlays exist (… visible;filled;group;name;verts); a blob saved before
+		# has 12. Names and vertices never carry ';' (the writer replaces it), so the count tells them apart.
+		nf = count(==(';'), line) + 1
+		nf in (12, 13) || continue
+		f = split(line, ';'; limit=nf)
+		nnum = nf - 3
+		nums = map(i -> tryparse(Float64, f[i]), 1:nnum)
 		any(isnothing, nums) && continue
-		segs = filter(!isempty, [_script_verts(String(sg)) for sg in split(f[12], '>'; keepempty=false)])
+		segs = filter(!isempty, [_script_verts(String(sg)) for sg in split(f[nf], '>'; keepempty=false)])
 		isempty(segs) && continue
 		push!(out, (mode=Int(nums[1]), r=nums[2], g=nums[3], b=nums[4], lw=nums[5], ps=nums[6],
 		            lstyle=Int(nums[7]), stack=Int(nums[8]), visible=nums[9] != 0,
-		            group=String(f[10]), name=String(f[11]), segs=segs))
+		            filled=nf == 13 && nums[10] != 0,
+		            group=String(f[nf - 2]), name=String(f[nf - 1]), segs=segs))
 	end
 	return out
 end
@@ -555,33 +560,43 @@ end
 One parsed symbol layer out of `gmtvtk_serialize_symbols`' blob. `xyz` holds the points AS STORED —
 x is still multiplied by `xfac` (`addSymbols` bakes it in); `_symbol_layer` un-bakes it for GMT, and
 the session rebuild hands them back to a C side that bakes it again, so neither may do it here.
-`scale` / `rgb` are empty when the layer has no per-point size / colour.
+`scale` / `rgb` are empty when the layer has no per-point size / colour. `uv` (east, north per point)
+is empty unless the layer is an ARROW field, whose world length is then `worldSize`.
 """
 const SymbolRow = @NamedTuple{sym::String, sizePx::Float64, filled::Bool,
                               r::Float64, g::Float64, b::Float64,
                               er::Float64, eg::Float64, eb::Float64, ew::Float64, evis::Bool,
                               stack::Int, visible::Bool, oneShot::Bool, name::String,
-                              xyz::Matrix{Float64}, scale::Vector{Float64}, rgb::Matrix{Float64}}
+                              xyz::Matrix{Float64}, scale::Vector{Float64}, rgb::Matrix{Float64},
+                              uv::Matrix{Float64}, worldSize::Float64}
 
 function _parse_symbols_blob(blob::String)::Vector{SymbolRow}
 	out = SymbolRow[]
 	isempty(blob) && return out
 	for line in split(blob, '\n'; keepempty=false)
-		f = split(line, ';'; limit=18)
-		length(f) < 18 && continue
-		nums = map(i -> tryparse(Float64, f[i]), 2:16)
+		# 20 fields since arrow layers exist (… hasRGB;hasVec;worldSize;name;points); a blob saved
+		# before that has 18 (no hasVec/worldSize). Names and points never carry ';' (the writer
+		# replaces it), so the count alone tells the two layouts apart.
+		nf = count(==(';'), line) + 1
+		nf in (18, 20) || continue
+		f = split(line, ';'; limit=nf)
+		nums = map(i -> tryparse(Float64, f[i]), 2:(nf - 2))
 		any(isnothing, nums) && continue
 		hasScale = nums[14] != 0; hasRGB = nums[15] != 0
-		pts = split(f[18], '|'; keepempty=false)
+		hasVec = nf == 20 && nums[16] != 0
+		worldSize = nf == 20 ? nums[17] : 0.0
+		pts = split(f[nf], '|'; keepempty=false)
 		isempty(pts) && continue
 		xyz = Matrix{Float64}(undef, length(pts), 3)
 		scale = hasScale ? Vector{Float64}(undef, length(pts)) : Float64[]
 		rgb = hasRGB ? Matrix{Float64}(undef, length(pts), 3) : Matrix{Float64}(undef, 0, 3)
+		uv = hasVec ? Matrix{Float64}(undef, length(pts), 2) : Matrix{Float64}(undef, 0, 2)
 		bad = false
 		for (i, p) in enumerate(pts)
 			c = split(p, ',')
-			# 3 coords, then the optional per-point size scale, then the optional r,g,b (0-255).
-			length(c) < 3 + (hasScale ? 1 : 0) + (hasRGB ? 3 : 0) && (bad = true; break)
+			# 3 coords, then the optional per-point size scale, the optional r,g,b (0-255), and on an
+			# arrow layer its u,v.
+			length(c) < 3 + (hasScale ? 1 : 0) + (hasRGB ? 3 : 0) + (hasVec ? 2 : 0) && (bad = true; break)
 			for k in 1:3
 				v = tryparse(Float64, c[k]); v === nothing && (bad = true; break)
 				xyz[i, k] = v
@@ -599,12 +614,20 @@ function _parse_symbols_blob(blob::String)::Vector{SymbolRow}
 				end
 				bad && break
 			end
+			if hasVec
+				for k in 1:2
+					v = tryparse(Float64, c[j]); v === nothing && (bad = true; break)
+					uv[i, k] = v; j += 1
+				end
+				bad && break
+			end
 		end
 		bad && continue
 		push!(out, (sym=String(f[1]), sizePx=nums[1], filled=nums[2] != 0,
 		            r=nums[3], g=nums[4], b=nums[5], er=nums[6], eg=nums[7], eb=nums[8],
 		            ew=nums[9], evis=nums[10] != 0, stack=Int(nums[11]), visible=nums[12] != 0,
-		            oneShot=nums[13] != 0, name=String(f[17]), xyz=xyz, scale=scale, rgb=rgb))
+		            oneShot=nums[13] != 0, name=String(f[nf - 1]), xyz=xyz, scale=scale, rgb=rgb,
+		            uv=uv, worldSize=worldSize))
 	end
 	return out
 end
@@ -679,6 +702,8 @@ function _session_rebuild_overlays!(fig, blob::String, skip::Set{String})
 			ov.lstyle != 0 && ccall(_fn(:gmtvtk_set_overlay_style_h), Cint,
 			                        (Ptr{Cvoid}, Cstring, Cdouble, Cdouble, Cdouble, Cdouble, Cint, Cdouble),
 			                        h, ov.name, ov.r, ov.g, ov.b, ov.lw, Cint(ov.lstyle), 1.0)
+			# ...nor is the fill: the same setter the "Fill polygons" menu item runs
+			ov.filled && ccall(_fn(:gmtvtk_overlay_set_filled_h), Cint, (Ptr{Cvoid}, Cstring, Cint), h, ov.name, Cint(1))
 			ov.visible || _set_vector_visible(h, ov.name, false)
 		catch e
 			@warn "session: skipped a malformed overlay line" name=ov.name exception=(e,)
@@ -712,6 +737,17 @@ function _session_rebuild_symbols!(fig, blob::String, skip::Set{String})
 			if !isempty(sl.rgb)
 				rgbv = Vector{Float64}(undef, 3n)
 				for i in 1:n, k in 1:3; rgbv[3(i-1)+k] = sl.rgb[i, k]; end
+			end
+			if !isempty(sl.uv)
+				# An ARROW layer goes back through THE solid-field builder (grdvector.jl), with its saved
+				# length and flat colour, then its saved per-arrow colours on top.
+				_gv_add_solid(h, xyz[1:3:end], xyz[2:3:end], xyz[3:3:end], sl.uv[:, 1], sl.uv[:, 2],
+				              sl.name, sl.worldSize; cmap=nothing, color=(sl.r, sl.g, sl.b))
+				isempty(rgbv) || GC.@preserve rgbv ccall(_fn(:gmtvtk_arrows_set_rgb_h), Cint,
+					(Ptr{Cvoid}, Cstring, Ptr{Cdouble}, Cint, Cdouble, Cdouble, Cdouble),
+					h, sl.name, rgbv, Cint(n), sl.r, sl.g, sl.b)
+				sl.visible || _set_vector_visible(h, sl.name, false)
+				continue
 			end
 			GC.@preserve xyz sl rgbv ccall(_fn(:gmtvtk_add_symbols_ex_h), Cint,
 				(Ptr{Cvoid}, Ptr{Cdouble}, Cint, Cstring, Cdouble, Cint,

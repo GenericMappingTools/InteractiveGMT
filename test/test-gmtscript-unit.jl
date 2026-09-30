@@ -70,6 +70,10 @@ end
 	# An unchecked row is parsed, not dropped: the consumer decides (the script skips it, the session
 	# restores it hidden).
 	@test !M._parse_overlays_blob("1;1;0;0;9;6;0;1;0;;n;1,2,3|4,5,6\n")[1].visible
+	# 13 fields since filled overlays: …visible;filled;group;name;verts. The old 12-field line reads unfilled.
+	fo = M._parse_overlays_blob("1;1;0;0;1;6;0;1;1;1;VW;tone 2;0,0,0|4,0,0|4,4,0|0,4,0|0,0,0\n")
+	@test length(fo) == 1 && fo[1].filled && fo[1].group == "VW" && fo[1].name == "tone 2"
+	@test !ov[1].filled
 
 	# Symbols: the per-point size scale and colour are what make a seismicity layer scale with magnitude
 	# and colour with depth. Token width is declared by the hasScale/hasRGB flags.
@@ -84,6 +88,13 @@ end
 	@test isempty(plain[1].scale) && isempty(plain[1].rgb) && plain[1].oneShot
 	# A token that lies about its width is dropped, not read as garbage.
 	@test isempty(M._parse_symbols_blob("c;8;1;1;0;0;0;0;0;1;1;0;1;0;1;1;bad;1,2,3\n"))
+	# An ARROW layer (20 fields: …hasRGB;hasVec;worldSize;name;points) carries u,v last and its length.
+	ar = M._parse_symbols_blob(
+		"arrow;8;1;0;0;0;0;0;0;0;0;3;1;0;1;1;1;0.25;gps;1,2,3,1,255,0,0,0.5,2|4,5,6,0.5,0,0,255,-1,0\n")
+	@test length(ar) == 1 && ar[1].name == "gps" && ar[1].worldSize == 0.25
+	@test ar[1].uv == [0.5 2.0; -1.0 0.0] && ar[1].scale == [1.0, 0.5] && ar[1].rgb[2, :] == [0.0, 0.0, 1.0]
+	# …and a pre-arrow 18-field layer still reads, with no vectors.
+	@test isempty(plain[1].uv) && plain[1].worldSize == 0.0
 
 	# Rulers travel as their clicked vertices only — the legs are re-measured on rebuild.
 	rl = M._parse_rulers_blob("7;-2,2,0|0,2,0|2,0,0\n")
@@ -204,4 +215,16 @@ end
 	@test M._cmap_tag(nothing) == ""            # the viewer's built-in ramp has no name
 	# A CPT OBJECT has no name GMT can look up again -> "" so the caller serializes the palette.
 	@test M._cmap_tag(M.GMT.makecpt(range=(0, 1, 0.1))) == ""
+end
+
+@testitem "gmtscript: a filled overlay's holes become -Ph segments after their area" tags=[:unit, :fast, :gmtscript] begin
+	M = InteractiveGMT
+	sq(a, b) = [a a; b a; b b; a b; a a]
+	# outer square, a hole in it, an island in the hole, and a separate square elsewhere
+	mk(M) = InteractiveGMT.GMT.mat2ds(M)
+	ds = [mk(sq(0.0, 10.0)), mk(sq(20.0, 25.0)), mk(sq(2.0, 8.0)), mk(sq(4.0, 6.0))]
+	out = M._script_fill_rings(ds)
+	@test length(out) == 4
+	@test [o.header for o in out] == ["", " -Ph", "", ""]
+	@test out[1].data[1, 1] == 0.0 && out[2].data[1, 1] == 2.0     # the hole follows ITS area
 end

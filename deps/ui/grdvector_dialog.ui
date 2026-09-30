@@ -232,6 +232,13 @@
         <property name="text"><string>Send the field to the Data Viewer</string></property>
        </widget>
       </item>
+      <item row="4" column="0" colspan="4">
+       <widget class="QCheckBox" name="chk_solid">
+        <property name="toolTip"><string>&lt;html&gt;Draw each vector as a solid 3-D arrow (shaft + cone head), scaled&lt;br&gt;by its magnitude and, with Colour by magnitude, coloured through a&lt;br&gt;continuous colormap. Unticked: GMT-style line arrows with the Head&lt;br&gt;options above.&lt;/html&gt;</string></property>
+        <property name="text"><string>Solid 3-D arrows</string></property>
+        <property name="checked"><bool>true</bool></property>
+       </widget>
+      </item>
      </layout>
     </widget>
    </item>

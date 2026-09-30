@@ -1,6 +1,6 @@
 @echo OFF
 setlocal EnableDelayedExpansion
-REM Configure + build the Qt+VTK viewer (gmtvtk.dll, gmtvtk_test.dll, gmtvtk_demo.exe). Run from
+REM Configure + build the Qt+VTK viewer (gmtvtk.dll, gmtvtk_test.dll). Run from
 REM anywhere -- every path below is derived from %~dp0 or discovered, never assumed.
 REM
 REM NOTHING HERE IS PINNED TO ONE MACHINE. The previous version hard-coded "Visual Studio\18\

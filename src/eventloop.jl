@@ -102,6 +102,7 @@ function _ensure_callbacks()
 	                    ("gmtedit",     _register_gmtedit),
 	                    ("clipgrid",    _register_clipgrid),
 	                    ("binarize",    _register_binarize),
+	                    ("vectorwizard", _register_vectorwizard),
 	                    ("forget",      _register_forget),
 	                    ("aquamoto",    _register_aquamoto),
 	                    ("imagehisto",  _register_image_histo),

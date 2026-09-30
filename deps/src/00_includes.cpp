@@ -1,12 +1,10 @@
 // gmtvtk — self-contained Qt6 + VTK 9.6 3-D viewer for GMT data (native QMenu UI +
 // VTK 3-D; see ../QTVTK_PLAN.md). No dependency on f3d.
 //
-// Builds as BOTH a shared library (C API `gmtvtk_view_grid` / `gmtvtk_view_demo`,
-// ccall'd from Julia) and a standalone demo executable. A grid surface is a
-// vtkPolyData (points + quad cells + a z scalar) wrapped in the polished chrome:
-// native menubar, right-click context menu, cube axes, scalar bar, gradient
-// background, live coordinate readout, an interaction gizmo, and vertical
-// exaggeration. The demo build shows a synthetic MATLAB-peaks surface.
+// Builds as a shared library (C API `gmtvtk_view_grid` / `gmtvtk_view_demo`, ccall'd from
+// Julia). A grid surface is a vtkPolyData (points + quad cells + a z scalar) wrapped in the
+// polished chrome: native menubar, right-click context menu, cube axes, scalar bar, gradient
+// background, live coordinate readout, an interaction gizmo, and vertical exaggeration.
 
 #include <QApplication>
 #include <QClipboard>
@@ -256,6 +254,7 @@
 #include <vtkPolyDataNormals.h>
 #include <vtkTriangleFilter.h>
 #include <vtkContourTriangulator.h>
+#include "third_party/earcut/earcut.hpp"   // mapbox earcut (ISC): polygon-with-holes triangulation (overlayBuildFill)
 #include <vtkAppendPolyData.h>
 #include <vtkColorTransferFunction.h>
 #include <vtkDiscretizableColorTransferFunction.h>
