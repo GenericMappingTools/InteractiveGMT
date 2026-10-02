@@ -292,6 +292,10 @@ end
 # Is `path` a Level-2 swath (what "MODIS L2 swath to grid" grids)? By CONTENT, not name: an OB.DAAC
 # L2 file says so itself (global processing_level = L2) and carries the swath's navigation_data
 # longitude/latitude arrays. A plain netCDF grid, a Level-3 map or an Aquamoto file answers false.
+# The variable picked in the netCDF picker for a dropped L2 swath (drop.jl), keyed by the file's
+# abspath; the tool's next init/refresh on that file selects it in p_var and forgets it.
+const _RS_L2_PICKED = Dict{String,String}()
+
 function _rs_is_l2_swath(path::String)::Bool
 	lowercase(splitext(path)[2]) in (".nc", ".nc4", ".h5", ".hdf", ".he5") || return false
 	isfile(path) || return false
@@ -313,7 +317,9 @@ function _rs_modisl2(scene::Ptr{Cvoid}, d::Dict{String,String}, io::IOBuffer)::B
 			_rs_status(io, "Choose a MODIS (or other swath) L2 netCDF file.")
 			return true
 		end
-		k = something(findfirst(v -> v in ("sst", "chlor_a"), vars), 1)
+		picked = isempty(file) ? nothing : pop!(_RS_L2_PICKED, abspath(file), nothing)
+		k = something((picked === nothing ? nothing : findfirst(==(picked), vars)),
+		              findfirst(v -> v in ("sst", "chlor_a"), vars), 1)
 		_rs_set(io, "p_var", k - 1)
 		note = try
 			# ONE increment for x and y, 0.02 degrees as the first choice (the swath's own spacing gives

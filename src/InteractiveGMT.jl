@@ -152,6 +152,22 @@ include("shapenc.jl")    # write a SHAPENC netCDF file (port of Mirone utils/sha
 include("benchmark1_analytic.jl") # Carrier--Greenspan analytic solution of benchmark 1 (self-contained module)
 include("benchmark1.jl") # Geophysics > Tsunamis > Catalina benchmark 1 (NSWING demo; needs shapenc's MDArray helpers)
 include("gmtedit.jl")    # Geophysics > Magnetics > gmtedit: the MGD77 track editor (port of Mirone src_figs/gmtedit.m)
+# EXPERIMENTAL swath editor (MB-System's mbedit, deps/src/mbedit/): comment this line out to drop its
+# Julia side (`mbedit`, exported from the file itself). The C side is switched by IGMT_WITH_MBEDIT in
+# deps/CMakeLists.txt; its exports are optional (_LIB_OPTIONAL), so either side may be off alone.
+isfile(joinpath(@__DIR__, "mbedit.jl")) && include("mbedit.jl")
+# EXPERIMENTAL sound velocity tool (MB-System's mbvelocitytool, deps/src/mbvelocitytool/), switched the
+# same way: this line for the Julia side (`mbvelocitytool`), IGMT_WITH_MBVELOCITYTOOL for the C side.
+isfile(joinpath(@__DIR__, "mbvelocitytool.jl")) && include("mbvelocitytool.jl")
+# EXPERIMENTAL mbeditviz (MB-System's mbeditviz, deps/src/mbeditviz/), switched the same way: this line for the
+# Julia side (`mbeditviz`), IGMT_WITH_MBEDITVIZ for the C side.
+isfile(joinpath(@__DIR__, "mbeditviz.jl")) && include("mbeditviz.jl")
+# EXPERIMENTAL mbgrdviz (MB-System's mbgrdviz, deps/src/mbgrdviz/), switched the same way: this line for the
+# Julia side (`mbgrdviz`), IGMT_WITH_MBGRDVIZ for the C side.
+isfile(joinpath(@__DIR__, "mbgrdviz.jl")) && include("mbgrdviz.jl")
+# EXPERIMENTAL pointCloudEditor (MB-System's pointCloudEditor, deps/src/pointcloudeditor/), switched the same
+# way: this line for the Julia side (`pointcloudeditor`), IGMT_WITH_PCE for the C side.
+isfile(joinpath(@__DIR__, "pointcloudeditor.jl")) && include("pointcloudeditor.jl")
 include("isocs.jl")      # parse Mirone data/isocs/*.dat isochron header -> write via shapenc
 include("palettes.jl")   # Image > Color Palettes: the six palette families + CPT I/O (port of Mirone color_palettes.m)
 include("bandslist.jl")  # Image > Load Bands: multiband/.vrt band picker (port of Mirone bands_list.m)

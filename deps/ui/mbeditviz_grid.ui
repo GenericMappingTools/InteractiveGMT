@@ -1,0 +1,132 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  mbeditviz_grid.ui - the grid parameters dialog of mbeditviz (bulletinBoard_gridparameters).
+  Loaded at runtime by deps/src/mbeditviz/mbeditviz_window.cpp. The cell size slider runs in
+  millimetres; its maximum doubles at the top end and halves at the bottom, as in mbeditviz.
+-->
+<ui version="4.0">
+ <class>MbEditVizGridDialog</class>
+ <widget class="QDialog" name="MbEditVizGridDialog">
+  <property name="geometry">
+   <rect><x>0</x><y>0</y><width>520</width><height>420</height></rect>
+  </property>
+  <property name="windowTitle">
+   <string>MBeditviz - Grid Parameters</string>
+  </property>
+  <layout class="QVBoxLayout" name="mainLayout">
+   <item>
+    <widget class="QLabel" name="labelCurrent">
+     <property name="text"><string>Current Grid Parameters:</string></property>
+     <property name="font"><font><family>Courier New</family></font></property>
+    </widget>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="cellRow">
+     <item>
+      <widget class="QLabel" name="cellLabel">
+       <property name="text"><string>Cell Size (m):</string></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QLabel" name="cellSizeSliderValue">
+       <property name="minimumSize"><size><width>64</width><height>0</height></size></property>
+       <property name="alignment"><set>Qt::AlignRight|Qt::AlignVCenter</set></property>
+       <property name="text"><string>1.000</string></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QSlider" name="cellSizeSlider">
+       <property name="minimum"><number>1</number></property>
+       <property name="maximum"><number>5000</number></property>
+       <property name="value"><number>1000</number></property>
+       <property name="orientation"><enum>Qt::Horizontal</enum></property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="algRow">
+     <item>
+      <widget class="QLabel" name="algLabel">
+       <property name="text"><string>Algorithm:</string></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QRadioButton" name="algSimpleMean">
+       <property name="text"><string>Simple Mean</string></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QRadioButton" name="algFootprint">
+       <property name="toolTip"><string>Each sounding weighted by its beam footprint</string></property>
+       <property name="text"><string>Weighted Mean</string></property>
+       <property name="checked"><bool>true</bool></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QRadioButton" name="algShoalBias">
+       <property name="text"><string>Shoal Bias</string></property>
+      </widget>
+     </item>
+     <item>
+      <spacer name="algSpacer">
+       <property name="orientation"><enum>Qt::Horizontal</enum></property>
+       <property name="sizeHint" stdset="0"><size><width>20</width><height>10</height></size></property>
+      </spacer>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="interpRow">
+     <item>
+      <widget class="QLabel" name="interpLabel">
+       <property name="text"><string>Interpolation (cell gaps):</string></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QLineEdit" name="interpolationEdit">
+       <property name="maximumSize"><size><width>80</width><height>16777215</height></size></property>
+       <property name="text"><string>0</string></property>
+      </widget>
+     </item>
+     <item>
+      <spacer name="interpSpacer">
+       <property name="orientation"><enum>Qt::Horizontal</enum></property>
+       <property name="sizeHint" stdset="0"><size><width>20</width><height>10</height></size></property>
+      </spacer>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <widget class="QLabel" name="labelImplied">
+     <property name="text"><string>Selected Grid Parameters:</string></property>
+     <property name="font"><font><family>Courier New</family></font></property>
+    </widget>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="buttonRow">
+     <item>
+      <spacer name="buttonSpacer">
+       <property name="orientation"><enum>Qt::Horizontal</enum></property>
+       <property name="sizeHint" stdset="0"><size><width>20</width><height>10</height></size></property>
+      </spacer>
+     </item>
+     <item>
+      <widget class="QPushButton" name="applyButton">
+       <property name="text"><string>Apply</string></property>
+       <property name="autoDefault"><bool>false</bool></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="dismissButton">
+       <property name="text"><string>Dismiss</string></property>
+       <property name="autoDefault"><bool>false</bool></property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

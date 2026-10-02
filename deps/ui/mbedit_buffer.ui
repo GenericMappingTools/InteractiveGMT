@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  mbedit_buffer.ui - Controls > Buffer Controls of the swath editor (mbedit's
+  bulletinBoard_buffer). Loaded at runtime by src/mbedit/mbedit_window.cpp; each slider has its
+  <name>Value and <name>Max labels.
+-->
+<ui version="4.0">
+ <class>MbEditBufferDialog</class>
+ <widget class="QDialog" name="MbEditBufferDialog">
+  <property name="geometry">
+   <rect><x>0</x><y>0</y><width>520</width><height>140</height></rect>
+  </property>
+  <property name="windowTitle">
+   <string>MBedit - Buffer Controls</string>
+  </property>
+  <layout class="QVBoxLayout" name="mainLayout">
+   <item>
+    <layout class="QGridLayout" name="sliderGrid">
+     <item row="0" column="0">
+      <widget class="QLabel" name="bufferLabel"><property name="text"><string>Data Buffer Size:</string></property></widget>
+     </item>
+     <item row="0" column="1">
+      <widget class="QLabel" name="bufferSliderValue">
+       <property name="minimumSize"><size><width>48</width><height>0</height></size></property>
+       <property name="alignment"><set>Qt::AlignRight|Qt::AlignVCenter</set></property>
+       <property name="text"><string>5000</string></property>
+      </widget>
+     </item>
+     <item row="0" column="2">
+      <widget class="QSlider" name="bufferSlider">
+       <property name="toolTip"><string>Number of pings read into memory at once</string></property>
+       <property name="minimum"><number>1</number></property>
+       <property name="maximum"><number>30000</number></property>
+       <property name="orientation"><enum>Qt::Horizontal</enum></property>
+      </widget>
+     </item>
+     <item row="0" column="3">
+      <widget class="QLabel" name="bufferSliderMax"><property name="text"><string>30000</string></property></widget>
+     </item>
+     <item row="1" column="0">
+      <widget class="QLabel" name="holdLabel"><property name="text"><string>Buffer Retain Size:</string></property></widget>
+     </item>
+     <item row="1" column="1">
+      <widget class="QLabel" name="holdSliderValue">
+       <property name="alignment"><set>Qt::AlignRight|Qt::AlignVCenter</set></property>
+       <property name="text"><string>30</string></property>
+      </widget>
+     </item>
+     <item row="1" column="2">
+      <widget class="QSlider" name="holdSlider">
+       <property name="toolTip"><string>Number of pings kept in memory when Next Buffer writes the rest out</string></property>
+       <property name="minimum"><number>1</number></property>
+       <property name="maximum"><number>30000</number></property>
+       <property name="orientation"><enum>Qt::Horizontal</enum></property>
+      </widget>
+     </item>
+     <item row="1" column="3">
+      <widget class="QLabel" name="holdSliderMax"><property name="text"><string>30000</string></property></widget>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="buttonRow">
+     <item>
+      <spacer name="buttonSpacer">
+       <property name="orientation"><enum>Qt::Horizontal</enum></property>
+       <property name="sizeHint" stdset="0"><size><width>20</width><height>10</height></size></property>
+      </spacer>
+     </item>
+     <item>
+      <widget class="QPushButton" name="dismissButton">
+       <property name="text"><string>Dismiss</string></property>
+       <property name="autoDefault"><bool>false</bool></property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

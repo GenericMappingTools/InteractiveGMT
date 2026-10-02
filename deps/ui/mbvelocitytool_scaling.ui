@@ -1,0 +1,138 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  mbvelocitytool_scaling.ui - "Plot Scaling" of the sound velocity tool (mbvelocitytool's
+  bulletinBoard_scaling). Loaded at runtime by deps/src/mbvelocitytool/mbvelocity_window.cpp; each
+  slider has its <name>Value label. The residual range slider runs in tenths of a metre.
+-->
+<ui version="4.0">
+ <class>MbVelocityScalingDialog</class>
+ <widget class="QDialog" name="MbVelocityScalingDialog">
+  <property name="geometry">
+   <rect><x>0</x><y>0</y><width>560</width><height>200</height></rect>
+  </property>
+  <property name="windowTitle">
+   <string>MBvelocitytool - Plot Scaling</string>
+  </property>
+  <layout class="QVBoxLayout" name="mainLayout">
+   <item>
+    <layout class="QGridLayout" name="sliderGrid">
+     <item row="0" column="0">
+      <widget class="QLabel" name="maxdepthLabel"><property name="text"><string>Maximum Depth (m):</string></property></widget>
+     </item>
+     <item row="0" column="1">
+      <widget class="QLabel" name="maxdepthSliderValue">
+       <property name="minimumSize"><size><width>48</width><height>0</height></size></property>
+       <property name="alignment"><set>Qt::AlignRight|Qt::AlignVCenter</set></property>
+       <property name="text"><string>3000</string></property>
+      </widget>
+     </item>
+     <item row="0" column="2">
+      <widget class="QLabel" name="maxdepthMin"><property name="text"><string>1</string></property></widget>
+     </item>
+     <item row="0" column="3">
+      <widget class="QSlider" name="maxdepthSlider">
+       <property name="toolTip"><string>Deepest depth shown on the profile plot</string></property>
+       <property name="minimum"><number>1</number></property>
+       <property name="maximum"><number>13000</number></property>
+       <property name="value"><number>3000</number></property>
+       <property name="orientation"><enum>Qt::Horizontal</enum></property>
+      </widget>
+     </item>
+     <item row="0" column="4">
+      <widget class="QLabel" name="maxdepthMax"><property name="text"><string>13000</string></property></widget>
+     </item>
+     <item row="1" column="0">
+      <widget class="QLabel" name="velrangeLabel"><property name="text"><string>Velocity Range (m/s):</string></property></widget>
+     </item>
+     <item row="1" column="1">
+      <widget class="QLabel" name="velrangeSliderValue">
+       <property name="alignment"><set>Qt::AlignRight|Qt::AlignVCenter</set></property>
+       <property name="text"><string>500</string></property>
+      </widget>
+     </item>
+     <item row="1" column="2">
+      <widget class="QLabel" name="velrangeMin"><property name="text"><string>25</string></property></widget>
+     </item>
+     <item row="1" column="3">
+      <widget class="QSlider" name="velrangeSlider">
+       <property name="toolTip"><string>Width of the velocity axis of the profile plot</string></property>
+       <property name="minimum"><number>25</number></property>
+       <property name="maximum"><number>1000</number></property>
+       <property name="value"><number>500</number></property>
+       <property name="orientation"><enum>Qt::Horizontal</enum></property>
+      </widget>
+     </item>
+     <item row="1" column="4">
+      <widget class="QLabel" name="velrangeMax"><property name="text"><string>1000</string></property></widget>
+     </item>
+     <item row="2" column="0">
+      <widget class="QLabel" name="velcenterLabel"><property name="text"><string>Velocity Center (m/s):</string></property></widget>
+     </item>
+     <item row="2" column="1">
+      <widget class="QLabel" name="velcenterSliderValue">
+       <property name="alignment"><set>Qt::AlignRight|Qt::AlignVCenter</set></property>
+       <property name="text"><string>1490</string></property>
+      </widget>
+     </item>
+     <item row="2" column="2">
+      <widget class="QLabel" name="velcenterMin"><property name="text"><string>1300</string></property></widget>
+     </item>
+     <item row="2" column="3">
+      <widget class="QSlider" name="velcenterSlider">
+       <property name="toolTip"><string>Centre of the velocity axis of the profile plot</string></property>
+       <property name="minimum"><number>1300</number></property>
+       <property name="maximum"><number>1700</number></property>
+       <property name="value"><number>1490</number></property>
+       <property name="orientation"><enum>Qt::Horizontal</enum></property>
+      </widget>
+     </item>
+     <item row="2" column="4">
+      <widget class="QLabel" name="velcenterMax"><property name="text"><string>1700</string></property></widget>
+     </item>
+     <item row="3" column="0">
+      <widget class="QLabel" name="resrangeLabel"><property name="text"><string>Residual Range (m):</string></property></widget>
+     </item>
+     <item row="3" column="1">
+      <widget class="QLabel" name="resrangeSliderValue">
+       <property name="alignment"><set>Qt::AlignRight|Qt::AlignVCenter</set></property>
+       <property name="text"><string>200.0</string></property>
+      </widget>
+     </item>
+     <item row="3" column="2">
+      <widget class="QLabel" name="resrangeMin"><property name="text"><string>0.1</string></property></widget>
+     </item>
+     <item row="3" column="3">
+      <widget class="QSlider" name="resrangeSlider">
+       <property name="toolTip"><string>Half height of the beam residual plot, in metres</string></property>
+       <property name="minimum"><number>1</number></property>
+       <property name="maximum"><number>2000</number></property>
+       <property name="value"><number>2000</number></property>
+       <property name="orientation"><enum>Qt::Horizontal</enum></property>
+      </widget>
+     </item>
+     <item row="3" column="4">
+      <widget class="QLabel" name="resrangeMax"><property name="text"><string>200</string></property></widget>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="buttonRow">
+     <item>
+      <spacer name="buttonSpacer">
+       <property name="orientation"><enum>Qt::Horizontal</enum></property>
+       <property name="sizeHint" stdset="0"><size><width>20</width><height>10</height></size></property>
+      </spacer>
+     </item>
+     <item>
+      <widget class="QPushButton" name="dismissButton">
+       <property name="text"><string>Dismiss</string></property>
+       <property name="autoDefault"><bool>false</bool></property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

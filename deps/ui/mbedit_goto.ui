@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  mbedit_goto.ui - Controls > Go To Specified Time of the swath editor (mbedit's
+  bulletinBoard_goto). Loaded at runtime by src/mbedit/mbedit_window.cpp.
+-->
+<ui version="4.0">
+ <class>MbEditGotoDialog</class>
+ <widget class="QDialog" name="MbEditGotoDialog">
+  <property name="geometry">
+   <rect><x>0</x><y>0</y><width>300</width><height>250</height></rect>
+  </property>
+  <property name="windowTitle">
+   <string>MBedit - Go To Specified Time</string>
+  </property>
+  <layout class="QVBoxLayout" name="mainLayout">
+   <item>
+    <layout class="QFormLayout" name="timeForm">
+     <item row="0" column="0">
+      <widget class="QLabel" name="yearLabel"><property name="text"><string>Year:</string></property></widget>
+     </item>
+     <item row="0" column="1">
+      <widget class="QLineEdit" name="yearEdit"/>
+     </item>
+     <item row="1" column="0">
+      <widget class="QLabel" name="monthLabel"><property name="text"><string>Month:</string></property></widget>
+     </item>
+     <item row="1" column="1">
+      <widget class="QLineEdit" name="monthEdit"/>
+     </item>
+     <item row="2" column="0">
+      <widget class="QLabel" name="dayLabel"><property name="text"><string>Day:</string></property></widget>
+     </item>
+     <item row="2" column="1">
+      <widget class="QLineEdit" name="dayEdit"/>
+     </item>
+     <item row="3" column="0">
+      <widget class="QLabel" name="hourLabel"><property name="text"><string>Hour:</string></property></widget>
+     </item>
+     <item row="3" column="1">
+      <widget class="QLineEdit" name="hourEdit"/>
+     </item>
+     <item row="4" column="0">
+      <widget class="QLabel" name="minuteLabel"><property name="text"><string>Minute:</string></property></widget>
+     </item>
+     <item row="4" column="1">
+      <widget class="QLineEdit" name="minuteEdit"/>
+     </item>
+     <item row="5" column="0">
+      <widget class="QLabel" name="secondLabel"><property name="text"><string>Second:</string></property></widget>
+     </item>
+     <item row="5" column="1">
+      <widget class="QLineEdit" name="secondEdit"/>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="buttonRow">
+     <item>
+      <spacer name="buttonSpacer">
+       <property name="orientation"><enum>Qt::Horizontal</enum></property>
+       <property name="sizeHint" stdset="0"><size><width>20</width><height>10</height></size></property>
+      </spacer>
+     </item>
+     <item>
+      <widget class="QPushButton" name="applyButton">
+       <property name="text"><string>Apply</string></property>
+       <property name="autoDefault"><bool>false</bool></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="cancelButton">
+       <property name="text"><string>Cancel</string></property>
+       <property name="autoDefault"><bool>false</bool></property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

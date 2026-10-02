@@ -5683,9 +5683,9 @@ static GrdGradientState g_grdgradState;
 // computed in C++ and never reach Julia; each is applied by the one shared `sceneSetReliefLook`,
 // which is what made removing the dock a matter of deleting checkboxes rather than moving maths.
 // 1 and 7 are the dock's SINGLE "Shade (PBR)" box split into the two things it is: VTK's own PBR
-// render path on a 3-D surface (1), and the CPU Cook-Torrance bake that imitates it per flat-image
-// pixel (7, applyPBRShade). Both set the one flag `litBake`; what separates them is the GEOMETRY, so
-// each method also sets that through `sceneSetShadedImage2D`.
+// render path on the grid's surface (1), and the CPU Cook-Torrance bake that imitates it per node of
+// that SAME surface (7, applyPBRShade in hillshadeMapper). Both set `litBake`; `pbrBake` separates
+// them. No method changes the geometry: illuminating a grid never makes a flat image with a drape.
 //
 // CAST SHADOWS IS NOT A METHOD. It is a render PASS on method 1's path — a sibling of SSAO, tone
 // mapping and FXAA, not a way of deriving a reflectance — so it is a CHECKBOX in method 1's panel.
@@ -5695,7 +5695,7 @@ static GrdGradientState g_grdgradState;
 // One control here is NOT a method's own — "Drape blend". It describes the picture laid over the
 // surface rather than the light, so it stands in a common strip under the method band and acts on
 // the spot: an actor property is not an illumination parameter, so "only OK computes" does not
-// reach it. There is NO "Shaded image (2-D)" checkbox — methods 1 and 7 are that switch.
+// reach it. There is NO "Shaded image (2-D)" checkbox, and no method acts as one.
 // The false colour keeps BOTH of Mirone's algorithms — its two radio buttons — so the "Old
 // algorithm" (shade_manip_raster) is here with its elevation and Amp factor, even though the
 // stand-alone Manip Raster entry is gone.
@@ -6580,11 +6580,8 @@ public:
 		// shared function first, rather than being reimplemented behind the dock's checkboxes.
 		//
 		// 1 AND 7 ARE THE DOCK'S ONE "Shade (PBR)" BOX, SPLIT INTO THE TWO THINGS IT ACTUALLY IS.
-		// `litBake` alone cannot tell them apart — which of the two you get depends on the GEOMETRY the
-		// window is in — so each method also puts the window in its own mode through the one geometry
-		// switch, `sceneSetShadedImage2D` (the same call the "Shaded image (2-D)" box makes).
-		// Without that, picking 1 on a flat-image window would silently hand back 7, and picking 7 on
-		// a surface would hand back 1: two buttons that do whatever the window happens to already be.
+		// `litBake` alone cannot tell them apart, so `pbrBake` does (set below); the geometry is never
+		// touched — both light the grid's own surface.
 		// …EXCEPT METHOD 1 ON A HOST-COMPOSITED LAYER (an Aquamoto tsunami), which is NOT a look this
 		// window can wear. The branch below reasons it out itself, two screens down, for the geometry
 		// switch: a composited layer "has no plain-grid form". The same is true of the MATERIAL — one
@@ -6617,6 +6614,10 @@ public:
 		// material are this dialog's all the same: they are written below first, and the side takes
 		// them from there. 5, 6 and 7 stay C++ looks, re-lighting the layer in place.
 		const bool hostRender = (model == 1 && composited);
+		// A SHADED GRID HAS NO DRAPE. A plain grid still held as a flat picture is put back on its own
+		// surface before ANY method lights it — every method lights that surface (hillshadeMapper).
+		// Never a tsunami (no plain-grid form), never the tank under another grid.
+		if (!composited && onTank() && scn->layerImgMode) sceneSetShadedImage2D(scn, false);
 		if (model == 1 || model == 5 || model == 6 || model == 7) {
 			activeLook(scn).lightAz = eAzim->text().trimmed().toDouble();
 			activeLook(scn).lightEl = eElev->text().trimmed().toDouble();
@@ -6657,20 +6658,12 @@ public:
 				scn->fillIntensity  = sFillI.value();
 				activeLook(scn).roughness      = sRough.value();
 				activeLook(scn).metallic       = sMetal.value();
-				// Put the window in the mode this method IS. Rebuilds nothing when it is already there.
-				//
-				// EXCEPT for a HOST-COMPOSITED layer (an Aquamoto tsunami). Its colours ARE the
-				// composite; the surface mode hands it to the plain-grid builder, which paints the
-				// stage with the WATER CPT and turns all land red. And it does not even survive: the
-				// next slice pushes a drape and the window is flat again, so the method the user
-				// picked silently became method 7 on the next layer. The LOOK still applies — the
-				// composite is re-lit through it — the geometry is simply not this method's to change
-				// for a layer that has no plain-grid form.
-				// …and the switch is the WINDOW's geometry, i.e. the base's: aimed at another grid (an
-				// extra on top of a tsunami, layer0.grd) it would rebuild the tank underneath. The pick
-				// is that grid's look alone.
-				if (!composited && onTank()) sceneSetShadedImage2D(scn, model == 7);
 			}
+			// ILLUMINATION NEVER CHANGES THE GEOMETRY. No method turns a grid into a flat image with a
+			// drape: 7 bakes its PBR shade per node onto the grid's OWN surface (hillshadeMapper, the
+			// function every look goes through), 1 is VTK's render of that same surface. `pbrBake` is
+			// what tells them apart, since both set `litBake`. Set before the look so its re-bake sees it.
+			activeLook(scn).pbrBake = (model == 7);
 			HillshadeState ls;                       // remember the aim like every other method does
 			ls.valid = true;  ls.model = model;
 			ls.azim = activeLook(scn).lightAz;  ls.elev = activeLook(scn).lightEl;
@@ -28997,6 +28990,31 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// "Vector Wizard": trace the picture on display (an image, or the picture a grid is drawn as)
 	// into filled vector layers with potrace — into this window, or to SVG / EPS / GMT.
 	mTools->addAction("Vector Wizard", [win, s]() { vectorWizardOpen(win, s); });
+#ifdef GMTVTK_MBEDIT
+	// EXPERIMENTAL "Swath editor (mbedit)": MB-System's mbedit, ported (deps/src/mbedit/, its own
+	// window). Built only with IGMT_WITH_MBEDIT in CMakeLists.txt.
+	mTools->addAction("Swath editor (mbedit)", [win]() { mbeditOpenWindow(win, mbeditViewerHost()); });
+#endif
+#ifdef GMTVTK_MBVELOCITY
+	// EXPERIMENTAL "Sound velocity editor (mbvelocitytool)": MB-System's mbvelocitytool, ported
+	// (deps/src/mbvelocitytool/, its own window). Built only with IGMT_WITH_MBVELOCITYTOOL.
+	mTools->addAction("Sound velocity editor (mbvelocitytool)", [win]() { mbvelocityOpenWindow(win, mbvelocityViewerHost()); });
+#endif
+#ifdef GMTVTK_MBEDITVIZ
+	// EXPERIMENTAL "Bathymetry editor and patch test (mbeditviz)": MB-System's mbeditviz, ported
+	// (deps/src/mbeditviz/; its survey map is a window of this viewer). Built only with IGMT_WITH_MBEDITVIZ.
+	mTools->addAction("Bathymetry editor and patch test (mbeditviz)", [win]() { mbeditvizOpenWindow(win, mbeditvizViewerHost()); });
+#endif
+#ifdef GMTVTK_MBGRDVIZ
+	// EXPERIMENTAL "Survey planning (mbgrdviz)": MB-System's mbgrdviz, ported onto this window (its
+	// sites, routes and navigation become this window's elements). Built only with IGMT_WITH_MBGRDVIZ.
+	mTools->addAction("Survey planning (mbgrdviz)", [win, s]() { mbgrdvizOpenWindow(win, mbgrdvizViewerHost(), s); });
+#endif
+#ifdef GMTVTK_PCE
+	// EXPERIMENTAL "Point cloud editor (pointCloudEditor)": MB-System's pointCloudEditor, ported (its own
+	// window), on this window's grid. Built only with IGMT_WITH_PCE.
+	mTools->addAction("Point cloud editor (pointCloudEditor)", [win, s]() { pceOpenWindow(win, pceViewerHost(), s); });
+#endif
 	// "Project" (port of Mirone's Projections > GDAL project): reproject the window's raster with
 	// gdalwarp. Needs something to warp, so it is offered only with a raster on screen.
 	mTools->addAction("Project…", [win, s]() {

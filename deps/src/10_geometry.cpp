@@ -563,6 +563,9 @@ struct LayerShade {
 	bool   litBake      = true;       // FLAT image only: bake a CPU PBR shade (approximates the lit 3-D
 	                                  // surface) so "Shaded image" alone reproduces the loaded-grid look.
 	                                  // Mutually exclusive with useHillshade; both off (flat) = plain CPT.
+	bool   pbrBake      = false;      // Illumination method 7: with litBake, the CPU PBR shade is baked PER
+	                                  // NODE onto the grid's OWN surface (hillshadeMapper), never a drape.
+	                                  // Off = method 1, VTK's own PBR render of that same surface.
 	bool   noShade      = false;      // "Remove illumination": NO light at all, plain CPT, unlit.
 	double lightAz = 315.0, lightEl = 45.0;   // THIS layer's sun: azimuth (deg from north, CW) + elevation
 	double roughness = 0.3, metallic = 0.0, ior = 1.5;   // its PBR material (F3D defaults)

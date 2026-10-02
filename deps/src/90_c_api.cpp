@@ -1461,6 +1461,7 @@ GMTVTK_API int gmtvtk_scene_state_full(void *handle, char *buf, int cap) {
 		// this, or a host driving the window by hand); they are just no longer what is written.
 		kvi("look", s->look.useHillshade ? (s->look.hillGrd ? 3 : 2) : (s->look.litBake ? 1 : 0));
 		kvi("noshade", s->look.noShade ? 1 : 0);       // "Remove illumination": no light at all
+		kvi("pbrbake", s->look.pbrBake ? 1 : 0);       // look 1 as method 7 (per-node bake), else method 1
 		kvi("imgmode", s->layerImgMode ? 1 : 0);  // flat baked image vs 3-D surface (the look's geometry)
 		kvd("sunaz", s->look.lightAz); kvd("sunel", s->look.lightEl);
 		kvd("hillgain", s->look.hillGain); kvd("hillamb", s->look.hillAmbient);
@@ -1474,9 +1475,10 @@ GMTVTK_API int gmtvtk_scene_state_full(void *handle, char *buf, int cap) {
 			char k[32]; snprintf(k, sizeof(k), "lk_%d", ex.tag);
 			const LayerShade &L = ex.look;
 			const int lookId = L.useHillshade ? (L.hillGrd ? 3 : 2) : (L.litBake ? 1 : 0);
-			char v[192];
-			snprintf(v, sizeof(v), "%s=%d,%d,%.12g,%.12g,%.12g,%.12g,%.12g,%.12g;", k, lookId,
-			         L.noShade ? 1 : 0, L.lightAz, L.lightEl, L.hillGain, L.hillAmbient, L.roughness, L.metallic);
+			char v[200];
+			snprintf(v, sizeof(v), "%s=%d,%d,%.12g,%.12g,%.12g,%.12g,%.12g,%.12g,%d;", k, lookId,
+			         L.noShade ? 1 : 0, L.lightAz, L.lightEl, L.hillGain, L.hillAmbient, L.roughness, L.metallic,
+			         L.pbrBake ? 1 : 0);
 			o += v;
 		}
 		kvd("keyi", s->lightIntensity); kvd("filli", s->fillIntensity); kvd("envi", s->envIntensity);
@@ -1604,6 +1606,7 @@ GMTVTK_API void gmtvtk_apply_scene_state(void *handle, const char *kv) {
 				                   /*keepExternShade=*/true);
 		}
 		if (geti("noshade", i) && (i != 0) != s->look.noShade) { s->look.noShade = (i != 0); touched = true; }
+		if (geti("pbrbake", i) && (i != 0) != s->look.pbrBake) { s->look.pbrBake = (i != 0); touched = true; }
 		// Each dropped layer's own set, from its lk_<tag> record. Written straight into that layer's
 		// LayerShade -- sceneSetReliefLook is the setter for the ACTIVE layer, which is not what this
 		// is restoring; the single applyShading below re-bakes every layer from its own numbers.
@@ -1611,10 +1614,12 @@ GMTVTK_API void gmtvtk_apply_scene_state(void *handle, const char *kv) {
 			char k[40]; snprintf(k, sizeof(k), ";lk_%d=", ex.tag);
 			const size_t p = buf.find(k);
 			if (p == std::string::npos) continue;
-			int lookId = 0, ns = 0;
+			int lookId = 0, ns = 0, pb = 0;
 			double az = 0, el = 0, gn = 0, am = 0, ro = 0, me = 0;
-			if (sscanf(buf.c_str() + p + strlen(k), "%d,%d,%lf,%lf,%lf,%lf,%lf,%lf",
-			           &lookId, &ns, &az, &el, &gn, &am, &ro, &me) != 8) continue;
+			// 9th field (pbrBake) is absent in sessions written before it existed.
+			if (sscanf(buf.c_str() + p + strlen(k), "%d,%d,%lf,%lf,%lf,%lf,%lf,%lf,%d",
+			           &lookId, &ns, &az, &el, &gn, &am, &ro, &me, &pb) < 8) continue;
+			ex.look.pbrBake      = (pb != 0);
 			ex.look.useHillshade = (lookId == 2 || lookId == 3);
 			ex.look.hillGrd      = (lookId == 3);
 			ex.look.litBake      = (lookId == 1);
@@ -1849,6 +1854,529 @@ GMTVTK_API void gmtvtk_set_basemap_callback(JuliaBaseMapFn fn) {
 GMTVTK_API void gmtvtk_set_about_info(const char *txt) {
 	g_aboutHostInfo = QString::fromUtf8(txt ? txt : "");
 }
+
+#ifdef GMTVTK_MBEDIT
+// EXPERIMENTAL (IGMT_WITH_MBEDIT in CMakeLists.txt; Julia lists these in _LIB_OPTIONAL).
+// The swath bathymetry editor (MB-System's mbedit, ported: deps/src/mbedit/). Open it, as
+// `mbedit -I file -F format`; an empty file opens it with File > Open offered. useEsf decides
+// about an existing edit save file: -1 ask, 0 ignore, 1 apply (mbedit -S). 1 = open.
+// The MBIO library GMT loaded with its MB-System supplement (GMT_CUSTOM_LIBS), found by the host
+// through GMT; "" = none. Every MB-System tool's loader tries it.
+GMTVTK_API void gmtvtk_mbedit_set_mbio_hint(const char *path) {
+	mbeditSetMbioHint(QString::fromUtf8(path ? path : ""));
+}
+GMTVTK_API int gmtvtk_mbedit_open(const char *file, int format, int useEsf) {
+	ensureApp();
+	return mbeditOpenWindow(nullptr, mbeditViewerHost(), QString::fromUtf8(file ? file : ""), format, useEsf) ? 1 : 0;
+}
+// [open, numfiles, currentfile, nbuffer, ngood, icurrent, nplot, nflagged, nunflagged] -> out[0:n-1]
+GMTVTK_API int gmtvtk_mbedit_state(int *out, int n) {
+	return mbeditState(out, n);
+}
+// A key typed on the editor's canvas (mbedit's key macros: x flag view, c unflag view, f forward, ...)
+GMTVTK_API int gmtvtk_mbedit_key(int ch) {
+	return mbeditKey(ch) ? 1 : 0;
+}
+// One press + release of the edit button at canvas pixel (x, y), in the current mode
+GMTVTK_API int gmtvtk_mbedit_click(int x, int y) {
+	return mbeditClick(x, y) ? 1 : 0;
+}
+GMTVTK_API int gmtvtk_mbedit_save_png(const char *path) {
+	return (path && mbeditSavePng(QString::fromUtf8(path))) ? 1 : 0;
+}
+// Quit: the file being edited is saved (its edit save file written), the window closed
+GMTVTK_API int gmtvtk_mbedit_close(void) {
+	return mbeditClose() ? 1 : 0;
+}
+#endif // GMTVTK_MBEDIT
+
+#ifdef GMTVTK_MBVELOCITY
+// EXPERIMENTAL (IGMT_WITH_MBVELOCITYTOOL in CMakeLists.txt; Julia lists these in _LIB_OPTIONAL).
+// The water sound velocity profile editor (MB-System's mbvelocitytool, ported:
+// deps/src/mbvelocitytool/). Open it, as `mbvelocitytool -I swath -F format -W editsvp -S displaysvp`;
+// every file may be empty. 1 = open and every given file loaded.
+GMTVTK_API int gmtvtk_mbvelocity_open(const char *swath, int format, const char *editsvp, const char *displaysvp) {
+	ensureApp();
+	return mbvelocityOpenWindow(nullptr, mbvelocityViewerHost(), QString::fromUtf8(swath ? swath : ""), format,
+	                            QString::fromUtf8(editsvp ? editsvp : ""), QString::fromUtf8(displaysvp ? displaysvp : ""))
+	           ? 1 : 0;
+}
+// [open, edit, nedit, ndisplay, nbuffer, nbeams_with_residuals, canvas_width, canvas_height] -> out[0:n-1]
+GMTVTK_API int gmtvtk_mbvelocity_state(int *out, int n) {
+	return mbvelocityState(out, n);
+}
+// The canvas's mouse: button 1 drags the nearest node (x0,y0) -> (x1,y1), 2 adds one, 3 deletes one
+GMTVTK_API int gmtvtk_mbvelocity_mouse(int button, int x0, int y0, int x1, int y1) {
+	return mbvelocityMouse(button, x0, y0, x1, y1) ? 1 : 0;
+}
+// Node i of the editable profile -> out[0] depth, out[1] velocity; 0 when there is no such node
+GMTVTK_API int gmtvtk_mbvelocity_edit_node(int i, double *out) {
+	return (out && mbvelocityEditNode(i, &out[0], &out[1])) ? 1 : 0;
+}
+GMTVTK_API int gmtvtk_mbvelocity_reprocess(void) {
+	return mbvelocityReprocess() ? 1 : 0;
+}
+// File > Save swath svp file (<swath>.svp + the mbprocess parameter file)
+GMTVTK_API int gmtvtk_mbvelocity_save_swath_svp(void) {
+	return mbvelocitySaveSwathSvp() ? 1 : 0;
+}
+// File > Save residuals as offsets (<swath>.sbo, <swath>.sbao + the mbprocess parameter file)
+GMTVTK_API int gmtvtk_mbvelocity_save_residuals(void) {
+	return mbvelocitySaveResiduals() ? 1 : 0;
+}
+GMTVTK_API int gmtvtk_mbvelocity_save_png(const char *path) {
+	return (path && mbvelocitySavePng(QString::fromUtf8(path))) ? 1 : 0;
+}
+GMTVTK_API int gmtvtk_mbvelocity_close(void) {
+	return mbvelocityClose() ? 1 : 0;
+}
+#endif // GMTVTK_MBVELOCITY
+
+#ifdef GMTVTK_MBEDITVIZ
+// EXPERIMENTAL (IGMT_WITH_MBEDITVIZ in CMakeLists.txt; Julia lists these in _LIB_OPTIONAL).
+// mbeditviz's survey map: an ordinary window of this viewer, made and driven through the SAME calls
+// any host uses (gmtvtk_view_grid, gmtvtk_replace_base_grid_h, gmtvtk_add_overlay_ex2_h), plus three
+// read-only looks at it (its drawn shapes, its colour bar's colours, its window).
+GMTVTK_API int gmtvtk_replace_base_grid_h(void *handle, const float *z, int nx, int ny, double x0, double x1, double y0,
+                                          double y1, int geographic, const double *cz, const double *crgb, int ncolor,
+                                          const char *name, int zlayout);   // defined further down
+static MbEditVizHost mbeditvizViewerHost() {
+	MbEditVizHost h;
+	h.base = mbeditViewerHost();
+	h.base.busyText = [](const char *text) {      // the app's ONE busy notice, named for this tool
+		if (!g_progress)
+			showBusyDialog("MBeditviz");
+		if (g_progress) {
+			g_progress->setLabelText(QString::fromUtf8(text));
+			QApplication::processEvents();
+		}
+	};
+	h.mapOpen = [](const char *title, const float *z, int nx, int ny, double x0, double x1, double y0, double y1,
+	               const double *cz, const double *crgb, int ncolor) -> void * {
+		return gmtvtk_view_grid(z, nx, ny, x0, x1, y0, y1, /*geographic=*/0, cz, crgb, ncolor, nullptr, 0, 0, 0,
+		                        /*edges=*/0, /*triangulate=*/0, /*image_only=*/0, title, /*zlayout=BCB*/0);
+	};
+	h.mapAlive = [](void *map) { return sceneAlive(static_cast<Scene *>(map)); };
+	h.mapClose = [](void *map) {
+		Scene *s = static_cast<Scene *>(map);
+		if (sceneAlive(s) && s->win)
+			s->win->close();
+	};
+	h.mapUpdate = [](void *map, const float *z, int nx, int ny, double x0, double x1, double y0, double y1, const double *cz,
+	                 const double *crgb, int ncolor) {
+		return gmtvtk_replace_base_grid_h(map, z, nx, ny, x0, x1, y0, y1, 0, cz, crgb, ncolor, "", 0) == 1;
+	};
+	h.mapAddLines = [](void *map, const double *xyz, int npts, const int *segoff, int nseg, double r, double g, double b,
+	                   double width, const char *name, const char *group) {
+		return gmtvtk_add_overlay_ex2_h(map, xyz, npts, segoff, nseg, /*mode=lines*/1, r, g, b, width, 0.0, name, group, "",
+		                                /*noConvertToPoints=*/0, /*zIsPlaceholder=*/1) == 1;
+	};
+	h.mapShapes = [](void *map) {
+		std::vector<MbEditVizShape> out;
+		Scene *s = static_cast<Scene *>(map);
+		if (!sceneAlive(s))
+			return out;
+		for (const auto &pg : s->polys) {
+			MbEditVizShape sh;
+			sh.name = pg.name;
+			sh.closed = pg.closed;
+			sh.isRect = pg.isRect;
+			for (const auto &p : pg.v)
+				sh.v.push_back({p[0], p[1]});
+			out.push_back(std::move(sh));
+		}
+		return out;
+	};
+	h.mapColor = [](void *map, double z, double rgb[3]) {
+		Scene *s = static_cast<Scene *>(map);
+		if (!sceneAlive(s) || !s->bar || !s->bar->GetLookupTable())
+			return false;
+		s->bar->GetLookupTable()->GetColor(z, rgb);
+		return true;
+	};
+	h.mapWindow = [](void *map) -> QWidget * {
+		Scene *s = static_cast<Scene *>(map);
+		return sceneAlive(s) ? s->win : nullptr;
+	};
+	return h;
+}
+
+// Open mbeditviz, as `mbeditviz -I file -F format`; an empty file opens it with the file list empty.
+// outputMode: 0 edit, 1 browse. 1 = open (and, with a file, at least one file listed).
+GMTVTK_API int gmtvtk_mbeditviz_open(const char *file, int format, int outputMode) {
+	ensureApp();
+	return mbeditvizOpenWindow(nullptr, mbeditvizViewerHost(), QString::fromUtf8(file ? file : ""), format, outputMode) ? 1 : 0;
+}
+// [open, numfiles, numloaded, gridstatus, nx, ny, nselected, nselected_flagged, editor_open] -> out[0:n-1]
+GMTVTK_API int gmtvtk_mbeditviz_state(int *out, int n) {
+	return mbeditvizState(out, n);
+}
+// View All, then the grid dialog's Apply with this cell size in metres (<=0: the suggested one)
+GMTVTK_API int gmtvtk_mbeditviz_view_all(double cellsize) {
+	return mbeditvizViewAll(cellsize) ? 1 : 0;
+}
+// the soundings of the drawn shape `shape` into the 3-D editor: what 0 region, 1 area, 2 nav
+GMTVTK_API int gmtvtk_mbeditviz_select(int what, const char *shape) {
+	return mbeditvizSelect(what, QString::fromUtf8(shape ? shape : "")) ? 1 : 0;
+}
+// a region given by its corners, in the survey map's (projected, metre) coordinates
+GMTVTK_API int gmtvtk_mbeditviz_select_box(double x0, double x1, double y0, double y1) {
+	return mbeditvizSelectBox(x0, x1, y0, y1) ? 1 : 0;
+}
+// the 3-D editor: a key macro, an edit mode (0 toggle .. 5 info), one left click on sounding i
+GMTVTK_API int gmtvtk_mbeditviz_editor_key(int ch) {
+	return mbeditvizEditorKey(ch) ? 1 : 0;
+}
+GMTVTK_API int gmtvtk_mbeditviz_editor_mode(int mode) {
+	return mbeditvizEditorMode(mode) ? 1 : 0;
+}
+GMTVTK_API int gmtvtk_mbeditviz_editor_click(int i) {
+	return mbeditvizEditorClickSounding(i) ? 1 : 0;
+}
+GMTVTK_API int gmtvtk_mbeditviz_editor_save_png(const char *path) {
+	return (path && mbeditvizEditorSavePng(QString::fromUtf8(path))) ? 1 : 0;
+}
+GMTVTK_API int gmtvtk_mbeditviz_close_editor(void) {
+	return mbeditvizCloseEditor() ? 1 : 0;
+}
+// close the survey map: the grid goes, and the edits are written to the edit save files
+GMTVTK_API int gmtvtk_mbeditviz_close_map(void) {
+	return mbeditvizCloseMap() ? 1 : 0;
+}
+GMTVTK_API int gmtvtk_mbeditviz_close(void) {
+	return mbeditvizClose() ? 1 : 0;
+}
+#endif // GMTVTK_MBEDITVIZ
+
+#ifdef GMTVTK_MBGRDVIZ
+// EXPERIMENTAL (IGMT_WITH_MBGRDVIZ in CMakeLists.txt; Julia lists these in _LIB_OPTIONAL).
+// mbgrdviz's views are ordinary windows of this viewer. What the tool reads and adds goes through the
+// viewer's own doors: the window's base grid, its drawn polygons and one-point symbols (read only),
+// gmtvtk_add_poly_full / polygonDelete for routes, addSymbols / sceneDeleteGroup for sites and vectors,
+// gmtvtk_add_overlay_ex2_h for navigation, juliaOpenFile for every file, gmtvtk_open_empty and
+// gmtvtk_view_grid for new windows.
+GMTVTK_API int gmtvtk_add_poly_full(void *handle, const double *xyz, int npts, int closed, int isRect,
+                                    double lr, double lg, double lb, double lw, int lstyle,
+                                    double fr, double fg, double fb, double fop, const char *name,
+                                    const char *groupName);   // defined further down
+GMTVTK_API void *gmtvtk_open_empty(const char *title);      // defined further down
+static MbGrdVizHost mbgrdvizViewerHost() {
+	MbGrdVizHost h;
+	h.base = mbeditViewerHost();
+	h.base.busyText = [](const char *text) {      // the app's ONE busy notice, named for this tool
+		if (!g_progress)
+			showBusyDialog("MBgrdviz");
+		if (g_progress) {
+			g_progress->setLabelText(QString::fromUtf8(text));
+			QApplication::processEvents();
+		}
+	};
+	h.alive = [](void *win) { return sceneAlive(static_cast<Scene *>(win)); };
+	h.window = [](void *win) -> QWidget * {
+		Scene *s = static_cast<Scene *>(win);
+		return sceneAlive(s) ? s->win : nullptr;
+	};
+	h.title = [](void *win) {
+		Scene *s = static_cast<Scene *>(win);
+		return (sceneAlive(s) && s->win) ? s->win->windowTitle() : QString();
+	};
+	h.grid = [](void *win, MbGrdVizGrid &g) {
+		Scene *s = static_cast<Scene *>(win);
+		if (!sceneAlive(s) || s->emptyStart || s->imageOnly || s->gnx < 2 || s->gny < 2 ||
+		    s->gridZ.size() < size_t(s->gnx) * size_t(s->gny))
+			return false;
+		g.z = s->gridZ;                          // column-major, row 0 = south: the tool's own layout
+		g.nx = s->gnx;
+		g.ny = s->gny;
+		g.x0 = s->gx0;
+		g.x1 = s->gx1;
+		g.y0 = s->gy0;
+		g.y1 = s->gy1;
+		g.dx = s->gdx > 0 ? s->gdx : (s->gx1 - s->gx0) / (s->gnx - 1);
+		g.dy = s->gdy > 0 ? s->gdy : (s->gy1 - s->gy0) / (s->gny - 1);
+		g.geographic = s->baseGeog != 0;
+		if (s->crsEpsg > 0)
+			g.crs = "EPSG:" + std::to_string(s->crsEpsg);
+		else if (!s->crsProj4.empty())
+			g.crs = s->crsProj4;
+		else if (!s->crsWkt.empty())
+			g.crs = s->crsWkt;
+		g.name = s->win ? s->win->windowTitle().toStdString() : std::string();
+		return true;
+	};
+	h.openFile = [](void *win, const char *path) -> void * {
+		Scene *s = static_cast<Scene *>(win);
+		if (!sceneAlive(s))
+			s = static_cast<Scene *>(gmtvtk_open_empty("MBgrdviz"));
+		if (!sceneAlive(s))
+			return nullptr;
+		juliaOpenFile(s, path);
+		return sceneAlive(s) ? s : nullptr;
+	};
+	h.newWindow = [](const char *title, const MbGrdVizGrid &g) -> void * {
+		// mbgrdviz's default colour table (Haxby) over the grid's range
+		static const double hr[11] = {0.950, 1.000, 1.000, 1.000, 0.941, 0.804, 0.541, 0.416, 0.196, 0.157, 0.145};
+		static const double hg[11] = {0.950, 0.729, 0.631, 0.741, 0.925, 1.000, 0.925, 0.922, 0.745, 0.498, 0.224};
+		static const double hb[11] = {0.950, 0.522, 0.267, 0.341, 0.475, 0.635, 0.682, 1.000, 1.000, 0.984, 0.686};
+		double zmin = 1e30, zmax = -1e30;
+		for (float v : g.z)
+			if (!std::isnan(v)) {
+				zmin = std::min(zmin, double(v));
+				zmax = std::max(zmax, double(v));
+			}
+		if (zmin > zmax) {
+			zmin = 0.0;
+			zmax = 1.0;
+		}
+		double cz[11], crgb[33];
+		for (int i = 0; i < 11; i++) {   // index 0 = the top of the range, as mbview's table runs
+			cz[i] = zmin + (zmax - zmin) * i / 10.0;
+			crgb[3 * i] = hr[10 - i];
+			crgb[3 * i + 1] = hg[10 - i];
+			crgb[3 * i + 2] = hb[10 - i];
+		}
+		Scene *s = static_cast<Scene *>(gmtvtk_view_grid(g.z.data(), g.nx, g.ny, g.x0, g.x1, g.y0, g.y1, g.geographic ? 1 : 0,
+		                                                 cz, crgb, 11, nullptr, 0, 0, 0, 0, 0, 0, title, /*zlayout=BCB*/0));
+		if (sceneAlive(s) && !g.geographic && !g.crs.empty()) {   // the new window keeps its parent grid's projection
+			if (g.crs.rfind("EPSG:", 0) == 0)
+				s->crsEpsg = std::atoi(g.crs.c_str() + 5);
+			else
+				s->crsProj4 = g.crs;
+		}
+		return s;
+	};
+	h.lines = [](void *win) {
+		std::vector<MbGrdVizLine> out;
+		Scene *s = static_cast<Scene *>(win);
+		if (!sceneAlive(s))
+			return out;
+		for (const auto &pg : s->polys) {
+			if (pg.isFault || pg.isSlip || pg.isMeca || pg.nestKind != 0 || !pg.line)
+				continue;
+			MbGrdVizLine l;
+			l.name = pg.name;
+			l.group = pg.groupName;
+			l.closed = pg.closed;
+			l.isRect = pg.isRect;
+			l.v = pg.v;
+			if (l.closed && l.v.size() > 1 && l.v.front() == l.v.back())
+				l.v.pop_back();                  // the ring's closing duplicate
+			pg.line->GetProperty()->GetColor(l.rgb);
+			l.width = pg.line->GetProperty()->GetLineWidth();
+			out.push_back(std::move(l));
+		}
+		return out;
+	};
+	h.addLine = [](void *win, const MbGrdVizLine &l) {
+		std::vector<double> xyz;
+		for (const auto &p : l.v) {
+			xyz.push_back(p[0]);
+			xyz.push_back(p[1]);
+			xyz.push_back(p[2]);
+		}
+		return gmtvtk_add_poly_full(win, xyz.data(), int(l.v.size()), l.closed ? 1 : 0, 0, l.rgb[0], l.rgb[1], l.rgb[2],
+		                            l.width, 0, 0.0, 0.0, 0.0, 0.0, l.name.c_str(), l.group.c_str()) >= 0;
+	};
+	h.removeLine = [](void *win, const char *name) {
+		Scene *s = static_cast<Scene *>(win);
+		if (!sceneAlive(s) || !name)
+			return false;
+		for (const auto &pg : s->polys)
+			if (pg.name == name && pg.line) {
+				polygonDelete(s, pg.line.Get());   // the Scene Objects row's own Remove
+				return true;
+			}
+		return false;
+	};
+	h.points = [](void *win) {
+		std::vector<MbGrdVizPoint> out;
+		Scene *s = static_cast<Scene *>(win);
+		if (!sceneAlive(s))
+			return out;
+		for (const auto &sl : s->symbols) {
+			if (!sl.oneShot || sl.xyOrig.size() < 2)
+				continue;
+			MbGrdVizPoint p;
+			p.name = sl.name;
+			p.x = sl.xyOrig[0];
+			p.y = sl.xyOrig[1];
+			p.z = sl.zOrig.empty() ? 0.0 : sl.zOrig[0];
+			p.rgb[0] = sl.fillRGB[0];
+			p.rgb[1] = sl.fillRGB[1];
+			p.rgb[2] = sl.fillRGB[2];
+			p.sizePx = sl.sizePx;
+			out.push_back(std::move(p));
+		}
+		return out;
+	};
+	h.addPoints = [](void *win, const std::vector<MbGrdVizPoint> &pts, const char *master) {
+		Scene *s = static_cast<Scene *>(win);
+		if (!sceneAlive(s))
+			return false;
+		for (const MbGrdVizPoint &p : pts) {
+			const double xyz[3] = {p.x, p.y, p.z};
+			addSymbols(s, xyz, 1, "c", p.sizePx, /*filled=*/1, p.rgb[0], p.rgb[1], p.rgb[2], 0.0, 0.0, 0.0, 1.0, p.name,
+			           nullptr, /*oneShot=*/true);
+			if (master && master[0])
+				s->groupMaster[p.name] = master;
+		}
+		rebuildSceneObjects(s);
+		if (s->widget && s->widget->renderWindow())
+			s->widget->renderWindow()->Render();
+		return true;
+	};
+	h.removePoint = [](void *win, const char *name) {
+		Scene *s = static_cast<Scene *>(win);
+		if (!sceneAlive(s) || !name || !name[0])
+			return false;
+		sceneDeleteGroup(s, {GroupChild(GroupChild::SymbolLayer, std::string(name))});
+		return true;
+	};
+	h.addLines = [](void *win, const double *xyz, int npts, const int *segoff, int nseg, double r, double g, double b,
+	                double width, const char *name, const char *group) {
+		return gmtvtk_add_overlay_ex2_h(win, xyz, npts, segoff, nseg, /*mode=lines*/1, r, g, b, width, 0.0, name, group, "",
+		                                /*noConvertToPoints=*/0, /*zIsPlaceholder=*/1) == 1;
+	};
+	h.addColoredPoints = [](void *win, const double *xyz, int npts, const double *rgb, double sizePx, const char *name,
+	                        const char *master) {
+		Scene *s = static_cast<Scene *>(win);
+		if (!sceneAlive(s) || npts <= 0)
+			return false;
+		addSymbols(s, xyz, npts, "c", sizePx, /*filled=*/1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, std::string(name ? name : ""),
+		           nullptr, false, nullptr, rgb);
+		if (master && master[0])
+			s->groupMaster[std::string(name ? name : "")] = master;
+		rebuildSceneObjects(s);
+		return true;
+	};
+	h.render = [](void *win) {
+		Scene *s = static_cast<Scene *>(win);
+		if (sceneAlive(s) && s->widget && s->widget->renderWindow())
+			s->widget->renderWindow()->Render();
+	};
+	h.openMbedit = [](QWidget *parent, const QString &file, int format) {
+		return mbeditOpenWindow(parent, mbeditViewerHost(), file, format);
+	};
+	h.openMbeditviz = [](QWidget *parent, const QString &file, int format) {
+		return mbeditvizOpenWindow(parent, mbeditvizViewerHost(), file, format, 0);
+	};
+	h.openMbvelocity = [](QWidget *parent, const QString &file, int format) {
+		return mbvelocityOpenWindow(parent, mbvelocityViewerHost(), file, format);
+	};
+	return h;
+}
+
+// Open mbgrdviz (or raise it), bound to the window `handle` (may be null); with a grid `file`, it is
+// opened as mbgrdviz -I opens one (into that window when it is empty, else a new one). 1 = open.
+GMTVTK_API int gmtvtk_mbgrdviz_open(void *handle, const char *file) {
+	ensureApp();
+	Scene *s = static_cast<Scene *>(handle);
+	return mbgrdvizOpenWindow(nullptr, mbgrdvizViewerHost(), sceneAlive(s) ? s : nullptr, QString::fromUtf8(file ? file : ""))
+	           ? 1 : 0;
+}
+// [open, nviews, current_view_ready, nroute, nsite, nnav, nvector, working_route] -> out[0:n-1]
+GMTVTK_API int gmtvtk_mbgrdviz_state(int *out, int n) {
+	return mbgrdvizState(out, n);
+}
+// the engine's file operations: what = MBGRDVIZ_OPEN_* / MBGRDVIZ_SAVE_* (deps/src/mbgrdviz/mbgrdviz.h)
+GMTVTK_API int gmtvtk_mbgrdviz_open_file(int what, const char *path) {
+	return mbgrdvizOpen(what, QString::fromUtf8(path ? path : "")) ? 1 : 0;
+}
+GMTVTK_API int gmtvtk_mbgrdviz_save(int what, const char *path) {
+	return mbgrdvizSave(what, QString::fromUtf8(path ? path : "")) ? 1 : 0;
+}
+// the route the writers and the profile take (empty: all routes)
+GMTVTK_API int gmtvtk_mbgrdviz_select_route(const char *name) {
+	return mbgrdvizSelectRoute(QString::fromUtf8(name ? name : "")) ? 1 : 0;
+}
+// the survey area: a two-point line of the window by name, and its width in metres
+GMTVTK_API int gmtvtk_mbgrdviz_set_area(const char *line, double width) {
+	return mbgrdvizSetArea(QString::fromUtf8(line ? line : ""), width) ? 1 : 0;
+}
+GMTVTK_API int gmtvtk_mbgrdviz_set_region(const char *rect) {
+	return mbgrdvizSetRegion(QString::fromUtf8(rect ? rect : "")) ? 1 : 0;
+}
+// the survey dialog's values, then Generate Route; the route's name -> name_out (cap bytes); 1 = made
+GMTVTK_API int gmtvtk_mbgrdviz_generate_survey(const int *p, const char *name, char *name_out, int cap) {
+	if (!p)
+		return 0;
+	const QString r = mbgrdvizGenerateSurvey(p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7], p[8], p[9], p[10],
+	                                         QString::fromUtf8(name ? name : ""));
+	if (name_out && cap > 0)
+		snprintf(name_out, size_t(cap), "%s", r.toUtf8().constData());
+	return r.isEmpty() ? 0 : 1;
+}
+GMTVTK_API int gmtvtk_mbgrdviz_survey_dismiss(void) {
+	return mbgrdvizSurveyDismiss() ? 1 : 0;
+}
+GMTVTK_API int gmtvtk_mbgrdviz_open_region(void) {
+	return mbgrdvizOpenRegion() ? 1 : 0;
+}
+GMTVTK_API int gmtvtk_mbgrdviz_select_nav(int nav, int selected) {
+	return mbgrdvizSelectNav(nav, selected != 0) ? 1 : 0;
+}
+GMTVTK_API int gmtvtk_mbgrdviz_close(void) {
+	return mbgrdvizClose() ? 1 : 0;
+}
+#endif // GMTVTK_MBGRDVIZ
+
+#ifdef GMTVTK_PCE
+// EXPERIMENTAL (IGMT_WITH_PCE in CMakeLists.txt; Julia lists these in _LIB_OPTIONAL).
+// The point cloud editor: mbgrdviz's own window doors (a window's grid, the file door), the swath
+// editor's host with the busy notice named for this tool.
+static PceHost pceViewerHost() {
+	PceHost h;
+	h.base = mbeditViewerHost();
+	h.base.busyText = [](const char *text) {      // the app's ONE busy notice, named for this tool
+		if (!g_progress)
+			showBusyDialog("pointCloudEditor");
+		if (g_progress) {
+			g_progress->setLabelText(QString::fromUtf8(text));
+			QApplication::processEvents();
+		}
+	};
+	const MbGrdVizHost gv = mbgrdvizViewerHost();
+	h.alive = gv.alive;
+	h.grid = gv.grid;
+	h.openFile = gv.openFile;
+	return h;
+}
+
+// Open the point cloud editor (or raise it) on the grid of window `handle` (may be null) or on `file`
+// (a grid, opened in a window of its own, or a swath file .mb*); elev = the original's -elev. 1 = open.
+GMTVTK_API int gmtvtk_pce_open(void *handle, const char *file, int elev) {
+	ensureApp();
+	Scene *s = static_cast<Scene *>(handle);
+	return pceOpenWindow(nullptr, pceViewerHost(), sceneAlive(s) ? s : nullptr, QString::fromUtf8(file ? file : ""),
+	                     elev != 0) ? 1 : 0;
+}
+// [open, npoints, ncells, nbad, editmode, selecting, elevprofile, nprofile] -> out[0:n-1]
+GMTVTK_API int gmtvtk_pce_state(int *out, int n) {
+	return pceState(out, n);
+}
+GMTVTK_API int gmtvtk_pce_set_edit_mode(int mode) {
+	return pceSetEditMode(mode) ? 1 : 0;
+}
+GMTVTK_API int gmtvtk_pce_set_vertical_exagg(double value) {
+	return pceSetVerticalExagg(value) ? 1 : 0;
+}
+// a rubber band released in select mode, window pixels from the top left
+GMTVTK_API int gmtvtk_pce_rubber_band(int x0, int y0, int x1, int y1) {
+	return pceRubberBand(x0, y0, x1, y1) ? 1 : 0;
+}
+GMTVTK_API int gmtvtk_pce_set_elev_profile(int on) {
+	return pceSetElevProfile(on != 0) ? 1 : 0;
+}
+GMTVTK_API int gmtvtk_pce_canvas_size(int *out2) {
+	return (out2 && pceCanvasSize(&out2[0], &out2[1])) ? 1 : 0;
+}
+GMTVTK_API int gmtvtk_pce_save_png(const char *path) {
+	return (path && pceSavePng(QString::fromUtf8(path))) ? 1 : 0;
+}
+GMTVTK_API int gmtvtk_pce_close(void) {
+	return pceClose() ? 1 : 0;
+}
+#endif // GMTVTK_PCE
 
 // Set the path to the world logo image painted in the basemap picker (data/etopo4_logo.jpg).
 GMTVTK_API void gmtvtk_set_basemap_logo(const char *path) {
@@ -2422,23 +2950,9 @@ GMTVTK_API void gmtvtk_set_shade_intensity_h(void *handle, const float *inten, i
 	// shades from it through `wExt`/`lExt` in bakeAquaShade regardless of the look flags.
 	AquaSideShade &A = (side == 1) ? s->aquaLandShade : s->aquaWaterShade;
 	A.valid = true;
-	// DIRECT GRID ILLUMINATION MEANS DIRECT. GMT already computed one intensity per grid node; the
-	// only honest way to consume it is ONE bake -- CPT(z) x intensity -> the drape texture
-	// (rebakeLayerImage), which is what `layerImgMode` is. On the BASE surface the same reflectance is
-	// otherwise re-derived per VERTEX, per TILE, per LOD level by hillshadeMapper, so every zoom
-	// re-illuminates the grid: the mesh, not the data, decides how often the light is computed.
-	//
-	// ONLY when the base IS the grid the window is showing. A dropped grid extra is a single mesh with
-	// no LOD pyramid — hillshadeMapper bakes it once, which is already direct — and rebuilding the base
-	// underneath it would re-make a layer the user is not even looking at. Asked through the SAME
-	// resolveActiveGrid every other "which layer?" question uses (activeGridName).
-	// …and NEVER for a two-sided (Aquamoto) layer, in either geometry. Rebuilding the base is a
-	// WHOLE-SURFACE act: a reflectance pushed for ONE side would re-make the water's half of the
-	// picture too, which is one side's operation reaching the other. `aquaBathyZ` is what says this
-	// layer has two surfaces (the flat form is already excluded by customLayerTexture above).
-	if (activeGridName(s) == s->surfName && !s->layerImgMode && !s->customLayerTexture &&
-	    s->aquaBathyZ.empty() && !s->gridZ.empty() && s->gnx > 1 && s->gny > 1)
-		rebuildBaseFromStored(s, /*asImage=*/true);
+	// A SHADED GRID HAS NO DRAPE. The reflectance is consumed on the grid's OWN surface by
+	// hillshadeMapper (its extern-shade branch), the same function every other method lights through —
+	// never by rebuilding the base as a flat image with a drape texture.
 	applyShading(s);
 }
 

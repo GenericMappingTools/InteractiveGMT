@@ -1,0 +1,457 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>MbGrdVizWindow</class>
+ <widget class="QMainWindow" name="MbGrdVizWindow">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>520</width>
+    <height>470</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>MBgrdviz</string>
+  </property>
+  <widget class="QWidget" name="centralwidget">
+   <widget class="QLabel" name="labelView">
+    <property name="geometry">
+     <rect>
+      <x>10</x>
+      <y>10</y>
+      <width>60</width>
+      <height>24</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>View:</string>
+    </property>
+   </widget>
+   <widget class="QComboBox" name="viewCombo">
+    <property name="geometry">
+     <rect>
+      <x>70</x>
+      <y>10</y>
+      <width>440</width>
+      <height>24</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>The InteractiveGMT window the actions work on. A window joins this list when Tools &gt; Survey planning (mbgrdviz) is chosen in it, or when a grid is opened from here.</string>
+    </property>
+   </widget>
+   <widget class="QGroupBox" name="groupRoutes">
+    <property name="geometry">
+     <rect>
+      <x>10</x>
+      <y>45</y>
+      <width>500</width>
+      <height>80</height>
+     </rect>
+    </property>
+    <property name="title">
+     <string>Routes</string>
+    </property>
+    <widget class="QLabel" name="labelRoute">
+     <property name="geometry">
+      <rect>
+       <x>10</x>
+       <y>22</y>
+       <width>60</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Route:</string>
+     </property>
+    </widget>
+    <widget class="QComboBox" name="routeCombo">
+     <property name="geometry">
+      <rect>
+       <x>70</x>
+       <y>22</y>
+       <width>420</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>The selected route: the route writers save it alone, and Save Profile File follows it. "All routes" saves every one. Every open polyline of the window is a route.</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="labelRouteInfo">
+     <property name="geometry">
+      <rect>
+       <x>10</x>
+       <y>50</y>
+       <width>480</width>
+       <height>22</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string/>
+     </property>
+    </widget>
+   </widget>
+   <widget class="QGroupBox" name="groupNav">
+    <property name="geometry">
+     <rect>
+      <x>10</x>
+      <y>130</y>
+      <width>500</width>
+      <height>140</height>
+     </rect>
+    </property>
+    <property name="title">
+     <string>Navigation</string>
+    </property>
+    <widget class="QListWidget" name="navList">
+     <property name="geometry">
+      <rect>
+       <x>10</x>
+       <y>20</y>
+       <width>480</width>
+       <height>110</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>Check the lines the Action menu's editors open.</string>
+     </property>
+    </widget>
+   </widget>
+   <widget class="QGroupBox" name="groupShapes">
+    <property name="geometry">
+     <rect>
+      <x>10</x>
+      <y>275</y>
+      <width>500</width>
+      <height>120</height>
+     </rect>
+    </property>
+    <property name="title">
+     <string>Area and region</string>
+    </property>
+    <widget class="QLabel" name="labelArea">
+     <property name="geometry">
+      <rect>
+       <x>10</x>
+       <y>22</y>
+       <width>120</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Area centre line:</string>
+     </property>
+    </widget>
+    <widget class="QComboBox" name="areaCombo">
+     <property name="geometry">
+      <rect>
+       <x>130</x>
+       <y>22</y>
+       <width>360</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>A line drawn in the window (two points): the centre line of the survey area, from its start to its end.</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="labelAreaWidth">
+     <property name="geometry">
+      <rect>
+       <x>10</x>
+       <y>52</y>
+       <width>120</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Area width (m):</string>
+     </property>
+    </widget>
+    <widget class="QDoubleSpinBox" name="areaWidth">
+     <property name="geometry">
+      <rect>
+       <x>130</x>
+       <y>52</y>
+       <width>140</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>The width of the survey area across its centre line. 0 = half its length, mbview's default.</string>
+     </property>
+     <property name="decimals">
+      <number>1</number>
+     </property>
+     <property name="maximum">
+      <double>100000000.000000000000000</double>
+     </property>
+    </widget>
+    <widget class="QLabel" name="labelRegion">
+     <property name="geometry">
+      <rect>
+       <x>10</x>
+       <y>82</y>
+       <width>120</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Region:</string>
+     </property>
+    </widget>
+    <widget class="QComboBox" name="regionCombo">
+     <property name="geometry">
+      <rect>
+       <x>130</x>
+       <y>82</y>
+       <width>360</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>A rectangle drawn in the window: the region Open Region as New View extracts.</string>
+     </property>
+    </widget>
+   </widget>
+   <widget class="QLabel" name="labelStatus">
+    <property name="geometry">
+     <rect>
+      <x>10</x>
+      <y>400</y>
+      <width>500</width>
+      <height>40</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string/>
+    </property>
+    <property name="wordWrap">
+     <bool>true</bool>
+    </property>
+   </widget>
+  </widget>
+  <widget class="QMenuBar" name="menubar">
+   <property name="geometry">
+    <rect>
+     <x>0</x>
+     <y>0</y>
+     <width>520</width>
+     <height>22</height>
+    </rect>
+   </property>
+   <widget class="QMenu" name="menuFile">
+    <property name="title">
+     <string>File</string>
+    </property>
+    <widget class="QMenu" name="menuSaveRouteAs">
+     <property name="title">
+      <string>Save Route As</string>
+     </property>
+     <addaction name="actionSaveRisiHeading"/>
+     <addaction name="actionSaveRisiNoHeading"/>
+     <addaction name="actionSaveRisi2Heading"/>
+     <addaction name="actionSaveRisi2NoHeading"/>
+     <addaction name="separator"/>
+     <addaction name="actionSaveDegDecMin"/>
+     <addaction name="actionSaveLnw"/>
+     <addaction name="actionSaveGreenseaYml"/>
+     <addaction name="actionSaveTecdisLst"/>
+     <addaction name="actionSaveKongsbergDp"/>
+     <addaction name="actionSaveSisAsciiPlan1"/>
+     <addaction name="actionSaveSisAsciiPlan2"/>
+    </widget>
+    <addaction name="actionOpenPrimary"/>
+    <addaction name="actionOpenOverlay"/>
+    <addaction name="separator"/>
+    <addaction name="actionOpenSite"/>
+    <addaction name="actionOpenRoute"/>
+    <addaction name="actionOpenNav"/>
+    <addaction name="actionOpenSwath"/>
+    <addaction name="actionOpenVector"/>
+    <addaction name="separator"/>
+    <addaction name="actionSaveSite"/>
+    <addaction name="actionSaveRoute"/>
+    <addaction name="actionSaveRouteReversed"/>
+    <addaction name="menuSaveRouteAs"/>
+    <addaction name="actionSaveProfile"/>
+    <addaction name="separator"/>
+    <addaction name="actionQuit"/>
+   </widget>
+   <widget class="QMenu" name="menuAction">
+    <property name="title">
+     <string>Action</string>
+    </property>
+    <addaction name="actionMbedit"/>
+    <addaction name="actionMbeditviz"/>
+    <addaction name="actionMbnavedit"/>
+    <addaction name="actionMbvelocitytool"/>
+    <addaction name="separator"/>
+    <addaction name="actionOpenRegion"/>
+    <addaction name="actionMakeSurvey"/>
+   </widget>
+   <widget class="QMenu" name="menuHelp">
+    <property name="title">
+     <string>Help</string>
+    </property>
+    <addaction name="actionAbout"/>
+   </widget>
+   <addaction name="menuFile"/>
+   <addaction name="menuAction"/>
+   <addaction name="menuHelp"/>
+  </widget>
+  <action name="actionOpenPrimary">
+   <property name="text">
+    <string>Open Primary Grid</string>
+   </property>
+  </action>
+  <action name="actionOpenOverlay">
+   <property name="text">
+    <string>Open Overlay Grid</string>
+   </property>
+  </action>
+  <action name="actionOpenSite">
+   <property name="text">
+    <string>Open Site File</string>
+   </property>
+  </action>
+  <action name="actionOpenRoute">
+   <property name="text">
+    <string>Open Route File</string>
+   </property>
+  </action>
+  <action name="actionOpenNav">
+   <property name="text">
+    <string>Open Navigation</string>
+   </property>
+  </action>
+  <action name="actionOpenSwath">
+   <property name="text">
+    <string>Open Swath Data</string>
+   </property>
+  </action>
+  <action name="actionOpenVector">
+   <property name="text">
+    <string>Open Vector File</string>
+   </property>
+  </action>
+  <action name="actionSaveSite">
+   <property name="text">
+    <string>Save Site File</string>
+   </property>
+  </action>
+  <action name="actionSaveRoute">
+   <property name="text">
+    <string>Save Route File</string>
+   </property>
+  </action>
+  <action name="actionSaveRouteReversed">
+   <property name="text">
+    <string>Save Route File Reversed</string>
+   </property>
+  </action>
+  <action name="actionSaveRisiHeading">
+   <property name="text">
+    <string>Save Risi Script File (variable heading)</string>
+   </property>
+  </action>
+  <action name="actionSaveRisiNoHeading">
+   <property name="text">
+    <string>Save Risi Script File (static heading)</string>
+   </property>
+  </action>
+  <action name="actionSaveRisi2Heading">
+   <property name="text">
+    <string>Save Risi 2 Script File (variable heading)</string>
+   </property>
+  </action>
+  <action name="actionSaveRisi2NoHeading">
+   <property name="text">
+    <string>Save Risi 2 Script File (static heading)</string>
+   </property>
+  </action>
+  <action name="actionSaveDegDecMin">
+   <property name="text">
+    <string>Save Route as Degrees + Decimal Minutes File</string>
+   </property>
+  </action>
+  <action name="actionSaveLnw">
+   <property name="text">
+    <string>Save Route as Hypack LNW File</string>
+   </property>
+  </action>
+  <action name="actionSaveGreenseaYml">
+   <property name="text">
+    <string>Save Route as Greensea YML File</string>
+   </property>
+  </action>
+  <action name="actionSaveTecdisLst">
+   <property name="text">
+    <string>Save Route as TECDIS LST File</string>
+   </property>
+  </action>
+  <action name="actionSaveKongsbergDp">
+   <property name="text">
+    <string>Save Route as Kongsberg DP waypoint File</string>
+   </property>
+  </action>
+  <action name="actionSaveSisAsciiPlan1">
+   <property name="text">
+    <string>Save Route as SIS ASCIIPlan line File</string>
+   </property>
+  </action>
+  <action name="actionSaveSisAsciiPlan2">
+   <property name="text">
+    <string>Save Route as SIS ASCIIPlan route File</string>
+   </property>
+  </action>
+  <action name="actionSaveProfile">
+   <property name="text">
+    <string>Save Profile File</string>
+   </property>
+  </action>
+  <action name="actionQuit">
+   <property name="text">
+    <string>Quit</string>
+   </property>
+  </action>
+  <action name="actionMbedit">
+   <property name="text">
+    <string>Open Selected Nav in MBedit</string>
+   </property>
+  </action>
+  <action name="actionMbeditviz">
+   <property name="text">
+    <string>Open Selected Nav in MBeditviz</string>
+   </property>
+  </action>
+  <action name="actionMbnavedit">
+   <property name="text">
+    <string>Open Selected Nav in MBnavedit</string>
+   </property>
+  </action>
+  <action name="actionMbvelocitytool">
+   <property name="text">
+    <string>Open Selected Nav in MBvelocitytool</string>
+   </property>
+  </action>
+  <action name="actionOpenRegion">
+   <property name="text">
+    <string>Open Region as New View</string>
+   </property>
+  </action>
+  <action name="actionMakeSurvey">
+   <property name="text">
+    <string>Generate Survey Route from Area</string>
+   </property>
+  </action>
+  <action name="actionAbout">
+   <property name="text">
+    <string>About</string>
+   </property>
+  </action>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

@@ -1968,6 +1968,70 @@ static void closeBusyDialog() {
 	QApplication::processEvents();
 }
 
+#ifdef GMTVTK_MBEDIT
+// EXPERIMENTAL (IGMT_WITH_MBEDIT in CMakeLists.txt). What the swath editor (deps/src/mbedit/, its
+// own translation unit) needs from the viewer, handed over because it cannot call these statics by
+// name. The ONE place it is built: Tools > Swath editor and gmtvtk_mbedit_open both take it from here.
+static MbEditHost mbeditViewerHost() {
+	MbEditHost h;
+	h.uiDir = gmtvtkUiDir();
+	h.icon = appIcon();
+	h.busyText = [](const char *text) {           // the app's ONE busy notice, re-labelled as it goes
+		if (!g_progress)
+			showBusyDialog("MBedit");
+		if (g_progress) {
+			g_progress->setLabelText(QString::fromUtf8(text));
+			QApplication::processEvents();
+		}
+	};
+	h.busyOff = []() { closeBusyDialog(); };
+	h.windowOpened = []() { g_openWindows++; };   // a top-level the Julia pump must keep alive
+	h.windowClosed = []() { if (g_openWindows > 0) g_openWindows--; };
+	h.startDir = []() { return prefStartDir(); };
+	h.rememberDir = [](const QString &path) { rememberStartDir(path); };
+	h.setting = [](const char *key) { return igmtSettings().value(key).toString(); };
+	h.setSetting = [](const char *key, const QString &value) { igmtSettings().setValue(key, value); };
+	return h;
+}
+#endif // GMTVTK_MBEDIT
+
+#ifdef GMTVTK_MBVELOCITY
+// EXPERIMENTAL (IGMT_WITH_MBVELOCITYTOOL). The sound velocity tool (deps/src/mbvelocitytool/) is
+// handed the swath editor's host, verbatim: only the busy notice it raises carries its own name.
+static MbEditHost mbvelocityViewerHost() {
+	MbEditHost h = mbeditViewerHost();
+	h.busyText = [](const char *text) {
+		if (!g_progress)
+			showBusyDialog("MBvelocitytool");
+		if (g_progress) {
+			g_progress->setLabelText(QString::fromUtf8(text));
+			QApplication::processEvents();
+		}
+	};
+	return h;
+}
+#endif // GMTVTK_MBVELOCITY
+
+#ifdef GMTVTK_MBEDITVIZ
+// EXPERIMENTAL (IGMT_WITH_MBEDITVIZ). What mbeditviz (deps/src/mbeditviz/) needs from the viewer: the
+// swath editor's host plus the survey map, an ordinary window of this viewer driven through the C
+// API's own grid/overlay calls. Defined in 90_c_api.cpp, next to the calls it wraps.
+static MbEditVizHost mbeditvizViewerHost();
+#endif // GMTVTK_MBEDITVIZ
+
+#ifdef GMTVTK_MBGRDVIZ
+// EXPERIMENTAL (IGMT_WITH_MBGRDVIZ). What mbgrdviz (deps/src/mbgrdviz/) needs from the viewer: its
+// windows' grids and elements, read and added through the viewer's own builders. Defined in
+// 90_c_api.cpp, next to the calls it wraps.
+static MbGrdVizHost mbgrdvizViewerHost();
+#endif // GMTVTK_MBGRDVIZ
+
+#ifdef GMTVTK_PCE
+// EXPERIMENTAL (IGMT_WITH_PCE). The point cloud editor gets the swath editor's host plus mbgrdviz's
+// window doors (a window's grid, the file door). Defined in 90_c_api.cpp.
+static PceHost pceViewerHost();
+#endif // GMTVTK_PCE
+
 // EVERY route that opens a data file goes through here: drag-and-drop, File > Open, Recent Files,
 // the desktop-icon launch. The point is WHERE the dialog is raised — on this side of the call, before
 // Julia is entered. Julia cannot do it for itself on the first open: its own `_load_dialog_begin` sits

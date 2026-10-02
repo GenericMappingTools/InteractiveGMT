@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  mbedit_filelist.ui - File > File Selection List of the swath editor (mbedit's form_filelist):
+  every file opened so far, its lock and edit-save-file state, which one is loaded.
+  Loaded at runtime by src/mbedit/mbedit_window.cpp.
+-->
+<ui version="4.0">
+ <class>MbEditFileListDialog</class>
+ <widget class="QDialog" name="MbEditFileListDialog">
+  <property name="geometry">
+   <rect><x>0</x><y>0</y><width>720</width><height>360</height></rect>
+  </property>
+  <property name="windowTitle">
+   <string>MBedit - File Selection List</string>
+  </property>
+  <layout class="QVBoxLayout" name="mainLayout">
+   <item>
+    <widget class="QLabel" name="listLabel">
+     <property name="text"><string>Files Available for Editing</string></property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QListWidget" name="fileList">
+     <property name="toolTip"><string>&lt;loaded&gt; the file being edited, &lt;Locked&gt; another program holds it, &lt;esf&gt; it has saved edits</string></property>
+    </widget>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="outputRow">
+     <item>
+      <widget class="QLabel" name="outputLabel">
+       <property name="text"><string>Output Mode:</string></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QRadioButton" name="outputEdit">
+       <property name="text"><string>Output Edits</string></property>
+       <property name="checked"><bool>true</bool></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QRadioButton" name="outputBrowse">
+       <property name="text"><string>Browse Only</string></property>
+      </widget>
+     </item>
+     <item>
+      <spacer name="outputSpacer">
+       <property name="orientation"><enum>Qt::Horizontal</enum></property>
+       <property name="sizeHint" stdset="0"><size><width>20</width><height>10</height></size></property>
+      </spacer>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="buttonRow">
+     <item>
+      <widget class="QPushButton" name="editButton">
+       <property name="toolTip"><string>Close the file being edited (saving its edits) and load the selected one</string></property>
+       <property name="text"><string>Edit Selected File</string></property>
+       <property name="autoDefault"><bool>false</bool></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="removeButton">
+       <property name="toolTip"><string>Take the selected file off the list (not the one being edited)</string></property>
+       <property name="text"><string>Remove Selected File</string></property>
+       <property name="autoDefault"><bool>false</bool></property>
+      </widget>
+     </item>
+     <item>
+      <spacer name="buttonSpacer">
+       <property name="orientation"><enum>Qt::Horizontal</enum></property>
+       <property name="sizeHint" stdset="0"><size><width>20</width><height>10</height></size></property>
+      </spacer>
+     </item>
+     <item>
+      <widget class="QPushButton" name="dismissButton">
+       <property name="text"><string>Dismiss</string></property>
+       <property name="autoDefault"><bool>false</bool></property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

@@ -256,6 +256,21 @@
 #include <vtkTriangleFilter.h>
 #include <vtkContourTriangulator.h>
 #include "third_party/earcut/earcut.hpp"   // mapbox earcut (ISC): polygon-with-holes triangulation (overlayBuildFill)
+#ifdef GMTVTK_MBEDIT                        // EXPERIMENTAL swath editor, switched in CMakeLists.txt (IGMT_WITH_MBEDIT)
+#include "mbedit/mbedit_window.h"
+#endif
+#ifdef GMTVTK_MBVELOCITY                    // EXPERIMENTAL sound velocity tool (IGMT_WITH_MBVELOCITYTOOL)
+#include "mbvelocitytool/mbvelocity_window.h"
+#endif
+#ifdef GMTVTK_MBEDITVIZ                     // EXPERIMENTAL mbeditviz (IGMT_WITH_MBEDITVIZ)
+#include "mbeditviz/mbeditviz_window.h"
+#endif
+#ifdef GMTVTK_MBGRDVIZ                      // EXPERIMENTAL mbgrdviz (IGMT_WITH_MBGRDVIZ)
+#include "mbgrdviz/mbgrdviz_window.h"
+#endif
+#ifdef GMTVTK_PCE                           // EXPERIMENTAL pointCloudEditor (IGMT_WITH_PCE)
+#include "pointcloudeditor/pce_window.h"
+#endif
 #include <vtkAppendPolyData.h>
 #include <vtkColorTransferFunction.h>
 #include <vtkDiscretizableColorTransferFunction.h>

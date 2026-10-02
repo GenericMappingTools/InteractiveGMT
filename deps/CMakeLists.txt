@@ -181,7 +181,93 @@ set(SAT_CODE_SRC
   src/sat_code/basics.cpp src/sat_code/common.cpp src/sat_code/get_el.cpp
   src/sat_code/tle_out.cpp)
 
-set(GMTVTK_SRC src/gmtvtk.cpp src/mbgrid.c src/satellite.cpp ${SAT_CODE_SRC})
+# EXPERIMENTAL -- the swath bathymetry editor (MB-System's mbedit, ported), in src/mbedit/.
+# ON/OFF with this ONE line: comment it out and the editor is not built at all (no sources, no
+# Tools menu entry, no gmtvtk_mbedit_* exports -- every hook in the viewer sits behind
+# #ifdef GMTVTK_MBEDIT). A plain variable on purpose, not option(): an option is CACHED, so
+# commenting it out would leave it on. It also switches itself off when src/mbedit/ is absent.
+set(IGMT_WITH_MBEDIT ON)
+
+# src/mbedit/ keeps the editor apart from the viewer's code: mbedit.c is the engine (plain C,
+# like mbgrid.c) and mbedit_window.cpp its Qt window, both their own translation units; the
+# viewer reaches the editor only through mbedit_window.h. MB-System's MBIO library is NOT
+# linked: mbedit.c loads it at run time, so nothing here needs MB-System to build.
+set(MBEDIT_SRC)
+if(IGMT_WITH_MBEDIT AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/mbedit/mbedit.c")
+  set(MBEDIT_SRC src/mbedit/mbedit.c src/mbedit/mbedit_window.cpp)
+  add_compile_definitions(GMTVTK_MBEDIT)
+  if(MSVC)
+    # the engine keeps mbedit_prog.c's own sprintf/strcpy, line for line
+    set_source_files_properties(src/mbedit/mbedit.c PROPERTIES COMPILE_DEFINITIONS _CRT_SECURE_NO_WARNINGS)
+  endif()
+  message(STATUS "gmtvtk: building the EXPERIMENTAL swath editor (src/mbedit/)")
+endif()
+
+# EXPERIMENTAL -- the water sound velocity profile editor (MB-System's mbvelocitytool, ported), in
+# src/mbvelocitytool/. ON/OFF with this ONE line, like the swath editor above (Tools menu entry and
+# gmtvtk_mbvelocity_* exports sit behind #ifdef GMTVTK_MBVELOCITY). It reads swath files through
+# the swath editor's run-time MBIO loader, so it is built only when the editor is.
+set(IGMT_WITH_MBVELOCITYTOOL ON)
+
+set(MBVELOCITY_SRC)
+if(IGMT_WITH_MBVELOCITYTOOL AND MBEDIT_SRC AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/mbvelocitytool/mbvelocity.c")
+  set(MBVELOCITY_SRC src/mbvelocitytool/mbvelocity.c src/mbvelocitytool/mbvelocity_window.cpp)
+  add_compile_definitions(GMTVTK_MBVELOCITY)
+  if(MSVC)
+    # the engine keeps mbvelocity_prog.c's own sprintf/strcpy, line for line
+    set_source_files_properties(src/mbvelocitytool/mbvelocity.c PROPERTIES COMPILE_DEFINITIONS _CRT_SECURE_NO_WARNINGS)
+  endif()
+  message(STATUS "gmtvtk: building the EXPERIMENTAL sound velocity tool (src/mbvelocitytool/)")
+endif()
+
+# EXPERIMENTAL -- the geographic bathymetry editor and patch test tool (MB-System's mbeditviz, ported),
+# in src/mbeditviz/. ON/OFF with this ONE line (Tools menu entry and gmtvtk_mbeditviz_* exports sit
+# behind #ifdef GMTVTK_MBEDITVIZ). Like the sound velocity tool it reads swath files through the swath
+# editor's run-time MBIO loader, so it is built only when the editor is.
+set(IGMT_WITH_MBEDITVIZ ON)
+
+set(MBEDITVIZ_SRC)
+if(IGMT_WITH_MBEDITVIZ AND MBEDIT_SRC AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/mbeditviz/mbeditviz.c")
+  set(MBEDITVIZ_SRC src/mbeditviz/mbeditviz.c src/mbeditviz/mbeditviz_window.cpp src/mbeditviz/mb3dsoundings_window.cpp)
+  add_compile_definitions(GMTVTK_MBEDITVIZ)
+  if(MSVC)
+    # the engine keeps mbeditviz_prog.c's own sprintf/strcpy/strdup, line for line
+    set_source_files_properties(src/mbeditviz/mbeditviz.c PROPERTIES COMPILE_DEFINITIONS "_CRT_SECURE_NO_WARNINGS;_CRT_NONSTDC_NO_WARNINGS")
+  endif()
+  message(STATUS "gmtvtk: building the EXPERIMENTAL mbeditviz (src/mbeditviz/)")
+endif()
+
+# EXPERIMENTAL -- the survey planning and display tool (MB-System's mbgrdviz, ported onto this viewer's
+# windows), in src/mbgrdviz/. ON/OFF with this ONE line (Tools menu entry and gmtvtk_mbgrdviz_* exports
+# sit behind #ifdef GMTVTK_MBGRDVIZ). It reads swath files through the swath editor's run-time MBIO
+# loader and launches the ported editors, so it is built only with mbedit, mbeditviz and mbvelocitytool.
+set(IGMT_WITH_MBGRDVIZ ON)
+
+set(MBGRDVIZ_SRC)
+if(IGMT_WITH_MBGRDVIZ AND MBEDIT_SRC AND MBEDITVIZ_SRC AND MBVELOCITY_SRC AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/mbgrdviz/mbgrdviz.c")
+  set(MBGRDVIZ_SRC src/mbgrdviz/mbgrdviz.c src/mbgrdviz/mbgrdviz_mbview.c src/mbgrdviz/mbgrdviz_window.cpp)
+  add_compile_definitions(GMTVTK_MBGRDVIZ)
+  if(MSVC)
+    # mbgrdviz_callbacks.c's and libmbview's own sprintf/strcpy, line for line
+    set_source_files_properties(src/mbgrdviz/mbgrdviz.c src/mbgrdviz/mbgrdviz_mbview.c PROPERTIES COMPILE_DEFINITIONS "_CRT_SECURE_NO_WARNINGS;_CRT_NONSTDC_NO_WARNINGS")
+  endif()
+  message(STATUS "gmtvtk: building the EXPERIMENTAL mbgrdviz (src/mbgrdviz/)")
+endif()
+
+# EXPERIMENTAL -- the point cloud editor (MB-System's pointCloudEditor, ported into a window of its own), in
+# src/pointcloudeditor/. ON/OFF with this ONE line (Tools menu entry and gmtvtk_pce_* exports sit behind
+# #ifdef GMTVTK_PCE). It grids swath files with the mbeditviz engine and projects through mbgrdviz's MBIO
+# glue, so it is built only with both.
+set(IGMT_WITH_PCE ON)
+
+set(PCE_SRC)
+if(IGMT_WITH_PCE AND MBEDITVIZ_SRC AND MBGRDVIZ_SRC AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/pointcloudeditor/pce_window.cpp")
+  set(PCE_SRC src/pointcloudeditor/pce_window.cpp)
+  add_compile_definitions(GMTVTK_PCE)
+  message(STATUS "gmtvtk: building the EXPERIMENTAL pointCloudEditor (src/pointcloudeditor/)")
+endif()
+
+set(GMTVTK_SRC src/gmtvtk.cpp src/mbgrid.c src/satellite.cpp ${SAT_CODE_SRC} ${MBEDIT_SRC} ${MBVELOCITY_SRC} ${MBEDITVIZ_SRC} ${MBGRDVIZ_SRC} ${PCE_SRC})
 
 # deps/ui/*.ui are loaded at RUNTIME (QUiLoader, see FocalMechanismsDialog in 70_window.cpp) for
 # dialogs where the .ui must stay the single source of truth — no hand-ported C++ to fall out of

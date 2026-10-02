@@ -3031,12 +3031,20 @@ static void rebuildSceneObjects(Scene *s) {
 			        [s](const QPoint &g) { surfaceObjectMenu(s, g); },
 			        "Checkbox toggles the whole group · right-click for save / stacking",
 			        /*startFolded=*/true);                                // just the grid row until opened
-			makeRow("Surface", IC_Surface, baseVis,                      // Surface leaf handle kept as a child
-			        [s, sp](bool on) { sp->SetVisibility(on ? 1 : 0); refreshGridColorbar(s); },
+			// A grid held as a flat picture (layerImgMode) IS its surface: the texture on its quad is the
+			// grid's own shaded colours. A shaded grid has no "Image drape" row — the Surface row is it,
+			// shows the picture's state and shows/hides the picture with the quad.
+			const bool ownPicture = s->layerImgMode && s->drape;
+			const bool surfVis = ownPicture ? (baseVis || s->drape->GetVisibility() != 0) : baseVis;
+			makeRow("Surface", IC_Surface, surfVis,                      // Surface leaf handle kept as a child
+			        [s, sp](bool on) {
+			            sp->SetVisibility(on ? 1 : 0);
+			            if (s->layerImgMode && s->drape) s->drape->SetVisibility(on ? 1 : 0);
+			            refreshGridColorbar(s); },
 			        [s](const QPoint&) { toggleShadingFold(s); },
 			        "Left-click to fold / un-fold the Shading panel · right-click for save / stacking",
 			        [s](const QPoint &g) { surfaceObjectMenu(s, g); });
-			if (s->drape) addRow(QString("Image drape"), s->drape, IC_Image);   // grid's drape texture
+			if (s->drape && !ownPicture) addRow(QString("Image drape"), s->drape, IC_Image);   // a real image draped on the grid
 			// Each child row draws ITS OWN state. Hiding the base surface as part of a LAYER transition
 			// (SACRED_LAW.md's "uncheck the source" when a derived result replaces it) switches these
 			// flags off for real, at the transition (baseLayerSetVisible), so the rows come up unchecked

@@ -151,7 +151,10 @@ function _ensure_callbacks()
 	                    ("magfield",    _register_magfield),
 	                    ("magfield-poles", _register_magfield_poles),
 	                    ("okada-inset", _register_okada_inset),
-	                    ("meca-props",  _register_meca_props))
+	                    ("meca-props",  _register_meca_props),
+	                    # the MBIO beside GMT_CUSTOM_LIBS's MB-System supplement (mbedit.jl, included only when present)
+	                    ("mbio-hint",   () -> isdefined(@__MODULE__, :_push_mbio_hint) &&
+	                                          Base.invokelatest(getfield(@__MODULE__, :_push_mbio_hint))))
 		try
 			fn()
 		catch e

@@ -1,0 +1,209 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  mbeditviz.ui - the file list window of mbeditviz (port of MB-System's mbeditviz, mbeditviz.uil).
+  Loaded at RUNTIME by deps/src/mbeditviz/mbeditviz_window.cpp (QUiLoader); every objectName is
+  looked up by name there. The "Survey map" box stands in for libmbview's own pick and action
+  controls: the soundings to edit are chosen with a shape drawn on the survey map.
+-->
+<ui version="4.0">
+ <class>MbEditVizWindow</class>
+ <widget class="QMainWindow" name="MbEditVizWindow">
+  <property name="geometry">
+   <rect><x>0</x><y>0</y><width>620</width><height>640</height></rect>
+  </property>
+  <property name="windowTitle">
+   <string>MBeditviz - Bathymetry Editor and Patch Test Tool</string>
+  </property>
+  <widget class="QWidget" name="centralwidget">
+   <layout class="QVBoxLayout" name="mainLayout">
+    <property name="spacing"><number>4</number></property>
+    <property name="leftMargin"><number>6</number></property>
+    <property name="topMargin"><number>4</number></property>
+    <property name="rightMargin"><number>6</number></property>
+    <property name="bottomMargin"><number>4</number></property>
+    <item>
+     <widget class="QLabel" name="filesLabel">
+      <property name="text"><string>Swath Files:</string></property>
+     </widget>
+    </item>
+    <item>
+     <widget class="QListWidget" name="fileList">
+      <property name="toolTip"><string>&lt;loaded&gt; / &lt;Locked&gt;, &lt;esf&gt; (an edit save file exists), H S A (asynchronous heading, sensor depth, attitude), name, format</string></property>
+      <property name="selectionMode"><enum>QAbstractItemView::ExtendedSelection</enum></property>
+      <property name="font">
+       <font><family>Courier New</family></font>
+      </property>
+     </widget>
+    </item>
+    <item>
+     <layout class="QHBoxLayout" name="buttonRow">
+      <item>
+       <widget class="QPushButton" name="viewAllButton">
+        <property name="toolTip"><string>Load every file, grid it and show the survey map</string></property>
+        <property name="text"><string>View All</string></property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QPushButton" name="viewSelectedButton">
+        <property name="toolTip"><string>Load the selected files (unloading the others), grid them and show the survey map</string></property>
+        <property name="text"><string>View Selected</string></property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QPushButton" name="removeButton">
+        <property name="toolTip"><string>Remove the selected files from the list</string></property>
+        <property name="text"><string>Remove Selected</string></property>
+       </widget>
+      </item>
+      <item>
+       <spacer name="buttonSpacer">
+        <property name="orientation"><enum>Qt::Horizontal</enum></property>
+        <property name="sizeHint" stdset="0"><size><width>20</width><height>10</height></size></property>
+       </spacer>
+      </item>
+     </layout>
+    </item>
+    <item>
+     <layout class="QHBoxLayout" name="modeRow">
+      <item>
+       <widget class="QLabel" name="modeLabel">
+        <property name="text"><string>Mode:</string></property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QRadioButton" name="modeEdit">
+        <property name="toolTip"><string>Edits are written to the files' edit save files (.esf) and recorded for mbprocess</string></property>
+        <property name="text"><string>Edit Bathymetry</string></property>
+        <property name="checked"><bool>true</bool></property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QRadioButton" name="modeBrowse">
+        <property name="toolTip"><string>Look only: nothing is written</string></property>
+        <property name="text"><string>Browse Only</string></property>
+       </widget>
+      </item>
+      <item>
+       <spacer name="modeSpacer">
+        <property name="orientation"><enum>Qt::Horizontal</enum></property>
+        <property name="sizeHint" stdset="0"><size><width>20</width><height>10</height></size></property>
+       </spacer>
+      </item>
+     </layout>
+    </item>
+    <item>
+     <widget class="QGroupBox" name="mapGroup">
+      <property name="title"><string>Survey map: edit the soundings of a shape drawn on it</string></property>
+      <layout class="QGridLayout" name="mapGrid">
+       <item row="0" column="0">
+        <widget class="QLabel" name="shapeLabel">
+         <property name="text"><string>Shape:</string></property>
+        </widget>
+       </item>
+       <item row="0" column="1" colspan="2">
+        <widget class="QComboBox" name="shapeCombo">
+         <property name="toolTip"><string>A shape drawn on the survey map with the Draw tools (Rectangle, Line, Polygon...)</string></property>
+         <property name="sizePolicy">
+          <sizepolicy hsizetype="Expanding" vsizetype="Fixed"><horstretch>1</horstretch><verstretch>0</verstretch></sizepolicy>
+         </property>
+        </widget>
+       </item>
+       <item row="0" column="3">
+        <widget class="QPushButton" name="refreshShapesButton">
+         <property name="text"><string>Refresh</string></property>
+         <property name="autoDefault"><bool>false</bool></property>
+        </widget>
+       </item>
+       <item row="1" column="0" colspan="2">
+        <widget class="QPushButton" name="regionButton">
+         <property name="toolTip"><string>mbview's Region pick: every sounding inside the shape's bounding box</string></property>
+         <property name="text"><string>Region (shape's box)</string></property>
+         <property name="autoDefault"><bool>false</bool></property>
+        </widget>
+       </item>
+       <item row="1" column="2" colspan="2">
+        <widget class="QPushButton" name="navButton">
+         <property name="toolTip"><string>mbview's Nav pick: every sounding of the pings whose fix lies inside the (closed) shape</string></property>
+         <property name="text"><string>Nav (pings inside)</string></property>
+         <property name="autoDefault"><bool>false</bool></property>
+        </widget>
+       </item>
+       <item row="2" column="0" colspan="2">
+        <widget class="QPushButton" name="areaButton">
+         <property name="toolTip"><string>mbview's Area pick: a rectangle along the line from the shape's first to its last vertex, viewed across it</string></property>
+         <property name="text"><string>Area (along the line)</string></property>
+         <property name="autoDefault"><bool>false</bool></property>
+        </widget>
+       </item>
+       <item row="2" column="2">
+        <widget class="QLabel" name="aspectLabel">
+         <property name="text"><string>Width / length:</string></property>
+        </widget>
+       </item>
+       <item row="2" column="3">
+        <widget class="QDoubleSpinBox" name="areaAspectBox">
+         <property name="toolTip"><string>The area's width as a fraction of its length (mbview's area aspect)</string></property>
+         <property name="decimals"><number>2</number></property>
+         <property name="minimum"><double>0.01</double></property>
+         <property name="maximum"><double>10.0</double></property>
+         <property name="singleStep"><double>0.05</double></property>
+         <property name="value"><double>0.5</double></property>
+        </widget>
+       </item>
+       <item row="3" column="0" colspan="2">
+        <widget class="QPushButton" name="updateGridButton">
+         <property name="toolTip"><string>Regrid the bathymetry with the 3-D editor's bias values</string></property>
+         <property name="text"><string>Update Bathymetry Grid</string></property>
+         <property name="autoDefault"><bool>false</bool></property>
+        </widget>
+       </item>
+       <item row="3" column="2" colspan="2">
+        <widget class="QCheckBox" name="secondaryCheck">
+         <property name="toolTip"><string>Include the soundings flagged as secondary picks in the selections</string></property>
+         <property name="text"><string>Enable Secondary Picks</string></property>
+        </widget>
+       </item>
+      </layout>
+     </widget>
+    </item>
+    <item>
+     <widget class="QLabel" name="statusTitle">
+      <property name="text"><string>Status:</string></property>
+     </widget>
+    </item>
+    <item>
+     <widget class="QLabel" name="labelStatus">
+      <property name="text"><string>Available Files: 0</string></property>
+      <property name="alignment"><set>Qt::AlignLeft|Qt::AlignTop</set></property>
+      <property name="textInteractionFlags"><set>Qt::TextSelectableByMouse</set></property>
+     </widget>
+    </item>
+   </layout>
+  </widget>
+  <widget class="QMenuBar" name="menubar">
+   <widget class="QMenu" name="menuFile">
+    <property name="title"><string>File</string></property>
+    <addaction name="actionOpen"/>
+    <addaction name="separator"/>
+    <addaction name="actionQuit"/>
+   </widget>
+   <widget class="QMenu" name="menuOptions">
+    <property name="title"><string>Options</string></property>
+    <addaction name="actionNewGrid"/>
+   </widget>
+   <widget class="QMenu" name="menuHelp">
+    <property name="title"><string>Help</string></property>
+    <addaction name="actionAbout"/>
+   </widget>
+   <addaction name="menuFile"/>
+   <addaction name="menuOptions"/>
+   <addaction name="menuHelp"/>
+  </widget>
+  <action name="actionOpen"><property name="text"><string>Open Swath Data...</string></property></action>
+  <action name="actionQuit"><property name="text"><string>Quit</string></property></action>
+  <action name="actionNewGrid"><property name="text"><string>Generate New Grid...</string></property></action>
+  <action name="actionAbout"><property name="text"><string>About</string></property></action>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

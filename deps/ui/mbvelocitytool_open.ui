@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  mbvelocitytool_open.ui - File > Open swath sonar data of the sound velocity tool (mbvelocitytool's
+  file selection box with its "Swath Sonar Format ID" field). Loaded at runtime by
+  deps/src/mbvelocitytool/mbvelocity_window.cpp.
+-->
+<ui version="4.0">
+ <class>MbVelocityOpenDialog</class>
+ <widget class="QDialog" name="MbVelocityOpenDialog">
+  <property name="geometry">
+   <rect><x>0</x><y>0</y><width>560</width><height>130</height></rect>
+  </property>
+  <property name="windowTitle">
+   <string>Open Swath Sonar Data</string>
+  </property>
+  <layout class="QVBoxLayout" name="mainLayout">
+   <item>
+    <layout class="QHBoxLayout" name="fileRow">
+     <item>
+      <widget class="QLabel" name="fileLabel">
+       <property name="text"><string>Swath file:</string></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QLineEdit" name="fileEdit">
+       <property name="toolTip"><string>A swath sonar file with travel times (or one whose travel times may be estimated)</string></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="browseButton">
+       <property name="text"><string>Browse...</string></property>
+       <property name="autoDefault"><bool>false</bool></property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="formatRow">
+     <item>
+      <widget class="QLabel" name="formatLabel">
+       <property name="text"><string>Swath Sonar Format ID:</string></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QSpinBox" name="formatBox">
+       <property name="toolTip"><string>MB-System format id of the file; guessed from the file name when one is chosen</string></property>
+       <property name="minimum"><number>0</number></property>
+       <property name="maximum"><number>999</number></property>
+       <property name="value"><number>0</number></property>
+      </widget>
+     </item>
+     <item>
+      <spacer name="formatSpacer">
+       <property name="orientation"><enum>Qt::Horizontal</enum></property>
+       <property name="sizeHint" stdset="0"><size><width>20</width><height>10</height></size></property>
+      </spacer>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="buttonRow">
+     <item>
+      <spacer name="buttonSpacer">
+       <property name="orientation"><enum>Qt::Horizontal</enum></property>
+       <property name="sizeHint" stdset="0"><size><width>20</width><height>10</height></size></property>
+      </spacer>
+     </item>
+     <item>
+      <widget class="QPushButton" name="okButton">
+       <property name="text"><string>OK</string></property>
+       <property name="autoDefault"><bool>false</bool></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="cancelButton">
+       <property name="text"><string>Cancel</string></property>
+       <property name="autoDefault"><bool>false</bool></property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

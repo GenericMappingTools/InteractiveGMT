@@ -1,0 +1,264 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  mbedit_filters.ui - Controls > Filters of the swath editor (mbedit's bulletinBoard_filters).
+  Loaded at runtime by deps/src/mbedit/mbedit_window.cpp. Each slider has a <name>Value label;
+  the slider ranges are set from the loaded data (mbedit_get_filters), as in mbedit. Distance
+  and angle sliders run in hundredths (two decimals).
+-->
+<ui version="4.0">
+ <class>MbEditFiltersDialog</class>
+ <widget class="QDialog" name="MbEditFiltersDialog">
+  <property name="geometry">
+   <rect><x>0</x><y>0</y><width>560</width><height>620</height></rect>
+  </property>
+  <property name="windowTitle">
+   <string>MBedit - Filters</string>
+  </property>
+  <layout class="QVBoxLayout" name="mainLayout">
+   <item>
+    <widget class="QGroupBox" name="medianGroup">
+     <property name="title"><string>Median Spike Filter</string></property>
+     <layout class="QGridLayout" name="medianGrid">
+      <item row="0" column="0" colspan="3">
+       <widget class="QCheckBox" name="medianCheck">
+        <property name="toolTip"><string>Flag soundings that depart from the local median depth by more than the threshold</string></property>
+        <property name="text"><string>Apply median spike filter</string></property>
+       </widget>
+      </item>
+      <item row="1" column="0">
+       <widget class="QLabel" name="medianThresholdLabel"><property name="text"><string>% Median Depth Threshold</string></property></widget>
+      </item>
+      <item row="1" column="1">
+       <widget class="QLabel" name="medianThresholdSliderValue">
+        <property name="minimumSize"><size><width>56</width><height>0</height></size></property>
+        <property name="alignment"><set>Qt::AlignRight|Qt::AlignVCenter</set></property>
+        <property name="text"><string>10</string></property>
+       </widget>
+      </item>
+      <item row="1" column="2">
+       <widget class="QSlider" name="medianThresholdSlider">
+        <property name="orientation"><enum>Qt::Horizontal</enum></property>
+       </widget>
+      </item>
+      <item row="2" column="0">
+       <widget class="QLabel" name="medianXtrackLabel"><property name="text"><string>Median Acrosstrack Dimension</string></property></widget>
+      </item>
+      <item row="2" column="1">
+       <widget class="QLabel" name="medianXtrackSliderValue">
+        <property name="alignment"><set>Qt::AlignRight|Qt::AlignVCenter</set></property>
+        <property name="text"><string>5</string></property>
+       </widget>
+      </item>
+      <item row="2" column="2">
+       <widget class="QSlider" name="medianXtrackSlider">
+        <property name="toolTip"><string>Beams across track in the median window (kept odd)</string></property>
+        <property name="orientation"><enum>Qt::Horizontal</enum></property>
+       </widget>
+      </item>
+      <item row="3" column="0">
+       <widget class="QLabel" name="medianLtrackLabel"><property name="text"><string>Median Alongtrack Dimension</string></property></widget>
+      </item>
+      <item row="3" column="1">
+       <widget class="QLabel" name="medianLtrackSliderValue">
+        <property name="alignment"><set>Qt::AlignRight|Qt::AlignVCenter</set></property>
+        <property name="text"><string>1</string></property>
+       </widget>
+      </item>
+      <item row="3" column="2">
+       <widget class="QSlider" name="medianLtrackSlider">
+        <property name="toolTip"><string>Pings along track in the median window (kept odd)</string></property>
+        <property name="orientation"><enum>Qt::Horizontal</enum></property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QGroupBox" name="wrongsideGroup">
+     <property name="title"><string>Wrong Side Filter</string></property>
+     <layout class="QGridLayout" name="wrongsideGrid">
+      <item row="0" column="0" colspan="3">
+       <widget class="QCheckBox" name="wrongsideCheck">
+        <property name="toolTip"><string>Flag port beams that land to starboard and starboard beams that land to port</string></property>
+        <property name="text"><string>Apply wrong side filter</string></property>
+       </widget>
+      </item>
+      <item row="1" column="0">
+       <widget class="QLabel" name="wrongsideLabel"><property name="text"><string>Beams from Center Threshold</string></property></widget>
+      </item>
+      <item row="1" column="1">
+       <widget class="QLabel" name="wrongsideSliderValue">
+        <property name="minimumSize"><size><width>56</width><height>0</height></size></property>
+        <property name="alignment"><set>Qt::AlignRight|Qt::AlignVCenter</set></property>
+        <property name="text"><string>15</string></property>
+       </widget>
+      </item>
+      <item row="1" column="2">
+       <widget class="QSlider" name="wrongsideSlider">
+        <property name="orientation"><enum>Qt::Horizontal</enum></property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QGroupBox" name="cutbeamGroup">
+     <property name="title"><string>Flag by Beam Number</string></property>
+     <layout class="QGridLayout" name="cutbeamGrid">
+      <item row="0" column="0" colspan="3">
+       <widget class="QCheckBox" name="cutbeamCheck">
+        <property name="toolTip"><string>Flag the beams between Start and End (or outside them, when Start is past End)</string></property>
+        <property name="text"><string>Flag by beam number</string></property>
+       </widget>
+      </item>
+      <item row="1" column="0">
+       <widget class="QLabel" name="cutbeamStartLabel"><property name="text"><string>Start Flagging Beam Number</string></property></widget>
+      </item>
+      <item row="1" column="1">
+       <widget class="QLabel" name="cutbeamStartSliderValue">
+        <property name="minimumSize"><size><width>56</width><height>0</height></size></property>
+        <property name="alignment"><set>Qt::AlignRight|Qt::AlignVCenter</set></property>
+        <property name="text"><string>0</string></property>
+       </widget>
+      </item>
+      <item row="1" column="2">
+       <widget class="QSlider" name="cutbeamStartSlider">
+        <property name="orientation"><enum>Qt::Horizontal</enum></property>
+       </widget>
+      </item>
+      <item row="2" column="0">
+       <widget class="QLabel" name="cutbeamEndLabel"><property name="text"><string>End Flagging Beam Number</string></property></widget>
+      </item>
+      <item row="2" column="1">
+       <widget class="QLabel" name="cutbeamEndSliderValue">
+        <property name="alignment"><set>Qt::AlignRight|Qt::AlignVCenter</set></property>
+        <property name="text"><string>0</string></property>
+       </widget>
+      </item>
+      <item row="2" column="2">
+       <widget class="QSlider" name="cutbeamEndSlider">
+        <property name="orientation"><enum>Qt::Horizontal</enum></property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QGroupBox" name="cutdistGroup">
+     <property name="title"><string>Flag by Distance</string></property>
+     <layout class="QGridLayout" name="cutdistGrid">
+      <item row="0" column="0" colspan="3">
+       <widget class="QCheckBox" name="cutdistCheck">
+        <property name="toolTip"><string>Flag soundings whose acrosstrack distance is between Start and End (or outside them, when Start is past End)</string></property>
+        <property name="text"><string>Flag by acrosstrack distance</string></property>
+       </widget>
+      </item>
+      <item row="1" column="0">
+       <widget class="QLabel" name="cutdistStartLabel"><property name="text"><string>Start Flagging Distance (m)</string></property></widget>
+      </item>
+      <item row="1" column="1">
+       <widget class="QLabel" name="cutdistStartSliderValue">
+        <property name="minimumSize"><size><width>72</width><height>0</height></size></property>
+        <property name="alignment"><set>Qt::AlignRight|Qt::AlignVCenter</set></property>
+        <property name="text"><string>0.00</string></property>
+       </widget>
+      </item>
+      <item row="1" column="2">
+       <widget class="QSlider" name="cutdistStartSlider">
+        <property name="orientation"><enum>Qt::Horizontal</enum></property>
+       </widget>
+      </item>
+      <item row="2" column="0">
+       <widget class="QLabel" name="cutdistEndLabel"><property name="text"><string>End Flagging Distance (m)</string></property></widget>
+      </item>
+      <item row="2" column="1">
+       <widget class="QLabel" name="cutdistEndSliderValue">
+        <property name="alignment"><set>Qt::AlignRight|Qt::AlignVCenter</set></property>
+        <property name="text"><string>0.00</string></property>
+       </widget>
+      </item>
+      <item row="2" column="2">
+       <widget class="QSlider" name="cutdistEndSlider">
+        <property name="orientation"><enum>Qt::Horizontal</enum></property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QGroupBox" name="cutangleGroup">
+     <property name="title"><string>Flag by Angle</string></property>
+     <layout class="QGridLayout" name="cutangleGrid">
+      <item row="0" column="0" colspan="3">
+       <widget class="QCheckBox" name="cutangleCheck">
+        <property name="toolTip"><string>Flag soundings whose angle from vertical is between Start and End (or outside them, when Start is past End)</string></property>
+        <property name="text"><string>Flag by angle</string></property>
+       </widget>
+      </item>
+      <item row="1" column="0">
+       <widget class="QLabel" name="cutangleStartLabel"><property name="text"><string>Start Flagging Angle (deg)</string></property></widget>
+      </item>
+      <item row="1" column="1">
+       <widget class="QLabel" name="cutangleStartSliderValue">
+        <property name="minimumSize"><size><width>72</width><height>0</height></size></property>
+        <property name="alignment"><set>Qt::AlignRight|Qt::AlignVCenter</set></property>
+        <property name="text"><string>0.00</string></property>
+       </widget>
+      </item>
+      <item row="1" column="2">
+       <widget class="QSlider" name="cutangleStartSlider">
+        <property name="orientation"><enum>Qt::Horizontal</enum></property>
+       </widget>
+      </item>
+      <item row="2" column="0">
+       <widget class="QLabel" name="cutangleEndLabel"><property name="text"><string>End Flagging Angle (deg)</string></property></widget>
+      </item>
+      <item row="2" column="1">
+       <widget class="QLabel" name="cutangleEndSliderValue">
+        <property name="alignment"><set>Qt::AlignRight|Qt::AlignVCenter</set></property>
+        <property name="text"><string>0.00</string></property>
+       </widget>
+      </item>
+      <item row="2" column="2">
+       <widget class="QSlider" name="cutangleEndSlider">
+        <property name="orientation"><enum>Qt::Horizontal</enum></property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="buttonRow">
+     <item>
+      <widget class="QPushButton" name="applyButton">
+       <property name="toolTip"><string>Filter every ping in the buffer with the settings above</string></property>
+       <property name="text"><string>Apply</string></property>
+       <property name="autoDefault"><bool>false</bool></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="resetButton">
+       <property name="toolTip"><string>Put the controls back to the filter settings in use</string></property>
+       <property name="text"><string>Reset</string></property>
+       <property name="autoDefault"><bool>false</bool></property>
+      </widget>
+     </item>
+     <item>
+      <spacer name="buttonSpacer">
+       <property name="orientation"><enum>Qt::Horizontal</enum></property>
+       <property name="sizeHint" stdset="0"><size><width>20</width><height>10</height></size></property>
+      </spacer>
+     </item>
+     <item>
+      <widget class="QPushButton" name="dismissButton">
+       <property name="text"><string>Dismiss</string></property>
+       <property name="autoDefault"><bool>false</bool></property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

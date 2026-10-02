@@ -1,0 +1,459 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>MbGrdVizSurvey</class>
+ <widget class="QDialog" name="MbGrdVizSurvey">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>481</width>
+    <height>691</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>Generate Survey Route for Selected Area...</string>
+  </property>
+  <widget class="QLabel" name="labelInfo">
+   <property name="geometry">
+    <rect>
+     <x>10</x>
+     <y>10</y>
+     <width>440</width>
+     <height>140</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>Current Area Info:</string>
+   </property>   <property name="alignment">
+    <set>Qt::AlignLeading|Qt::AlignLeft|Qt::AlignTop</set>
+   </property>
+   <property name="wordWrap">
+    <bool>true</bool>
+   </property>
+  </widget>
+  <widget class="QLabel" name="labelLineControl">
+   <property name="geometry">
+    <rect>
+     <x>10</x>
+     <y>160</y>
+     <width>180</width>
+     <height>30</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>Line Spacing Mode:</string>
+   </property>  </widget>
+  <widget class="QComboBox" name="lineControl">
+   <property name="geometry">
+    <rect>
+     <x>12</x>
+     <y>195</y>
+     <width>200</width>
+     <height>32</height>
+    </rect>
+   </property>
+   <item>
+    <property name="text">
+     <string>Uniform</string>
+    </property>
+   </item>
+   <item>
+    <property name="text">
+     <string>Variable by Swath Width</string>
+    </property>
+   </item>  </widget>
+  <widget class="QLabel" name="labelLineSpacing">
+   <property name="geometry">
+    <rect>
+     <x>240</x>
+     <y>160</y>
+     <width>140</width>
+     <height>30</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>Line Spacing (m):</string>
+   </property>  </widget>
+  <widget class="QSpinBox" name="lineSpacing">
+   <property name="geometry">
+    <rect>
+     <x>242</x>
+     <y>195</y>
+     <width>200</width>
+     <height>32</height>
+    </rect>
+   </property>
+   <property name="minimum">
+    <number>1</number>
+   </property>
+   <property name="maximum">
+    <number>10000</number>
+   </property>
+   <property name="singleStep">
+    <number>1</number>
+   </property>  </widget>
+  <widget class="QLabel" name="labelDirection">
+   <property name="geometry">
+    <rect>
+     <x>10</x>
+     <y>240</y>
+     <width>180</width>
+     <height>30</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>Start Corner:</string>
+   </property>  </widget>
+  <widget class="QComboBox" name="direction">
+   <property name="geometry">
+    <rect>
+     <x>12</x>
+     <y>270</y>
+     <width>200</width>
+     <height>32</height>
+    </rect>
+   </property>
+   <item>
+    <property name="text">
+     <string>SW</string>
+    </property>
+   </item>
+   <item>
+    <property name="text">
+     <string>SE</string>
+    </property>
+   </item>
+   <item>
+    <property name="text">
+     <string>NW</string>
+    </property>
+   </item>
+   <item>
+    <property name="text">
+     <string>NE</string>
+    </property>
+   </item>  </widget>
+  <widget class="QLabel" name="labelPlatform">
+   <property name="geometry">
+    <rect>
+     <x>240</x>
+     <y>240</y>
+     <width>180</width>
+     <height>30</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>Platform Type:</string>
+   </property>  </widget>
+  <widget class="QComboBox" name="platform">
+   <property name="geometry">
+    <rect>
+     <x>242</x>
+     <y>275</y>
+     <width>200</width>
+     <height>32</height>
+    </rect>
+   </property>
+   <item>
+    <property name="text">
+     <string>Surface Vessel</string>
+    </property>
+   </item>
+   <item>
+    <property name="text">
+     <string>Submerged - constant altitude</string>
+    </property>
+   </item>
+   <item>
+    <property name="text">
+     <string>Submerged - constant depth</string>
+    </property>
+   </item>  </widget>
+  <widget class="QLabel" name="labelCrossLines">
+   <property name="geometry">
+    <rect>
+     <x>10</x>
+     <y>320</y>
+     <width>140</width>
+     <height>30</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>Cross Lines:</string>
+   </property>  </widget>
+  <widget class="QSpinBox" name="crossLines">
+   <property name="geometry">
+    <rect>
+     <x>12</x>
+     <y>350</y>
+     <width>200</width>
+     <height>32</height>
+    </rect>
+   </property>
+   <property name="minimum">
+    <number>0</number>
+   </property>
+   <property name="maximum">
+    <number>50</number>
+   </property>
+   <property name="singleStep">
+    <number>1</number>
+   </property>  </widget>
+  <widget class="QLabel" name="labelSwathWidth">
+   <property name="geometry">
+    <rect>
+     <x>240</x>
+     <y>320</y>
+     <width>200</width>
+     <height>30</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>Swath Width (degrees):</string>
+   </property>  </widget>
+  <widget class="QSpinBox" name="swathWidth">
+   <property name="geometry">
+    <rect>
+     <x>242</x>
+     <y>355</y>
+     <width>200</width>
+     <height>32</height>
+    </rect>
+   </property>
+   <property name="minimum">
+    <number>5</number>
+   </property>
+   <property name="maximum">
+    <number>175</number>
+   </property>
+   <property name="singleStep">
+    <number>5</number>
+   </property>  </widget>
+  <widget class="QLabel" name="labelCrossFirstLast">
+   <property name="geometry">
+    <rect>
+     <x>10</x>
+     <y>400</y>
+     <width>220</width>
+     <height>30</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>Crosslines Before/After Survey:</string>
+   </property>  </widget>
+  <widget class="QComboBox" name="crossFirstLast">
+   <property name="geometry">
+    <rect>
+     <x>12</x>
+     <y>435</y>
+     <width>200</width>
+     <height>32</height>
+    </rect>
+   </property>
+   <item>
+    <property name="text">
+     <string>Crosslines first</string>
+    </property>
+   </item>
+   <item>
+    <property name="text">
+     <string>Crosslines last</string>
+    </property>
+   </item>  </widget>
+  <widget class="QLabel" name="labelAltitude">
+   <property name="geometry">
+    <rect>
+     <x>240</x>
+     <y>400</y>
+     <width>140</width>
+     <height>30</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>Sonar Altitude (m):</string>
+   </property>  </widget>
+  <widget class="QSpinBox" name="altitude">
+   <property name="geometry">
+    <rect>
+     <x>242</x>
+     <y>435</y>
+     <width>200</width>
+     <height>32</height>
+    </rect>
+   </property>
+   <property name="minimum">
+    <number>1</number>
+   </property>
+   <property name="maximum">
+    <number>10000</number>
+   </property>
+   <property name="singleStep">
+    <number>1</number>
+   </property>  </widget>
+  <widget class="QLabel" name="labelInterleaving">
+   <property name="geometry">
+    <rect>
+     <x>10</x>
+     <y>480</y>
+     <width>220</width>
+     <height>30</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>Interleaving:</string>
+   </property>  </widget>
+  <widget class="QSpinBox" name="interleaving">
+   <property name="geometry">
+    <rect>
+     <x>12</x>
+     <y>515</y>
+     <width>200</width>
+     <height>32</height>
+    </rect>
+   </property>
+   <property name="minimum">
+    <number>1</number>
+   </property>
+   <property name="maximum">
+    <number>100</number>
+   </property>
+   <property name="singleStep">
+    <number>1</number>
+   </property>  </widget>
+  <widget class="QLabel" name="labelDepth">
+   <property name="geometry">
+    <rect>
+     <x>240</x>
+     <y>480</y>
+     <width>140</width>
+     <height>30</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>Sonar Depth (m):</string>
+   </property>  </widget>
+  <widget class="QSpinBox" name="depth">
+   <property name="geometry">
+    <rect>
+     <x>242</x>
+     <y>515</y>
+     <width>200</width>
+     <height>32</height>
+    </rect>
+   </property>
+   <property name="minimum">
+    <number>1</number>
+   </property>
+   <property name="maximum">
+    <number>10000</number>
+   </property>
+   <property name="singleStep">
+    <number>1</number>
+   </property>  </widget>
+  <widget class="QLabel" name="labelName">
+   <property name="geometry">
+    <rect>
+     <x>10</x>
+     <y>560</y>
+     <width>180</width>
+     <height>30</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>Route Name:</string>
+   </property>  </widget>
+  <widget class="QLineEdit" name="name">
+   <property name="geometry">
+    <rect>
+     <x>10</x>
+     <y>590</y>
+     <width>200</width>
+     <height>32</height>
+    </rect>
+   </property>
+  </widget>
+  <widget class="QLabel" name="labelColor">
+   <property name="geometry">
+    <rect>
+     <x>240</x>
+     <y>560</y>
+     <width>180</width>
+     <height>30</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>Route Color:</string>
+   </property>  </widget>
+  <widget class="QComboBox" name="color">
+   <property name="geometry">
+    <rect>
+     <x>242</x>
+     <y>590</y>
+     <width>200</width>
+     <height>32</height>
+    </rect>
+   </property>
+   <item>
+    <property name="text">
+     <string>Black</string>
+    </property>
+   </item>
+   <item>
+    <property name="text">
+     <string>Yellow</string>
+    </property>
+   </item>
+   <item>
+    <property name="text">
+     <string>Green</string>
+    </property>
+   </item>
+   <item>
+    <property name="text">
+     <string>Bluegreen</string>
+    </property>
+   </item>
+   <item>
+    <property name="text">
+     <string>Blue</string>
+    </property>
+   </item>
+   <item>
+    <property name="text">
+     <string>Purple</string>
+    </property>
+   </item>  </widget>
+  <widget class="QPushButton" name="generateButton">
+   <property name="geometry">
+    <rect>
+     <x>90</x>
+     <y>640</y>
+     <width>120</width>
+     <height>40</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>Generate Route</string>
+   </property>   <property name="autoDefault">
+    <bool>false</bool>
+   </property>
+  </widget>
+  <widget class="QPushButton" name="dismissButton">
+   <property name="geometry">
+    <rect>
+     <x>270</x>
+     <y>640</y>
+     <width>120</width>
+     <height>40</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>Dismiss</string>
+   </property>   <property name="autoDefault">
+    <bool>false</bool>
+   </property>
+  </widget>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

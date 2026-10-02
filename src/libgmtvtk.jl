@@ -327,6 +327,28 @@ const _LIB_OPTIONAL = (
 	:gmtvtk_freeze_scene_objects_h,   # hold the Scene Objects tree still while a run adds many elements
 	:gmtvtk_poly_globe_probe_h,       # probe: is a polygon really hooked onto the globe?
 	:gmtvtk_set_aqua_window_h,           # mark a tsunami window: its grid meshes keep the NaN-hole rim (aquamoto.jl)
+	# EXPERIMENTAL swath editor (deps/src/mbedit/, built only with IGMT_WITH_MBEDIT in CMakeLists.txt)
+	:gmtvtk_mbedit_open, :gmtvtk_mbedit_state, :gmtvtk_mbedit_key, :gmtvtk_mbedit_click,
+	:gmtvtk_mbedit_save_png, :gmtvtk_mbedit_close,
+	:gmtvtk_mbedit_set_mbio_hint,     # the MBIO beside GMT_CUSTOM_LIBS's MB-System supplement (mbedit.jl)
+	# EXPERIMENTAL sound velocity tool (deps/src/mbvelocitytool/, IGMT_WITH_MBVELOCITYTOOL)
+	:gmtvtk_mbvelocity_open, :gmtvtk_mbvelocity_state, :gmtvtk_mbvelocity_mouse, :gmtvtk_mbvelocity_edit_node,
+	:gmtvtk_mbvelocity_reprocess, :gmtvtk_mbvelocity_save_swath_svp, :gmtvtk_mbvelocity_save_residuals,
+	:gmtvtk_mbvelocity_save_png, :gmtvtk_mbvelocity_close,
+	# EXPERIMENTAL mbeditviz (deps/src/mbeditviz/, IGMT_WITH_MBEDITVIZ)
+	:gmtvtk_mbeditviz_open, :gmtvtk_mbeditviz_state, :gmtvtk_mbeditviz_view_all, :gmtvtk_mbeditviz_select,
+	:gmtvtk_mbeditviz_select_box, :gmtvtk_mbeditviz_editor_key, :gmtvtk_mbeditviz_editor_mode,
+	:gmtvtk_mbeditviz_editor_click, :gmtvtk_mbeditviz_editor_save_png, :gmtvtk_mbeditviz_close_editor,
+	:gmtvtk_mbeditviz_close_map, :gmtvtk_mbeditviz_close,
+	# EXPERIMENTAL mbgrdviz (deps/src/mbgrdviz/, IGMT_WITH_MBGRDVIZ)
+	:gmtvtk_mbgrdviz_open, :gmtvtk_mbgrdviz_state, :gmtvtk_mbgrdviz_open_file, :gmtvtk_mbgrdviz_save,
+	:gmtvtk_mbgrdviz_select_route, :gmtvtk_mbgrdviz_set_area, :gmtvtk_mbgrdviz_set_region,
+	:gmtvtk_mbgrdviz_generate_survey, :gmtvtk_mbgrdviz_survey_dismiss, :gmtvtk_mbgrdviz_open_region,
+	:gmtvtk_mbgrdviz_select_nav, :gmtvtk_mbgrdviz_close,
+	# EXPERIMENTAL pointCloudEditor (deps/src/pointcloudeditor/, IGMT_WITH_PCE)
+	:gmtvtk_pce_open, :gmtvtk_pce_state, :gmtvtk_pce_set_edit_mode, :gmtvtk_pce_set_vertical_exagg,
+	:gmtvtk_pce_rubber_band, :gmtvtk_pce_set_elev_profile, :gmtvtk_pce_canvas_size, :gmtvtk_pce_save_png,
+	:gmtvtk_pce_close,
 )
 
 # Why the library failed to load, kept so the FIRST viewer call can repeat it. __init__ is

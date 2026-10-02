@@ -1252,7 +1252,10 @@ static void hillshadeMapper(Scene *s, vtkActor *act) {
 	//
 	// ...and ONLY for an actor whose colour really is the LUT's. `dayNightNodeBake` is what says so.
 	const bool dnOn = s->dayNight.on && dayNightNodeBake(s, act, m);
-	if (!lk.useHillshade && !landCol && !dnOn) {  // revert to whatever this geometry's colouring IS
+	// METHOD 7 ON THE GRID'S OWN SURFACE: the CPU PBR shade (applyPBRShade, the same one bakeLayerRGBA
+	// runs) baked per node, exactly like the hillshade looks below. Never a flat image with a drape.
+	const bool pbrB = lk.litBake && lk.pbrBake && !lk.useHillshade;
+	if (!lk.useHillshade && !pbrB && !landCol && !dnOn) {  // revert to whatever this geometry's colouring IS
 		// NOT hard-coded to "point data, through the LUT" any more. That is right for a grid and
 		// wrong for every MESH: a per-vertex RGB array pushed through a LUT is mapped by its
 		// MAGNITUDE, so a magenta model rendered as one flat red off the top of the ramp, and a
@@ -1308,7 +1311,7 @@ static void hillshadeMapper(Scene *s, vtkActor *act) {
 	if (!zs || !lut)   return;                    // no scalars/LUT -> leave as-is
 	// …normals only matter to the shade itself — and an Aquamoto surface shades from its two sides'
 	// own lights even when the window look is off, so it needs them too.
-	if (!nrm && (lk.useHillshade || landCol)) return;
+	if (!nrm && (lk.useHillshade || pbrB || landCol)) return;
 
 	double lzf = 1.0, lve = 1.0;
 	layerZOf(s, act, lzf, lve);                    // THIS actor's own normaliser + VE (VE is what we want)
@@ -1341,10 +1344,29 @@ static void hillshadeMapper(Scene *s, vtkActor *act) {
 	// only the case of no picture to wear yet, and then its nodes get their two bars' colours, unlit —
 	// there is no second tsunami light here.
 	const bool aqua = twoBar;
-	// The points are needed by the extern reflectance sampler AND by day/night, which asks each node
-	// where it is on the Earth. Same array, one reason more to fetch it.
-	vtkPoints *pts = (ext || dnOn) ? pd->GetPoints() : nullptr;
-	if ((ext || dnOn) && !pts) return;
+	// Method 7's occlusion and cast shadows (reliefOcclusion), from THIS layer's own grid: the base's
+	// s->gridZ, or the extra's own. Both are stored column-major ("BCB", layout 0).
+	const std::vector<float> *gz = &s->gridZ;
+	int gnx = s->gnx, gny = s->gny;
+	double ggx0 = s->gx0, ggy0 = s->gy0, gdx = s->gdx, gdy = s->gdy;
+	for (auto &ex : s->extras)
+		if (ex.actor.Get() == act) {
+			gz = &ex.gridZ;  gnx = ex.gnx;  gny = ex.gny;  ggx0 = ex.gx0;  ggy0 = ex.gy0;
+			gdx = (ex.gnx > 1) ? (ex.gx1 - ex.gx0) / (ex.gnx - 1) : 0.0;
+			gdy = (ex.gny > 1) ? (ex.gy1 - ex.gy0) / (ex.gny - 1) : 0.0;
+			break;
+		}
+	const bool haveGrid = gnx > 1 && gny > 1 && gdx != 0.0 && gdy != 0.0 && gz->size() == (size_t)gnx * gny;
+	const GridLay glay = gridLay(gnx, gny, 0);
+	auto Zg = [&](int ix, int iy) -> double { return glay.at(gz->data(), ix, iy); };
+	double zTop = std::numeric_limits<double>::quiet_NaN();
+	if (pbrB && haveGrid && s->bakeShadows) zTop = gridTopZ(gnx, gny, Zg);
+	const BakeOcclusion occ = (pbrB && haveGrid) ? makeBakeOcclusion(s, L, zTop) : BakeOcclusion();
+	const bool occOn = occ.ao || occ.shadow;
+	// The points are needed by the extern reflectance sampler, by day/night, which asks each node
+	// where it is on the Earth, and by method 7's occlusion. Same array, one reason more to fetch it.
+	vtkPoints *pts = (ext || dnOn || occOn) ? pd->GetPoints() : nullptr;
+	if ((ext || dnOn || occOn) && !pts) return;
 	vtkSmartPointer<vtkUnsignedCharArray> col = vtkSmartPointer<vtkUnsignedCharArray>::New();
 	col->SetName("hillshade");
 	col->SetNumberOfComponents(3);
@@ -1369,6 +1391,17 @@ static void hillshadeMapper(Scene *s, vtkActor *act) {
 			if (ext) { double p[3]; pts->GetPoint(i, p); ei = externShadeAt(*extE, p[0], p[1]); }
 			if (lk.useHillshade)                                         // colour only when the look is unlit
 				applyReliefShade(L, nv, c, std::isnan(ei) ? nullptr : &ei);  // SHARED shade (extern / grdimage / Lambert)
+		}
+		else if (pbrB) {                                                 // method 7: the SHARED PBR shade
+			double ao = 1.0, sunVis = 1.0;
+			if (occOn) {
+				double p[3]; pts->GetPoint(i, p);
+				int ix = (int)std::lround((p[0] - ggx0) / gdx), iy = (int)std::lround((p[1] - ggy0) / gdy);
+				ix = ix < 0 ? 0 : (ix > gnx - 1 ? gnx - 1 : ix);
+				iy = iy < 0 ? 0 : (iy > gny - 1 ? gny - 1 : iy);
+				reliefOcclusion(L, occ, Zg, gnx, gny, gdx, gdy, ix, iy, nv, ao, sunVis);
+			}
+			applyPBRShade(L, nv, c, ao, sunVis);
 		}
 		// …and THEN the night, as the second factor on whatever colour the lines above decided. Never
 		// instead of them: with no relief shade selected the CPT colour is what this layer looks like
@@ -1423,7 +1456,7 @@ static void applySurfStyle(Scene *s, vtkActor *a) {
 		prop->SetAmbient(1.0); prop->SetDiffuse(0.0); prop->SetSpecular(0.0);
 		prop->SetAmbientColor(1.0, 1.0, 1.0);
 	}
-	else if (lk.useHillshade) {
+	else if (lk.useHillshade || (lk.litBake && lk.pbrBake)) {
 		// Baked shade IS the shading -> render UNLIT (flat ambient) so colours show verbatim.
 		prop->SetInterpolationToFlat();
 		prop->SetAmbient(1.0); prop->SetDiffuse(0.0); prop->SetSpecular(0.0);

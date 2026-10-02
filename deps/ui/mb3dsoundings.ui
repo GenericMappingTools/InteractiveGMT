@@ -1,0 +1,344 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  mb3dsoundings.ui - mbeditviz's 3-D sounding editor (MB-System's libmbview mb3dsoundings, the
+  Mb3dsdg widget). Loaded at RUNTIME by deps/src/mbeditviz/mb3dsoundings_window.cpp (QUiLoader);
+  every objectName is looked up by name there. Each bias slider has its <name>Value label.
+-->
+<ui version="4.0">
+ <class>Mb3dSoundingsWindow</class>
+ <widget class="QMainWindow" name="Mb3dSoundingsWindow">
+  <property name="geometry">
+   <rect><x>0</x><y>0</y><width>1040</width><height>600</height></rect>
+  </property>
+  <property name="windowTitle">
+   <string>3D Soundings</string>
+  </property>
+  <widget class="QWidget" name="centralwidget">
+   <layout class="QVBoxLayout" name="mainLayout">
+    <property name="spacing"><number>4</number></property>
+    <property name="leftMargin"><number>6</number></property>
+    <property name="topMargin"><number>4</number></property>
+    <property name="rightMargin"><number>6</number></property>
+    <property name="bottomMargin"><number>4</number></property>
+    <item>
+     <layout class="QHBoxLayout" name="bodyRow">
+      <item>
+       <layout class="QVBoxLayout" name="controlColumn">
+        <item>
+         <widget class="QRadioButton" name="modeToggle">
+          <property name="toolTip"><string>Left click toggles the sounding nearest the pointer (key Q)</string></property>
+          <property name="text"><string>Toggle</string></property>
+          <property name="checked"><bool>true</bool></property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QRadioButton" name="modePick">
+          <property name="toolTip"><string>Left click flags the good sounding nearest the pointer (key W)</string></property>
+          <property name="text"><string>Pick</string></property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QRadioButton" name="modeErase">
+          <property name="toolTip"><string>Left drag flags every good sounding it sweeps over (key E)</string></property>
+          <property name="text"><string>Erase</string></property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QRadioButton" name="modeRestore">
+          <property name="toolTip"><string>Left drag unflags every flagged sounding it sweeps over (key R)</string></property>
+          <property name="text"><string>Restore</string></property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QRadioButton" name="modeGrab">
+          <property name="toolTip"><string>Left drag a rectangle: every good sounding inside it is flagged (key T)</string></property>
+          <property name="text"><string>Grab</string></property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QRadioButton" name="modeInfo">
+          <property name="toolTip"><string>Left click shows the file, ping, beam and values of the nearest sounding (key Y)</string></property>
+          <property name="text"><string>Info</string></property>
+         </widget>
+        </item>
+        <item>
+         <spacer name="modeSpacer">
+          <property name="orientation"><enum>Qt::Vertical</enum></property>
+          <property name="sizeType"><enum>QSizePolicy::Fixed</enum></property>
+          <property name="sizeHint" stdset="0"><size><width>10</width><height>12</height></size></property>
+         </spacer>
+        </item>
+        <item>
+         <widget class="QRadioButton" name="mouseRotate1">
+          <property name="text"><string>Rotate Soundings</string></property>
+          <property name="checked"><bool>true</bool></property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QRadioButton" name="mousePanZoom1">
+          <property name="text"><string>Pan and Zoom</string></property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QLabel" name="labelMouseMode">
+          <property name="text"><string>Mouse Mode:</string></property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QPushButton" name="resetButton">
+          <property name="text"><string>Reset View</string></property>
+          <property name="autoDefault"><bool>false</bool></property>
+         </widget>
+        </item>
+        <item>
+         <spacer name="controlSpacer">
+          <property name="orientation"><enum>Qt::Vertical</enum></property>
+          <property name="sizeHint" stdset="0"><size><width>10</width><height>20</height></size></property>
+         </spacer>
+        </item>
+       </layout>
+      </item>
+      <item>
+       <widget class="QWidget" name="canvasHost">
+        <property name="sizePolicy">
+         <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+          <horstretch>1</horstretch>
+          <verstretch>1</verstretch>
+         </sizepolicy>
+        </property>
+        <property name="minimumSize"><size><width>500</width><height>380</height></size></property>
+       </widget>
+      </item>
+     </layout>
+    </item>
+    <item>
+     <widget class="QLabel" name="labelStatus">
+      <property name="text"><string>Azimuth: 0.00 | Elevation: 0.00 | Vert. Exager.: 1.00</string></property>
+      <property name="textInteractionFlags"><set>Qt::TextSelectableByMouse</set></property>
+     </widget>
+    </item>
+    <item>
+     <widget class="QWidget" name="biasPanel">
+      <layout class="QGridLayout" name="biasGrid">
+       <property name="leftMargin"><number>0</number></property>
+       <property name="topMargin"><number>0</number></property>
+       <property name="rightMargin"><number>0</number></property>
+       <property name="bottomMargin"><number>0</number></property>
+       <property name="horizontalSpacing"><number>6</number></property>
+       <property name="verticalSpacing"><number>2</number></property>
+       <item row="0" column="0">
+        <widget class="QLabel" name="rollLabel"><property name="text"><string>Roll Bias (degrees)</string></property></widget>
+       </item>
+       <item row="1" column="0">
+        <widget class="QLabel" name="rollSliderValue"><property name="text"><string>0.00</string></property></widget>
+       </item>
+       <item row="2" column="0">
+        <widget class="QSlider" name="rollSlider">
+         <property name="minimum"><number>-100</number></property>
+         <property name="maximum"><number>100</number></property>
+         <property name="orientation"><enum>Qt::Horizontal</enum></property>
+        </widget>
+       </item>
+       <item row="0" column="1">
+        <widget class="QLabel" name="pitchLabel"><property name="text"><string>Pitch Bias (degrees)</string></property></widget>
+       </item>
+       <item row="1" column="1">
+        <widget class="QLabel" name="pitchSliderValue"><property name="text"><string>0.00</string></property></widget>
+       </item>
+       <item row="2" column="1">
+        <widget class="QSlider" name="pitchSlider">
+         <property name="minimum"><number>-100</number></property>
+         <property name="maximum"><number>100</number></property>
+         <property name="orientation"><enum>Qt::Horizontal</enum></property>
+        </widget>
+       </item>
+       <item row="0" column="2">
+        <widget class="QLabel" name="headingLabel"><property name="text"><string>Heading Bias (degrees)</string></property></widget>
+       </item>
+       <item row="1" column="2">
+        <widget class="QLabel" name="headingSliderValue"><property name="text"><string>0.00</string></property></widget>
+       </item>
+       <item row="2" column="2">
+        <widget class="QSlider" name="headingSlider">
+         <property name="minimum"><number>-100</number></property>
+         <property name="maximum"><number>100</number></property>
+         <property name="orientation"><enum>Qt::Horizontal</enum></property>
+        </widget>
+       </item>
+       <item row="0" column="3">
+        <widget class="QLabel" name="timelagLabel"><property name="text"><string>Time Lag (seconds)</string></property></widget>
+       </item>
+       <item row="1" column="3">
+        <widget class="QLabel" name="timelagSliderValue"><property name="text"><string>0.00</string></property></widget>
+       </item>
+       <item row="2" column="3">
+        <widget class="QSlider" name="timelagSlider">
+         <property name="minimum"><number>-100</number></property>
+         <property name="maximum"><number>100</number></property>
+         <property name="orientation"><enum>Qt::Horizontal</enum></property>
+        </widget>
+       </item>
+       <item row="0" column="4">
+        <widget class="QLabel" name="snellLabel"><property name="text"><string>Snell Correction</string></property></widget>
+       </item>
+       <item row="1" column="4">
+        <widget class="QLabel" name="snellSliderValue"><property name="text"><string>1.0000</string></property></widget>
+       </item>
+       <item row="2" column="4">
+        <widget class="QSlider" name="snellSlider">
+         <property name="minimum"><number>9900</number></property>
+         <property name="maximum"><number>10100</number></property>
+         <property name="value"><number>10000</number></property>
+         <property name="orientation"><enum>Qt::Horizontal</enum></property>
+        </widget>
+       </item>
+      </layout>
+     </widget>
+    </item>
+   </layout>
+  </widget>
+  <widget class="QMenuBar" name="menubar">
+   <widget class="QMenu" name="menuDismiss">
+    <property name="title"><string>Dismiss</string></property>
+    <addaction name="actionDismiss"/>
+   </widget>
+   <widget class="QMenu" name="menuMouse">
+    <property name="title"><string>Mouse</string></property>
+    <addaction name="actionMouseRotate"/>
+    <addaction name="actionMousePanZoom"/>
+   </widget>
+   <widget class="QMenu" name="menuView">
+    <property name="title"><string>View</string></property>
+    <addaction name="actionViewFlagged"/>
+    <addaction name="actionViewSecondary"/>
+    <addaction name="separator"/>
+    <addaction name="actionNoConnect"/>
+    <addaction name="actionConnectGood"/>
+    <addaction name="actionConnectAll"/>
+    <addaction name="separator"/>
+    <addaction name="actionResetView"/>
+    <addaction name="actionBoundingBox"/>
+    <addaction name="actionScaleWithFlagged"/>
+    <addaction name="separator"/>
+    <addaction name="actionColorByFlag"/>
+    <addaction name="actionColorByTopo"/>
+    <addaction name="actionColorBySounding"/>
+    <addaction name="actionColorByAmp"/>
+   </widget>
+   <widget class="QMenu" name="menuAction">
+    <property name="title"><string>Action</string></property>
+    <addaction name="actionApplyBias"/>
+    <addaction name="separator"/>
+    <addaction name="actionFlagSparseA"/>
+    <addaction name="actionFlagSparseB"/>
+    <addaction name="actionFlagSparseC"/>
+    <addaction name="actionFlagSparseD"/>
+    <addaction name="actionFlagSparseE"/>
+    <addaction name="actionFlagSparseF"/>
+    <addaction name="separator"/>
+    <addaction name="actionColorBlack"/>
+    <addaction name="actionColorRed"/>
+    <addaction name="actionColorYellow"/>
+    <addaction name="actionColorGreen"/>
+    <addaction name="actionColorBlueGreen"/>
+    <addaction name="actionColorBlue"/>
+    <addaction name="actionColorPurple"/>
+    <addaction name="separator"/>
+    <addaction name="actionOptimizeR"/>
+    <addaction name="actionOptimizeP"/>
+    <addaction name="actionOptimizeH"/>
+    <addaction name="actionOptimizeRP"/>
+    <addaction name="actionOptimizeRPH"/>
+    <addaction name="actionOptimizeT"/>
+    <addaction name="actionOptimizeS"/>
+   </widget>
+   <addaction name="menuDismiss"/>
+   <addaction name="menuMouse"/>
+   <addaction name="menuView"/>
+   <addaction name="menuAction"/>
+  </widget>
+  <action name="actionDismiss"><property name="text"><string>Dismiss</string></property></action>
+  <action name="actionMouseRotate">
+   <property name="checkable"><bool>true</bool></property>
+   <property name="checked"><bool>true</bool></property>
+   <property name="text"><string>Rotate Soundings</string></property>
+  </action>
+  <action name="actionMousePanZoom">
+   <property name="checkable"><bool>true</bool></property>
+   <property name="text"><string>Pan and Zoom</string></property>
+  </action>
+  <action name="actionViewFlagged">
+   <property name="checkable"><bool>true</bool></property>
+   <property name="checked"><bool>true</bool></property>
+   <property name="text"><string>Show Flagged Soundings</string></property>
+  </action>
+  <action name="actionViewSecondary">
+   <property name="checkable"><bool>true</bool></property>
+   <property name="text"><string>View Secondary Pick Soundings</string></property>
+  </action>
+  <action name="actionNoConnect">
+   <property name="checkable"><bool>true</bool></property>
+   <property name="checked"><bool>true</bool></property>
+   <property name="text"><string>Show No Profiles</string></property>
+  </action>
+  <action name="actionConnectGood">
+   <property name="checkable"><bool>true</bool></property>
+   <property name="text"><string>Show Good Profiles</string></property>
+  </action>
+  <action name="actionConnectAll">
+   <property name="checkable"><bool>true</bool></property>
+   <property name="text"><string>Show All Profiles</string></property>
+  </action>
+  <action name="actionResetView"><property name="text"><string>Reset View</string></property></action>
+  <action name="actionBoundingBox">
+   <property name="checkable"><bool>true</bool></property>
+   <property name="checked"><bool>true</bool></property>
+   <property name="text"><string>Show Bounding Box</string></property>
+  </action>
+  <action name="actionScaleWithFlagged">
+   <property name="checkable"><bool>true</bool></property>
+   <property name="checked"><bool>true</bool></property>
+   <property name="text"><string>Scale with Flagged Soundings</string></property>
+  </action>
+  <action name="actionColorByFlag">
+   <property name="checkable"><bool>true</bool></property>
+   <property name="checked"><bool>true</bool></property>
+   <property name="text"><string>Color by Flag State</string></property>
+  </action>
+  <action name="actionColorByTopo">
+   <property name="checkable"><bool>true</bool></property>
+   <property name="text"><string>Color by Topography</string></property>
+  </action>
+  <action name="actionColorBySounding">
+   <property name="checkable"><bool>true</bool></property>
+   <property name="text"><string>Color by Soundings</string></property>
+  </action>
+  <action name="actionColorByAmp">
+   <property name="checkable"><bool>true</bool></property>
+   <property name="text"><string>Color by Amplitude</string></property>
+  </action>
+  <action name="actionApplyBias"><property name="text"><string>Apply Bias Values to Grid</string></property></action>
+  <action name="actionFlagSparseA"><property name="text"><string>Filter by sparse voxels (1 X cell, n&lt;10)</string></property></action>
+  <action name="actionFlagSparseB"><property name="text"><string>Filter by sparse voxels (1 X cell, n&lt;2)</string></property></action>
+  <action name="actionFlagSparseC"><property name="text"><string>Filter by sparse voxels (4 X cell, n&lt;10)</string></property></action>
+  <action name="actionFlagSparseD"><property name="text"><string>Filter by sparse voxels (4 X cell, n&lt;2)</string></property></action>
+  <action name="actionFlagSparseE"><property name="text"><string>Filter by sparse voxels (8 X cell, n&lt;10)</string></property></action>
+  <action name="actionFlagSparseF"><property name="text"><string>Filter by sparse voxels (8 X cell, n&lt;2)</string></property></action>
+  <action name="actionColorBlack"><property name="text"><string>Color Unflagged Soundings Black</string></property></action>
+  <action name="actionColorRed"><property name="text"><string>Color Unflagged Soundings Red</string></property></action>
+  <action name="actionColorYellow"><property name="text"><string>Color Unflagged Soundings Yellow</string></property></action>
+  <action name="actionColorGreen"><property name="text"><string>Color Unflagged Soundings Green</string></property></action>
+  <action name="actionColorBlueGreen"><property name="text"><string>Color Unflagged Soundings Bluegreen</string></property></action>
+  <action name="actionColorBlue"><property name="text"><string>Color Unflagged Soundings Blue</string></property></action>
+  <action name="actionColorPurple"><property name="text"><string>Color Unflagged Soundings Purple</string></property></action>
+  <action name="actionOptimizeR"><property name="text"><string>Optimize Bias Values (roll)</string></property></action>
+  <action name="actionOptimizeP"><property name="text"><string>Optimize Bias Values (pitch)</string></property></action>
+  <action name="actionOptimizeH"><property name="text"><string>Optimize Bias Values (heading)</string></property></action>
+  <action name="actionOptimizeRP"><property name="text"><string>Optimize Bias Values (roll-pitch)</string></property></action>
+  <action name="actionOptimizeRPH"><property name="text"><string>Optimize Bias Values (roll-pitch-heading)</string></property></action>
+  <action name="actionOptimizeT"><property name="text"><string>Optimize Time Lag Values</string></property></action>
+  <action name="actionOptimizeS"><property name="text"><string>Optimize Snell Correction Values</string></property></action>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

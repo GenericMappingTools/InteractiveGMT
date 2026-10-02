@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  mbvelocitytool_mode.ui - "Angle Mode" of the sound velocity tool (mbvelocitytool's
+  bulletinBoard_mode: mbprocess's MBP_ANGLES_OK / _SNELL / _SNELLNULL). Loaded at runtime by
+  deps/src/mbvelocitytool/mbvelocity_window.cpp.
+-->
+<ui version="4.0">
+ <class>MbVelocityModeDialog</class>
+ <widget class="QDialog" name="MbVelocityModeDialog">
+  <property name="geometry">
+   <rect><x>0</x><y>0</y><width>348</width><height>172</height></rect>
+  </property>
+  <property name="windowTitle">
+   <string>Beam Angle Mode</string>
+  </property>
+  <layout class="QVBoxLayout" name="mainLayout">
+   <item>
+    <widget class="QRadioButton" name="modeOk">
+     <property name="toolTip"><string>Trace the rays from the beam angles as the sonar recorded them</string></property>
+     <property name="text"><string>Do Not Change Beam Angles</string></property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QRadioButton" name="modeSnell">
+     <property name="toolTip"><string>Correct the beam angles for the surface sound velocity with Snell's law</string></property>
+     <property name="text"><string>Adjust Angles Using Snell's Law</string></property>
+     <property name="checked"><bool>true</bool></property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QRadioButton" name="modeNull">
+     <property name="toolTip"><string>Correct the beam angles with Snell's law and the sonar array geometry (null angle)</string></property>
+     <property name="text"><string>Adjust Angles Using Sonar Geometry</string></property>
+    </widget>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="buttonRow">
+     <item>
+      <spacer name="buttonSpacer">
+       <property name="orientation"><enum>Qt::Horizontal</enum></property>
+       <property name="sizeHint" stdset="0"><size><width>20</width><height>10</height></size></property>
+      </spacer>
+     </item>
+     <item>
+      <widget class="QPushButton" name="dismissButton">
+       <property name="text"><string>Dismiss</string></property>
+       <property name="autoDefault"><bool>false</bool></property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

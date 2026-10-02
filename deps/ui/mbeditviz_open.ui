@@ -1,0 +1,111 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  mbeditviz_open.ui - File > Open Swath Data of mbeditviz (its file selection box with the MBIO
+  format id and the output mode). Loaded at runtime by deps/src/mbeditviz/mbeditviz_window.cpp.
+-->
+<ui version="4.0">
+ <class>MbEditVizOpenDialog</class>
+ <widget class="QDialog" name="MbEditVizOpenDialog">
+  <property name="geometry">
+   <rect><x>0</x><y>0</y><width>560</width><height>170</height></rect>
+  </property>
+  <property name="windowTitle">
+   <string>Open Swath Data</string>
+  </property>
+  <layout class="QVBoxLayout" name="mainLayout">
+   <item>
+    <layout class="QHBoxLayout" name="fileRow">
+     <item>
+      <widget class="QLabel" name="fileLabel">
+       <property name="text"><string>Swath file or datalist:</string></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QLineEdit" name="fileEdit">
+       <property name="toolTip"><string>A swath file, or a datalist (format -1) of swath files</string></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="browseButton">
+       <property name="text"><string>Browse...</string></property>
+       <property name="autoDefault"><bool>false</bool></property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="formatRow">
+     <item>
+      <widget class="QLabel" name="formatLabel">
+       <property name="text"><string>MBIO Format ID:</string></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QSpinBox" name="formatBox">
+       <property name="toolTip"><string>MB-System format id of the file, guessed from its name when one is chosen; -1 reads a datalist</string></property>
+       <property name="minimum"><number>-1</number></property>
+       <property name="maximum"><number>999</number></property>
+       <property name="value"><number>-1</number></property>
+      </widget>
+     </item>
+     <item>
+      <spacer name="formatSpacer">
+       <property name="orientation"><enum>Qt::Horizontal</enum></property>
+       <property name="sizeHint" stdset="0"><size><width>20</width><height>10</height></size></property>
+      </spacer>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="outputRow">
+     <item>
+      <widget class="QLabel" name="outputLabel">
+       <property name="text"><string>Output Mode:</string></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QRadioButton" name="outputEdit">
+       <property name="text"><string>Output Edits</string></property>
+       <property name="checked"><bool>true</bool></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QRadioButton" name="outputBrowse">
+       <property name="text"><string>Browse Only</string></property>
+      </widget>
+     </item>
+     <item>
+      <spacer name="outputSpacer">
+       <property name="orientation"><enum>Qt::Horizontal</enum></property>
+       <property name="sizeHint" stdset="0"><size><width>20</width><height>10</height></size></property>
+      </spacer>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="buttonRow">
+     <item>
+      <spacer name="buttonSpacer">
+       <property name="orientation"><enum>Qt::Horizontal</enum></property>
+       <property name="sizeHint" stdset="0"><size><width>20</width><height>10</height></size></property>
+      </spacer>
+     </item>
+     <item>
+      <widget class="QPushButton" name="okButton">
+       <property name="text"><string>OK</string></property>
+       <property name="autoDefault"><bool>false</bool></property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="cancelButton">
+       <property name="text"><string>Cancel</string></property>
+       <property name="autoDefault"><bool>false</bool></property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

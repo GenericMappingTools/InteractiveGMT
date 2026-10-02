@@ -1,0 +1,154 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  mbvelocitytool.ui - the water sound velocity profile editor window (port of MB-System's
+  mbvelocitytool, mbvelocity.uil). Loaded at RUNTIME by deps/src/mbvelocitytool/mbvelocity_window.cpp
+  (QUiLoader). Every objectName below is looked up by name there; rename one and the tool refuses
+  to open, naming the missing widget.
+-->
+<ui version="4.0">
+ <class>MbVelocityWindow</class>
+ <widget class="QMainWindow" name="MbVelocityWindow">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>1016</width>
+    <height>720</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>MBvelocityTool - Interactive SVP Modeler/Editor</string>
+  </property>
+  <widget class="QWidget" name="centralwidget">
+   <layout class="QVBoxLayout" name="mainLayout">
+    <property name="spacing">
+     <number>2</number>
+    </property>
+    <property name="leftMargin">
+     <number>6</number>
+    </property>
+    <property name="topMargin">
+     <number>4</number>
+    </property>
+    <property name="rightMargin">
+     <number>6</number>
+    </property>
+    <property name="bottomMargin">
+     <number>4</number>
+    </property>
+    <item>
+     <layout class="QHBoxLayout" name="buttonRow">
+      <property name="spacing">
+       <number>4</number>
+      </property>
+      <item>
+       <widget class="QPushButton" name="plotScalingButton">
+        <property name="toolTip"><string>Depth and velocity ranges of the profile plot, and the residual range</string></property>
+        <property name="text"><string>Plot Scaling</string></property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QPushButton" name="angleModeButton">
+        <property name="toolTip"><string>How the beam angles are treated when the rays are traced</string></property>
+        <property name="text"><string>Angle Mode</string></property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QPushButton" name="reprocessButton">
+        <property name="toolTip"><string>Raytrace the swath data again through the editable profile</string></property>
+        <property name="text"><string>Reprocess</string></property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QPushButton" name="quitButton">
+        <property name="text"><string>Quit</string></property>
+       </widget>
+      </item>
+      <item>
+       <spacer name="buttonSpacer">
+        <property name="orientation"><enum>Qt::Horizontal</enum></property>
+        <property name="sizeHint" stdset="0"><size><width>20</width><height>10</height></size></property>
+       </spacer>
+      </item>
+      <item>
+       <widget class="QPushButton" name="aboutButton">
+        <property name="text"><string>About</string></property>
+       </widget>
+      </item>
+     </layout>
+    </item>
+    <item>
+     <widget class="QLabel" name="labelStatusDisplay">
+      <property name="text"><string>No Display Sound Velocity Profiles Loaded</string></property>
+     </widget>
+    </item>
+    <item>
+     <widget class="QLabel" name="labelStatusEdit">
+      <property name="text"><string>No Editable Sound Velocity Profile Loaded</string></property>
+     </widget>
+    </item>
+    <item>
+     <widget class="QLabel" name="labelStatusMb">
+      <property name="text"><string>No MultiBeam Data Loaded</string></property>
+     </widget>
+    </item>
+    <item>
+     <widget class="QWidget" name="canvasHost">
+      <property name="toolTip"><string>Left button: drag the nearest node of the editable profile.  Middle button: add a node.  Right button: delete the node under the pointer.</string></property>
+      <property name="sizePolicy">
+       <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+        <horstretch>0</horstretch>
+        <verstretch>1</verstretch>
+       </sizepolicy>
+      </property>
+      <property name="minimumSize"><size><width>640</width><height>400</height></size></property>
+     </widget>
+    </item>
+   </layout>
+  </widget>
+  <widget class="QMenuBar" name="menubar">
+   <widget class="QMenu" name="menuFile">
+    <property name="title"><string>File</string></property>
+    <addaction name="actionOpenDisplaySvp"/>
+    <addaction name="actionOpenEditSvp"/>
+    <addaction name="actionNewEditSvp"/>
+    <addaction name="actionSaveEditSvp"/>
+    <addaction name="separator"/>
+    <addaction name="actionOpenSwath"/>
+    <addaction name="separator"/>
+    <addaction name="actionSaveSwathSvp"/>
+    <addaction name="actionSaveResiduals"/>
+   </widget>
+   <addaction name="menuFile"/>
+  </widget>
+  <action name="actionOpenDisplaySvp">
+   <property name="text"><string>Open display profile...</string></property>
+   <property name="toolTip"><string>Show a sound velocity profile (depth velocity pairs) for comparison</string></property>
+  </action>
+  <action name="actionOpenEditSvp">
+   <property name="text"><string>Open editable profile...</string></property>
+   <property name="toolTip"><string>Read the sound velocity profile to edit</string></property>
+  </action>
+  <action name="actionNewEditSvp">
+   <property name="text"><string>New editable profile</string></property>
+   <property name="toolTip"><string>Start from the default 1500 m/s editable profile</string></property>
+  </action>
+  <action name="actionSaveEditSvp">
+   <property name="text"><string>Save editable profile...</string></property>
+  </action>
+  <action name="actionOpenSwath">
+   <property name="text"><string>Open swath sonar data...</string></property>
+   <property name="toolTip"><string>Read a swath file whose pings are raytraced through the editable profile</string></property>
+  </action>
+  <action name="actionSaveSwathSvp">
+   <property name="text"><string>Save swath svp file</string></property>
+   <property name="toolTip"><string>Write the editable profile as &lt;swath file&gt;.svp and set it in the file's mbprocess parameter file</string></property>
+  </action>
+  <action name="actionSaveResiduals">
+   <property name="text"><string>Save residuals as offsets</string></property>
+   <property name="toolTip"><string>Write the beam residuals as static beam offsets (&lt;swath file&gt;.sbo, .sbao) and set them for mbprocess</string></property>
+  </action>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

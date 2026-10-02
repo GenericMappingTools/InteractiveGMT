@@ -1,0 +1,464 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  mbedit.ui - the swath bathymetry editor window (port of MB-System's mbedit, mbedit.uil).
+  Loaded at RUNTIME by deps/src/mbedit/mbedit_window.cpp (QUiLoader). Every objectName below is looked up
+  by name there; rename one and the editor refuses to open, naming the missing widget.
+  Each slider carries two labels named after it: <name>Value (its value) and <name>Max (its
+  current maximum, which doubles/halves when the slider is pushed to an end, as in mbedit).
+-->
+<ui version="4.0">
+ <class>MbEditWindow</class>
+ <widget class="QMainWindow" name="MbEditWindow">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>1100</width>
+    <height>820</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>MBedit - Interactive Swath Bathymetry Editor</string>
+  </property>
+  <widget class="QWidget" name="centralwidget">
+   <layout class="QVBoxLayout" name="mainLayout">
+    <property name="spacing">
+     <number>4</number>
+    </property>
+    <property name="leftMargin">
+     <number>6</number>
+    </property>
+    <property name="topMargin">
+     <number>4</number>
+    </property>
+    <property name="rightMargin">
+     <number>6</number>
+    </property>
+    <property name="bottomMargin">
+     <number>4</number>
+    </property>
+    <item>
+     <layout class="QHBoxLayout" name="buttonRow">
+      <property name="spacing">
+       <number>4</number>
+      </property>
+      <item>
+       <widget class="QPushButton" name="quitButton">
+        <property name="toolTip"><string>Save the edits of the file being edited and close the editor</string></property>
+        <property name="text"><string>Quit</string></property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QPushButton" name="nextBufferButton">
+        <property name="toolTip"><string>Write out the pings already seen and load the next buffer of the file</string></property>
+        <property name="text"><string>Next Buffer</string></property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QPushButton" name="doneButton">
+        <property name="toolTip"><string>Save the edits of this file (and open the next one in the list, if any)</string></property>
+        <property name="text"><string>Done</string></property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QPushButton" name="forwardButton">
+        <property name="toolTip"><string>Step forward by "Pings to step" (key F, or the right mouse button)</string></property>
+        <property name="text"><string>Forward</string></property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QPushButton" name="reverseButton">
+        <property name="toolTip"><string>Step back by "Pings to step" (key V, or the middle mouse button)</string></property>
+        <property name="text"><string>Reverse</string></property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QPushButton" name="startButton">
+        <property name="toolTip"><string>Go to the first ping in the buffer</string></property>
+        <property name="text"><string>Start</string></property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QPushButton" name="endButton">
+        <property name="toolTip"><string>Go to the last ping in the buffer</string></property>
+        <property name="text"><string>End</string></property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QPushButton" name="flagViewButton">
+        <property name="toolTip"><string>Flag every sounding on view (key X)</string></property>
+        <property name="text"><string>Flag View</string></property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QPushButton" name="unflagViewButton">
+        <property name="toolTip"><string>Unflag every sounding on view (key C)</string></property>
+        <property name="text"><string>Unflag View</string></property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QPushButton" name="unflagForwardButton">
+        <property name="toolTip"><string>Unflag every sounding from the first ping on view to the end of the buffer</string></property>
+        <property name="text"><string>Unflag Forward</string></property>
+       </widget>
+      </item>
+      <item>
+       <spacer name="buttonSpacer">
+        <property name="orientation"><enum>Qt::Horizontal</enum></property>
+        <property name="sizeHint" stdset="0"><size><width>20</width><height>10</height></size></property>
+       </spacer>
+      </item>
+      <item>
+       <widget class="QPushButton" name="aboutButton">
+        <property name="text"><string>About</string></property>
+       </widget>
+      </item>
+     </layout>
+    </item>
+    <item>
+     <layout class="QGridLayout" name="sliderGrid">
+      <property name="horizontalSpacing">
+       <number>6</number>
+      </property>
+      <property name="verticalSpacing">
+       <number>2</number>
+      </property>
+      <item row="0" column="0">
+       <widget class="QLabel" name="widthLabel">
+        <property name="text"><string>Acrosstrack Width (m):</string></property>
+       </widget>
+      </item>
+      <item row="0" column="1">
+       <widget class="QLabel" name="widthSliderValue">
+        <property name="minimumSize"><size><width>56</width><height>0</height></size></property>
+        <property name="alignment"><set>Qt::AlignRight|Qt::AlignVCenter</set></property>
+        <property name="text"><string>5000</string></property>
+       </widget>
+      </item>
+      <item row="0" column="2">
+       <widget class="QSlider" name="widthSlider">
+        <property name="toolTip"><string>Width of the plot across track, in metres</string></property>
+        <property name="minimum"><number>1</number></property>
+        <property name="maximum"><number>20000</number></property>
+        <property name="value"><number>5000</number></property>
+        <property name="orientation"><enum>Qt::Horizontal</enum></property>
+       </widget>
+      </item>
+      <item row="0" column="3">
+       <widget class="QLabel" name="widthSliderMax">
+        <property name="minimumSize"><size><width>48</width><height>0</height></size></property>
+        <property name="text"><string>20000</string></property>
+       </widget>
+      </item>
+      <item row="0" column="4">
+       <widget class="QLabel" name="exagLabel">
+        <property name="text"><string>Vertical Exaggeration:</string></property>
+       </widget>
+      </item>
+      <item row="0" column="5">
+       <widget class="QLabel" name="exagSliderValue">
+        <property name="minimumSize"><size><width>48</width><height>0</height></size></property>
+        <property name="alignment"><set>Qt::AlignRight|Qt::AlignVCenter</set></property>
+        <property name="text"><string>1.00</string></property>
+       </widget>
+      </item>
+      <item row="0" column="6">
+       <widget class="QSlider" name="exagSlider">
+        <property name="toolTip"><string>Vertical exaggeration of the depth profiles</string></property>
+        <property name="minimum"><number>1</number></property>
+        <property name="maximum"><number>2000</number></property>
+        <property name="value"><number>100</number></property>
+        <property name="orientation"><enum>Qt::Horizontal</enum></property>
+       </widget>
+      </item>
+      <item row="0" column="7">
+       <widget class="QLabel" name="exagSliderMax">
+        <property name="minimumSize"><size><width>40</width><height>0</height></size></property>
+        <property name="text"><string>20.00</string></property>
+       </widget>
+      </item>
+      <item row="1" column="0">
+       <widget class="QLabel" name="pingsLabel">
+        <property name="text"><string>Pings shown:</string></property>
+       </widget>
+      </item>
+      <item row="1" column="1">
+       <widget class="QLabel" name="pingsSliderValue">
+        <property name="alignment"><set>Qt::AlignRight|Qt::AlignVCenter</set></property>
+        <property name="text"><string>10</string></property>
+       </widget>
+      </item>
+      <item row="1" column="2">
+       <widget class="QSlider" name="pingsSlider">
+        <property name="toolTip"><string>Number of pings drawn at once</string></property>
+        <property name="minimum"><number>1</number></property>
+        <property name="maximum"><number>20</number></property>
+        <property name="value"><number>10</number></property>
+        <property name="orientation"><enum>Qt::Horizontal</enum></property>
+       </widget>
+      </item>
+      <item row="1" column="3">
+       <widget class="QLabel" name="pingsSliderMax">
+        <property name="text"><string>20</string></property>
+       </widget>
+      </item>
+      <item row="1" column="4">
+       <widget class="QLabel" name="stepLabel">
+        <property name="text"><string>Pings to step:</string></property>
+       </widget>
+      </item>
+      <item row="1" column="5">
+       <widget class="QLabel" name="stepSliderValue">
+        <property name="alignment"><set>Qt::AlignRight|Qt::AlignVCenter</set></property>
+        <property name="text"><string>5</string></property>
+       </widget>
+      </item>
+      <item row="1" column="6">
+       <widget class="QSlider" name="stepSlider">
+        <property name="toolTip"><string>Number of pings Forward/Reverse move by</string></property>
+        <property name="minimum"><number>1</number></property>
+        <property name="maximum"><number>20</number></property>
+        <property name="value"><number>5</number></property>
+        <property name="orientation"><enum>Qt::Horizontal</enum></property>
+       </widget>
+      </item>
+      <item row="1" column="7">
+       <widget class="QLabel" name="stepSliderMax">
+        <property name="text"><string>20</string></property>
+       </widget>
+      </item>
+     </layout>
+    </item>
+    <item>
+     <layout class="QHBoxLayout" name="modeRow">
+      <property name="spacing">
+       <number>10</number>
+      </property>
+      <item>
+       <widget class="QLabel" name="modeLabel">
+        <property name="text"><string>Mode:</string></property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QRadioButton" name="modeToggle">
+        <property name="toolTip"><string>Click a sounding to flag it, click again to unflag it (key Q)</string></property>
+        <property name="text"><string>Toggle</string></property>
+        <property name="checked"><bool>true</bool></property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QRadioButton" name="modePick">
+        <property name="toolTip"><string>Click a sounding to flag it (key W)</string></property>
+        <property name="text"><string>Pick</string></property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QRadioButton" name="modeErase">
+        <property name="toolTip"><string>Drag over soundings to flag them (key E)</string></property>
+        <property name="text"><string>Erase</string></property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QRadioButton" name="modeRestore">
+        <property name="toolTip"><string>Drag over flagged soundings to unflag them (key R)</string></property>
+        <property name="text"><string>Restore</string></property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QRadioButton" name="modeGrab">
+        <property name="toolTip"><string>Drag a rectangle: every sounding inside is flagged (key T)</string></property>
+        <property name="text"><string>Grab</string></property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QRadioButton" name="modeInfo">
+        <property name="toolTip"><string>Click a sounding to see its ping, beam, time, position and depth (key Y)</string></property>
+        <property name="text"><string>Info</string></property>
+       </widget>
+      </item>
+      <item>
+       <spacer name="modeSpacer">
+        <property name="orientation"><enum>Qt::Horizontal</enum></property>
+        <property name="sizeHint" stdset="0"><size><width>20</width><height>10</height></size></property>
+       </spacer>
+      </item>
+     </layout>
+    </item>
+    <item>
+     <widget class="QWidget" name="canvasHost">
+      <property name="sizePolicy">
+       <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+        <horstretch>0</horstretch>
+        <verstretch>1</verstretch>
+       </sizepolicy>
+      </property>
+      <property name="minimumSize"><size><width>640</width><height>360</height></size></property>
+     </widget>
+    </item>
+   </layout>
+  </widget>
+  <widget class="QMenuBar" name="menubar">
+   <widget class="QMenu" name="menuFile">
+    <property name="title"><string>File</string></property>
+    <addaction name="actionOpen"/>
+    <addaction name="actionFileList"/>
+   </widget>
+   <widget class="QMenu" name="menuView">
+    <property name="title"><string>View</string></property>
+    <addaction name="actionWaterfall"/>
+    <addaction name="actionAlongtrack"/>
+    <addaction name="actionAcrosstrack"/>
+    <addaction name="separator"/>
+    <addaction name="actionShowFlaggedSoundings"/>
+    <addaction name="actionShowFlaggedProfiles"/>
+    <addaction name="separator"/>
+    <addaction name="actionShowFlags"/>
+    <addaction name="actionShowDetects"/>
+    <addaction name="actionShowPulses"/>
+    <addaction name="separator"/>
+    <addaction name="actionPlotWide"/>
+    <addaction name="actionPlotTime"/>
+    <addaction name="actionPlotInterval"/>
+    <addaction name="actionPlotLon"/>
+    <addaction name="actionPlotLat"/>
+    <addaction name="actionPlotHeading"/>
+    <addaction name="actionPlotSpeed"/>
+    <addaction name="actionPlotDepth"/>
+    <addaction name="actionPlotAltitude"/>
+    <addaction name="actionPlotSensorDepth"/>
+    <addaction name="actionPlotRoll"/>
+    <addaction name="actionPlotPitch"/>
+    <addaction name="actionPlotHeave"/>
+   </widget>
+   <widget class="QMenu" name="menuControls">
+    <property name="title"><string>Controls</string></property>
+    <addaction name="actionGoto"/>
+    <addaction name="actionBuffer"/>
+    <addaction name="actionAnnotation"/>
+    <addaction name="actionFilters"/>
+    <addaction name="separator"/>
+    <addaction name="actionReverseKeys"/>
+    <addaction name="actionReverseMouse"/>
+   </widget>
+   <addaction name="menuFile"/>
+   <addaction name="menuView"/>
+   <addaction name="menuControls"/>
+  </widget>
+  <action name="actionOpen">
+   <property name="text"><string>Open...</string></property>
+  </action>
+  <action name="actionFileList">
+   <property name="text"><string>File Selection List...</string></property>
+  </action>
+  <action name="actionWaterfall">
+   <property name="checkable"><bool>true</bool></property>
+   <property name="checked"><bool>true</bool></property>
+   <property name="text"><string>Waterfall View</string></property>
+  </action>
+  <action name="actionAlongtrack">
+   <property name="checkable"><bool>true</bool></property>
+   <property name="text"><string>Alongtrack View</string></property>
+  </action>
+  <action name="actionAcrosstrack">
+   <property name="checkable"><bool>true</bool></property>
+   <property name="text"><string>Acrosstrack View</string></property>
+  </action>
+  <action name="actionShowFlaggedSoundings">
+   <property name="checkable"><bool>true</bool></property>
+   <property name="checked"><bool>true</bool></property>
+   <property name="text"><string>Show Flagged Soundings</string></property>
+  </action>
+  <action name="actionShowFlaggedProfiles">
+   <property name="checkable"><bool>true</bool></property>
+   <property name="text"><string>Show Flagged Profile</string></property>
+  </action>
+  <action name="actionShowFlags">
+   <property name="checkable"><bool>true</bool></property>
+   <property name="checked"><bool>true</bool></property>
+   <property name="text"><string>Show Flag States</string></property>
+  </action>
+  <action name="actionShowDetects">
+   <property name="checkable"><bool>true</bool></property>
+   <property name="text"><string>Show Bottom Detect Algorithms</string></property>
+  </action>
+  <action name="actionShowPulses">
+   <property name="checkable"><bool>true</bool></property>
+   <property name="text"><string>Show Source Pulse Types</string></property>
+  </action>
+  <action name="actionPlotWide">
+   <property name="checkable"><bool>true</bool></property>
+   <property name="text"><string>Wide Bathymetry Profiles</string></property>
+  </action>
+  <action name="actionPlotTime">
+   <property name="checkable"><bool>true</bool></property>
+   <property name="checked"><bool>true</bool></property>
+   <property name="text"><string>Print Time Stamps</string></property>
+  </action>
+  <action name="actionPlotInterval">
+   <property name="checkable"><bool>true</bool></property>
+   <property name="text"><string>Plot Ping Interval</string></property>
+  </action>
+  <action name="actionPlotLon">
+   <property name="checkable"><bool>true</bool></property>
+   <property name="text"><string>Plot Longitude</string></property>
+  </action>
+  <action name="actionPlotLat">
+   <property name="checkable"><bool>true</bool></property>
+   <property name="text"><string>Plot Latitude</string></property>
+  </action>
+  <action name="actionPlotHeading">
+   <property name="checkable"><bool>true</bool></property>
+   <property name="text"><string>Plot Heading</string></property>
+  </action>
+  <action name="actionPlotSpeed">
+   <property name="checkable"><bool>true</bool></property>
+   <property name="text"><string>Plot Speed</string></property>
+  </action>
+  <action name="actionPlotDepth">
+   <property name="checkable"><bool>true</bool></property>
+   <property name="text"><string>Plot Center Beam Depth</string></property>
+  </action>
+  <action name="actionPlotAltitude">
+   <property name="checkable"><bool>true</bool></property>
+   <property name="text"><string>Plot Sonar Altitude</string></property>
+  </action>
+  <action name="actionPlotSensorDepth">
+   <property name="checkable"><bool>true</bool></property>
+   <property name="text"><string>Plot Sonar Depth</string></property>
+  </action>
+  <action name="actionPlotRoll">
+   <property name="checkable"><bool>true</bool></property>
+   <property name="text"><string>Plot Roll</string></property>
+  </action>
+  <action name="actionPlotPitch">
+   <property name="checkable"><bool>true</bool></property>
+   <property name="text"><string>Plot Pitch</string></property>
+  </action>
+  <action name="actionPlotHeave">
+   <property name="checkable"><bool>true</bool></property>
+   <property name="text"><string>Plot Heave</string></property>
+  </action>
+  <action name="actionGoto">
+   <property name="text"><string>Go To Specified Time...</string></property>
+  </action>
+  <action name="actionBuffer">
+   <property name="text"><string>Buffer Controls...</string></property>
+  </action>
+  <action name="actionAnnotation">
+   <property name="text"><string>Annotation...</string></property>
+  </action>
+  <action name="actionFilters">
+   <property name="text"><string>Filters...</string></property>
+  </action>
+  <action name="actionReverseKeys">
+   <property name="checkable"><bool>true</bool></property>
+   <property name="text"><string>Reverse Right/Left Key Macros</string></property>
+  </action>
+  <action name="actionReverseMouse">
+   <property name="checkable"><bool>true</bool></property>
+   <property name="text"><string>Reverse Mouse Buttons</string></property>
+  </action>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>
