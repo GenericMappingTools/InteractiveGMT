@@ -45,6 +45,7 @@ function _interp_module(method::AbstractString)
 	method == "greenspline"    && return GMT.greenspline
 	method == "sphinterpolate" && return GMT.sphinterpolate
 	method == "mbgrid"         && return mbgrid          # ours, not GMT's — see the header note
+	method == "cube"           && return cubegrid        # ours too: MB-System's CUBE (src/cube.jl)
 	error("unknown gridding method '$method'")
 end
 
@@ -60,7 +61,12 @@ function _interp_kwargs(d::Dict{String,String}, method::AbstractString, geog::Bo
 	# unit on a grid they think is Cartesian — same trap grdfilter's -D hit. An in-memory dataset does
 	# not carry its geographic-ness, so it is stated explicitly. mbgrid is not a GMT module and has no
 	# -f to state it to: it measures its Gaussian in CELLS, so there is no distance unit to resolve.
-	(geog && method != "mbgrid") && (kw[:f] = :g)
+	# CUBE is not a GMT module either; it measures in METRES and is told the coordinates' kind itself.
+	if method == "cube"
+		kw[:geographic] = geog
+	elseif geog && method != "mbgrid"
+		kw[:f] = :g
+	end
 	# Near Neighbor's -S is required and lives in the main dialog (Mirone's "For Nearneighbor only"
 	# group), not in the Options window, so it is not an opt_ line.
 	r = _get(d, "radius")
@@ -119,14 +125,32 @@ function _on_interpolate(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		infile = _get(d, "infile")
 		isempty(infile) && error("no input data file")
 
-		D = _interp_read(infile, _get(d, "headers"), _on(d, "toggle"))
+		# MB-System swath data (a datalist or a swath file) is CUBE's own input: read through MBIO into
+		# the same x,y,z table a text file gives (src/cube.jl), longitude/latitude by construction.
+		swath = method == "cube" && _cube_is_swath(infile)
+		D = swath ? _cube_swath_dataset(infile) : _interp_read(infile, _get(d, "headers"), _on(d, "toggle"))
+		swath && (d["coords"] = "geog")
 		# "auto" is what the dialog opens with: ask GMT the same question it asks itself elsewhere
 		# (GMT.guessgeog), never a private lon/lat range test of our own.
 		coords = _get(d, "coords", "auto")
 		geog = coords == "geog" ? true : (coords == "cart" ? false : GMT.guessgeog(D))
 
 		kw = _interp_kwargs(d, method, geog)
-		R = _interp_module(method)(D; kw...)
+		# CUBE makes more than a depth: its uncertainty, hypothesis count and strength ratio are grids
+		# of their own. They go to the window as their OWN named handles, before the depth, so the
+		# depth is the one the shared derived-variable transition leaves showing.
+		extra = method == "cube" && _mb_bool(string(pop!(kw, :extra, "false")))
+		method == "cube" && _cube_fill_geometry!(kw, D)  # empty region/spacing: GMT's choice for the data
+		if extra
+			nt = cubegrid_all(D; kw...)
+			for (G, t) in ((nt.uncertainty, "CUBE uncertainty (95%)"), (nt.n_hypotheses, "CUBE hypotheses"),
+			               (nt.ratio, "CUBE hypothesis strength"), (nt.n_points, "CUBE soundings"))
+				_gm3d_deliver(scene, G, t, "", false, "cube $t"; geographic = (coords == "auto" ? nothing : geog))
+			end
+			R = nt.depth
+		else
+			R = _interp_module(method)(D; kw...)
+		end
 
 		# surface -Q does not grid anything — it only reports the dimensions with a highly composite
 		# factor, on GMT's own message stream. Say so instead of reporting a failure.

@@ -577,7 +577,7 @@ static void textLabelMenu(Scene *s, vtkProp3D *act, const QPoint &globalPos) {
 // colourbar / profile). Drawn into a 16x16 transparent pixmap (matches the small checkbox).
 enum ObjIcon { IC_Surface, IC_Image, IC_Line, IC_Points, IC_Curtain,
                IC_Polygon, IC_Polyline, IC_Rect, IC_Circle, IC_Text, IC_ColorBar, IC_Profile, IC_NestRect,
-               IC_Axes, IC_StraightLine, IC_Beachball };
+               IC_Axes, IC_StraightLine, IC_Beachball, IC_LineArea };
 
 static QPixmap makeObjectIcon(int kind) {
 	// Drawn in a 16-unit coordinate space but rasterised at high DPI (supersampled) so the glyph
@@ -673,6 +673,14 @@ static QPixmap makeObjectIcon(int kind) {
 	case IC_Circle: {                                          // circle outline, light fill
 		p.setPen(QPen(QColor(40, 40, 40), 1.4)); p.setBrush(QColor(255, 200, 120, 150));
 		p.drawEllipse(QPointF(8, 8.5), 6, 6);
+		break;
+	}
+	case IC_LineArea: {                                        // "Line area": tilted box + its central line
+		p.setPen(QPen(QColor(40, 40, 40), 1.2, Qt::SolidLine, Qt::SquareCap, Qt::MiterJoin));
+		p.setBrush(Qt::NoBrush);
+		QPolygonF box; box << QPointF(1.5, 7.0) << QPointF(13.0, 3.0) << QPointF(14.5, 9.0) << QPointF(3.0, 13.0);
+		p.drawPolygon(box);
+		p.drawLine(QPointF(2.25, 10.0), QPointF(13.75, 6.0));
 		break;
 	}
 	case IC_NestRect: {                                        // "Nested grids": three concentric thin rects
@@ -3209,6 +3217,9 @@ static void rebuildSceneObjects(Scene *s) {
 			auto grpMenu = [s, gn, cptable, vwKey](const QPoint &g) {
 				QMenu m(s->widget);
 				QAction *aCpt = nullptr, *aBlack = nullptr;
+				// A group of MB-System navigation tracks: mbgrdviz's Action menu editors, on every track
+				// of the group (each submenu item does its own work, so `pick` matches nothing below).
+				addMbSystemMenu(m, lineGroupMbNavs(s, gn));
 				QAction *aVw = vwKey.empty() ? nullptr : m.addAction("Save as SVG / EPS / PDF…");
 				if (aVw) m.addSeparator();
 				if (cptable) {
@@ -3447,6 +3458,7 @@ static void rebuildSceneObjects(Scene *s) {
 		int ic = pg.isFault              ? (pg.v.size() > 2 ? IC_Polyline : IC_StraightLine)
 		       : !pg.groupName.empty()   ? IC_Rect      // slip-model patches are rectangles, not generic polygons
 		       : pg.nestKind == 1        ? IC_NestRect
+		       : pg.isLineArea           ? IC_LineArea
 		       : !pg.closed              ? (pg.v.size() > 2 ? IC_Polyline : IC_StraightLine)
 		       : nm.startsWith("rect")   ? IC_Rect
 		       : nm.startsWith("circle") ? IC_Circle
@@ -4094,8 +4106,17 @@ static void addOverlay(Scene *s, const double *xyz, int npts, const int *segoff,
 	for (int i = 0; i < npts && !realZ; ++i)
 		if (xyz[3*i+2] != 0.0) realZ = true;
 	if (zIsPlaceholder) realZ = false;
+	// A line with NO z of its own (an MB-System track, a 2-column table) lives ON TOP of the grid it is
+	// laid on: that grid's highest z, at that grid's VE only (veOwner, below). Never at z = 0: over a
+	// sea floor thousands of metres down, z = 0 put the line above the camera the grid was framed with,
+	// and its row stayed checked while nothing was drawn. No grid under it: z = 0 is all there is.
+	double zTop = 0.0;
+	if (zIsPlaceholder) {
+		const ActiveGrid ag = resolveActiveGrid(s);
+		if (ag.valid && ag.zmax >= ag.zmin) zTop = ag.zmax;
+	}
 	for (int i = 0; i < npts; ++i)
-		pts->InsertNextPoint(xyz[3*i], xyz[3*i+1], xyz[3*i+2]);
+		pts->InsertNextPoint(xyz[3*i], xyz[3*i+1], zIsPlaceholder ? zTop : xyz[3*i+2]);
 
 	// `gaps` = ngaps pairs of GLOBAL 0-based vertex indices (a,b), ascending: the stretch strictly
 	// between a and b is not DRAWN. The points and `segoff` stay whole, so everything that reads the
@@ -4161,7 +4182,7 @@ static void addOverlay(Scene *s, const double *xyz, int npts, const int *segoff,
 	// that true for a line that was clamped by its importer (a Geography boundary) as well as for one
 	// the user clamps by hand; inferring it later cannot work, because by then the source z is gone.
 	ov.zClampSave.resize((size_t)npts);
-	for (int i = 0; i < npts; ++i) ov.zClampSave[(size_t)i] = xyz[3*i+2];
+	for (int i = 0; i < npts; ++i) ov.zClampSave[(size_t)i] = zIsPlaceholder ? zTop : xyz[3*i+2];
 	ov.baseLine = pd;                         // keep the geometry (both modes) for restyling + line<->points toggle
 	ov.segoff.assign(segoff, segoff + nseg + 1);   // remember segments so a Points overlay can rebuild polylines
 	ov.nseg = nseg;

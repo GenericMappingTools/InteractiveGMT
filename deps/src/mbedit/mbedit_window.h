@@ -43,6 +43,9 @@ struct MbEditHost {
 	             std::function<void()> remove) = nullptr;
 	void (*unpark)(void *win, QWidget *tool) = nullptr;
 	void (*parkOnMinimise)(QWidget *tool, std::function<void()> park) = nullptr;
+	// the top-level window of a viewer window (null when it is gone): a tool BELONGS to the viewer window
+	// it was opened from or parks in, and goes when that window goes, like every iGMT tool window
+	QWidget *(*sceneWindow)(void *scene) = nullptr;
 	// THE VIEWER'S OWN 3-D VIEW for a tool window (mbeditviz's 3-D soundings): GLView + a Scene + the
 	// trackball style + the gizmo, used exactly as every iGMT 3-D view uses them — same mouse, same keys,
 	// same handle. Nothing of that navigation is re-done by the tool. While `armed()` says an edit mode

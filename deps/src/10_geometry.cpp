@@ -319,7 +319,12 @@ struct Overlay {
 	std::string vwKey;
 	bool noFill = false;                     // suppresses ONLY "Fill polygons": set by the MB-System swath
 	                                          // tracks (mbHostAddTrack), a ship's track is never an area
-	bool noConvertToPoints = false;          // suppresses ONLY "Convert to points"/"Convert to line" in the
+	std::string mbNav;                       // an MB-System navigation track (or its swath bounds): the name the
+	                                          // track was given when mbHostAddTrack laid it here, which is how
+	                                          // mbgrdviz knows it (a later Rename does not orphan it). Non-empty
+	                                          // puts the "MB-System" submenu (the Action menu's editors) on its
+	                                          // row and on its group's handle. "" = not a track.
+	bool noConvertToPoints = false;         // suppresses ONLY "Convert to points"/"Convert to line" in the
 	                                          // context menu, unlike isShapencBoundary which also drops
 	                                          // "Line length…"/"Azimuth…" -- for lines where scattering to
 	                                          // points makes no sense but length/azimuth still does (e.g.
@@ -731,6 +736,9 @@ struct Polygon {
 	bool zIsPlaceholder = false;             // the caller's data had no Z (every z sent was the 0 filler):
 	                                         // the data table must not invent a Z column (Overlay twin)
 	bool isRect = false;                     // drawn with a rectangle tool (SH_Rect/SH_RectN): vertex edits stay axis-aligned
+	bool isLineArea = false;                 // "Line area" (SH_LineArea): v is the 4-corner rectangle ring; the central
+	                                         // line joins the midpoints of its two short ends (v0-v3 and v1-v2) and is
+	                                         // drawn in the same actor. Corner edits keep it a rectangle (lineAreaDragCorner)
 	bool isFault = false;                    // drawn with the Draw Fault tool (SH_Fault): props hold the elastic-deformation dialog
 	double faultSlip = std::nan("");         // dislocation slip in METERS (set when imported from a sub-fault file; NaN = unknown -> dialog default)
 	double faultRake = std::nan("");         // dislocation rake in DEGREES (set on import; NaN = unknown -> dialog default)
@@ -938,6 +946,10 @@ static bool lineGroupNamesShown(Scene *s, const std::string &gname);    // ...an
 static void lineGroupSetNames(Scene *s, const std::string &gname, bool on);
 static void lineGroupRename(Scene *s, const std::string &oldName, const std::string &newName);
 static void lineGroupRenamePrompt(Scene *s, const std::string &gname);   // ask, then rename (menu + dbl-click)
+// The "MB-System" submenu (mbgrdviz's Action menu editors) of a navigation track and of its group's
+// handle (55_lineprops.cpp): the tracks of a group, and the submenu itself (nothing added for none).
+static std::vector<std::string> lineGroupMbNavs(Scene *s, const std::string &gname);
+static void addMbSystemMenu(QMenu &m, const std::vector<std::string> &navs);
 static void overlayBuildFill(Overlay &ov);                                 // filled overlay's triangles (50_scene.cpp)
 static bool overlayActorFilled(Scene *s, vtkActor *a);                     // ...is this actor one? (50_scene.cpp)
 static void vwSaveProduct(Scene *s, const std::string &key);               // Vector Wizard product -> SVG/EPS/PDF (50_scene.cpp)
@@ -1068,6 +1080,7 @@ struct Scene {
 	vtkSmartPointer<vtkPlaneSource>       nanPlaneSrc;
 	bool                                  gridHasNaN = false;   // set where the z layer is stored
 	double                                clipBounds[6] = { 1, -1, 1, -1, 1, -1 };   // visible bounds the depth range was last fitted to (syncClipToVisible)
+	double                                clipRange[2] = { 0, 0 };                    // ...and the range that fit gave (someone else's reset changes it)
 	// The BASE surface's OWN axes (SACRED_LAW.md Raster-own-axes law -- see AxesSet above). This is
 	// the PRIMARY raster's set, not "the window's axes": it is owned by the base surface's own master
 	// handle exactly as every ExtraObj owns `ex.ax`, and nothing else in the window may frame, hide or
@@ -1695,7 +1708,8 @@ struct Scene {
 	// one) and so share preview / edit / delete / Scene-Objects / Line-Properties code. Text places
 	// a billboard label instead. polyShape selects which tool the active (checked) button drives.
 	enum ShapeKind { SH_Polygon, SH_Polyline, SH_Line, SH_Rect, SH_Circle, SH_Text, SH_RectN, SH_Fault, SH_Ruler,
-	                 SH_SymCircle, SH_SymSquare, SH_SymStar };   // Symbols flyout: one-click regular shapes
+	                 SH_SymCircle, SH_SymSquare, SH_SymStar,     // Symbols flyout: one-click regular shapes
+	                 SH_LineArea };                               // a straight line inside its own rectangle
 	ShapeKind polyShape = SH_Polygon;                  // active tool while polyMode is on
 	std::vector<Polygon> polys;                        // finished polygons / polylines / rects / circles
 	// "Point at a line" pick a tool can ARM (Plates > Euler rotations' "Pick in view" / "Rect
@@ -1757,6 +1771,8 @@ struct Scene {
 	vtkSmartPointer<vtkActor>    polyPreview;          // rubber preview: placed verts + segment to cursor
 	vtkSmartPointer<vtkPolyData> polyPreviewPD;
 	int    polyEdit     = -1;                          // index into polys being edited (-1 = none)
+	bool   polyEditMid  = false;                       // polyEdit is a line area edited by its CENTRAL LINE: two
+	                                                    // handles at its ends (length + orientation), box follows
 	int    polyDragVert = -1;                          // vertex index being click-dragged (-1 = none)
 	bool   polyDragWhole = false;                       // Shift+drag in edit mode: translate the WHOLE element
 	double polyDragLastW[2] = {0.0, 0.0};              // last picked world (x,y) for the incremental whole-drag delta
@@ -5122,17 +5138,42 @@ static void followZoomAnnotations(Scene *s);   // 50_scene.cpp: keep screen-cons
 // when it was last reset; a layer checked back on whose drawn relief is taller (the SST at its own z
 // scale, after layer0's) fell outside it and was clipped away whole, leaving only its NaN backdrop —
 // "unchecking layer0 makes the SST invisible". The Scene Objects rows toggle actors directly, so no
-// setter sees every show/hide; the render does. Refit only when the visible bounds really changed.
+// setter sees every show/hide; the render does.
+// WHAT IS SHOWN INCLUDES THE TOP LAYER. The vectors applyStacking parks in the depth-cleared layer
+// (axesRen) are drawn with the SAME camera, so they are cut by the SAME near/far planes — but
+// ren->ComputeVisiblePropBounds never sees them. A track at z = 0 over a second grid whose relief lies
+// thousands of metres down (the base grid hidden, so nothing else stretches the range) sat in front of
+// the near plane: its row checked, nothing on screen. The range is fitted to the union of both layers.
+// Refitted when the bounds change AND when anyone else has reset the range since the last fit: the
+// other resets (camera moves, the interactor, addOverlay) fit it to the main layer alone, and a
+// shortcut on the bounds only left that too-thin range in force. Nothing changed: nothing done, so
+// a render loop (Aquamoto's held slider) pays for one comparison.
 static void syncClipToVisible(Scene *s) {
 	if (!s || !s->ren) return;
-	double b[6];
+	double b[6], t[6];
 	s->ren->ComputeVisiblePropBounds(b);
+	// Nothing shown in the main layer (an empty launcher: its 0..1 placeholder is hidden) -> leave the
+	// range alone. The top layer only WIDENS a fit, never makes one by itself: the placeholder's axes
+	// billboards live there flagged visible, and a range fitted to them alone drew a 0..1 axes box
+	// over the empty window.
 	if (!vtkMath::AreBoundsInitialized(b)) return;
-	bool same = true;
-	for (int k = 0; k < 6; ++k) if (b[k] != s->clipBounds[k]) { same = false; break; }
+	if (s->axesRen && s->axesRen.Get() != s->ren.Get()) {
+		s->axesRen->ComputeVisiblePropBounds(t);
+		if (vtkMath::AreBoundsInitialized(t))
+			for (int k = 0; k < 6; k += 2) {
+				b[k] = std::min(b[k], t[k]);
+				b[k + 1] = std::max(b[k + 1], t[k + 1]);
+			}
+	}
+	vtkCamera *cam = s->ren->GetActiveCamera();
+	double cr[2] = {0, 0};
+	if (cam) cam->GetClippingRange(cr);
+	bool same = cam && cr[0] == s->clipRange[0] && cr[1] == s->clipRange[1];
+	for (int k = 0; k < 6 && same; ++k) if (b[k] != s->clipBounds[k]) same = false;
 	if (same) return;
 	for (int k = 0; k < 6; ++k) s->clipBounds[k] = b[k];
 	s->ren->ResetCameraClippingRange(b);
+	if (cam) cam->GetClippingRange(s->clipRange);
 }
 
 static void refineExtraLods(Scene *s);   // 70_window.cpp: every visible grid extra's zoom pyramid
@@ -6025,7 +6066,9 @@ static void onMouseMove(vtkObject*, unsigned long, void *clientData, void* /*cd*
 	if (nr[3] != 0.0) { nr[0] /= nr[3]; nr[1] /= nr[3]; nr[2] /= nr[3]; }
 	if (fr[3] != 0.0) { fr[0] /= fr[3]; fr[1] /= fr[3]; fr[2] /= fr[3]; }
 	const double dirx = fr[0] - nr[0], diry = fr[1] - nr[1], dirz = fr[2] - nr[2];
-	const double zsc = sceneZScale(s);
+	// The ACTIVE layer's own drawn scale, paired with its own grid below (sampleActiveZ): one layer's
+	// heights times another layer's scale is a surface nobody drew -- the same march polyPickWorld runs.
+	const double zsc = layerZScale(s, activeOwnerTag(s));
 	const double gx  = (s->xfac != 0.0) ? s->xfac : 1.0;
 	// March against the ACTIVE (topmost-visible) grid so the readout tracks the grid actually shown.
 	const bool haveActive = (s->actZ && !s->actZ->empty()) || !s->gridZ.empty();

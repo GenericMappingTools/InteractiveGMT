@@ -1241,6 +1241,37 @@ static bool lineGroupCanClamp(Scene *s, const std::string &gname) {
 	return false;
 }
 
+// The MB-System navigation tracks of a group (Overlay::mbNav), each once, in the group's order.
+static std::vector<std::string> lineGroupMbNavs(Scene *s, const std::string &gname) {
+	std::vector<std::string> out;
+	if (!s || gname.empty()) return out;
+	for (auto &o : s->overlays)
+		if (o.groupName == gname && !o.mbNav.empty() &&
+		    std::find(out.begin(), out.end(), o.mbNav) == out.end())
+			out.push_back(o.mbNav);
+	return out;
+}
+
+// "MB-System": mbgrdviz's Action menu editors (Open Selected Nav in MBedit / MBeditviz / MBnavedit /
+// MBvelocitytool), here on THESE tracks instead of the ones checked in the tool's Navigation list.
+// The tool does the opening (mbgrdvizNavEditor), so the menu and the Action menu are one path. Added
+// only for tracks the open mbgrdviz knows; nothing at all otherwise.
+static void addMbSystemMenu(QMenu &m, const std::vector<std::string> &navs) {
+#ifdef GMTVTK_MBGRDVIZ
+	std::vector<std::string> known;
+	for (const std::string &n : navs)
+		if (mbgrdvizNavIndex(n) >= 0) known.push_back(n);
+	if (known.empty()) return;
+	QMenu *mb = m.addMenu("MB-System");
+	static const char *const kLabels[4] = { "Open in MBedit", "Open in MBeditviz", "Open in MBnavedit", "Open in MBvelocitytool" };
+	for (int which = 0; which < 4; ++which)
+		mb->addAction(kLabels[which], [which, known]() { mbgrdvizNavEditor(which, known); });
+	m.addSeparator();
+#else
+	(void)m; (void)navs;
+#endif
+}
+
 // The unified right-click menu for a line object: "Line properties…" plus the kind's own actions
 // (profile: save / delete; overlay & polygon: hide; polygon: delete). Shared by the 3-D-view
 // right-click hit-test and the Scene Objects list rows, so both routes give the same menu.
@@ -1277,6 +1308,11 @@ static void popupLineObjectMenu(Scene *s, const LineRef &lr, const QString &name
 			m.addAction("Show in Fault plane", [s, a]() { showFaultTraceInFaultPlane(s, a); });
 		m.addSeparator();
 	}
+
+	// An MB-System navigation track (or its swath bounds): its first properties are the editors
+	// mbgrdviz's Action menu opens, on THIS track.
+	if (ovp && !ovp->mbNav.empty())
+		addMbSystemMenu(m, { ovp->mbNav });
 
 	// EVERY nested rectangle carries the nesting actions at the TOP of the menu, so the chain can
 	// be extended from any level (each "New nested grid" inherits its parent's nesting behaviour).

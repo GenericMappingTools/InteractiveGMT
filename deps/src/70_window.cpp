@@ -21531,6 +21531,7 @@ public:
 		if (methodCb) {                                  // data = the GMT module that does the work
 			methodCb->addItem("Minimum Curvature - surface", "surface");
 			methodCb->addItem("Minimum Curvature - mbgrid", "mbgrid");
+			methodCb->addItem("CUBE (bathymetry with uncertainty)", "cube");
 			methodCb->addItem("Delaunay Triangulation", "triangulate");
 			methodCb->addItem("Near Neighbor", "nearneighbor");
 			methodCb->addItem("Median", "blockmedian");
@@ -21563,12 +21564,19 @@ public:
 
 		if (auto *inBtn = d->findChild<QToolButton *>("btn_infile")) {
 			QObject::connect(inBtn, &QToolButton::clicked, d, [this, d]() {
-				QString p = QFileDialog::getOpenFileName(d, "Select x,y,z data file", prefStartDir(),
-					"Data tables (*.dat *.txt *.xyz *.csv);;All files (*)");
+				// Swath data (an MB-System datalist or swath file) is read through MBIO by the Julia side
+				// (src/cube.jl) and gridded like any table; it is offered first when the dialog was
+				// opened as Geophysics > MB-System > CUBE gridding.
+				const QString tables = "Data tables (*.dat *.txt *.xyz *.csv)";
+				const QString swath  = "MB-System swath data (*.mb-1 *.mb* *.all *.kmall *.s7k *.gsf)";
+				QString p = QFileDialog::getOpenFileName(d, swathMode ? "Select swath data or datalist" : "Select x,y,z data file",
+					prefStartDir(), (swathMode ? swath + ";;" + tables : tables + ";;" + swath) + ";;All files (*)");
 				if (p.isEmpty()) return;
 				inEdit->setText(p);
 				rememberStartDir(p);
-				fillFromData(p);
+				// Swath data is not a table the metadata reader knows: its limits come from the soundings,
+				// once MBIO has read them (the empty boxes are filled at Compute, src/cube.jl).
+				if (!isSwathPath(p)) fillFromData(p);
 			});
 			if (inEdit) fileBoxDoubleClick(inEdit, inBtn);
 		}
@@ -21599,6 +21607,29 @@ public:
 	}
 
 	QString method() const { return methodCb ? methodCb->currentData().toString() : QString("surface"); }
+
+	// Geophysics > MB-System > CUBE gridding opens THIS dialog, on CUBE, with swath data offered first:
+	// a multibeam tool, but the same dialog and the same Julia path as GMT > Interpolate > CUBE.
+	bool swathMode = false;
+	// An MB-System datalist or swath file, by suffix (the same test as src/cube.jl's _cube_is_swath).
+	static bool isSwathPath(const QString &p) {
+		const QString ext = QFileInfo(p).suffix().toLower();
+		static const QRegularExpression mbN("^mb\\d+$");
+		return ext == "mb-1" || mbN.match(ext).hasMatch() ||
+		       ext == "all" || ext == "kmall" || ext == "s7k" || ext == "gsf" || ext == "xtf" || ext == "fbt";
+	}
+	void presetCube() {
+		swathMode = true;
+		if (dlg) dlg->setWindowTitle("CUBE gridding (MB-System)");
+		if (methodCb) {
+			const int i = methodCb->findData("cube");
+			if (i >= 0) methodCb->setCurrentIndex(i);
+		}
+		if (coordsCb) {                                  // swath soundings are longitude/latitude
+			const int i = coordsCb->findData("geog");
+			if (i >= 0) coordsCb->setCurrentIndex(i);
+		}
+	}
 
 	// Only Near Neighbor reads the search-radius group (it is that module's REQUIRED -S).
 	void syncMethod() {
@@ -21647,6 +21678,23 @@ public:
 			v.push_back({"solver", "Solver", "", "combo", "zgrid", "Which spline fills the gaps between the binned nodes",
 			             {"zgrid (IGPP/SIO, in C, fast)|zgrid", "GMT surface|surface"}});
 			v.push_back({"breakline", "Breakline file", "-D", "file", "", "x,y,z line whose nodes are pinned to its own z, undiluted by nearby soundings", {}});
+		}
+		else if (m == "cube") {
+			// MB-System's CUBE (src/cube.jl over deps/src/cube/mb_cube.c), the engine mbgrid -F9 runs.
+			// The flags shown are mbgrid's GMT-module -F9 modifiers.
+			v.push_back({"iho_order", "IHO order", "+o", "combo", "order1a", "IHO S-44 survey order: bounds how far a sounding spreads, and is the default sounding uncertainty",
+			             {"Exclusive|exclusive", "Special|special", "Order 1a|order1a", "Order 1b|order1b", "Order 2|order2"}});
+			v.push_back({"method", "Hypothesis selection", "+m", "combo", "local", "Which depth hypothesis a node reports when soundings disagree",
+			             {"local - nearest single-hypothesis node guides|local", "prior - most soundings|prior",
+			              "posterior - local and prior combined|posterior", "predicted - closest to the predicted depth|predicted"}});
+			v.push_back({"tvu", "Vertical uncertainty a/b", "+u", "text", "", "Sounding TVU at 95%: sqrt(a^2 + (b*depth)^2) m. Empty = the IHO order's limit", {}});
+			v.push_back({"thu", "Horizontal uncertainty a/b", "+u", "text", "", "Sounding THU at 95%: a + b*depth m. Empty = the IHO order's limit", {}});
+			v.push_back({"variance", "Reported uncertainty", "+v", "combo", "cube", "What the uncertainty grid holds",
+			             {"CUBE posterior|cube", "spread of the soundings|input", "the larger of the two|max"}});
+			v.push_back({"zdown", "Z is depth (positive down)", "", "check", "0", "Unticked: z is elevation, negative below sea level (GMT convention)", {}});
+			v.push_back({"noqueue", "Skip the median pre-filter", "+q", "check", "0", "Feed the soundings to the estimator in input order", {}});
+			v.push_back({"extra", "Also make uncertainty / hypotheses / ratio grids", "", "check", "0", "Adds four more grids to the window: 95% uncertainty, number of hypotheses, hypothesis strength ratio, soundings used", {}});
+			v.push_back({"paramfile", "Parameter file", "+p", "file", "", "bathycube CubeParameters JSON; the boxes above override it", {}});
 		}
 		else if (m == "nearneighbor") {
 			v.push_back({"sectors", "Sectors  n[/n_min]", "-N", "text", "", "Split the search circle in n sectors; a node needs data in at least n_min of them [4/4]", {}});
@@ -21819,7 +21867,10 @@ public:
 			return;
 		}
 		const QString in = inEdit ? inEdit->text().trimmed() : QString();
-		if (in.isEmpty()) { QMessageBox::warning(d, "Interpolate", "Give the x,y,z data file to grid."); return; }
+		if (in.isEmpty()) {
+			QMessageBox::warning(d, "Interpolate", swathMode ? "Give the swath file or datalist to grid." : "Give the x,y,z data file to grid.");
+			return;
+		}
 		const QString m = method();
 		if (m == "nearneighbor" && (!radiusEdit || radiusEdit->text().trimmed().isEmpty())) {
 			QMessageBox::warning(d, "Interpolate", "Near Neighbor needs a search radius.");
@@ -21827,7 +21878,13 @@ public:
 		}
 		QString R, I;
 		if (geo) { R = geo->region();  I = geo->inc(); }
-		if (I.isEmpty() || R.contains("//") || R.startsWith('/') || R.endsWith('/')) {
+		const bool badR = R.isEmpty() || R.contains("//") || R.startsWith('/') || R.endsWith('/');
+		if (swathMode) {
+			// A swath survey's limits are only known once MBIO has read it: boxes left empty are filled
+			// on the Julia side with what GMT would choose for the soundings (src/cube.jl).
+			if (badR) R.clear();
+		}
+		else if (I.isEmpty() || badR) {
 			QMessageBox::warning(d, "Interpolate", "Give the output region and spacing (Griding Line Geometry).");
 			return;
 		}
@@ -24565,6 +24622,7 @@ static void polygonToolToggled(Scene *s, QAction *act, Scene::ShapeKind shape, b
 static QIcon makePolygonIcon();
 static QIcon makePolylineIcon();
 static QIcon makeLineIcon();
+static QIcon makeLineAreaIcon();
 static QIcon makeRectIcon();
 static QIcon makeNestedRectIcon();
 static QIcon makeCircleIcon();
@@ -28892,6 +28950,19 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 			});
 		});
 		++n;
+		// "CUBE gridding": MB-System's CUBE (mbgrid -F9's engine, deps/src/cube/) on swath files or a
+		// datalist, read through the editor's MBIO (loaded first, the way every tool here loads it).
+		// It is the Interpolate dialog preset on CUBE -- one dialog, one Julia path (src/cube.jl).
+		mGphy->addAction("CUBE gridding (mbgrid -F9)", [win, s, afterPopup]() {
+			afterPopup([win, s]() {
+				if (!mbeditLoadMbio(win, mbeditViewerHost())) return;
+				auto *w = new InterpolationDialog(win, s);
+				if (!w->dlg) return;
+				w->presetCube();
+				w->dlg->show();
+			});
+		});
+		++n;
 #endif
 #ifdef GMTVTK_MBVELOCITY
 		// EXPERIMENTAL "Sound velocity editor (mbvelocitytool)": MB-System's mbvelocitytool, ported
@@ -29699,6 +29770,11 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		                                   "double-click ends the open line.",                                     Scene::SH_Polyline },
 		{ makeLineIcon(),     "Line",      "Draw a straight line: click the start point, then the end point "
 		                                   "(later clicks move the end); double-click ends it.",                   Scene::SH_Line     },
+		// "Line area" flyout entry: a straight line drawn together with a rectangle around it (20x the line
+		// width); double-click the box to get corner handles that change its width and length
+		{ makeLineAreaIcon(), "Line area", "Draw a line inside a rectangle: click the start point, then the end point; "
+		                                   "double-click ends it. Double-click the rectangle, then drag a corner to "
+		                                   "change its width and length.",                                          Scene::SH_LineArea },
 		{ makeRectIcon(),     "Rectangle", "Draw a rectangle: click one corner, then the opposite corner.",        Scene::SH_Rect     },
 		{ makeCircleIcon(),   "Circle",    "Draw a circle: click the centre, then a point on the edge.",           Scene::SH_Circle   },
 	};

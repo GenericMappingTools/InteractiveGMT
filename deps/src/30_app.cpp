@@ -2008,6 +2008,10 @@ static MbEditHost mbeditViewerHost() {
 	h.park = mbHostPark;
 	h.unpark = mbHostUnpark;
 	h.parkOnMinimise = mbHostParkOnMinimise;
+	h.sceneWindow = [](void *scene) -> QWidget * {
+		Scene *s = static_cast<Scene *>(scene);
+		return sceneAlive(s) ? s->win : nullptr;
+	};
 	h.view3dMake = mbView3dMake;
 	h.view3dSetBounds = mbView3dSetBounds;
 	h.view3dVE = mbView3dVE;

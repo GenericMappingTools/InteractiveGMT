@@ -142,6 +142,7 @@ include("gravprisms.jl") # GMT menu > gravprisms: the field of a body made of re
 include("grdvector.jl")  # GMT menu > grdvector: the vector field of two grids, drawn as an overlay
 include("earthregions.jl")# Tools > Earth regions: a named region's raster or boundaries (GMT.jl earthregions)
 include("mbgrid.jl")     # MBGRID: Gaussian binning + zgrid/surface gap fill, via deps/src/mbgrid.c
+include("cube.jl")       # CUBE (Combined Uncertainty and Bathymetry Estimator), via deps/src/cube/mb_cube.c
 include("interpolate.jl")# GMT menu > Interpolate: grid an x,y,z table (surface, nearneighbor, mbgrid, block*, …)
 include("satellite.jl")  # SGP4/SDP4 orbit propagation + ground tracks, via deps/src/satellite.cpp
 include("project.jl")    # Tools > Project: reproject the window's raster with gdalwarp (Mirone gdal_project.m)
@@ -182,7 +183,7 @@ export gmtscript, gmtreplay,
        set_layer!, nlayers, add_label!, add_progress!, remove_annotation!, movie_annotations,
        xyplot, clear!, profile_to_xyplot, xtime!, logscale!, stickplot, xyinfo!, xynowcross!,
        QtFigure, QtPoints, QtFV, QtImage, QtEmpty, QtXYPlot, rtp3d, shapenc, isoc2shapenc, shapenc2isoc,
-       gmtedit, mbgrid, tsushade, tsupbr, aqua_shade_image,
+       gmtedit, mbgrid, cubegrid, cubegrid_all, tsushade, tsupbr, aqua_shade_image,
        TLE, Satellite, read_tle, propagate, propagate_ecef, subpoint, groundtrack, plot_groundtrack!
 
 # --- precompile (ALL of it lives HERE, via PrecompileTools — never hidden in other files) ---

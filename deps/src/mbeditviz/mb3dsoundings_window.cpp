@@ -151,7 +151,7 @@ struct Mb3dsdg {
 	Mb3dsdgNotify notify;
 	mb3dsoundings_struct *soundingdata = nullptr;
 
-	QLabel *labelStatus = nullptr, *labelMouseMode = nullptr;
+	QLabel *labelStatus = nullptr;
 	QRadioButton *modeButton[6] = {};
 	QAction *actViewFlagged = nullptr, *actViewSecondary = nullptr, *actNoConnect = nullptr, *actConnectGood = nullptr,
 	        *actConnectAll = nullptr, *actBoundingBox = nullptr, *actScaleWithFlagged = nullptr, *actColorByFlag = nullptr,
@@ -211,7 +211,6 @@ double msDpr() {
 void msPlot();
 void msUpdateStatus();
 void msUpdateModeToggles();
-void msUpdateLabelMouseMode();
 void msUpdateCursor();
 
 void msBeep() {
@@ -243,6 +242,25 @@ void msScaleZ() {
 	}
 }
 
+// Is this sounding drawn by msBuildScene in the current view? The SAME tests its point loops make
+// (each colour mode's own, the original's parenthesis included), so the box can never hold a
+// sounding the view does not show.
+static bool msSoundingShown(const Mb3dsdg *m, const mb3dsoundings_sounding_struct *sounding) {
+	if (mb_beam_ok(sounding->beamflag))
+		return true;
+	if (!m->view_flagged)
+		return false;
+	if (m->view_color == MBS_VIEW_COLOR_FLAG)
+		return mb_beam_check_flag_manual(sounding->beamflag) || mb_beam_check_flag_filter(sounding->beamflag) ||
+		       mb_beam_check_flag_filter2(sounding->beamflag) || mb_beam_check_flag_sonar(sounding->beamflag) ||
+		       (m->view_secondary && mb_beam_check_flag_multipick(sounding->beamflag));
+	return !mb_beam_check_flag_null(sounding->beamflag) &&
+	       (!mb_beam_check_flag_multipick(sounding->beamflag || m->view_secondary));
+}
+
+// The vertical box hugs the soundings the view DRAWS (only the unflagged ones of those when
+// "scale with flagged" is off): a hidden sounding -- a flagged spike, a secondary pick -- must not
+// stretch the box with empty space that every exaggeration then multiplies.
 void msSetZScale() {
 	mb3dsoundings_struct *soundingdata = g_ms->soundingdata;
 
@@ -250,32 +268,23 @@ void msSetZScale() {
 	double zmin = 0.0;
 	double zmax = 0.0;
 
-	/* get vertical min maxes for scaling of all soundings */
-	if (g_ms->view_scalewithflagged && soundingdata->num_soundings > 0) {
-		zmin = soundingdata->soundings[0].z;
-		zmax = soundingdata->soundings[0].z;
-		for (int i = 0; i < soundingdata->num_soundings; i++) {
-			zmin = MIN(soundingdata->soundings[i].z, zmin);
-			zmax = MAX(soundingdata->soundings[i].z, zmax);
+	/* get vertical min maxes of the shown soundings */
+	int nused = 0;
+	for (int i = 0; i < soundingdata->num_soundings; i++) {
+		const mb3dsoundings_sounding_struct *sounding = &(soundingdata->soundings[i]);
+		if (!msSoundingShown(g_ms, sounding))
+			continue;
+		if (!g_ms->view_scalewithflagged && !mb_beam_ok(sounding->beamflag))
+			continue;
+		if (nused == 0) {
+			zmin = sounding->z;
+			zmax = sounding->z;
 		}
-	}
-
-	/* else get vertical min maxes for scaling of only unflagged soundings */
-	else if (soundingdata->num_soundings > 0) {
-		int nunflagged = 0;
-		for (int i = 1; i < soundingdata->num_soundings; i++) {
-			if (mb_beam_ok(soundingdata->soundings[i].beamflag)) {
-				if (nunflagged == 0) {
-					zmin = soundingdata->soundings[i].z;
-					zmax = soundingdata->soundings[i].z;
-				}
-				else {
-					zmin = MIN(soundingdata->soundings[i].z, zmin);
-					zmax = MAX(soundingdata->soundings[i].z, zmax);
-				}
-				nunflagged++;
-			}
+		else {
+			zmin = MIN(sounding->z, zmin);
+			zmax = MAX(sounding->z, zmax);
 		}
+		nused++;
 	}
 
 	soundingdata->zorigin = 0.5 * (zmin + zmax);
@@ -1019,13 +1028,6 @@ void msUpdateStatus() {
 	m->labelStatus->setText(QString::fromLatin1(value_text));
 }
 
-// The mouse is iGMT's (the view's navigation and gizmo); only an ARMED edit mode takes the left button.
-void msUpdateLabelMouseMode() {
-	Mb3dsdg *m = g_ms;
-	static const char *const modes[6] = {"Toggle", "Pick", "Erase", "Restore", "Grab", "Info"};
-	const QString left = (m->edit_mode >= 0) ? QString("L: Edit (%1)").arg(modes[m->edit_mode]) : QString("L: Rotate");
-	m->labelMouseMode->setText("Mouse:\n" + left + "\nM: Pan\nR: Zoom");
-}
 
 void msUpdateCursor() {
 	Mb3dsdg *m = g_ms;
@@ -1044,7 +1046,6 @@ void msUpdateModeToggles() {
 		QSignalBlocker b(m->modeButton[i]);
 		m->modeButton[i]->setChecked(i == m->edit_mode);
 	}
-	msUpdateLabelMouseMode();
 }
 
 // arm an edit mode (MBS_EDIT_NONE disarms: the left button goes back to the view)
@@ -1385,7 +1386,6 @@ Mb3dsdg *msBuild(QWidget *parent, const MbEditHost &host) {
 	for (int i = 0; i < 6; i++)
 		m->modeButton[i] = msChild<QRadioButton>(win, modes[i], missing);
 	m->labelStatus = msChild<QLabel>(win, "labelStatus", missing);
-	m->labelMouseMode = msChild<QLabel>(win, "labelMouseMode", missing);
 	m->biasPanel = msChild<QWidget>(win, "biasPanel", missing);
 	m->scale_rollbias = msChild<QSlider>(win, "rollSlider", missing);
 	m->scale_pitchbias = msChild<QSlider>(win, "pitchSlider", missing);
@@ -1460,13 +1460,6 @@ Mb3dsdg *msBuild(QWidget *parent, const MbEditHost &host) {
 		veCB->SetCallback(msVeCB);
 		m->ren->AddObserver(vtkCommand::StartEvent, veCB);
 	}
-	// the mouse modes (Rotate / Pan-Zoom) were mb3dsoundings' own navigation: iGMT's replaces them
-	for (const char *n : {"mouseRotate1", "mousePanZoom1"})
-		if (auto *w = win->findChild<QWidget *>(QString::fromLatin1(n)))
-			w->hide();
-	for (const char *n : {"actionMouseRotate", "actionMousePanZoom"})
-		if (auto *a = win->findChild<QAction *>(QString::fromLatin1(n)))
-			a->setVisible(false);
 	m->boxSolidActor = msMakeActor(1.0, 1.0);
 	m->boxSolidActor->GetProperty()->SetColor(0.0, 0.0, 0.0);
 	m->boxDotActor = msMakeActor(1.0, 1.0);
@@ -1501,10 +1494,12 @@ Mb3dsdg *msBuild(QWidget *parent, const MbEditHost &host) {
 	// View menu
 	QObject::connect(m->actViewFlagged, &QAction::toggled, win, [](bool on) {
 		g_ms->view_flagged = on;
+		msSetZScale();                    // the box follows what is shown
 		msPlot();
 	});
 	QObject::connect(m->actViewSecondary, &QAction::toggled, win, [](bool on) {
 		g_ms->view_secondary = on;
+		msSetZScale();
 		msPlot();
 	});
 	auto *gProfiles = new QActionGroup(win);
@@ -1557,18 +1552,22 @@ Mb3dsdg *msBuild(QWidget *parent, const MbEditHost &host) {
 	gColor->addAction(m->actColorByAmp);
 	QObject::connect(m->actColorByFlag, &QAction::triggered, win, []() {
 		g_ms->view_color = MBS_VIEW_COLOR_FLAG;
+		msSetZScale();                    // each colour mode shows its own set of flagged soundings
 		msPlot();
 	});
 	QObject::connect(m->actColorByTopo, &QAction::triggered, win, []() {
 		g_ms->view_color = MBS_VIEW_COLOR_TOPO;
+		msSetZScale();
 		msPlot();
 	});
 	QObject::connect(m->actColorBySounding, &QAction::triggered, win, []() {
 		g_ms->view_color = MBS_VIEW_COLOR_SOUNDING;
+		msSetZScale();
 		msPlot();
 	});
 	QObject::connect(m->actColorByAmp, &QAction::triggered, win, []() {
 		g_ms->view_color = MBS_VIEW_COLOR_AMP;
+		msSetZScale();
 		msPlot();
 	});
 

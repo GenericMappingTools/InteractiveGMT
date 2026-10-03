@@ -30,7 +30,7 @@
 class QWidget;
 
 // A shape drawn on the map with the viewer's Draw tools: its Scene Objects name and its vertices
-// in the map's own (projected, metre) coordinates.
+// in the map's own coordinates (lon/lat on a geographic window, else projected metres).
 struct MbEditVizShape {
 	std::string name;
 	bool closed = false;
@@ -44,13 +44,19 @@ struct MbEditVizHost {
 	// with the colour nodes cz -> crgb, as a NEW ELEMENT named `title` in the viewer window `into`
 	// (the one mbeditviz was opened from; null: the most recent one). Its handle (the element, not a
 	// window), or null. A previous result of the same name in that window is replaced.
+	// `geographic`: x,y are lon/lat (the window's own coordinates when it is a geographic map).
 	void *(*mapOpen)(void *into, const char *title, const float *z, int nx, int ny, double x0, double x1, double y0,
-	                 double y1, const double *cz, const double *crgb, int ncolor) = nullptr;
+	                 double y1, int geographic, const double *cz, const double *crgb, int ncolor) = nullptr;
+	// Is the viewer window mapOpen would put the map into (same resolution of `into`) a GEOGRAPHIC map?
+	// A window holds ONE coordinate system: the map is handed over in the window's own, never in UTM
+	// metres beside a grid in degrees.
+	bool (*mapWindowGeographic)(void *into) = nullptr;
 	bool (*mapAlive)(void *map) = nullptr;   // false once its grid is gone from the window
+	void *(*mapScene)(void *map) = nullptr;  // the viewer window the map is in: the tool belongs to it
 	void (*mapClose)(void *map) = nullptr;   // let go of it: the grid and its lines STAY in the window
 	// the same grid with new heights (the edits of the 3-D editor); the camera stays
-	bool (*mapUpdate)(void *map, const float *z, int nx, int ny, double x0, double x1, double y0, double y1, const double *cz,
-	                  const double *crgb, int ncolor) = nullptr;
+	bool (*mapUpdate)(void *map, const float *z, int nx, int ny, double x0, double x1, double y0, double y1, int geographic,
+	                  const double *cz, const double *crgb, int ncolor) = nullptr;
 	// polylines (segment offsets into xyz) under the Scene Objects group `group`
 	bool (*mapAddLines)(void *map, const double *xyz, int npts, const int *segoff, int nseg, double r, double g, double b,
 	                    double width, const char *name, const char *group) = nullptr;
@@ -63,8 +69,10 @@ struct MbEditVizHost {
 // Open the tool, or raise it if it is already open (the engine is a single instance: its state is
 // file-static, as in mbeditviz). With a `file` (a swath file, or a datalist with format -1) it is
 // read into the file list at once, as `mbeditviz -I file -F format`. `outputMode`: 0 edit, 1 browse.
+// `replace`: start from an EMPTY file list (its map, grid and loaded files dropped first), as a fresh
+// `mbeditviz -I file` holds only what it was given -- what mbgrdviz's "Open Selected Nav" means.
 bool mbeditvizOpenWindow(QWidget *parent, const MbEditVizHost &host, const QString &file = QString(), int format = 0,
-                         int outputMode = 0);
+                         int outputMode = 0, bool replace = false);
 
 // Drive / read the open tool (the host's C API and tests). All are no-ops without the tool.
 //   state: [open, numfiles, numloaded, gridstatus, nx, ny, nselected, nselected_flagged, editor_open]

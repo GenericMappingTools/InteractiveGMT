@@ -38,6 +38,7 @@
 #include <QLineEdit>
 #include <QListWidget>
 #include <QMainWindow>
+#include <QMenu>
 #include <QMessageBox>
 #include <QProcess>
 #include <QPushButton>
@@ -84,6 +85,8 @@ struct MbGrdViz {
 	QComboBox *regionCombo = nullptr;
 	QDoubleSpinBox *areaWidth = nullptr;
 	QListWidget *navList = nullptr;
+	QPushButton *navPick = nullptr;                      // "Pick in view": down while the pick is armed
+	void *pickWin = nullptr;                             // the window it is armed on (null: none)
 	QLabel *routeInfo = nullptr;
 	QLabel *status = nullptr;
 	QTimer *timer = nullptr;
@@ -588,11 +591,12 @@ void gvRouteInfo(MbGrdViz *m) {
 
 void gvTick(MbGrdViz *m) {
 	// windows that went away; windows whose grid arrived
-	bool changed = false;
+	bool changed = false, lost = false;
 	for (int v = 0; v < MBGRDVIZ_MAX_VIEWS; v++) {
 		if (!m->views[v].win)
 			continue;
 		if (!m->host.alive || !m->host.alive(m->views[v].win)) {
+			lost = true;
 			mbgrdviz_view_release(v);
 			m->views[v] = GvView();
 			for (auto &s : m->navDrawn)
@@ -615,12 +619,35 @@ void gvTick(MbGrdViz *m) {
 			if (m->views[v].win)
 				m->current = v;
 	}
+	// the tool belongs to the windows it plans on: the last of them closed, it goes with it, as every
+	// iGMT tool window does (never left open with no window behind it)
+	if (lost && m->current < 0) {
+		mbParkQuit(m->parking);
+		return;
+	}
 	if (changed)
 		gvRefreshViews(m);
 	gvRefreshLists(m);
+	// the window the pick was armed on went away: the button pops back up
+	if (m->pickWin && !(m->host.alive && m->host.alive(m->pickWin))) {
+		m->pickWin = nullptr;
+		QSignalBlocker b(m->navPick);
+		m->navPick->setChecked(false);
+	}
 }
 
 // ---- the actions -------------------------------------------------------------------------
+// What File > Open Navigation / Open Swath Data take: a swath sonar file (its ship track is read
+// out of it), its .fnv navigation file (MB-System's text track, written by mbdatalist -O), or a
+// datalist naming several of them. MBIO picks the format from the name, hence the suffixes.
+static const char *kGvSwathFilter =
+	"Swath files, navigation and datalists (*.mb-1 *.mb?? *.mb??? *.fnv *.all *.kmall *.s7k *.gsf *.xse);;"
+	"Datalists (*.mb-1);;All Files (*)";
+static const char *kGvNavHelp =
+	"Navigation = the ship track (time, lon, lat, heading, speed) recorded in swath sonar files. Pick a swath "
+	"file MBIO reads (.mb59, .all, .kmall, .s7k, .gsf ...), its .fnv navigation file, or a datalist (.mb-1). "
+	"Open Swath Data also draws the swath edges.";
+
 QString gvFileDialog(MbGrdViz *m, bool save, const QString &title, const QString &filter) {
 	const QString fn = save ? QFileDialog::getSaveFileName(m->win, title, m->host.base.startDir(), filter)
 	                        : QFileDialog::getOpenFileName(m->win, title, m->host.base.startDir(), filter);
@@ -646,7 +673,12 @@ bool gvDoOpen(MbGrdViz *m, int what, const QString &path) {
 	                                                 : "Reading...";
 	if (m->host.base.busyText)
 		m->host.base.busyText(busy);
-	const bool ok = mbgrdviz_open(v, what, p.constData()) == 1;
+	const int nnavBefore = mbgrdviz_nav_count();
+	bool ok = mbgrdviz_open(v, what, p.constData()) == 1;
+	// the engine answers "success" for a datalist it got nothing out of: say what happened instead
+	const bool navWhat = what == MBGRDVIZ_OPEN_NAV || what == MBGRDVIZ_OPEN_SWATH;
+	if (navWhat && mbgrdviz_nav_count() == nnavBefore)
+		ok = false;
 	if (what == MBGRDVIZ_OPEN_ROUTE)
 		gvPushRoutes(m, v);
 	else if (what == MBGRDVIZ_OPEN_SITE) {
@@ -658,6 +690,17 @@ bool gvDoOpen(MbGrdViz *m, int what, const QString &path) {
 		m->host.base.busyOff();
 	gvRefreshLists(m);
 	gvStatus(m, (ok ? "Read " : "Unable to read ") + QFileInfo(path).fileName());
+	if (navWhat && !ok) {   // no navigation line came out of the file: a message box, never silence
+		// non-modal: it must not hold the event loop (a scripted open waits on that loop too)
+		auto *mb = new QMessageBox(QMessageBox::Warning, "MBgrdviz",
+			"No navigation was read from " + QFileInfo(path).fileName() + ".\n\n"
+			"Pick a swath file MB-System's MBIO reads (e.g. .mb59, .all, .kmall, .s7k, .gsf), its .fnv navigation "
+			"file, or a datalist (.mb-1) listing such files with their format numbers. The file name must tell "
+			"MBIO the format (a .mbXX suffix, or a known vendor suffix).", QMessageBox::Ok, m->win);
+		mb->setAttribute(Qt::WA_DeleteOnClose);
+		mb->setModal(false);
+		mb->show();
+	}
 	return ok;
 }
 
@@ -684,6 +727,10 @@ bool gvDoSave(MbGrdViz *m, int what, const QString &path) {
 	return ok;
 }
 
+// the last primary grid opened in this tool (iGMT.ini), and the grid dialogs' filter
+static const char *const kGvLastGridKey = "mbgrdviz/last_grid";
+static const char *const kGvGridFilter = "Grid Files (*.grd *.nc *.tif *.tiff);;All Files (*)";
+
 // a primary grid from a file: File > Open Primary Grid, the Load grid button and a drop all come here
 void gvOpenPrimaryFile(MbGrdViz *m, const QString &fn) {
 	if (fn.isEmpty() || !m->host.openFile)
@@ -693,6 +740,8 @@ void gvOpenPrimaryFile(MbGrdViz *m, const QString &fn) {
 	void *into = (gvViewAlive(m, m->current) && !m->views[m->current].ready) ? m->views[m->current].win : nullptr;
 	void *w = m->host.openFile(into, p.constData());
 	if (w) {
+		if (m->host.base.setSetting)            // Open Primary Grid proposes it next time (gvOpenPrimary)
+			m->host.base.setSetting(kGvLastGridKey, QDir::fromNativeSeparators(fn));
 		const int v = gvBind(m, w);
 		if (v >= 0) {
 			gvSetupView(m, v);
@@ -702,8 +751,18 @@ void gvOpenPrimaryFile(MbGrdViz *m, const QString &fn) {
 	gvRefreshLists(m);
 }
 
+// File > Open Primary Grid and the Load grid button: the dialog opens with the last grid opened here
+// already selected, so Enter opens it again. A last grid that is gone falls back to the usual folder.
 void gvOpenPrimary(MbGrdViz *m) {
-	gvOpenPrimaryFile(m, gvFileDialog(m, false, "Open Primary Grid", "Grid Files (*.grd *.nc *.tif *.tiff);;All Files (*)"));
+	const QString last = m->host.base.setting ? m->host.base.setting(kGvLastGridKey) : QString();
+	if (last.isEmpty() || !QFileInfo::exists(last)) {
+		gvOpenPrimaryFile(m, gvFileDialog(m, false, "Open Primary Grid", kGvGridFilter));
+		return;
+	}
+	const QString fn = QFileDialog::getOpenFileName(m->win, "Open Primary Grid", last, kGvGridFilter);
+	if (!fn.isEmpty() && m->host.base.rememberDir)
+		m->host.base.rememberDir(fn);
+	gvOpenPrimaryFile(m, fn);
 }
 
 void gvOpenOverlay(MbGrdViz *m) {
@@ -716,28 +775,33 @@ void gvOpenOverlay(MbGrdViz *m) {
 	m->host.openFile(m->views[m->current].win, p.constData());
 }
 
-// do_mbgrdviz_open_mbedit / _mbeditviz / _mbnavedit / _mbvelocitytool
-void gvOpenEditor(MbGrdViz *m, int which) {
-	if (!gvNeedView(m))
+// a navigation file an editor opens
+struct GvSel {
+	QString path;
+	int format;
+};
+
+// the navigation line a track was drawn for: by the name gvPushNavVectors gave it, or its swath
+// bounds' "<name> (swath bounds)"; -1 = none
+int gvNavIndex(const std::string &track) {
+	static const std::string kBounds = " (swath bounds)";
+	std::string want = track;
+	if (want.size() > kBounds.size() && want.compare(want.size() - kBounds.size(), kBounds.size(), kBounds) == 0)
+		want.resize(want.size() - kBounds.size());
+	char name[1024];
+	for (int i = 0; i < mbgrdviz_nav_count(); i++)
+		if (mbgrdviz_nav_info(i, name, int(sizeof(name)), nullptr, 0, nullptr, nullptr, nullptr, nullptr) && want == name)
+			return i;
+	return -1;
+}
+
+// do_mbgrdviz_open_mbedit / _mbeditviz / _mbnavedit / _mbvelocitytool, on these files
+void gvRunEditor(MbGrdViz *m, int which, const std::vector<GvSel> &sel) {
+	if (sel.empty())
 		return;
-	struct Sel {
-		QString path;
-		int format;
-	};
-	std::vector<Sel> sel;
-	char path[1024];
-	for (int i = 0; i < mbgrdviz_nav_count(); i++) {
-		int format = 0, nsel = 0;
-		if (mbgrdviz_nav_info(i, nullptr, 0, path, int(sizeof(path)), &format, nullptr, nullptr, &nsel) && nsel > 0)
-			sel.push_back({QString::fromUtf8(path), format});
-	}
-	if (sel.empty()) {
-		QMessageBox::information(m->win, "MBgrdviz", "Check the navigation to open (Navigation).");
-		return;
-	}
 	if (which == 2) {   // mbnavedit: not ported, started as the program, as mbgrdviz does
 		QStringList args;
-		for (const Sel &s : sel)
+		for (const GvSel &s : sel)
 			args << QString("-F%1").arg(s.format) << "-I" + s.path;
 		if (!QProcess::startDetached("mbnavedit", args))
 			QMessageBox::warning(m->win, "MBgrdviz", "Unable to start mbnavedit (MB-System's navigation editor is not "
@@ -749,12 +813,75 @@ void gvOpenEditor(MbGrdViz *m, int which) {
 			m->host.openMbvelocity(m->win, sel[0].path, sel[0].format);
 		return;
 	}
-	for (const Sel &s : sel) {
+	bool first = true;
+	for (const GvSel &s : sel) {
 		if (which == 0 && m->host.openMbedit)
 			m->host.openMbedit(m->win, s.path, s.format);
 		else if (which == 1 && m->host.openMbeditviz)
-			m->host.openMbeditviz(m->win, s.path, s.format);
+			m->host.openMbeditviz(m->win, s.path, s.format, first);   // mbeditviz holds the selection, nothing else
+		first = false;
 	}
+}
+
+// the Action menu: the editor on the navigation checked in the Navigation list
+void gvOpenEditor(MbGrdViz *m, int which) {
+	if (!gvNeedView(m))
+		return;
+	std::vector<GvSel> sel;
+	char path[1024];
+	for (int i = 0; i < mbgrdviz_nav_count(); i++) {
+		int format = 0, nsel = 0;
+		if (mbgrdviz_nav_info(i, nullptr, 0, path, int(sizeof(path)), &format, nullptr, nullptr, &nsel) && nsel > 0)
+			sel.push_back({QString::fromUtf8(path), format});
+	}
+	if (sel.empty()) {
+		QMessageBox::information(m->win, "MBgrdviz", "Check the navigation to open (Navigation), or press Pick in view "
+		                                             "and click the tracks in the window.");
+		return;
+	}
+	gvRunEditor(m, which, sel);
+}
+
+// a click of "Pick in view" on a line of the window: a track toggles its check in the Navigation
+// list, as picking a navigation line in an mbview window selected it
+void gvNavPicked(MbGrdViz *m, const std::string &track) {
+	if (g_gv != m)
+		return;
+	const int i = gvNavIndex(track);
+	if (i < 0) {
+		gvStatus(m, "Not a navigation track: click a ship track");
+		return;
+	}
+	char name[1024] = "";
+	int nsel = 0;
+	mbgrdviz_nav_info(i, name, int(sizeof(name)), nullptr, 0, nullptr, nullptr, nullptr, &nsel);
+	mbgrdvizSelectNav(i, nsel <= 0);
+	gvStatus(m, QString(nsel <= 0 ? "Selected %1" : "Unselected %1").arg(QString::fromUtf8(name)));
+}
+
+// disarm the pick, wherever it is armed (no widget touched: also run while the tool goes away)
+void gvPickOff(MbGrdViz *m) {
+	if (m->pickWin && m->host.pickNav && m->host.alive && m->host.alive(m->pickWin))
+		m->host.pickNav(m->pickWin, nullptr);
+	m->pickWin = nullptr;
+}
+
+// "Pick in view" pressed / released: armed on the view the tool plans on
+void gvPickNav(MbGrdViz *m, bool on) {
+	gvPickOff(m);
+	if (on && m->host.pickNav && gvViewAlive(m, m->current)) {
+		void *win = m->views[m->current].win;
+		if (m->host.pickNav(win, [m](const std::string &track) { gvNavPicked(m, track); }))
+			m->pickWin = win;
+	}
+	if (m->navPick) {
+		QSignalBlocker b(m->navPick);
+		m->navPick->setChecked(m->pickWin != nullptr);
+	}
+	if (m->pickWin)
+		gvStatus(m, "Click the tracks in the window to check / uncheck them");
+	else if (on)
+		gvStatus(m, "No window to pick in: open a primary grid first");
 }
 
 // the region / area shapes, read off the window by name
@@ -1013,8 +1140,12 @@ void *gvParkWhere(MbGrdViz *m) {
 struct GvCloseFilter : QObject {
 	using QObject::QObject;
 	bool eventFilter(QObject *o, QEvent *e) override {
-		if ((e->type() == QEvent::Close || e->type() == QEvent::Hide) && g_gv && o == g_gv->win && g_gv->survey)
-			g_gv->survey->hide();
+		if ((e->type() == QEvent::Close || e->type() == QEvent::Hide) && g_gv && o == g_gv->win) {
+			if (g_gv->survey)
+				g_gv->survey->hide();
+			if (g_gv->pickWin)
+				gvPickNav(g_gv, false);              // no clicks taken by a tool that is not on screen
+		}
 		return QObject::eventFilter(o, e);
 	}
 };
@@ -1076,6 +1207,7 @@ MbGrdViz *gvBuild(QWidget *parent, const MbGrdVizHost &host) {
 	m->regionCombo = gvChild<QComboBox>(win, "regionCombo", missing);
 	m->areaWidth = gvChild<QDoubleSpinBox>(win, "areaWidth", missing);
 	m->navList = gvChild<QListWidget>(win, "navList", missing);
+	m->navPick = gvChild<QPushButton>(win, "navPickButton", missing);
 	m->routeInfo = gvChild<QLabel>(win, "labelRouteInfo", missing);
 	m->status = gvChild<QLabel>(win, "labelStatus", missing);
 	QPushButton *loadGrid = gvChild<QPushButton>(win, "loadGridButton", missing);
@@ -1088,8 +1220,8 @@ MbGrdViz *gvBuild(QWidget *parent, const MbGrdVizHost &host) {
 		{"actionOpenOverlay", [m]() { gvOpenOverlay(m); }},
 		{"actionOpenSite", [m]() { gvDoOpen(m, MBGRDVIZ_OPEN_SITE, gvFileDialog(m, false, "Open Site File", "Site Files (*.ste *.site);;All Files (*)")); }},
 		{"actionOpenRoute", [m]() { gvDoOpen(m, MBGRDVIZ_OPEN_ROUTE, gvFileDialog(m, false, "Open Route File", "Route Files (*.rte);;All Files (*)")); }},
-		{"actionOpenNav", [m]() { gvDoOpen(m, MBGRDVIZ_OPEN_NAV, gvFileDialog(m, false, "Open Navigation", "Datalists (*.mb-1);;All Files (*)")); }},
-		{"actionOpenSwath", [m]() { gvDoOpen(m, MBGRDVIZ_OPEN_SWATH, gvFileDialog(m, false, "Open Swath Data", "Datalists (*.mb-1);;All Files (*)")); }},
+		{"actionOpenNav", [m]() { gvDoOpen(m, MBGRDVIZ_OPEN_NAV, gvFileDialog(m, false, "Open Navigation (the ship track of swath files)", kGvSwathFilter)); }},
+		{"actionOpenSwath", [m]() { gvDoOpen(m, MBGRDVIZ_OPEN_SWATH, gvFileDialog(m, false, "Open Swath Data (ship track + swath edges)", kGvSwathFilter)); }},
 		{"actionOpenVector", [m]() { gvDoOpen(m, MBGRDVIZ_OPEN_VECTOR, gvFileDialog(m, false, "Open Vector File", "All Files (*)")); }},
 		{"actionSaveSite", [m]() { gvDoSave(m, MBGRDVIZ_SAVE_SITE, gvFileDialog(m, true, "Save Site File", "Site Files (*.ste);;All Files (*)")); }},
 		{"actionSaveRoute", [m]() { gvDoSave(m, MBGRDVIZ_SAVE_ROUTE, gvFileDialog(m, true, "Save Route File", "Route Files (*.rte);;All Files (*)")); }},
@@ -1131,7 +1263,14 @@ MbGrdViz *gvBuild(QWidget *parent, const MbGrdVizHost &host) {
 	for (size_t i = 0; i < acts.size(); i++) {
 		const std::function<void()> fn = acts[i].fn;
 		QObject::connect(found[i], &QAction::triggered, win, [fn]() { fn(); });
+		// File > Open Navigation / Open Swath Data: say in the menu what such a file is
+		if (std::string(acts[i].name) == "actionOpenNav" || std::string(acts[i].name) == "actionOpenSwath") {
+			found[i]->setToolTip(kGvNavHelp);
+			found[i]->setStatusTip(kGvNavHelp);
+		}
 	}
+	if (QMenu *fm = found[0]->associatedObjects().isEmpty() ? nullptr : qobject_cast<QMenu *>(found[0]->associatedObjects().first()))
+		fm->setToolTipsVisible(true);   // the File menu shows those tooltips on hover
 	QObject::connect(m->viewCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), win, [m](int k) {
 		const int v = m->viewCombo->itemData(k).toInt();
 		if (v >= 0 && v < MBGRDVIZ_MAX_VIEWS && m->views[v].win) {
@@ -1139,8 +1278,12 @@ MbGrdViz *gvBuild(QWidget *parent, const MbGrdVizHost &host) {
 			m->pulledRoutes.clear();
 			m->pulledSites.clear();
 			gvRefreshLists(m);
+			if (m->pickWin && m->pickWin != m->views[v].win)
+				gvPickNav(m, true);                  // the pick follows the view the tool plans on
 		}
 	});
+	m->navPick->setCheckable(true);
+	QObject::connect(m->navPick, &QPushButton::toggled, win, [m](bool on) { gvPickNav(m, on); });
 	QObject::connect(m->routeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), win, [m](int) { gvRouteInfo(m); });
 	QObject::connect(loadGrid, &QPushButton::clicked, win, [m]() { gvOpenPrimary(m); });
 	// drops: the window takes them (no child of it accepts drops, so they all land here)
@@ -1177,6 +1320,7 @@ bool mbgrdvizOpenWindow(QWidget *parent, const MbGrdVizHost &host, void *win, co
 		if (host.base.windowOpened)
 			host.base.windowOpened();
 		QObject::connect(m->win, &QObject::destroyed, [m]() {
+			gvPickOff(m);
 			for (int v = 0; v < MBGRDVIZ_MAX_VIEWS; v++)
 				mbgrdviz_view_release(v);
 			mbgrdviz_set_message_hook(nullptr);
@@ -1329,6 +1473,45 @@ bool mbgrdvizSelectNav(int nav, bool selected) {
 		}
 	}
 	return true;
+}
+
+int mbgrdvizNavIndex(const std::string &name) {
+	return g_gv ? gvNavIndex(name) : -1;
+}
+
+bool mbgrdvizNavEditor(int which, const std::vector<std::string> &names) {
+	if (!g_gv || which < 0 || which > 3)
+		return false;
+	std::vector<GvSel> sel;
+	std::set<int> seen;                                  // a track and its swath bounds: one file
+	char path[1024];
+	for (const std::string &n : names) {
+		const int i = gvNavIndex(n);
+		int format = 0;
+		if (i < 0 || !seen.insert(i).second ||
+		    !mbgrdviz_nav_info(i, nullptr, 0, path, int(sizeof(path)), &format, nullptr, nullptr, nullptr))
+			continue;
+		sel.push_back({QString::fromUtf8(path), format});
+	}
+	if (sel.empty())
+		return false;
+	gvRunEditor(g_gv, which, sel);
+	return true;
+}
+
+bool mbgrdvizPickNav(bool on) {
+	if (!g_gv)
+		return false;
+	g_gv->navPick->setChecked(on);                       // the button's own path (gvPickNav)
+	return g_gv->pickWin != nullptr;
+}
+
+int mbgrdvizNavSelected(int nav) {
+	int nsel = 0;
+	if (!g_gv || nav < 0 || nav >= mbgrdviz_nav_count() ||
+	    !mbgrdviz_nav_info(nav, nullptr, 0, nullptr, 0, nullptr, nullptr, nullptr, &nsel))
+		return -1;
+	return nsel > 0 ? 1 : 0;
 }
 
 bool mbgrdvizClose() {

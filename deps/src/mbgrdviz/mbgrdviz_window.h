@@ -90,10 +90,14 @@ struct MbGrdVizHost {
 	bool (*addColoredPoints)(void *win, const double *xyz, int npts, const double *rgb, double sizePx, const char *name,
 	                         const char *master) = nullptr;
 	void (*render)(void *win) = nullptr;
-	// the ported navigation editors, as mbgrdviz launched them (one file at a time)
+	// the ported navigation editors, as mbgrdviz launched them (one file at a time); `replace`: mbeditviz
+	// starts from an empty file list (the first of the selected lines), as a fresh mbeditviz process did
 	bool (*openMbedit)(QWidget *parent, const QString &file, int format) = nullptr;
-	bool (*openMbeditviz)(QWidget *parent, const QString &file, int format) = nullptr;
+	bool (*openMbeditviz)(QWidget *parent, const QString &file, int format, bool replace) = nullptr;
 	bool (*openMbvelocity)(QWidget *parent, const QString &file, int format) = nullptr;
+	// arm the window's "point at a line" pick: each click on a line answers with the navigation track's
+	// name as addLines gave it ("" = the line clicked is not a track); a null `cb` disarms
+	bool (*pickNav)(void *win, std::function<void(const std::string &)> cb) = nullptr;
 };
 
 // Open the tool, or raise it if it is already open (the engine is a single instance, as mbgrdviz
@@ -115,6 +119,14 @@ QString mbgrdvizGenerateSurvey(int mode, int platform, int direction, int crossl
 bool mbgrdvizSurveyDismiss();
 bool mbgrdvizOpenRegion();                               // Open Region as New View
 bool mbgrdvizSelectNav(int nav, bool selected);
+// the navigation line a track of the window was drawn for (its name as addLines gave it, a "(swath
+// bounds)" one included); -1 = none, or no tool
+int mbgrdvizNavIndex(const std::string &name);
+// the Action menu's editor `which` (0 MBedit, 1 MBeditviz, 2 MBnavedit, 3 MBvelocitytool) on these
+// tracks instead of the checked ones: a track's own (and its group's) "MB-System" menu
+bool mbgrdvizNavEditor(int which, const std::vector<std::string> &names);
+bool mbgrdvizPickNav(bool on);                           // "Pick in view" down / up; true = armed
+int mbgrdvizNavSelected(int nav);                        // 1 checked, 0 not, -1 no such line
 bool mbgrdvizClose();
 
 #endif // MBGRDVIZ_WINDOW_H_

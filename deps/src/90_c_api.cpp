@@ -1892,23 +1892,26 @@ static void *mbHostParkWhere(void *preferred) {
 }
 static void mbHostParkOnMinimise(QWidget *tool, std::function<void()> park) { parkOnMinimise(tool, std::move(park)); }
 
-// An MB-System x,y line (a navigation track, a swath bound) laid on a viewer window: EXACTLY the
-// sequence Geography's lines go through (_add_geo_overlay, geography.jl) — the raw x,y with z = 0
-// (its true source z) through the overlay door, then THE one clamp (gmtvtk_line_clamp_h, the
-// handle's own "Clamp to ground"). Without the clamp the track hung at z = 0, off the relief, and
-// was invisible on a bathymetry surface while its Scene Objects row said it was there.
-GMTVTK_API int gmtvtk_line_clamp_h(void *scene, const char *name, int on);
+// An MB-System x,y line (a navigation track, a swath bound) laid on a viewer window, through the
+// overlay door. A track has NO z of its own: the z = 0 it is handed with is geometry, not data, so
+// it is flagged as a placeholder and its Data table shows #/X/Y only. It is NOT clamped on arrival:
+// it gets the handle's own "Clamp to ground" like every line, and the user turns it on.
+// every track mbHostAddTrack has put in a window, by its actor (compared, never dereferenced): what
+// mbeditviz's map opening reads to tell an MB-System navigation line from any other line
+static std::set<vtkActor *> g_mbTrackActors;
 static bool mbHostAddTrack(void *win, const double *xyz, int npts, const int *segoff, int nseg, double r, double g,
                            double b, double width, const char *name, const char *group) {
 	// a track is a LINE: "Convert to points" on it is an offer to turn a ship's track into a dot cloud
 	if (gmtvtk_add_overlay_ex4_h(win, xyz, npts, segoff, nseg, /*mode=lines*/1, r, g, b, width, 0.0, name, group, "",
-	                             /*noConvertToPoints=*/1, /*zIsPlaceholder=*/0, /*noDataTable=*/0, "") != 1)
+	                             /*noConvertToPoints=*/1, /*zIsPlaceholder=*/1, /*noDataTable=*/0, "") != 1)
 		return false;
 	// ...nor an area: no "Fill polygons" on it (the overlay just added is the last one)
 	Scene *s = static_cast<Scene *>(win);
-	if (sceneAlive(s) && !s->overlays.empty())
+	if (sceneAlive(s) && !s->overlays.empty()) {
 		s->overlays.back().noFill = true;
-	gmtvtk_line_clamp_h(win, name, 1);   // no grid in the window: a no-op, the line stays flat
+		s->overlays.back().mbNav = name ? name : "";   // its "MB-System" menu (55_lineprops.cpp)
+		g_mbTrackActors.insert(s->overlays.back().actor.Get());
+	}
 	return true;
 }
 
@@ -2055,6 +2058,21 @@ static void mbView3dFrame(void *view) {            // the window's own fit, from
 GMTVTK_API void gmtvtk_mbedit_set_mbio_hint(const char *path) {
 	mbeditSetMbioHint(QString::fromUtf8(path ? path : ""));
 }
+// CUBE gridding of swath data (Geophysics > MB-System > CUBE gridding; src/cube.jl): the soundings
+// of a swath file or datalist (format -1), read through the swath editor's MBIO (loaded here first
+// the way every MB-System tool loads it). Returns the count held for gmtvtk_cube_swath_take, or -1
+// with the reason in msg. bounds = {w, e, s, n} or NULL.
+GMTVTK_API int64_t gmtvtk_cube_swath_read(const char *path, int format, const double *bounds, char *msg, int msglen) {
+	ensureApp();
+	if (!mbeditLoadMbio(nullptr, mbeditViewerHost())) {
+		if (msg && msglen > 0) snprintf(msg, size_t(msglen), "MB-System's MBIO library could not be loaded");
+		return -1;
+	}
+	return cube_swath_read(path, format, bounds, msg, msglen);
+}
+GMTVTK_API int64_t gmtvtk_cube_swath_take(double *lon, double *lat, double *depth, int64_t n) {
+	return cube_swath_take(lon, lat, depth, n);
+}
 GMTVTK_API int gmtvtk_mbedit_open(const char *file, int format, int useEsf) {
 	ensureApp();
 	return mbeditOpenWindow(nullptr, mbeditViewerHost(), QString::fromUtf8(file ? file : ""), format, useEsf) ? 1 : 0;
@@ -2177,8 +2195,14 @@ static MbEditVizHost mbeditvizViewerHost() {
 			QApplication::processEvents();
 		}
 	};
+	// the window mapOpen resolves `into` to (below): is it a geographic map? An empty launcher has no
+	// coordinate system yet -- it takes the map's own.
+	h.mapWindowGeographic = [](void *into) {
+		Scene *s = static_cast<Scene *>(mbHostParkWhere(into));
+		return sceneAlive(s) && !s->emptyStart && s->baseGeog != 0;
+	};
 	h.mapOpen = [](void *into, const char *title, const float *z, int nx, int ny, double x0, double x1, double y0,
-	               double y1, const double *cz, const double *crgb, int ncolor) -> void * {
+	               double y1, int geographic, const double *cz, const double *crgb, int ncolor) -> void * {
 		Scene *s = static_cast<Scene *>(mbHostParkWhere(into));   // the parent window, else the most recent
 		if (!s)
 			s = static_cast<Scene *>(gmtvtk_open_empty("MBeditviz"));
@@ -2192,10 +2216,11 @@ static MbEditVizHost mbeditvizViewerHost() {
 		g_mbVizGroups[key].clear();
 		int ok;
 		if (mbVizIsBase(s, name))
-			ok = gmtvtk_replace_base_grid_h(s, z, nx, ny, x0, x1, y0, y1, 0, cz, crgb, ncolor, title, 0);
+			ok = gmtvtk_replace_base_grid_h(s, z, nx, ny, x0, x1, y0, y1, geographic, cz, crgb, ncolor, title, 0);
 		else {
 			gmtvtk_remove_grid_h(s, title);
-			ok = gmtvtk_promote_surface_h(s, z, nx, ny, x0, x1, y0, y1, 0, cz, crgb, ncolor, nullptr, 0, 0, 0, 0, title, 0);
+			ok = gmtvtk_promote_surface_h(s, z, nx, ny, x0, x1, y0, y1, geographic, cz, crgb, ncolor, nullptr, 0, 0, 0, 0,
+			                              title, 0);
 		}
 		if (!ok || !sceneAlive(s))
 			return nullptr;
@@ -2211,6 +2236,21 @@ static MbEditVizHost mbeditvizViewerHost() {
 		}
 		// THE transition every new raster takes: checked, the rest unchecked, its own axes
 		gmtvtk_show_new_element_h(s, title, x0, x1, y0, y1, z0, z1, /*hasBbox=*/1, /*keepMargin=*/0);
+		// ...and the navigation lines of the layers it just unchecked go with them: this map shows the
+		// lines mbeditviz was given (added next, on THIS layer), never every line mbgrdviz read. Each is
+		// only unchecked -- its row stays, ticking it brings it back.
+		const int owner = activeOwnerTag(s);
+		bool hid = false;
+		for (auto &ov : s->overlays)
+			if (ov.actor && ov.veOwner != owner && g_mbTrackActors.count(ov.actor.Get()) && ov.actor->GetVisibility()) {
+				ov.actor->SetVisibility(0);
+				hid = true;
+			}
+		if (hid) {
+			rebuildSceneObjects(s);
+			if (s->widget && s->widget->renderWindow())
+				s->widget->renderWindow()->Render();
+		}
 		auto *mp = new MbVizMap;
 		mp->s = s;
 		mp->name = name;
@@ -2220,18 +2260,22 @@ static MbEditVizHost mbeditvizViewerHost() {
 		auto *mp = static_cast<MbVizMap *>(map);
 		return mp && sceneAlive(mp->s) && (mbVizIsBase(mp->s, mp->name) || mbVizExtra(mp->s, mp->name));
 	};
+	h.mapScene = [](void *map) -> void * {
+		auto *mp = static_cast<MbVizMap *>(map);
+		return (mp && sceneAlive(mp->s)) ? mp->s : nullptr;
+	};
 	h.mapClose = [](void *map) { delete static_cast<MbVizMap *>(map); };   // the data stays in the window
-	h.mapUpdate = [](void *map, const float *z, int nx, int ny, double x0, double x1, double y0, double y1, const double *cz,
-	                 const double *crgb, int ncolor) {
+	h.mapUpdate = [](void *map, const float *z, int nx, int ny, double x0, double x1, double y0, double y1, int geographic,
+	                 const double *cz, const double *crgb, int ncolor) {
 		auto *mp = static_cast<MbVizMap *>(map);
 		if (!mp || !sceneAlive(mp->s))
 			return false;
 		Scene *s = mp->s;
 		const char *nm = mp->name.c_str();
 		if (mbVizIsBase(s, mp->name))
-			return gmtvtk_replace_base_grid_h(s, z, nx, ny, x0, x1, y0, y1, 0, cz, crgb, ncolor, nm, 0) == 1;
+			return gmtvtk_replace_base_grid_h(s, z, nx, ny, x0, x1, y0, y1, geographic, cz, crgb, ncolor, nm, 0) == 1;
 		gmtvtk_remove_grid_h(s, nm);
-		return gmtvtk_add_surface_h(s, z, nx, ny, x0, x1, y0, y1, 0, cz, crgb, ncolor, nullptr, 0, 0, 0, 0, nm, 0) == 1;
+		return gmtvtk_add_surface_h(s, z, nx, ny, x0, x1, y0, y1, geographic, cz, crgb, ncolor, nullptr, 0, 0, 0, 0, nm, 0) == 1;
 	};
 	h.mapAddLines = [](void *map, const double *xyz, int npts, const int *segoff, int nseg, double r, double g, double b,
 	                   double width, const char *name, const char *group) {
@@ -2556,11 +2600,44 @@ static MbGrdVizHost mbgrdvizViewerHost() {
 	h.openMbedit = [](QWidget *parent, const QString &file, int format) {
 		return mbeditOpenWindow(parent, mbeditViewerHost(), file, format);
 	};
-	h.openMbeditviz = [](QWidget *parent, const QString &file, int format) {
-		return mbeditvizOpenWindow(parent, mbeditvizViewerHost(), file, format, 0);
+	h.openMbeditviz = [](QWidget *parent, const QString &file, int format, bool replace) {
+		return mbeditvizOpenWindow(parent, mbeditvizViewerHost(), file, format, 0, replace);
 	};
 	h.openMbvelocity = [](QWidget *parent, const QString &file, int format) {
 		return mbvelocityOpenWindow(parent, mbvelocityViewerHost(), file, format);
+	};
+	// The tool's "Pick in view": the viewer's shared click pick (Scene::vectorPickMode 1, resolved by
+	// vectorPickFire) armed on `win`. Each click answers with the clicked track's mbgrdviz name
+	// (Overlay::mbNav), "" for a line that is not a track. A null `cb` disarms.
+	h.pickNav = [](void *win, std::function<void(const std::string &)> cb) {
+		Scene *s = static_cast<Scene *>(win);
+		if (!sceneAlive(s))
+			return false;
+		if (!cb) {
+			if (s->vectorPickMode == 1)
+				vectorPickDisarm(s);
+			s->vectorPickCB = nullptr;
+			return true;
+		}
+		s->vectorPickCB = [s, cb](const std::string &names) {
+			const std::string nm = names.substr(0, names.find('\n'));
+			if (nm.empty())
+				return;                                  // clicked past every line: stay armed
+			std::string nav;
+			for (const auto &ov : s->overlays)
+				if (ov.name == nm && !ov.mbNav.empty()) {
+					nav = ov.mbNav;
+					break;
+				}
+			cb(nav);
+		};
+		s->vectorPickPrevShape = (int)s->polyShape;
+		s->vectorPickMode = 1;
+		s->vectorPickDbl = false;
+		s->vectorPickDrawing = false;
+		if (s->widget)
+			s->widget->setCursor(Qt::CrossCursor);
+		return true;
 	};
 	return h;
 }
@@ -2616,6 +2693,58 @@ GMTVTK_API int gmtvtk_mbgrdviz_select_nav(int nav, int selected) {
 }
 GMTVTK_API int gmtvtk_mbgrdviz_close(void) {
 	return mbgrdvizClose() ? 1 : 0;
+}
+// the navigation line a track of a window was drawn for (by the name it was drawn with); -1 = none
+GMTVTK_API int gmtvtk_mbgrdviz_nav_index(const char *track) {
+	return mbgrdvizNavIndex(track ? track : "");
+}
+GMTVTK_API int gmtvtk_mbgrdviz_nav_selected(int nav) {
+	return mbgrdvizNavSelected(nav);
+}
+// "Pick in view" down (1) / up (0); 1 = the pick is armed on the tool's window
+GMTVTK_API int gmtvtk_mbgrdviz_pick_nav(int on) {
+	return mbgrdvizPickNav(on != 0) ? 1 : 0;
+}
+// the "MB-System" submenu a Scene Objects element would show: of the overlay `element` (group = 0) or
+// of the group handle `element` (group = 1); its items '\n'-separated -> out (cap bytes). Returns the
+// number of items (0 = no submenu).
+GMTVTK_API int gmtvtk_mbgrdviz_track_menu_test(void *handle, const char *element, int group, char *out, int cap) {
+	Scene *s = static_cast<Scene *>(handle);
+	if (out && cap > 0)
+		out[0] = '\0';
+	if (!sceneAlive(s) || !element)
+		return 0;
+	std::vector<std::string> navs;
+	if (group)
+		navs = lineGroupMbNavs(s, element);
+	else
+		for (const auto &ov : s->overlays)
+			if (ov.name == element && !ov.mbNav.empty()) {
+				navs.push_back(ov.mbNav);
+				break;
+			}
+	QMenu m;
+	addMbSystemMenu(m, navs);
+	std::string items;
+	int n = 0;
+	for (QAction *a : m.actions())
+		if (QMenu *sub = a->menu()) {
+			if (a->text() != "MB-System")
+				continue;
+			for (QAction *it : sub->actions()) {
+				if (!items.empty())
+					items += '\n';
+				items += it->text().toStdString();
+				n++;
+			}
+		}
+	if (out && cap > 0)
+		snprintf(out, size_t(cap), "%s", items.c_str());
+	return n;
+}
+// run the submenu's item `which` (0 MBedit .. 3 MBvelocitytool) on the track `track`; 1 = opened
+GMTVTK_API int gmtvtk_mbgrdviz_nav_editor(int which, const char *track) {
+	return mbgrdvizNavEditor(which, {std::string(track ? track : "")}) ? 1 : 0;
 }
 #endif // GMTVTK_MBGRDVIZ
 
@@ -5434,6 +5563,50 @@ GMTVTK_API double gmtvtk_world_per_pixel_h(void *handle) {
 // test hook: run the REAL double-click handler (polygonHandleDblClick) at the screen position of
 // world point (x,y,z), then report what is under vertex edit. out2 = { polyEdit, ovEdit }, and the
 // return value is ovEditSeg. Lets the test suite check the in-place overlay edit without a mouse.
+// test hook: what the ACTIVE-grid resolver sees, read-only. Writes "key=value;" pairs: the visible
+// resolve (valid, tag, name), activeOwnerTag, actZ (null or which grid it points at), the base's
+// visibility, and per extra its tag, name, visibility, gstack and gridZ size. Returns the length.
+GMTVTK_API int gmtvtk_active_grid_test(void *scene, char *out, int cap) {
+	Scene *s = static_cast<Scene*>(scene);
+	if (!sceneAlive(s) || !out || cap <= 0) return -1;
+	const ActiveGrid ag = resolveActiveGrid(s);
+	std::string r = "valid=" + std::to_string(ag.valid ? 1 : 0) + ";tag=" + std::to_string(ag.tag) + ";name=" + ag.name +
+	                ";owner=" + std::to_string(activeOwnerTag(s)) + ";actZ=" +
+	                (!s->actZ ? std::string("null") : s->actZ == &s->gridZ ? std::string("base") : std::string("extra")) +
+	                ";baseVis=" + std::to_string(surfProp(s) && surfProp(s)->GetVisibility() ? 1 : 0) +
+	                ";baseStack=" + std::to_string(s->surfStack) + ";baseNz=" + std::to_string(s->gridZ.size());
+	for (auto &ex : s->extras)
+		r += ";ex" + std::to_string(ex.tag) + "=" + ex.name + "|vis=" +
+		     std::to_string(ex.actor && ex.actor->GetVisibility() ? 1 : 0) + "|stack=" + std::to_string(ex.gstack) +
+		     "|nz=" + std::to_string(ex.gridZ.size()) + "|img=" + std::to_string(ex.isImage ? 1 : 0) +
+		     "|nnan=" + std::to_string(std::count_if(ex.gridZ.begin(), ex.gridZ.end(), [](float v) { return std::isnan(v); })) +
+		     "|gnx=" + std::to_string(ex.gnx) + "|gny=" + std::to_string(ex.gny) +
+		     "|kz=" + std::to_string(layerZScale(s, ex.tag)) +
+		     "|akz=" + std::to_string(ex.actor ? ex.actor->GetScale()[2] : 0.0) +
+		     "|abz=" + std::to_string(ex.actor ? ex.actor->GetBounds()[4] : 0.0) + "," +
+		     std::to_string(ex.actor ? ex.actor->GetBounds()[5] : 0.0);
+	for (auto &ov : s->overlays) {
+		double b[6] = {0, 0, 0, 0, 0, 0}, sc[3] = {0, 0, 0};
+		if (ov.actor) { ov.actor->GetBounds(b); ov.actor->GetScale(sc); }
+		r += ";ov=" + ov.name + "|grp=" + ov.groupName + "|owner=" + std::to_string(ov.veOwner) +
+		     "|clamped=" + std::to_string(ov.clamped ? 1 : 0) + "|vis=" + std::to_string(ov.actor && ov.actor->GetVisibility() ? 1 : 0) +
+		     "|akz=" + std::to_string(sc[2]) + "|abz=" + std::to_string(b[4]) + "," + std::to_string(b[5]);
+	}
+	std::snprintf(out, (size_t)cap, "%s", r.c_str());
+	return (int)r.size();
+}
+
+// test hook: the clamp's sampler at TRUE (x,y): out = { sampleActiveZ, sampleZ (base), actX0, actX1, actY0, actY1,
+// actNx, actNy }. Returns 1 when the window is alive.
+GMTVTK_API int gmtvtk_sample_active_test(void *scene, double x, double y, double *out) {
+	Scene *s = static_cast<Scene*>(scene);
+	if (!sceneAlive(s) || !out) return 0;
+	out[0] = sampleActiveZ(s, x, y);  out[1] = sampleZ(s, x, y);
+	out[2] = s->actX0;  out[3] = s->actX1;  out[4] = s->actY0;  out[5] = s->actY1;
+	out[6] = s->actNx;  out[7] = s->actNy;
+	return 1;
+}
+
 GMTVTK_API int gmtvtk_dblclick_test(void *scene, double x, double y, double z, int *out2) {
 	Scene *s = static_cast<Scene*>(scene);
 	if (!sceneAlive(s) || !s->widget) return -1;
@@ -6240,6 +6413,40 @@ GMTVTK_API int gmtvtk_scene_child_row_click_h(void *handle, const char *group, c
 // Compiled ONLY into gmtvtk_test.dll (GMTVTK_TEST_API, set by the gmtvtk_test CMake target).
 // The production gmtvtk.dll never sees these symbols at all — not hidden, not exported.
 #ifdef GMTVTK_TEST_API
+
+// test hook: WHERE a line overlay is and HOW it is drawn, read off the live actor -- what the grid-
+// independence tests need to tell "the row is checked but nothing is on screen" apart into its causes.
+// Writes "key=value;" pairs: visibility, which renderer holds it (main / the depth-cleared top layer),
+// its veOwner and the window's active owner, the actor scale, its world bounds, and both renderers'
+// clipping ranges. Returns the length written, 0 when no overlay of that name (or group) exists.
+GMTVTK_API int gmtvtk_overlay_probe_test(void *scene, const char *name, char *out, int cap) {
+	Scene *s = static_cast<Scene*>(scene);
+	if (!s || !name || !out || cap <= 0) return 0;
+	out[0] = '\0';
+	const std::string want = name;
+	Overlay *ov = nullptr;
+	for (auto &o : s->overlays)
+		if (o.actor && (o.name == want || o.groupName == want)) { ov = &o; break; }
+	if (!ov) return 0;
+	vtkActor *a = ov->actor.Get();
+	char buf[2048];
+	double b[6];
+	a->GetBounds(b);
+	const double *sc = a->GetScale();
+	double cr[2] = {0, 0}, ct[2] = {0, 0};
+	if (s->ren && s->ren->GetActiveCamera()) s->ren->GetActiveCamera()->GetClippingRange(cr);
+	if (s->axesRen && s->axesRen->GetActiveCamera()) s->axesRen->GetActiveCamera()->GetClippingRange(ct);
+	snprintf(buf, sizeof(buf),
+	         "vis=%d;inRen=%d;inTop=%d;veOwner=%d;active=%d;sx=%.9g;sy=%.9g;sz=%.9g;"
+	         "bx0=%.9g;bx1=%.9g;by0=%.9g;by1=%.9g;bz0=%.9g;bz1=%.9g;clip0=%.9g;clip1=%.9g;topClip0=%.9g;topClip1=%.9g;"
+	         "flat2d=%d;realZ=%d;clamped=%d",
+	         a->GetVisibility() ? 1 : 0, (s->ren && s->ren->HasViewProp(a)) ? 1 : 0,
+	         (s->axesRen && s->axesRen->HasViewProp(a)) ? 1 : 0, ov->veOwner, activeOwnerTag(s), sc[0], sc[1], sc[2],
+	         b[0], b[1], b[2], b[3], b[4], b[5], cr[0], cr[1], ct[0], ct[1], s->flat2d ? 1 : 0, ov->realZ ? 1 : 0,
+	         ov->clamped ? 1 : 0);
+	snprintf(out, size_t(cap), "%s", buf);
+	return int(strlen(out));
+}
 
 // Open the Color Palettes editor on one Aquamoto side exactly as that side's Color Bar row does --
 // through the SAME `aquaSideEditorRange` + `showColorPalettesAquaSide` pair, never a second opinion
@@ -7635,6 +7842,13 @@ GMTVTK_API int gmtvtk_menu_trigger_test(void *handle, const char *path) {
 				if (a) break;
 			}
 		}
+		// ...and the draw-tool FLYOUTS (shapes, symbols): their tools live in a toolbar button's own
+		// menu, which neither search above reaches. s->shapeActs holds every one of them.
+		if (!a) {
+			const QString want = step.trimmed().remove('&');
+			for (QAction *act : s->shapeActs)
+				if (act && act->text().remove('&').compare(want, Qt::CaseInsensitive) == 0) { a = act; break; }
+		}
 		if (!a) return n;
 		a->trigger();
 		QApplication::processEvents();
@@ -7767,6 +7981,31 @@ GMTVTK_API int gmtvtk_earthregions_type_test(const char *dlgTitle, const char *c
 	emit e->editingFinished();
 	QApplication::processEvents();
 	return 1;
+}
+
+// How many top-level windows with this title are VISIBLE on screen (a hidden one does not count:
+// gmtvtk_window_exists_test below counts every window that exists, shown or not).
+GMTVTK_API int gmtvtk_window_visible_test(const char *title) {
+	if (!title) return 0;
+	const QString want = QString::fromUtf8(title);
+	int n = 0;
+	for (QWidget *w : QApplication::topLevelWidgets())
+		if (w->isWindow() && w->isVisible() && w->windowTitle().contains(want, Qt::CaseInsensitive)) ++n;
+	return n;
+}
+
+// Close the first visible top-level window with this title, exactly as its X does (a close event, so
+// a tool that parks on X parks). Returns 1 if one was found.
+GMTVTK_API int gmtvtk_window_close_test(const char *title) {
+	if (!title) return 0;
+	const QString want = QString::fromUtf8(title);
+	for (QWidget *w : QApplication::topLevelWidgets())
+		if (w->isWindow() && w->isVisible() && w->windowTitle().contains(want, Qt::CaseInsensitive)) {
+			w->close();
+			QApplication::processEvents();
+			return 1;
+		}
+	return 0;
 }
 
 GMTVTK_API int gmtvtk_window_exists_test(const char *title) {

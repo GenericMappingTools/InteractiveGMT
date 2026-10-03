@@ -32,6 +32,9 @@ const _ONLYFILE = strip(get(ENV, "INTERACTIVEGMT_TEST_FILE", ""), [' ', '"', '\'
 # …and by TAG (INTERACTIVEGMT_TEST_TAG="xyplot"), the third axis: a fault that only shows up in one
 # subsystem is reproduced by that subsystem's items, not by its file's other four dozen.
 const _ONLYTAG = strip(get(ENV, "INTERACTIVEGMT_TEST_TAG", ""), [' ', '"', '\''])
+# Resume a run: only items whose test FILE sorts at or after this name (files run alphabetically), so
+# the ones a stopped run already passed are not run again. e.g. INTERACTIVEGMT_TEST_FROM=test-sacred-law
+const _FROMFILE = strip(get(ENV, "INTERACTIVEGMT_TEST_FROM", ""), [' ', '"', '\x27'])
 
 # macOS/arm64: GMT picks Accelerate's vDSP for its FFT and SEGFAULTS (signal 11) inside
 # vDSP_fft2d_zip — vDSP_fft2d_zip <- gmtfft_2d_vDSP <- GMT_FFT_2D, all inside libgmt — which kills
@@ -165,7 +168,8 @@ function _progress_filter(ti)
 	run = (_RUN_GUI || !(:gui in ti.tags)) && (_RUN_NET || !(:net in ti.tags)) &&
 	      (isempty(_ONLY) || occursin(_ONLY, ti.name)) &&
 	      (isempty(_ONLYFILE) || occursin(_ONLYFILE, ti.filename)) &&
-	      (isempty(_ONLYTAG) || Symbol(_ONLYTAG) in ti.tags)
+	      (isempty(_ONLYTAG) || Symbol(_ONLYTAG) in ti.tags) &&
+	      (isempty(_FROMFILE) || basename(ti.filename) >= _FROMFILE)
 	run && push!(_PROGRESS_ITEMS, ti.name)
 	return run
 end

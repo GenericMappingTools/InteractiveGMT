@@ -194,7 +194,9 @@ set(IGMT_WITH_MBEDIT ON)
 # linked: mbedit.c loads it at run time, so nothing here needs MB-System to build.
 set(MBEDIT_SRC)
 if(IGMT_WITH_MBEDIT AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/mbedit/mbedit.c")
-  set(MBEDIT_SRC src/mbedit/mbedit.c src/mbedit/mbedit_window.cpp)
+  # src/cube/cube_swath.c reads swath soundings for CUBE through the editor's MBIO table, so it is
+  # built only with the editor.
+  set(MBEDIT_SRC src/mbedit/mbedit.c src/mbedit/mbedit_window.cpp src/cube/cube_swath.c)
   add_compile_definitions(GMTVTK_MBEDIT)
   if(MSVC)
     # the engine keeps mbedit_prog.c's own sprintf/strcpy, line for line
@@ -280,7 +282,13 @@ if(IGMT_WITH_WCDVIEWER AND MBEDIT_SRC AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/sr
   message(STATUS "gmtvtk: building the EXPERIMENTAL water column viewer (src/wcdviewer/)")
 endif()
 
-set(GMTVTK_SRC src/gmtvtk.cpp src/mbgrid.c src/satellite.cpp ${SAT_CODE_SRC} ${MBEDIT_SRC} ${MBVELOCITY_SRC} ${MBEDITVIZ_SRC} ${MBGRDVIZ_SRC} ${PCE_SRC} ${WCDVIEWER_SRC})
+# src/cube/mb_cube.c — CUBE (Combined Uncertainty and Bathymetry Estimator), a verbatim copy of
+# MB-System's src/mbaux/mb_cube.c (see src/cube/PROVENANCE.md). Another second C translation unit,
+# libc-only, exactly like mbgrid.c. MB_CUBE_BUILD_DLL turns its header's MB_CUBE_API into an export.
+set(CUBE_SRC src/cube/mb_cube.c)
+set_source_files_properties(${CUBE_SRC} PROPERTIES COMPILE_DEFINITIONS MB_CUBE_BUILD_DLL)
+
+set(GMTVTK_SRC src/gmtvtk.cpp src/mbgrid.c ${CUBE_SRC} src/satellite.cpp ${SAT_CODE_SRC} ${MBEDIT_SRC} ${MBVELOCITY_SRC} ${MBEDITVIZ_SRC} ${MBGRDVIZ_SRC} ${PCE_SRC} ${WCDVIEWER_SRC})
 
 # deps/ui/*.ui are loaded at RUNTIME (QUiLoader, see FocalMechanismsDialog in 70_window.cpp) for
 # dialogs where the .ui must stay the single source of truth — no hand-ported C++ to fall out of

@@ -69,22 +69,6 @@
          </spacer>
         </item>
         <item>
-         <widget class="QRadioButton" name="mouseRotate1">
-          <property name="text"><string>Rotate Soundings</string></property>
-          <property name="checked"><bool>true</bool></property>
-         </widget>
-        </item>
-        <item>
-         <widget class="QRadioButton" name="mousePanZoom1">
-          <property name="text"><string>Pan and Zoom</string></property>
-         </widget>
-        </item>
-        <item>
-         <widget class="QLabel" name="labelMouseMode">
-          <property name="text"><string>Mouse Mode:</string></property>
-         </widget>
-        </item>
-        <item>
          <widget class="QPushButton" name="resetButton">
           <property name="text"><string>Reset View</string></property>
           <property name="autoDefault"><bool>false</bool></property>
@@ -127,65 +111,70 @@
        <property name="horizontalSpacing"><number>6</number></property>
        <property name="verticalSpacing"><number>2</number></property>
        <item row="0" column="0">
-        <widget class="QLabel" name="rollLabel"><property name="text"><string>Roll Bias (degrees)</string></property></widget>
+        <widget class="QLabel" name="rollLabel"><property name="toolTip"><string>Roll offset (degrees) added to the attitude used to place the soundings. Fixes swaths tilted across-track: outer beams too deep on one side and too shallow on the other. Applied on release; the range re-centres when you reach an end. Action &gt; Optimize Bias Values (roll) estimates it.</string></property><property name="text"><string>Roll Bias (degrees)</string></property></widget>
        </item>
        <item row="1" column="0">
         <widget class="QLabel" name="rollSliderValue"><property name="text"><string>0.00</string></property></widget>
        </item>
        <item row="2" column="0">
         <widget class="QSlider" name="rollSlider">
+         <property name="toolTip"><string>Roll offset (degrees) added to the attitude used to place the soundings. Fixes swaths tilted across-track: outer beams too deep on one side and too shallow on the other. Applied on release; the range re-centres when you reach an end. Action &gt; Optimize Bias Values (roll) estimates it.</string></property>
          <property name="minimum"><number>-100</number></property>
          <property name="maximum"><number>100</number></property>
          <property name="orientation"><enum>Qt::Horizontal</enum></property>
         </widget>
        </item>
        <item row="0" column="1">
-        <widget class="QLabel" name="pitchLabel"><property name="text"><string>Pitch Bias (degrees)</string></property></widget>
+        <widget class="QLabel" name="pitchLabel"><property name="toolTip"><string>Pitch offset (degrees) added to the attitude used to place the soundings. Fixes along-track displacement: the same feature appears shifted fore/aft on lines run in opposite directions. Applied on release; the range re-centres when you reach an end. Action &gt; Optimize Bias Values (pitch) estimates it.</string></property><property name="text"><string>Pitch Bias (degrees)</string></property></widget>
        </item>
        <item row="1" column="1">
         <widget class="QLabel" name="pitchSliderValue"><property name="text"><string>0.00</string></property></widget>
        </item>
        <item row="2" column="1">
         <widget class="QSlider" name="pitchSlider">
+         <property name="toolTip"><string>Pitch offset (degrees) added to the attitude used to place the soundings. Fixes along-track displacement: the same feature appears shifted fore/aft on lines run in opposite directions. Applied on release; the range re-centres when you reach an end. Action &gt; Optimize Bias Values (pitch) estimates it.</string></property>
          <property name="minimum"><number>-100</number></property>
          <property name="maximum"><number>100</number></property>
          <property name="orientation"><enum>Qt::Horizontal</enum></property>
         </widget>
        </item>
        <item row="0" column="2">
-        <widget class="QLabel" name="headingLabel"><property name="text"><string>Heading Bias (degrees)</string></property></widget>
+        <widget class="QLabel" name="headingLabel"><property name="toolTip"><string>Heading (yaw) offset (degrees) added to the ship heading used to place the soundings. Fixes a swath rotated about the vertical: outer-beam features shift in opposite directions on reciprocal lines. Applied on release; the range re-centres when you reach an end. Action &gt; Optimize Bias Values (heading) estimates it.</string></property><property name="text"><string>Heading Bias (degrees)</string></property></widget>
        </item>
        <item row="1" column="2">
         <widget class="QLabel" name="headingSliderValue"><property name="text"><string>0.00</string></property></widget>
        </item>
        <item row="2" column="2">
         <widget class="QSlider" name="headingSlider">
+         <property name="toolTip"><string>Heading (yaw) offset (degrees) added to the ship heading used to place the soundings. Fixes a swath rotated about the vertical: outer-beam features shift in opposite directions on reciprocal lines. Applied on release; the range re-centres when you reach an end. Action &gt; Optimize Bias Values (heading) estimates it.</string></property>
          <property name="minimum"><number>-100</number></property>
          <property name="maximum"><number>100</number></property>
          <property name="orientation"><enum>Qt::Horizontal</enum></property>
         </widget>
        </item>
        <item row="0" column="3">
-        <widget class="QLabel" name="timelagLabel"><property name="text"><string>Time Lag (seconds)</string></property></widget>
+        <widget class="QLabel" name="timelagLabel"><property name="toolTip"><string>Time lag (seconds) between the sonar pings and the navigation/attitude data. Fixes sensor latency: swath edges that ripple in step with the ship roll. Applied on release; the range re-centres when you reach an end. Action &gt; Optimize Time Lag Values estimates it.</string></property><property name="text"><string>Time Lag (seconds)</string></property></widget>
        </item>
        <item row="1" column="3">
         <widget class="QLabel" name="timelagSliderValue"><property name="text"><string>0.00</string></property></widget>
        </item>
        <item row="2" column="3">
         <widget class="QSlider" name="timelagSlider">
+         <property name="toolTip"><string>Time lag (seconds) between the sonar pings and the navigation/attitude data. Fixes sensor latency: swath edges that ripple in step with the ship roll. Applied on release; the range re-centres when you reach an end. Action &gt; Optimize Time Lag Values estimates it.</string></property>
          <property name="minimum"><number>-100</number></property>
          <property name="maximum"><number>100</number></property>
          <property name="orientation"><enum>Qt::Horizontal</enum></property>
         </widget>
        </item>
        <item row="0" column="4">
-        <widget class="QLabel" name="snellLabel"><property name="text"><string>Snell Correction</string></property></widget>
+        <widget class="QLabel" name="snellLabel"><property name="toolTip"><string>Scale factor on the sound speed used for ray tracing (1.0000 = unchanged). Fixes refraction errors from a wrong surface sound speed: swaths that curl up (smile) or down (frown) toward the outer beams. Applied on release; the range re-centres when you reach an end. Action &gt; Optimize Snell Correction Values estimates it.</string></property><property name="text"><string>Snell Correction</string></property></widget>
        </item>
        <item row="1" column="4">
         <widget class="QLabel" name="snellSliderValue"><property name="text"><string>1.0000</string></property></widget>
        </item>
        <item row="2" column="4">
         <widget class="QSlider" name="snellSlider">
+         <property name="toolTip"><string>Scale factor on the sound speed used for ray tracing (1.0000 = unchanged). Fixes refraction errors from a wrong surface sound speed: swaths that curl up (smile) or down (frown) toward the outer beams. Applied on release; the range re-centres when you reach an end. Action &gt; Optimize Snell Correction Values estimates it.</string></property>
          <property name="minimum"><number>9900</number></property>
          <property name="maximum"><number>10100</number></property>
          <property name="value"><number>10000</number></property>
@@ -201,11 +190,6 @@
    <widget class="QMenu" name="menuDismiss">
     <property name="title"><string>Dismiss</string></property>
     <addaction name="actionDismiss"/>
-   </widget>
-   <widget class="QMenu" name="menuMouse">
-    <property name="title"><string>Mouse</string></property>
-    <addaction name="actionMouseRotate"/>
-    <addaction name="actionMousePanZoom"/>
    </widget>
    <widget class="QMenu" name="menuView">
     <property name="title"><string>View</string></property>
@@ -253,20 +237,10 @@
     <addaction name="actionOptimizeS"/>
    </widget>
    <addaction name="menuDismiss"/>
-   <addaction name="menuMouse"/>
    <addaction name="menuView"/>
    <addaction name="menuAction"/>
   </widget>
   <action name="actionDismiss"><property name="text"><string>Dismiss</string></property></action>
-  <action name="actionMouseRotate">
-   <property name="checkable"><bool>true</bool></property>
-   <property name="checked"><bool>true</bool></property>
-   <property name="text"><string>Rotate Soundings</string></property>
-  </action>
-  <action name="actionMousePanZoom">
-   <property name="checkable"><bool>true</bool></property>
-   <property name="text"><string>Pan and Zoom</string></property>
-  </action>
   <action name="actionViewFlagged">
    <property name="checkable"><bool>true</bool></property>
    <property name="checked"><bool>true</bool></property>

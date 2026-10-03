@@ -327,6 +327,14 @@ const _LIB_OPTIONAL = (
 	:gmtvtk_freeze_scene_objects_h,   # hold the Scene Objects tree still while a run adds many elements
 	:gmtvtk_poly_globe_probe_h,       # probe: is a polygon really hooked onto the globe?
 	:gmtvtk_set_aqua_window_h,           # mark a tsunami window: its grid meshes keep the NaN-hole rim (aquamoto.jl)
+	# CUBE gridder (deps/src/cube/mb_cube.c, MB-System's engine copied verbatim; src/cube.jl).
+	# OPTIONAL only because the C side is new: it graduates once it is on master.
+	:mb_cube_params_default, :mb_cube_params_initialize, :mb_cube_params_read,
+	:mb_cube_iho_limits, :mb_cube_iho_thu_limits, :mb_cube_iho_from_name,
+	:mb_cube_method_from_name, :mb_cube_variance_from_name, :mb_cube_strerror,
+	:mb_cube_grid_new, :mb_cube_grid_insert, :mb_cube_grid_flush, :mb_cube_grid_get_values,
+	:mb_cube_grid_free,
+	:gmtvtk_cube_swath_read, :gmtvtk_cube_swath_take,   # swath soundings through the editor's MBIO (IGMT_WITH_MBEDIT)
 	# EXPERIMENTAL swath editor (deps/src/mbedit/, built only with IGMT_WITH_MBEDIT in CMakeLists.txt)
 	:gmtvtk_mbedit_open, :gmtvtk_mbedit_state, :gmtvtk_mbedit_key, :gmtvtk_mbedit_click,
 	:gmtvtk_mbedit_save_png, :gmtvtk_mbedit_close,
@@ -345,6 +353,8 @@ const _LIB_OPTIONAL = (
 	:gmtvtk_mbgrdviz_select_route, :gmtvtk_mbgrdviz_set_area, :gmtvtk_mbgrdviz_set_region,
 	:gmtvtk_mbgrdviz_generate_survey, :gmtvtk_mbgrdviz_survey_dismiss, :gmtvtk_mbgrdviz_open_region,
 	:gmtvtk_mbgrdviz_select_nav, :gmtvtk_mbgrdviz_close,
+	:gmtvtk_mbgrdviz_nav_index, :gmtvtk_mbgrdviz_nav_selected, :gmtvtk_mbgrdviz_pick_nav,
+	:gmtvtk_mbgrdviz_track_menu_test, :gmtvtk_mbgrdviz_nav_editor,
 	# EXPERIMENTAL pointCloudEditor (deps/src/pointcloudeditor/, IGMT_WITH_PCE)
 	:gmtvtk_pce_open, :gmtvtk_pce_state, :gmtvtk_pce_set_edit_mode, :gmtvtk_pce_set_vertical_exagg,
 	:gmtvtk_pce_rubber_band, :gmtvtk_pce_set_elev_profile, :gmtvtk_pce_canvas_size, :gmtvtk_pce_save_png,

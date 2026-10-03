@@ -107,6 +107,15 @@ stereo!
 show_table
 ```
 
+## CUBE Gridding
+
+See [CUBE — Combined Uncertainty and Bathymetry Estimator](76-cube.md).
+
+```@docs
+cubegrid
+cubegrid_all
+```
+
 ## Types
 
 ### QtFigure

@@ -75,6 +75,18 @@ static QIcon makeLineIcon() {
 	p.end(); return QIcon(pm);
 }
 
+// "Line area" icon: a tilted rectangle with its central line, no fill (the look of the drawn element).
+static QIcon makeLineAreaIcon() {
+	QPixmap pm = iconCanvas();
+	QPainter p(&pm); p.setRenderHint(QPainter::Antialiasing, true);
+	p.setPen(QPen(QColor(40, 40, 40), 1.4, Qt::SolidLine, Qt::SquareCap, Qt::MiterJoin));
+	p.setBrush(Qt::NoBrush);
+	QPolygonF box; box << QPointF(2.5, 10.0) << QPointF(19.0, 4.0) << QPointF(21.5, 12.5) << QPointF(5.0, 18.5);
+	p.drawPolygon(box);
+	p.drawLine(QPointF(3.75, 14.25), QPointF(20.25, 8.25));   // the central line: midpoints of the short ends
+	p.end(); return QIcon(pm);
+}
+
 // Square outline icon (light fill).
 static QIcon makeRectIcon() {
 	QPixmap pm = iconCanvas();
@@ -436,8 +448,14 @@ static QIcon makeCubeViewIcon() {
 }
 
 // Cursor (mx,my device px) -> a point ON the scene, returned in TRUE coords. Mirrors the hover
-// ray-cast in onMouseMove: march the unprojected ray against the grid heightfield (sampleZ), the
-// flat image plane, or the FV/point cellpicker. Returns false if the ray misses the scene.
+// ray-cast in onMouseMove: march the unprojected ray against the grid heightfield, the flat image
+// plane, or the FV/point cellpicker. Returns false if the ray misses the scene.
+//
+// THE grid is the ACTIVE one (sampleActiveZ, the hover readout's own sampler) at THAT layer's own
+// drawn scale (layerZScale of activeOwnerTag) -- the layer every element drawn now belongs to
+// (veOwner = activeOwnerTag) and is drawn at. Marching the BASE relief at the BASE scale put the
+// vertices of a line drawn on a second surface (mbeditviz's grid in an mbgrdviz window) on another
+// surface than the one on screen, and the line never showed (SACRED_LAW.md: one operation, one surface).
 static bool polyPickWorld(Scene *s, int mx, int my, double outTrue[3]) {
 	double nr[4], fr[4];
 	s->ren->SetDisplayPoint((double)mx, (double)my, 0.0); s->ren->DisplayToWorld();
@@ -447,10 +465,12 @@ static bool polyPickWorld(Scene *s, int mx, int my, double outTrue[3]) {
 	if (nr[3] != 0.0) { nr[0] /= nr[3]; nr[1] /= nr[3]; nr[2] /= nr[3]; }
 	if (fr[3] != 0.0) { fr[0] /= fr[3]; fr[1] /= fr[3]; fr[2] /= fr[3]; }
 	const double dirx = fr[0] - nr[0], diry = fr[1] - nr[1], dirz = fr[2] - nr[2];
-	const double zsc = sceneZScale(s);
+	const double zsc = layerZScale(s, activeOwnerTag(s));
 	const double gx  = (s->xfac != 0.0) ? s->xfac : 1.0;
+	const ActiveGrid ag = resolveActiveGrid(s);
+	const double zFloor = ag.valid ? ag.zmin : s->zmin;    // the active grid's floor: its holes' backdrop
 
-	if (!s->gridZ.empty()) {
+	if ((s->actZ && !s->actZ->empty()) || !s->gridZ.empty()) {
 		// A NaN is a DATA HOLE, and a hole still has a surface to click on: the flat NaN backdrop the
 		// renderer draws just under the grid floor (nanPlaneUpdate). Sampling NaN used to ABORT the
 		// ray-march ("no surface here"), so the surface the user could plainly see in the NaN fill
@@ -466,13 +486,13 @@ static bool polyPickWorld(Scene *s, int mx, int my, double outTrue[3]) {
 				const double P[3] = { X, Y, Z };
 				double lon, lat, zz;
 				if (!sceneWorldToGeo(s, P, lon, lat, zz)) return false;
-				double h = sampleZ(s, lon, lat);
-				if (std::isnan(h)) h = s->zmin;
+				double h = sampleActiveZ(s, lon, lat);
+				if (std::isnan(h)) h = zFloor;
 				fval = std::sqrt(X*X + Y*Y + Z*Z) - (s->globeR + h * zsc);
 				return true;
 			}
-			double h = sampleZ(s, X / gx, Y);
-			if (std::isnan(h)) h = s->zmin;         // the hole's backdrop sits at the grid floor
+			double h = sampleActiveZ(s, X / gx, Y);
+			if (std::isnan(h)) h = zFloor;          // the hole's backdrop sits at the grid floor
 			fval = Z - h * zsc; return true;
 		};
 		const int NS = 512;
@@ -492,10 +512,10 @@ static bool polyPickWorld(Scene *s, int mx, int my, double outTrue[3]) {
 				const double W[3] = { nr[0] + t0*dirx, nr[1] + t0*diry, nr[2] + t0*dirz };
 				double zz;
 				sceneWorldToGeo(s, W, outTrue[0], outTrue[1], zz);   // flat: w/xfac,w.y — globe: the sphere inverse
-				outTrue[2] = sampleZ(s, outTrue[0], outTrue[1]);
+				outTrue[2] = sampleActiveZ(s, outTrue[0], outTrue[1]);
 				// In a hole the vertex sits ON the hole's backdrop (the grid floor), not at z=0 --
 				// same surface the ray was just intersected against, so the point lands where clicked.
-				if (std::isnan(outTrue[2])) outTrue[2] = s->zmin;
+				if (std::isnan(outTrue[2])) outTrue[2] = zFloor;
 				return true;
 			}
 			pt = t; pf = fv; have = true;
@@ -721,11 +741,19 @@ static void polyRebuildFill(Scene *s, Polygon &pg) {
 	pg.fill->SetVisibility(pg.fillOpacity > 0.0 ? 1 : 0);   // no fill drawn until the user raises opacity
 }
 
+static void lineAreaMidline(const Polygon &pg, double a[3], double b[3]);
+static void polyAppendLine(Scene *s, vtkPolyData *pd, const double a[3], const double b[3]);
+
 static void polyRebuildLine(Scene *s, Polygon &pg) {
 	if (!pg.linePD) pg.linePD = vtkSmartPointer<vtkPolyData>::New();
 	std::vector<std::array<double,3>> draped;
 	polyDrapeCorners(s, pg.v, draped);
 	polyFillLine(pg.linePD, draped, false);
+	if (pg.isLineArea && pg.v.size() >= 4) {                        // line area: its central line, same actor
+		double a[3], b[3];
+		lineAreaMidline(pg, a, b);
+		polyAppendLine(s, pg.linePD, a, b);
+	}
 	if (!pg.line) {
 		double cr, cg, cb; prefLineColorRGB(cr, cg, cb);             // Preferences "Default line color"
 		pg.line = polyMakeLineActor(s, pg.linePD, cr, cg, cb);       // (default Orange = the old look)
@@ -762,6 +790,119 @@ static void rectDragCorner(Polygon &pg, int i, double wx, double wy) {
 	if (pg.closed && pg.v.size() >= 2) pg.v.back() = pg.v.front();   // keep the closing dup in sync
 }
 
+// ---- "Line area": a straight line inside its own rectangle --------------------------------------
+// Stored as an ordinary closed 4-corner ring (so hit test, handles, fill, delete, Line Properties are
+// the shared ones); the central line is not stored, it joins the midpoints of the two short ends.
+// Ring order, A/B the line's ends and n the unit normal to A->B:
+//   v0 = A - n*h   v1 = B - n*h   v2 = B + n*h   v3 = A + n*h   (v4 = v0, the closing dup)
+// The geometry is computed where it is SEEN: x scaled by xfac (the space the actors hang in), so the
+// box is square-cornered on screen whatever the line's orientation, on a geographic map as well.
+
+// The 4 corners (not closed) of the rectangle of half-width `halfW` (scaled-space units) around a->b.
+static void lineAreaCorners(Scene *s, const double a[3], const double b[3], double halfW,
+                            std::vector<std::array<double,3>> &out) {
+	const double xf = (s->xfac > 0.0) ? s->xfac : 1.0;
+	const double dx = (b[0] - a[0]) * xf, dy = b[1] - a[1];
+	const double L = std::hypot(dx, dy);
+	const double nx = (L > 0.0) ? -dy / L : 0.0, ny = (L > 0.0) ? dx / L : 1.0;
+	const double ox = nx * halfW / xf, oy = ny * halfW;   // the offset back in TRUE coords
+	out = { { a[0] - ox, a[1] - oy, a[2] }, { b[0] - ox, b[1] - oy, b[2] },
+	        { b[0] + ox, b[1] + oy, b[2] }, { a[0] + ox, a[1] + oy, a[2] } };
+}
+
+// The central line of a line area: midpoints of the short ends v0-v3 (A) and v1-v2 (B).
+static void lineAreaMidline(const Polygon &pg, double a[3], double b[3]) {
+	for (int k = 0; k < 3; ++k) {
+		a[k] = 0.5 * (pg.v[0][k] + pg.v[3][k]);
+		b[k] = 0.5 * (pg.v[1][k] + pg.v[2][k]);
+	}
+}
+
+// The opening half-width of a line area drawn a->b: the box is 20 times the line's own width, which
+// is in screen pixels, so it is turned into scaled-space units at the current zoom along the line.
+// 0 when the line has no screen length yet (both clicks on one pixel).
+static double lineAreaStartHalfWidth(Scene *s, const double a[3], const double b[3]) {
+	double da[2], db[2];
+	polyToDisplay(s, { a[0], a[1], a[2] }, da);
+	polyToDisplay(s, { b[0], b[1], b[2] }, db);
+	const double Lpx = std::hypot(db[0] - da[0], db[1] - da[1]);
+	if (Lpx < 1.0) return 0.0;
+	const double xf = (s->xfac > 0.0) ? s->xfac : 1.0;
+	const double Lw = std::hypot((b[0] - a[0]) * xf, b[1] - a[1]);
+	return 0.5 * 20.0 * prefLineWidthPx(s) * (Lw / Lpx);
+}
+
+// Drag corner `i` (0..3) of a line area to (wx,wy) keeping it a rectangle on the SAME axis: the end of
+// the central line away from that corner stays put, the near end slides along the axis to the
+// cursor's projection (length) and the half-width becomes the cursor's distance from the axis (width).
+static void lineAreaDragCorner(Scene *s, Polygon &pg, int i, double wx, double wy) {
+	if (pg.v.size() < 4 || i < 0 || i > 3) return;
+	const double xf = (s->xfac > 0.0) ? s->xfac : 1.0;
+	double a[3], b[3];
+	lineAreaMidline(pg, a, b);
+	const bool moveA = (i == 0 || i == 3);           // v0/v3 sit at the A end, v1/v2 at the B end
+	const double *fix = moveA ? b : a, *mov = moveA ? a : b;
+	const double ux0 = (mov[0] - fix[0]) * xf, uy0 = mov[1] - fix[1];
+	const double L0 = std::hypot(ux0, uy0);
+	if (L0 <= 0.0) return;
+	const double ux = ux0 / L0, uy = uy0 / L0;       // axis, from the fixed end towards the dragged one
+	const double px = (wx - fix[0]) * xf, py = wy - fix[1];
+	const double L = std::max(px * ux + py * uy, 1e-6 * L0);   // never through (or past) the fixed end
+	const double h = std::max(std::abs(-uy * px + ux * py), 1e-6 * L0);
+	const double end[3] = { fix[0] + ux * L / xf, fix[1] + uy * L, mov[2] };
+	std::vector<std::array<double,3>> c;
+	if (moveA) lineAreaCorners(s, end, fix, h, c);   // A -> B direction unchanged, so every corner keeps its index
+	else       lineAreaCorners(s, fix, end, h, c);
+	c.push_back(c.front());
+	pg.v = c;
+}
+
+// Move end `i` (0 = A, 1 = B) of a line area's CENTRAL line to (wx,wy): the other end stays, so the
+// line changes length and orientation freely; the box is rebuilt around it with its width unchanged.
+static void lineAreaDragEnd(Scene *s, Polygon &pg, int i, double wx, double wy) {
+	if (pg.v.size() < 4 || i < 0 || i > 1) return;
+	const double xf = (s->xfac > 0.0) ? s->xfac : 1.0;
+	const double h = 0.5 * std::hypot((pg.v[3][0] - pg.v[0][0]) * xf, pg.v[3][1] - pg.v[0][1]);
+	double a[3], b[3];
+	lineAreaMidline(pg, a, b);
+	double *e = (i == 0) ? a : b;
+	e[0] = wx;  e[1] = wy;
+	if (a[0] == b[0] && a[1] == b[1]) return;       // a zero-length line has no direction to build the box on
+	std::vector<std::array<double,3>> c;
+	lineAreaCorners(s, a, b, h, c);
+	c.push_back(c.front());
+	pg.v = c;
+}
+
+// Is (x,y) within tol px of the central line of line area `pi`?
+static bool lineAreaHitMid(Scene *s, int pi, int x, int y, double tol) {
+	if (pi < 0 || pi >= (int)s->polys.size() || !s->polys[pi].isLineArea || s->polys[pi].v.size() < 4) return false;
+	double ma[3], mb[3], a[2], b[2];
+	lineAreaMidline(s->polys[pi], ma, mb);
+	polyToDisplay(s, { ma[0], ma[1], ma[2] }, a);
+	polyToDisplay(s, { mb[0], mb[1], mb[2] }, b);
+	return segDist2((double)x, (double)y, a, b) <= tol * tol;
+}
+
+// The central-line edit (Scene::polyEditMid) is on: polyEdit is a line area shown with its 2 end handles.
+static bool lineAreaMidEditing(Scene *s) {
+	return s->polyEditMid && s->polyEdit >= 0 && s->polyEdit < (int)s->polys.size() &&
+	       s->polys[s->polyEdit].isLineArea && s->polys[s->polyEdit].v.size() >= 4;
+}
+
+// Append the line a->b, draped like every outline, as one more cell of `pd` (after polyFillLine).
+static void polyAppendLine(Scene *s, vtkPolyData *pd, const double a[3], const double b[3]) {
+	std::vector<std::array<double,3>> seg = { { a[0], a[1], a[2] }, { b[0], b[1], b[2] } }, draped;
+	polyDrapeCorners(s, seg, draped);
+	vtkPoints *pts = pd->GetPoints();
+	vtkCellArray *lines = pd->GetLines();
+	if (!pts || !lines || draped.size() < 2) return;
+	vtkNew<vtkIdList> ids;
+	for (auto &q : draped) ids->InsertNextId(pts->InsertNextPoint(q[0], q[1], q[2]));
+	lines->InsertNextCell(ids);
+	pd->Modified();
+}
+
 // Circle (in the TRUE x,y plane) centred at c, passing through edge point e, as N corner points.
 static void polyCircleCorners(const double c[3], const double e[3], std::vector<std::array<double,3>> &out) {
 	const double r = std::hypot(e[0] - c[0], e[1] - c[1]);
@@ -779,7 +920,20 @@ static void polyCircleCorners(const double c[3], const double e[3], std::vector<
 static void polyRebuildPreview(Scene *s, const double *cursor) {
 	if (!s->polyPreviewPD) s->polyPreviewPD = vtkSmartPointer<vtkPolyData>::New();
 	std::vector<std::array<double,3>> verts;
-	if (s->polyShape == Scene::SH_Rect || s->polyShape == Scene::SH_RectN || s->polyShape == Scene::SH_Circle) {
+	bool midline = false;                                         // line area: add its central line too
+	double ma[3] = { 0, 0, 0 }, mb[3] = { 0, 0, 0 };
+	if (s->polyShape == Scene::SH_LineArea) {                     // the line so far + its box, both live
+		std::vector<std::array<double,3>> line = s->polyCur;
+		if (cursor && line.size() >= 2) line.pop_back();          // like SH_Line: the cursor moves the end point
+		if (cursor) line.push_back({ cursor[0], cursor[1], cursor[2] });
+		if (line.size() >= 2) {
+			for (int k = 0; k < 3; ++k) { ma[k] = line[0][k]; mb[k] = line[1][k]; }
+			lineAreaCorners(s, ma, mb, lineAreaStartHalfWidth(s, ma, mb), verts);
+			verts.push_back(verts.front());
+			midline = true;
+		}
+	}
+	else if (s->polyShape == Scene::SH_Rect || s->polyShape == Scene::SH_RectN || s->polyShape == Scene::SH_Circle) {
 		if (s->polyDrawing && !s->polyCur.empty() && cursor) {
 			if (s->polyShape != Scene::SH_Circle) polyRectCorners(s->polyCur[0].data(), cursor, verts);
 			else                                polyCircleCorners(s->polyCur[0].data(), cursor, verts);
@@ -794,6 +948,7 @@ static void polyRebuildPreview(Scene *s, const double *cursor) {
 	std::vector<std::array<double,3>> draped;
 	polyDrapeCorners(s, verts, draped);
 	polyFillLine(s->polyPreviewPD, draped, false);   // already a draped ring/chain
+	if (midline) polyAppendLine(s, s->polyPreviewPD, ma, mb);
 	if (!s->polyPreview) {
 		s->polyPreview = polyMakeLineActor(s, s->polyPreviewPD, 1.0, 0.85, 0.2);   // drawing: yellow
 		s->ren->AddActor(s->polyPreview);
@@ -890,7 +1045,15 @@ static void polyRebuildHandles(Scene *s) {
 	vtkNew<vtkPoints> pts;
 	vtkNew<vtkCellArray> verts;
 	EditVerts ev = editVerts(s);
-	if (ev.valid()) {
+	if (lineAreaMidEditing(s)) {                         // line area by its central line: its 2 ends only
+		double ends[2][3];
+		lineAreaMidline(s->polys[s->polyEdit], ends[0], ends[1]);
+		for (int i = 0; i < 2; ++i) {
+			const vtkIdType id = pts->InsertNextPoint(ends[i]);
+			verts->InsertNextCell(1, &id);
+		}
+	}
+	else if (ev.valid()) {
 		const int m = ev.closedRing() ? ev.n() - 1 : ev.n();
 		for (int i = 0; i < m; ++i) {
 			double p[3];  ev.get(i, p);
@@ -918,8 +1081,9 @@ static void polyRebuildHandles(Scene *s) {
 	s->polyHandles->SetVisibility(polyEditing(s) ? 1 : 0);
 }
 
-static void polyEnterEdit(Scene *s, int idx) {
+static void polyEnterEdit(Scene *s, int idx, bool mid = false) {
 	s->polyEdit = idx;
+	s->polyEditMid = mid;                    // line area: edit its central line (true) or its box corners
 	s->ovEdit = -1;  s->ovEditSeg = -1;      // the two edit targets are mutually exclusive
 	s->polyDragVert = -1;
 	polyRebuildHandles(s);
@@ -929,6 +1093,7 @@ static void polyEnterEdit(Scene *s, int idx) {
 // contract as polyEnterEdit above, pointed at the overlay's own points.
 static void overlayEnterEdit(Scene *s, int ovIdx, int segIdx) {
 	s->polyEdit = -1;
+	s->polyEditMid = false;
 	s->ovEdit = ovIdx;  s->ovEditSeg = segIdx;
 	s->polyDragVert = -1;
 	polyRebuildHandles(s);
@@ -936,6 +1101,7 @@ static void overlayEnterEdit(Scene *s, int ovIdx, int segIdx) {
 
 static void polyExitEdit(Scene *s) {
 	s->polyEdit = -1;
+	s->polyEditMid = false;
 	s->ovEdit = -1;  s->ovEditSeg = -1;
 	s->polyDragVert = -1;
 	polyRebuildHandles(s);
@@ -1018,6 +1184,13 @@ static int polyHitPolygon(Scene *s, int x, int y, double tol) {
 			polyToDisplay(s, v[(i + 1) % n], b);
 			if (segDist2((double)x, (double)y, a, b) <= tol2) return pi;
 		}
+		if (s->polys[pi].isLineArea && n >= 4) {                 // a line area answers on its central line too
+			double ma[3], mb[3], a[2], b[2];
+			lineAreaMidline(s->polys[pi], ma, mb);
+			polyToDisplay(s, { ma[0], ma[1], ma[2] }, a);
+			polyToDisplay(s, { mb[0], mb[1], mb[2] }, b);
+			if (segDist2((double)x, (double)y, a, b) <= tol2) return pi;
+		}
 	}
 	return -1;
 }
@@ -1025,9 +1198,20 @@ static int polyHitPolygon(Scene *s, int x, int y, double tol) {
 // Index of the edited element's vertex within `tol` px of (x,y), or -1. Works off the same EditVerts
 // view the handles are drawn from, so a handle you can see is always a handle you can grab.
 static int polyHitHandle(Scene *s, int x, int y, double tol) {
+	const double tol2 = tol * tol;
+	if (lineAreaMidEditing(s)) {                         // the central line's 2 end handles: 0 = A, 1 = B
+		double ends[2][3];
+		lineAreaMidline(s->polys[s->polyEdit], ends[0], ends[1]);
+		int best = -1; double bestd = tol2;
+		for (int i = 0; i < 2; ++i) {
+			double d[2];  polyToDisplay(s, { ends[i][0], ends[i][1], ends[i][2] }, d);
+			const double dx = d[0] - x, dy = d[1] - y, dd = dx*dx + dy*dy;
+			if (dd <= bestd) { bestd = dd; best = i; }
+		}
+		return best;
+	}
 	EditVerts ev = editVerts(s);
 	if (!ev.valid()) return -1;
-	const double tol2 = tol * tol;
 	const int m = ev.closedRing() ? ev.n() - 1 : ev.n();
 	int best = -1; double bestd = tol2;
 	for (int i = 0; i < m; ++i) {
@@ -1047,6 +1231,7 @@ static void polyFinalize(Scene *s, std::vector<std::array<double,3>> verts, bool
 	if (std::string(prefix) == "Nested rectangle") pg.nestKind = 1;   // special "Nested grids" rectangle
 	if (std::string(prefix) == "fault") pg.isFault = true;            // Draw Fault line: props open the elastic dialog
 	if (std::string(prefix) == "rectangle" || pg.nestKind == 1) pg.isRect = true;   // rect tools: edits keep it axis-aligned
+	if (std::string(prefix) == "line area") pg.isLineArea = true;     // rectangle ring + its central line
 	if (closed && pg.v.size() >= 2 && !(pg.v.front() == pg.v.back()))
 		pg.v.push_back(pg.v.front());      // close the ring (first == last)
 	const std::string pre = std::string(prefix) + " ";   // number PER type: "polygon 1", "rectangle 1", ...
@@ -1122,6 +1307,7 @@ static void copyMeStart(Scene *s, const Polygon &src) {
 	copyMeEnd(s);   // abandon any clone already in flight (rare: menu re-invoked mid-drag)
 	s->copyGhost.v           = src.v;
 	s->copyGhost.closed      = src.closed;
+	s->copyGhost.isLineArea  = src.isLineArea;   // the ghost shows (and the copy keeps) the central line
 	s->copyGhost.fillColor[0] = src.fillColor[0];
 	s->copyGhost.fillColor[1] = src.fillColor[1];
 	s->copyGhost.fillColor[2] = src.fillColor[2];
@@ -2172,13 +2358,15 @@ static bool polygonHandlePress(Scene *s, int button, int x, int y, bool shift) {
 			const double fillColor[3] = { s->copyGhost.fillColor[0], s->copyGhost.fillColor[1], s->copyGhost.fillColor[2] };
 			const double fillOpacity  = s->copyGhost.fillOpacity;
 			const std::string groupName = s->copyGhost.groupName;
+			const bool lineArea = s->copyGhost.isLineArea;
 			double outCol[3] = { 1.0, 0.55, 0.0 }; double outW = 2.5;
 			if (s->copyGhost.line) {
 				s->copyGhost.line->GetProperty()->GetColor(outCol);
 				outW = s->copyGhost.line->GetProperty()->GetLineWidth();
 			}
 			copyMeEnd(s);
-			const char *prefix = !closed ? (verts.size() == 2 ? "line" : "polyline") : "polygon";
+			const char *prefix = lineArea ? "line area"
+			                   : !closed ? (verts.size() == 2 ? "line" : "polyline") : "polygon";
 			polyFinalize(s, verts, closed, prefix);
 			if (!s->polys.empty()) {                        // restyle the just-finalized element to match the copy source
 				Polygon &np = s->polys.back();
@@ -2196,7 +2384,7 @@ static bool polygonHandlePress(Scene *s, int button, int x, int y, bool shift) {
 	}
 	const bool vertexTool = (s->polyShape == Scene::SH_Polygon || s->polyShape == Scene::SH_Polyline ||
 	                         s->polyShape == Scene::SH_Line || s->polyShape == Scene::SH_Fault ||
-	                         s->polyShape == Scene::SH_Ruler);
+	                         s->polyShape == Scene::SH_LineArea || s->polyShape == Scene::SH_Ruler);
 	// A tool armed a "point at a line" pick (Scene::vectorPickMode — Plates > Euler rotations'
 	// "Pick in view" / "Rect select"). CLICK mode resolves the line under the cursor with the SAME
 	// two hit tests, in the same order, the double-click edit path uses: a drawn Polygon first, then
@@ -2363,6 +2551,7 @@ static bool polygonHandlePress(Scene *s, int button, int x, int y, bool shift) {
 			break;
 		case Scene::SH_Line:                             // exactly two points: first click sets the start,
 		case Scene::SH_Fault:                            // fault is a two-point line (Draw Fault tool)
+		case Scene::SH_LineArea:                         // line area: the same two-point line, its box follows
 			if (!s->polyDrawing) { s->polyDrawing = true; s->polyCur.clear(); }
 			if (s->polyCur.size() >= 2) s->polyCur.pop_back();   // any later click just replaces the end point
 			s->polyCur.push_back({ w[0], w[1], w[2] });
@@ -2534,6 +2723,16 @@ static bool polygonHandleDblClick(Scene *s, int x, int y) {
 			polyFinalize(s, s->polyCur, false, "fault");
 			s->widget->renderWindow()->Render();
 		}
+		else if (s->polyShape == Scene::SH_LineArea && s->polyCur.size() >= 2) {   // the line + its box
+			const double *a = s->polyCur[0].data(), *b = s->polyCur[1].data();
+			const double h = lineAreaStartHalfWidth(s, a, b);
+			if (h > 0.0) {                               // a line with no screen length has no box to make
+				std::vector<std::array<double,3>> corners;
+				lineAreaCorners(s, a, b, h, corners);
+				polyFinalize(s, corners, true, "line area");
+				s->widget->renderWindow()->Render();
+			}
+		}
 		return true;
 	}
 	if (!s->polyMode) {
@@ -2549,8 +2748,11 @@ static bool polygonHandleDblClick(Scene *s, int x, int y) {
 		}
 		const int pi = polyHitPolygon(s, x, y, 8.0);
 		if (pi >= 0) {
-			if (pi == s->polyEdit) polyExitEdit(s);        // double-click the one being edited -> leave
-			else                   polyEnterEdit(s, pi);   // any other drawn polygon -> switch/enter
+			// a line area has two editable parts: its central line (2 end handles) and its box (4 corners);
+			// a double-click picks the part it lands on, and on the part already being edited it leaves
+			const bool mid = lineAreaHitMid(s, pi, x, y, 8.0);
+			if (pi == s->polyEdit && mid == s->polyEditMid) polyExitEdit(s);        // same element, same part -> leave
+			else                                            polyEnterEdit(s, pi, mid);   // other element/part -> switch/enter
 			s->widget->renderWindow()->Render();
 			return true;
 		}
@@ -2696,7 +2898,13 @@ static bool polygonHandleMove(Scene *s, int x, int y) {
 		double w[3];
 		EditVerts ev = editVerts(s);
 		if (ev.valid() && polyPickWorld(s, x, y, w)) {
-			if (ev.pg && polyIsRect(*ev.pg)) {               // rectangle: keep it axis-aligned (carry the 2 neighbours)
+			if (ev.pg && ev.pg->isLineArea && s->polyEditMid) {   // central line end: length + orientation
+				lineAreaDragEnd(s, *ev.pg, s->polyDragVert, w[0], w[1]);
+			}
+			else if (ev.pg && ev.pg->isLineArea) {           // line area: width + length, still a rectangle
+				lineAreaDragCorner(s, *ev.pg, s->polyDragVert, w[0], w[1]);
+			}
+			else if (ev.pg && polyIsRect(*ev.pg)) {          // rectangle: keep it axis-aligned (carry the 2 neighbours)
 				rectDragCorner(*ev.pg, s->polyDragVert, w[0], w[1]);
 			} else {
 				const bool ring = ev.closedRing();           // ask BEFORE the move: after it, first != last

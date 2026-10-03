@@ -9,7 +9,7 @@
 # file with its .inf (MB-System's test/utilities/testdata/mb57, or ENV["INTERACTIVEGMT_MBGRDVIZ_TESTFILE"]). Without
 # either the item is skipped, visibly: CI has neither. Opt in with INTERACTIVEGMT_TEST_GUI=1.
 
-@testitem "mbgrdviz: nav, survey route over a drawn area, every writer, site/route round trip, region view" tags=[:gui] begin
+@testitem "mbgrdviz: nav, survey route over a drawn area, every writer, site/route round trip, region view" tags=[:gui] setup=[GmtvtkTest] begin
 	IG = InteractiveGMT
 	using InteractiveGMT.GMT
 	src = get(ENV, "INTERACTIVEGMT_MBGRDVIZ_TESTFILE",
@@ -52,6 +52,42 @@
 				@test IG._mbgrdviz_state().nnav == 1
 				@test IG._mbgrdviz_open(:swath, dl)
 				@test IG._mbgrdviz_state().nnav == 2
+
+				# the tracks' "MB-System" menu: the Action menu's four editors, on the group handle and on a
+				# track (its swath bounds included); none on a line that is not a track
+				menu(el, group) = (buf = zeros(UInt8, 1024);
+				                   n = ccall(IG._fn(:gmtvtk_mbgrdviz_track_menu_test), Cint,
+				                             (Ptr{Cvoid}, Cstring, Cint, Ptr{UInt8}, Cint), fig.h, el, group, buf, 1024);
+				                   (n, unsafe_string(pointer(buf))))
+				n, items = menu("Navigation", 1)
+				@test n == 4 && split(items, '\n') == ["Open in MBedit", "Open in MBeditviz", "Open in MBnavedit",
+				                                        "Open in MBvelocitytool"]
+				track = basename(f)
+				navidx(t) = ccall(IG._fn(:gmtvtk_mbgrdviz_nav_index), Cint, (Cstring,), t)
+				@test navidx(track) >= 0
+				@test navidx(track * " (swath bounds)") == navidx(track)
+				@test navidx("no such line") == -1
+				@test menu(track, 0)[1] == 4
+				@test menu(track * " (swath bounds)", 0)[1] == 4
+				@test menu("Navigation", 0)[1] == 0
+
+				# "Pick in view": a click on a track (delivered as the scene answers one) checks it, a second
+				# unchecks it; a click on any other line leaves the list alone; releasing the button disarms
+				navsel(i) = ccall(IG._fn(:gmtvtk_mbgrdviz_nav_selected), Cint, (Cint,), i)
+				deliver(nm) = ccall(_test_fn(:gmtvtk_euler_pick_deliver_test), Cint, (Ptr{Cvoid}, Cstring), fig.h, nm)
+				i = navidx(track)
+				@test navsel(i) == 0
+				@test ccall(IG._fn(:gmtvtk_mbgrdviz_pick_nav), Cint, (Cint,), 1) == 1
+				@test deliver(track) == 1
+				@test navsel(i) == 1
+				@test deliver(track * " (swath bounds)") == 1
+				@test navsel(i) == 0
+				@test deliver(track) == 1
+				@test navsel(i) == 1
+				@test ccall(IG._fn(:gmtvtk_mbgrdviz_pick_nav), Cint, (Cint,), 0) == 0
+				@test deliver(track) == 0                # disarmed: the scene has no pick answer any more
+				@test navsel(i) == 1
+				@test IG._mbgrdviz_select_nav(Int(i), false)
 
 				# the survey area: a two-point line drawn in the window, 600 m wide
 				@test addpoly(fig, [-124.5050 40.8370; -124.4985 40.8400], "area line") >= 0

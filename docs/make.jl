@@ -32,6 +32,7 @@ const titles = Dict(
     "73-sentinelhub.md" => "Sentinel Hub",
     "74-modis-scenes.md" => "MODIS Scenes (Terra / Aqua)",
     "75-mbgrid.md" => "mbgrid",
+    "76-cube.md" => "CUBE",
     "80-benchmark1.md" => "Catalina Benchmark 1",
     "90-user-manual.md" => "User Manual",
     "95-reference.md" => "API Reference",

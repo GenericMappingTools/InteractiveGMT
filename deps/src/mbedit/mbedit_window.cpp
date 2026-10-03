@@ -72,6 +72,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <functional>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -1894,9 +1895,28 @@ struct MbParking : QObject {
 	bool reallyClose = false;            // Quit / the handle's Delete
 
 	MbParking(QWidget *w, const MbEditHost &h, const QString &l, std::function<void *()> wh)
-		: QObject(w), win(w), host(h), label(l), where(std::move(wh)) {}
+		: QObject(w), win(w), host(h), label(l), where(std::move(wh)) {
+		watch(host.parkScene);
+	}
 	~MbParking() override { unparkNow(); }   // no handle may outlive the window it brings back
 
+	// The tool BELONGS to the viewer window it was opened from and to the one it parks in: when that
+	// window goes, the tool goes with it, as every iGMT tool window does -- never left open with no
+	// window behind it, never parked as a handle nobody can reach. Queued: the quit runs after the
+	// viewer window's destruction has finished, not inside it.
+	void watch(void *scene) {
+		QWidget *sw = (scene && host.sceneWindow) ? host.sceneWindow(scene) : nullptr;
+		if (!sw || watched.count(sw))
+			return;
+		watched.insert(sw);
+		QObject::connect(sw, &QObject::destroyed, this, [this, sw]() {
+			watched.erase(sw);
+			if (parkedIn && host.sceneWindow && !host.sceneWindow(parkedIn))
+				parkedIn = nullptr;          // its handle went with that window
+			mbParkQuit(this);
+		}, Qt::QueuedConnection);
+	}
+	std::set<QWidget *> watched;
 	void unparkNow() {
 		if (parkedIn && host.unpark)
 			host.unpark(parkedIn, win);      // the host checks the viewer window is still alive
@@ -1909,8 +1929,14 @@ struct MbParking : QObject {
 		if (!into || !host.park)
 			return false;
 		unparkNow();                         // re-parked elsewhere: never two handles
+		// the tool's OWN dialogs (Grid Parameters, Open...) are windows of their own: hiding the tool
+		// leaves them up, ghosts with nothing behind them. They go away with it.
+		for (QWidget *c : win->findChildren<QWidget *>())
+			if (c->isWindow() && c->isVisible())
+				c->hide();
 		win->hide();
 		parkedIn = into;
+		watch(into);
 		const QByteArray l = label.toUtf8();
 		host.park(into, win, l.constData(), [this]() { mbParkShow(this); }, [this]() { mbParkQuit(this); });
 		return true;
@@ -1949,8 +1975,10 @@ void mbParkShow(MbParking *p) {
 }
 
 void mbParkRebind(MbParking *p, void *scene) {
-	if (p && scene)
+	if (p && scene) {
 		p->host.parkScene = scene;
+		p->watch(scene);
+	}
 }
 
 void mbParkQuit(MbParking *p) {

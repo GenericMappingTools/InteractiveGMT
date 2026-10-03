@@ -103,6 +103,9 @@ struct MbEditViz {
 	void *map = nullptr;
 	std::vector<double> cz, crgb;            // its colour nodes, fixed when it opened (mbview kept min/max)
 	bool mapDirty = false;
+	// the map is in the WINDOW's coordinates: lon/lat when that window is a geographic map (the engine's
+	// grid stays UTM; mapLattice / mapShapes convert at the boundary, as mbview's display projection did)
+	bool mapGeo = false;
 
 	// the mbview selections the engine reads
 	mbview_struct view{};
@@ -156,15 +159,60 @@ std::vector<float> mapGridValues() {
 	return z;
 }
 
+// The grid as the map shows it, in the window's coordinates. A UTM window (or a new one): the engine's
+// own grid, untouched. A geographic window: the same number of nodes laid over the grid's lon/lat
+// bounds, each taking the value of the UTM node it falls on (nearest node: no value is invented or
+// smoothed, a hole stays a hole).
+struct MapLattice {
+	std::vector<float> z;
+	int nx = 0, ny = 0;
+	double x0 = 0, x1 = 0, y0 = 0, y1 = 0;
+};
+MapLattice mapLattice() {
+	MapLattice L;
+	const int nc = mbev_grid.n_columns, nr = mbev_grid.n_rows;
+	const double ux0 = mbev_grid.boundsutm[0], uy0 = mbev_grid.boundsutm[2];
+	if (!g_mv->mapGeo) {
+		L.z = mapGridValues();
+		L.nx = nc;
+		L.ny = nr;
+		L.x0 = ux0;
+		L.x1 = ux0 + (nc - 1) * mbev_grid.dx;
+		L.y0 = uy0;
+		L.y1 = uy0 + (nr - 1) * mbev_grid.dy;
+		return L;
+	}
+	L.nx = nc;
+	L.ny = nr;
+	L.x0 = mbev_grid.bounds[0];
+	L.x1 = mbev_grid.bounds[1];
+	L.y0 = mbev_grid.bounds[2];
+	L.y1 = mbev_grid.bounds[3];
+	L.z.assign((size_t)nc * (size_t)nr, NAN);
+	for (int i = 0; i < nc; i++) {
+		const double lon = L.x0 + i * (L.x1 - L.x0) / (nc - 1);
+		for (int j = 0; j < nr; j++) {
+			const double lat = L.y0 + j * (L.y1 - L.y0) / (nr - 1);
+			double x, y;
+			int err = MB_ERROR_NO_ERROR;
+			mb_proj_forward(mbev_verbose, mbev_grid.pjptr, lon, lat, &x, &y, &err);
+			const long ii = std::lround((x - ux0) / mbev_grid.dx), jj = std::lround((y - uy0) / mbev_grid.dy);
+			if (ii < 0 || ii >= nc || jj < 0 || jj >= nr)
+				continue;
+			const float v = mbev_grid.val[(size_t)ii * nr + (size_t)jj];
+			L.z[(size_t)i * nr + (size_t)j] = (v == mbev_grid.nodatavalue) ? NAN : v;
+		}
+	}
+	return L;
+}
+
 void mapRefresh() {
 	MbEditViz *m = g_mv;
 	if (!mapAlive() || mbev_grid.val == nullptr || !m->host.mapUpdate)
 		return;
-	const std::vector<float> z = mapGridValues();
-	const double x1 = mbev_grid.boundsutm[0] + (mbev_grid.n_columns - 1) * mbev_grid.dx;
-	const double y1 = mbev_grid.boundsutm[2] + (mbev_grid.n_rows - 1) * mbev_grid.dy;
-	m->host.mapUpdate(m->map, z.data(), mbev_grid.n_columns, mbev_grid.n_rows, mbev_grid.boundsutm[0], x1,
-	                  mbev_grid.boundsutm[2], y1, m->cz.data(), m->crgb.data(), (int)m->cz.size());
+	const MapLattice L = mapLattice();
+	m->host.mapUpdate(m->map, L.z.data(), L.nx, L.ny, L.x0, L.x1, L.y0, L.y1, m->mapGeo ? 1 : 0, m->cz.data(),
+	                  m->crgb.data(), (int)m->cz.size());
 	m->mapDirty = false;
 }
 
@@ -358,21 +406,24 @@ void doViewGrid() {
 				m->crgb.push_back(kHaxby[10 - k][c]);
 		}
 
-		/* open up the survey viewer */
-		const std::vector<float> z = mapGridValues();
-		const double x1 = mbev_grid.boundsutm[0] + (mbev_grid.n_columns - 1) * mbev_grid.dx;
-		const double y1 = mbev_grid.boundsutm[2] + (mbev_grid.n_rows - 1) * mbev_grid.dy;
-		// into the window mbeditviz was opened from, as a new element named for what it is
+		/* open up the survey viewer: into the window mbeditviz was opened from, as a new element named
+		   for what it is, in THAT window's coordinates */
+		m->mapGeo = m->host.mapWindowGeographic && m->host.mapWindowGeographic(m->host.base.parkScene);
+		const MapLattice L = mapLattice();
 		const QByteArray title = QString("mbeditviz bathymetry (%1)").arg(mbev_grid.projection_id).toUtf8();
-		m->map = m->host.mapOpen ? m->host.mapOpen(m->host.base.parkScene, title.constData(), z.data(), mbev_grid.n_columns,
-		                                           mbev_grid.n_rows, mbev_grid.boundsutm[0], x1, mbev_grid.boundsutm[2], y1,
-		                                           m->cz.data(), m->crgb.data(), (int)m->cz.size())
+		m->map = m->host.mapOpen ? m->host.mapOpen(m->host.base.parkScene, title.constData(), L.z.data(), L.nx, L.ny, L.x0,
+		                                           L.x1, L.y0, L.y1, m->mapGeo ? 1 : 0, m->cz.data(), m->crgb.data(),
+		                                           (int)m->cz.size())
 		                         : nullptr;
 		mbev_instance = 0;
 
 		/* set grid status */
-		if (m->map != nullptr)
+		if (m->map != nullptr) {
 			mbev_grid.status = MBEV_GRID_VIEWED;
+			// the tool belongs to the window its map is in: it parks there, and goes when that window goes
+			if (m->host.mapScene)
+				mbParkRebind(m->parking, m->host.mapScene(m->map));
+		}
 		else
 			mbev_status = MB_FAILURE;
 
@@ -387,8 +438,9 @@ void doViewGrid() {
 					xyz.reserve(3 * (size_t)file->num_pings);
 					for (int iping = 0; iping < file->num_pings; iping++) {
 						struct mbev_ping_struct *ping = &(file->pings[iping]);
-						double x, y;
-						mb_proj_forward(mbev_verbose, mbev_grid.pjptr, ping->navlon, ping->navlat, &x, &y, &mbev_error);
+						double x = ping->navlon, y = ping->navlat;      // a geographic window: as recorded
+						if (!m->mapGeo)
+							mb_proj_forward(mbev_verbose, mbev_grid.pjptr, ping->navlon, ping->navlat, &x, &y, &mbev_error);
 						xyz.push_back(x);
 						xyz.push_back(y);
 						xyz.push_back(0.0);
@@ -915,10 +967,21 @@ int setNav(const std::vector<std::array<double, 2>> &poly) {
 	return nselected;
 }
 
+// the shapes drawn on the map, in the ENGINE's coordinates (UTM metres): on a geographic window they
+// were drawn in lon/lat and are carried over here, the one place the selections read them
 std::vector<MbEditVizShape> mapShapes() {
 	if (!mapAlive() || !g_mv->host.mapShapes)
 		return {};
-	return g_mv->host.mapShapes(g_mv->map);
+	std::vector<MbEditVizShape> shapes = g_mv->host.mapShapes(g_mv->map);
+	if (g_mv->mapGeo)
+		for (MbEditVizShape &s : shapes)
+			for (auto &p : s.v) {
+				double x, y;
+				int err = MB_ERROR_NO_ERROR;
+				mb_proj_forward(mbev_verbose, mbev_grid.pjptr, p[0], p[1], &x, &y, &err);
+				p = {x, y};
+			}
+	return shapes;
 }
 
 void refillShapes() {
@@ -1282,7 +1345,14 @@ int mbview_plothigh(size_t instance) {
 } // extern "C"
 
 // ---- entry points ----------------------------------------------------------------------------
-bool mbeditvizOpenWindow(QWidget *parent, const MbEditVizHost &host, const QString &file, int format, int outputMode) {
+bool mbeditvizOpenWindow(QWidget *parent, const MbEditVizHost &host, const QString &file, int format, int outputMode,
+                         bool replace) {
+	if (g_mv && replace) {
+		doQuit();                                        // the map, the grid, every loaded file: let go
+		for (int i = mbev_num_files - 1; i >= 0; i--)    // and the list itself: only what is opened now
+			mbeditviz_delete_file(i);
+		doUpdateGui();
+	}
 	if (!g_mv) {
 		if (!mbeditLoadMbio(parent, host.base))
 			return false;

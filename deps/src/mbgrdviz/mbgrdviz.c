@@ -55,6 +55,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#ifdef _WIN32
+#include <direct.h>   /* _getcwd / _chdir: datalists are read from inside their folder (mbgv_abs_path) */
+#endif
 
 #ifdef _WIN32
 #	ifndef WIN32_LEAN_AND_MEAN
@@ -150,7 +153,7 @@ void do_mbgrdviz_arearoute_info(size_t instance);
    original does without it */
 
 int do_mbgrdviz_readnav(size_t instance, char *swathfile, int pathstatus, char *pathraw, char *pathprocessed, int format,
-                        int formatorg, double weight, int *error);
+                        int formatorg, double weight, bool wantbounds, int *error);
 
 /*--------------------------------------------------------------------*/
 /* The MBIO entry points of mbgrdviz_mbio.h, filled by mbgrdviz_mbio_open. */
@@ -306,14 +309,47 @@ MBGV_NOINLINE int mbgv_proj_inverse(int verbose, void *pjptr, double easting, do
 
 /* mb_datalist_read3: the library's when it has one, else mb_datalist_read2 with no alternative
    navigation (what read3 reports for a datalist entry that names none) */
+/* MBIO takes a datalist entry as absolute only when it starts with '/', and glues the datalist's
+   folder in front of any other one -- but only when the datalist's own path holds a '/'. So on
+   Windows an entry "C:\data\line.mb59" became "<datalist folder>/C:\data\line.mb59", failed MBIO's
+   stat() and was dropped ("Attempted to load 0 files"). do_mbgrdviz_opennav therefore opens a
+   datalist by its backslash path, from inside its folder (relative entries resolve there), and the
+   entries coming back are made absolute here, so the editors launched later still find them. */
+static void mbgv_abs_path(char *path) {
+#ifdef _WIN32
+	if (path == NULL || path[0] == '\0' || path[0] == '/' || path[0] == '\\' || (path[0] != '\0' && path[1] == ':'))
+		return;
+	char cwd[MB_PATH_MAXLINE], tmp[MB_PATH_MAXLINE];
+	if (_getcwd(cwd, (int)sizeof(cwd)) == NULL)
+		return;
+	snprintf(tmp, sizeof(tmp), "%s/%s", cwd, path);
+	for (char *c = tmp; *c; c++)
+		if (*c == '\\')
+			*c = '/';
+	strncpy(path, tmp, MB_PATH_MAXLINE - 1);
+	path[MB_PATH_MAXLINE - 1] = '\0';
+#else
+	(void)path;
+#endif
+}
+
 int mbgv_datalist_read3(int verbose, void *datalist_ptr, int *pstatus, char *path, char *ppath, int *astatus, char *apath,
                         char *dpath, int *format, double *weight, int *error) {
+	int status;
 	if (mbgv_mbio.datalist_read3 != NULL)
-		return mbgv_mbio.datalist_read3(verbose, datalist_ptr, pstatus, path, ppath, astatus, apath, dpath, format, weight,
-		                                error);
-	*astatus = MB_ALTNAV_NONE;
-	apath[0] = '\0';
-	return mb_datalist_read2(verbose, datalist_ptr, pstatus, path, ppath, dpath, format, weight, error);
+		status = mbgv_mbio.datalist_read3(verbose, datalist_ptr, pstatus, path, ppath, astatus, apath, dpath, format,
+		                                  weight, error);
+	else {
+		*astatus = MB_ALTNAV_NONE;
+		apath[0] = '\0';
+		status = mb_datalist_read2(verbose, datalist_ptr, pstatus, path, ppath, dpath, format, weight, error);
+	}
+	if (status == MB_SUCCESS) {
+		mbgv_abs_path(path);
+		mbgv_abs_path(ppath);
+		mbgv_abs_path(apath);
+	}
+	return status;
 }
 
 /*======================================================================================
@@ -3498,6 +3534,51 @@ int do_mbgrdviz_opennav(size_t instance, bool swathbounds, char *input_file_ptr)
     fprintf(stderr, "dbg2       input_file_ptr:  %s\n", input_file_ptr);
   }
 
+  /* InteractiveGMT port: a single swath (or .fnv navigation) file is read as itself. The original
+     handed every pick to mb_datalist_open, which parses a binary swath file as datalist text: it read
+     nothing, or crashed the process. MBIO names its format from the file name (-1 = a datalist). */
+  if (instance != MBV_NO_WINDOW) {
+    int sformat = 0;
+    mb_get_format(verbose, input_file_ptr, NULL, &sformat, &error);
+    if (sformat > 0 && sformat != MBF_ASCIIXYZ && sformat != MBF_ASCIIYXZ && sformat != MBF_ASCIIXYT &&
+        sformat != MBF_ASCIIYXT) {
+      strcpy(swathfile, input_file_ptr);
+      format = sformat;
+      if (!swathbounds)
+        mb_get_fnv(verbose, swathfile, &format, &error);
+      else
+        mb_get_fbt(verbose, swathfile, &format, &error);
+      lastslash = strrchr(swathfile, '/');
+      const char *swathfile_base = (lastslash != NULL) ? &(lastslash[1]) : swathfile;
+      snprintf(messagestr, sizeof(messagestr), "%s: %s", swathbounds ? "Reading swath data" : "Reading navigation",
+               swathfile_base);
+      do_mbview_message_on(messagestr, instance);
+      do_mbgrdviz_readnav(instance, swathfile, MB_PROCESSED_NONE, swathfile, swathfile, format, sformat, 1.0, swathbounds,
+                          &error);
+      mbview_enableviewnavs(verbose, instance, &error);
+      return mbview_update(verbose, instance, &error);
+    }
+  }
+
+  /* InteractiveGMT port: on Windows the datalist is read from inside its folder, by its backslash
+     path (see mbgv_abs_path): MBIO then leaves "C:\..." entries alone and relative ones resolve. */
+#ifdef _WIN32
+  char cwdSave[MB_PATH_MAXLINE] = "";
+  const bool cwdOk = _getcwd(cwdSave, (int)sizeof(cwdSave)) != NULL;
+  mb_path dlpath;
+  snprintf(dlpath, sizeof(dlpath), "%s", input_file_ptr);
+  for (char *c = dlpath; *c; c++)
+    if (*c == '/')
+      *c = '\\';
+  char *dlslash = strrchr(dlpath, '\\');
+  if (dlslash != NULL && cwdOk && instance != MBV_NO_WINDOW) {   /* restored after the read, below */
+    *dlslash = '\0';
+    _chdir(dlpath[0] != '\0' ? dlpath : "\\");
+    *dlslash = '\\';
+  }
+  input_file_ptr = dlpath;
+#endif
+
   /* read data for valid instance */
   if (instance != MBV_NO_WINDOW) {
     bool done = false;
@@ -3539,7 +3620,7 @@ int do_mbgrdviz_opennav(size_t instance, bool swathbounds, char *input_file_ptr)
               /* read the data */
               nfileread++;
               do_mbgrdviz_readnav(instance, swathfile, swathfilestatus, swathfileraw, swathfileprocessed, format,
-                                  formatorg, weight, &error);
+                                  formatorg, weight, swathbounds, &error);
             }
             else
               fprintf(stderr, "Skipped xyz data: %s\n", swathfile);
@@ -3554,6 +3635,10 @@ int do_mbgrdviz_opennav(size_t instance, bool swathbounds, char *input_file_ptr)
         done = true;
     }
     fprintf(stderr, "Attempted to load %d files, actually read %d files\n", nfiledatalist, nfileread);
+#ifdef _WIN32
+    if (cwdOk)
+      _chdir(cwdSave);   /* back where the process was */
+#endif
 
     /* update widgets */
     mbview_enableviewnavs(verbose, instance, &error);
@@ -3565,7 +3650,7 @@ int do_mbgrdviz_opennav(size_t instance, bool swathbounds, char *input_file_ptr)
 /*---------------------------------------------------------------------------------------*/
 
 int do_mbgrdviz_readnav(size_t instance, char *swathfile, int pathstatus, char *pathraw, char *pathprocessed, int format,
-                        int formatorg, double weight, int *error) {
+                        int formatorg, double weight, bool wantbounds, int *error) {
   int status = MB_SUCCESS;
   char *error_message;
 
@@ -3717,23 +3802,29 @@ int do_mbgrdviz_readnav(size_t instance, char *swathfile, int pathstatus, char *
     fprintf(stderr, "\nMBIO Error returned from function <mb_read_init>:\n%s\n", error_message);
     fprintf(stderr, "\nSwath sonar File <%s> not initialized for reading\n", swathfile);
   }
-  /* allocate memory for data arrays */
+  /* allocate memory for data arrays.
+     InteractiveGMT port: REGISTERED with MBIO, as mbedit/mbeditviz do, not mb_mallocd'ed at the
+     sizes mb_read_init reports. Those are only the opening sizes: MBIO grows the beam count while it
+     reads (an EM122 .mb59 does), and mb_get_all then wrote past fixed arrays -- the process died on
+     the first raw swath file read (measured). Registered arrays grow with it; mb_close frees them. */
   if (status == MB_SUCCESS) {
-    status = mb_mallocd(verbose, __FILE__, __LINE__, beams_bath * sizeof(char), (void **)&beamflag, error);
+    status = mb_register_array(verbose, mbio_ptr, MB_MEM_TYPE_BATHYMETRY, sizeof(char), (void **)&beamflag, error);
     if (status == MB_SUCCESS)
-      status = mb_mallocd(verbose, __FILE__, __LINE__, beams_bath * sizeof(double), (void **)&bath, error);
+      status = mb_register_array(verbose, mbio_ptr, MB_MEM_TYPE_BATHYMETRY, sizeof(double), (void **)&bath, error);
     if (status == MB_SUCCESS)
-      status = mb_mallocd(verbose, __FILE__, __LINE__, beams_bath * sizeof(double), (void **)&bathacrosstrack, error);
+      status = mb_register_array(verbose, mbio_ptr, MB_MEM_TYPE_BATHYMETRY, sizeof(double), (void **)&bathacrosstrack,
+                                 error);
     if (status == MB_SUCCESS)
-      status = mb_mallocd(verbose, __FILE__, __LINE__, beams_bath * sizeof(double), (void **)&bathalongtrack, error);
+      status = mb_register_array(verbose, mbio_ptr, MB_MEM_TYPE_BATHYMETRY, sizeof(double), (void **)&bathalongtrack,
+                                 error);
     if (status == MB_SUCCESS)
-      status = mb_mallocd(verbose, __FILE__, __LINE__, beams_amp * sizeof(double), (void **)&amp, error);
+      status = mb_register_array(verbose, mbio_ptr, MB_MEM_TYPE_AMPLITUDE, sizeof(double), (void **)&amp, error);
     if (status == MB_SUCCESS)
-      status = mb_mallocd(verbose, __FILE__, __LINE__, pixels_ss * sizeof(double), (void **)&ss, error);
+      status = mb_register_array(verbose, mbio_ptr, MB_MEM_TYPE_SIDESCAN, sizeof(double), (void **)&ss, error);
     if (status == MB_SUCCESS)
-      status = mb_mallocd(verbose, __FILE__, __LINE__, pixels_ss * sizeof(double), (void **)&ssacrosstrack, error);
+      status = mb_register_array(verbose, mbio_ptr, MB_MEM_TYPE_SIDESCAN, sizeof(double), (void **)&ssacrosstrack, error);
     if (status == MB_SUCCESS)
-      status = mb_mallocd(verbose, __FILE__, __LINE__, pixels_ss * sizeof(double), (void **)&ssalongtrack, error);
+      status = mb_register_array(verbose, mbio_ptr, MB_MEM_TYPE_SIDESCAN, sizeof(double), (void **)&ssalongtrack, error);
 
     /* if error initializing memory then don't read the file */
     if (*error != MB_ERROR_NO_ERROR) {
@@ -3909,23 +4000,16 @@ int do_mbgrdviz_readnav(size_t instance, char *swathfile, int pathstatus, char *
     /* insert nav data to mbview */
     if (npoint > 0) {
       decimation = npointread / npoint;
+      /* InteractiveGMT port: swath bounds only when Open Swath Data asked for them. The data alone
+         (beams_bath > 1, or .fnv port/stbd columns) sets swathbounds, so Open Navigation drew them too. */
       status = mbview_addnav(verbose, instance, npoint, navtime_d, navlon, navlat, navz, navheading, navspeed, navportlon,
                              navportlat, navstbdlon, navstbdlat, navline, navshot, navcdp, color, size, name, pathstatus,
-                             pathraw, pathprocessed, formatorg, swathbounds, line, shot, cdp, decimation, error);
+                             pathraw, pathprocessed, formatorg, wantbounds && swathbounds, line, shot, cdp, decimation, error);
     }
     else
       fprintf(stderr, "    Skipping %s because of 0 nav points read\n", name);
 
-    /* deallocate memory used for data arrays */
-    mb_freed(verbose, __FILE__, __LINE__, (void **)&beamflag, error);
-    mb_freed(verbose, __FILE__, __LINE__, (void **)&bath, error);
-    mb_freed(verbose, __FILE__, __LINE__, (void **)&bathacrosstrack, error);
-    mb_freed(verbose, __FILE__, __LINE__, (void **)&bathalongtrack, error);
-    mb_freed(verbose, __FILE__, __LINE__, (void **)&amp, error);
-    mb_freed(verbose, __FILE__, __LINE__, (void **)&ss, error);
-    mb_freed(verbose, __FILE__, __LINE__, (void **)&ssacrosstrack, error);
-    mb_freed(verbose, __FILE__, __LINE__, (void **)&ssalongtrack, error);
-
+    /* deallocate memory used for data arrays (the beam/pixel arrays went with mb_close: registered) */
     mb_freed(verbose, __FILE__, __LINE__, (void **)&navtime_d, error);
     mb_freed(verbose, __FILE__, __LINE__, (void **)&navlon, error);
     mb_freed(verbose, __FILE__, __LINE__, (void **)&navlat, error);
