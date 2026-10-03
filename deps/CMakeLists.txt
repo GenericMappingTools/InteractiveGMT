@@ -267,7 +267,20 @@ if(IGMT_WITH_PCE AND MBEDITVIZ_SRC AND MBGRDVIZ_SRC AND EXISTS "${CMAKE_CURRENT_
   message(STATUS "gmtvtk: building the EXPERIMENTAL pointCloudEditor (src/pointcloudeditor/)")
 endif()
 
-set(GMTVTK_SRC src/gmtvtk.cpp src/mbgrid.c src/satellite.cpp ${SAT_CODE_SRC} ${MBEDIT_SRC} ${MBVELOCITY_SRC} ${MBEDITVIZ_SRC} ${MBGRDVIZ_SRC} ${PCE_SRC})
+# EXPERIMENTAL -- the water column viewer (a port of kmwcd_viewer.py, MARUM / MB-System: Kongsberg .kmwcd /
+# .kmall water column), in src/wcdviewer/. ON/OFF with this ONE line (Geophysics > MB-System entry and
+# gmtvtk_wcd_* exports sit behind #ifdef GMTVTK_WCDVIEWER). Its data side is Julia (src/wcdviewer.jl); it
+# needs no MBIO, only the swath editor's host for its parking and busy notice.
+set(IGMT_WITH_WCDVIEWER ON)
+
+set(WCDVIEWER_SRC)
+if(IGMT_WITH_WCDVIEWER AND MBEDIT_SRC AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/wcdviewer/wcd_window.cpp")
+  set(WCDVIEWER_SRC src/wcdviewer/wcd_window.cpp)
+  add_compile_definitions(GMTVTK_WCDVIEWER)
+  message(STATUS "gmtvtk: building the EXPERIMENTAL water column viewer (src/wcdviewer/)")
+endif()
+
+set(GMTVTK_SRC src/gmtvtk.cpp src/mbgrid.c src/satellite.cpp ${SAT_CODE_SRC} ${MBEDIT_SRC} ${MBVELOCITY_SRC} ${MBEDITVIZ_SRC} ${MBGRDVIZ_SRC} ${PCE_SRC} ${WCDVIEWER_SRC})
 
 # deps/ui/*.ui are loaded at RUNTIME (QUiLoader, see FocalMechanismsDialog in 70_window.cpp) for
 # dialogs where the .ui must stay the single source of truth — no hand-ported C++ to fall out of

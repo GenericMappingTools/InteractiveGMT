@@ -1971,7 +1971,20 @@ static void closeBusyDialog() {
 #ifdef GMTVTK_MBEDIT
 // EXPERIMENTAL (IGMT_WITH_MBEDIT in CMakeLists.txt). What the swath editor (deps/src/mbedit/, its
 // own translation unit) needs from the viewer, handed over because it cannot call these statics by
-// name. The ONE place it is built: Tools > Swath editor and gmtvtk_mbedit_open both take it from here.
+// name. The ONE place it is built: every MB-System tool's host starts from it.
+// Parking (defined in 90_c_api.cpp, after the parked-tool list they drive).
+static void mbHostPark(void *win, QWidget *tool, const char *label, std::function<void()> show,
+                       std::function<void()> remove);
+static void mbHostUnpark(void *win, QWidget *tool);
+static void *mbHostParkWhere(void *preferred);
+static void mbHostParkOnMinimise(QWidget *tool, std::function<void()> park);
+// The viewer's own 3-D view for a tool window (defined in 90_c_api.cpp, after GLView and the gizmo).
+static void *mbView3dMake(QWidget *parent, std::function<bool()> armed, std::function<void(int, int, int)> tool,
+                          std::function<void(QKeyEvent *, bool)> key, QWidget **widget, vtkRenderer **ren);
+static void mbView3dSetBounds(void *view, const double b[6]);
+static double mbView3dVE(void *view);
+static void mbView3dSetVE(void *view, double ve);
+static void mbView3dFrame(void *view);
 static MbEditHost mbeditViewerHost() {
 	MbEditHost h;
 	h.uiDir = gmtvtkUiDir();
@@ -1991,6 +2004,15 @@ static MbEditHost mbeditViewerHost() {
 	h.rememberDir = [](const QString &path) { rememberStartDir(path); };
 	h.setting = [](const char *key) { return igmtSettings().value(key).toString(); };
 	h.setSetting = [](const char *key, const QString &value) { igmtSettings().setValue(key, value); };
+	h.parkWhere = mbHostParkWhere;
+	h.park = mbHostPark;
+	h.unpark = mbHostUnpark;
+	h.parkOnMinimise = mbHostParkOnMinimise;
+	h.view3dMake = mbView3dMake;
+	h.view3dSetBounds = mbView3dSetBounds;
+	h.view3dVE = mbView3dVE;
+	h.view3dSetVE = mbView3dSetVE;
+	h.view3dFrame = mbView3dFrame;
 	return h;
 }
 #endif // GMTVTK_MBEDIT
@@ -2031,6 +2053,13 @@ static MbGrdVizHost mbgrdvizViewerHost();
 // window doors (a window's grid, the file door). Defined in 90_c_api.cpp.
 static PceHost pceViewerHost();
 #endif // GMTVTK_PCE
+
+#ifdef GMTVTK_WCDVIEWER
+// EXPERIMENTAL (IGMT_WITH_WCDVIEWER). The water column viewer: the swath editor's host plus the Julia
+// side's callbacks (src/wcdviewer.jl). Defined in 90_c_api.cpp.
+static WcdHost wcdViewerHost();
+static bool wcdWired();                    // has Julia handed over its callbacks yet
+#endif // GMTVTK_WCDVIEWER
 
 // EVERY route that opens a data file goes through here: drag-and-drop, File > Open, Recent Files,
 // the desktop-icon launch. The point is WHERE the dialog is raised — on this side of the call, before

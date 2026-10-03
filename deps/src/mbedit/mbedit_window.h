@@ -6,7 +6,7 @@
 //    mbedit.c / mbedit.h / mbedit_mbio.h   the engine (mbedit_prog.c), plain C, own TU
 //    mbedit_window.cpp                      the Qt window (mbedit_callbacks.c), own TU
 //    deps/ui/mbedit*.ui                     its window and dialogs, loaded at run time
-//  The viewer reaches it only through mbeditOpenWindow(), from the Tools menu. What the
+//  The viewer reaches it only through mbeditOpenWindow(), from Geophysics > MB-System. What the
 //  window needs from the viewer it is HANDED in MbEditHost (the viewer's helpers are
 //  file-static in gmtvtk.cpp, so a separate translation unit cannot call them by name).
 // ============================================================================
@@ -17,7 +17,11 @@
 #include <QIcon>
 #include <QString>
 
+#include <functional>
+
 class QWidget;
+class QKeyEvent;
+class vtkRenderer;
 
 struct MbEditHost {
 	QString uiDir;                                   // deps/ui, where the mbedit*.ui files are
@@ -30,7 +34,39 @@ struct MbEditHost {
 	void (*rememberDir)(const QString &path);
 	QString (*setting)(const char *key);             // iGMT.ini
 	void (*setSetting)(const char *key, const QString &value);
+	// PARKING, through the viewer's ONE parked-tool list (Scene Objects). Every MB-System tool window
+	// parks: its X and its minimise put it away as a handle in a viewer window; only its own Quit (or
+	// the handle's Delete) closes it. `parkScene` is the viewer window it was opened from.
+	void *parkScene = nullptr;
+	void *(*parkWhere)(void *preferred) = nullptr;   // `preferred` if alive, else the viewer window to use
+	void (*park)(void *win, QWidget *tool, const char *label, std::function<void()> show,
+	             std::function<void()> remove) = nullptr;
+	void (*unpark)(void *win, QWidget *tool) = nullptr;
+	void (*parkOnMinimise)(QWidget *tool, std::function<void()> park) = nullptr;
+	// THE VIEWER'S OWN 3-D VIEW for a tool window (mbeditviz's 3-D soundings): GLView + a Scene + the
+	// trackball style + the gizmo, used exactly as every iGMT 3-D view uses them — same mouse, same keys,
+	// same handle. Nothing of that navigation is re-done by the tool. While `armed()` says an edit mode
+	// owns the left button, its press/move/release go to `tool(what 0/1/2, x, y)` (device pixels,
+	// origin bottom left) and never reach VTK; every other event is the view's. `key` sees each key
+	// after the view did. The handle is what the view3d* calls below take.
+	void *(*view3dMake)(QWidget *parent, std::function<bool()> armed, std::function<void(int, int, int)> tool,
+	                    std::function<void(QKeyEvent *, bool)> key, QWidget **widget, vtkRenderer **ren) = nullptr;
+	void (*view3dSetBounds)(void *view, const double b[6]) = nullptr;   // what the view frames (gizmo, view keys)
+	double (*view3dVE)(void *view) = nullptr;                            // the gizmo's vertical exaggeration
+	void (*view3dSetVE)(void *view, double ve) = nullptr;
+	void (*view3dFrame)(void *view) = nullptr;                           // Reset View: the window's own fit
 };
+
+// Make a tool window parkable — the ONE implementation every MB-System tool uses. Install it AFTER
+// the tool's own close filter (filters run newest first): a park swallows the close before the
+// tool's quit runs. `where` names the viewer window it prefers (null: the host's parkScene). The
+// object is a child of `win` and lives as long as it.
+struct MbParking;
+MbParking *mbParkable(QWidget *win, const MbEditHost &host, const QString &label,
+                      std::function<void *()> where = nullptr);
+void mbParkShow(MbParking *p);   // bring it back (the handle, or the menu entry again): unparks
+void mbParkQuit(MbParking *p);   // close for good (Quit, the handle's Delete)
+void mbParkRebind(MbParking *p, void *scene);   // opened again from `scene`: park there from now on (null: keep)
 
 // Open the editor, or raise it if it is already open (the engine is a single instance: its
 // state is file-static, as in mbedit). With a `file` (a swath file or a datalist) it is loaded

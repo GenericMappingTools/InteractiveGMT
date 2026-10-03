@@ -27,6 +27,10 @@
 #include <QDialog>
 #include <QDir>
 #include <QDoubleSpinBox>
+#include <QDragEnterEvent>
+#include <QDropEvent>
+#include <QMimeData>
+#include <QUrl>
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -68,6 +72,7 @@ struct GvView {
 	void *win = nullptr;
 	QString title;
 	bool ready = false;
+	std::string gridKey;                 // the identity of the grid it was set up on (host gridKey)
 };
 
 struct MbGrdViz {
@@ -91,6 +96,7 @@ struct MbGrdViz {
 	std::vector<std::set<int>> navDrawn;                 // the views each navigation line is drawn in
 	std::vector<std::set<int>> vecDrawn;                 // the views each vector is drawn in
 	QString lastSurvey;                                  // the open dialog's route, by name
+	MbParking *parking = nullptr;                        // X / minimise park it in Scene Objects (mbParkable)
 
 	// the survey dialog
 	QDialog *survey = nullptr;
@@ -187,7 +193,7 @@ bool gvViewAlive(MbGrdViz *m, int v) {
 bool gvNeedView(MbGrdViz *m) {
 	if (!gvViewAlive(m, m->current)) {
 		QMessageBox::information(m->win, "MBgrdviz", "Open a primary grid first (File > Open Primary Grid), or choose "
-		                                             "Tools > Survey planning (mbgrdviz) in a window that shows one.");
+		                                             "Geophysics > MB-System > Survey planning (mbgrdviz) in a window that shows one.");
 		return false;
 	}
 	if (!m->views[m->current].ready || !mbgrdviz_view_ready(m->current)) {
@@ -202,10 +208,15 @@ bool gvNeedView(MbGrdViz *m) {
 // read the window's grid into its view; false when it has none (yet)
 bool gvSetupView(MbGrdViz *m, int v) {
 	GvView &gv = m->views[v];
+	if (gv.ready)
+		mbgrdviz_view_release(v);        // another grid took the window: set up afresh, never on top
 	gv.ready = false;
+	gv.gridKey = m->host.gridKey ? m->host.gridKey(gv.win) : std::string();
 	MbGrdVizGrid g;
 	if (!m->host.grid || !m->host.grid(gv.win, g) || g.nx < 2 || g.ny < 2)
 		return false;
+	if (!g.name.empty())
+		gv.title = QString::fromStdString(g.name);   // the View field names the grid it plans on
 	const QByteArray title = gv.title.toUtf8();
 	gv.ready = mbgrdviz_view_setup(v, title.constData(), g.geographic ? 1 : 0, g.crs.c_str(), g.z.data(), g.nx, g.ny,
 	                               g.x0, g.x1, g.y0, g.y1, g.dx, g.dy) == 1;
@@ -219,7 +230,13 @@ void gvRefreshViews(MbGrdViz *m) {
 	for (int v = 0; v < MBGRDVIZ_MAX_VIEWS; v++) {
 		if (!m->views[v].win)
 			continue;
-		m->viewCombo->addItem(m->views[v].title + (m->views[v].ready ? "" : "  (no grid)"), v);
+		// named for the GRID it plans on, never for the window's title (an empty launcher's title is
+		// its own "drop a file" hint, which meant nothing here)
+		const GvView &gv = m->views[v];
+		const QString text = gv.ready ? gv.title
+		                     : !gv.gridKey.empty() ? gv.title + "  (projection unknown: cannot plan on it)"
+		                                           : QString("Empty window — load a grid");
+		m->viewCombo->addItem(text, v);
 		if (v == m->current)
 			sel = m->viewCombo->count() - 1;
 	}
@@ -586,7 +603,10 @@ void gvTick(MbGrdViz *m) {
 				m->current = -1;
 			changed = true;
 		}
-		else if (!m->views[v].ready && gvSetupView(m, v)) {
+		// a grid arrived, or the window now shows another one (the last opened into it): plan on THAT
+		// one. Only on a change: a grid that cannot be set up is not re-copied every tick.
+		else if (m->host.gridKey ? m->host.gridKey(m->views[v].win) != m->views[v].gridKey : !m->views[v].ready) {
+			gvSetupView(m, v);
 			changed = true;
 		}
 	}
@@ -664,8 +684,8 @@ bool gvDoSave(MbGrdViz *m, int what, const QString &path) {
 	return ok;
 }
 
-void gvOpenPrimary(MbGrdViz *m) {
-	const QString fn = gvFileDialog(m, false, "Open Primary Grid", "Grid Files (*.grd *.nc *.tif *.tiff);;All Files (*)");
+// a primary grid from a file: File > Open Primary Grid, the Load grid button and a drop all come here
+void gvOpenPrimaryFile(MbGrdViz *m, const QString &fn) {
 	if (fn.isEmpty() || !m->host.openFile)
 		return;
 	const QByteArray p = QDir::toNativeSeparators(fn).toUtf8();
@@ -680,6 +700,10 @@ void gvOpenPrimary(MbGrdViz *m) {
 		}
 	}
 	gvRefreshLists(m);
+}
+
+void gvOpenPrimary(MbGrdViz *m) {
+	gvOpenPrimaryFile(m, gvFileDialog(m, false, "Open Primary Grid", "Grid Files (*.grd *.nc *.tif *.tiff);;All Files (*)"));
 }
 
 void gvOpenOverlay(MbGrdViz *m) {
@@ -975,11 +999,62 @@ void gvAbout(MbGrdViz *m) {
 	                       QString::fromUtf8(mbedit_mbio_version()));
 }
 
+// the window to park in (mbParkable): the view it plans on, else any bound one
+void *gvParkWhere(MbGrdViz *m) {
+	if (gvViewAlive(m, m->current))
+		return m->views[m->current].win;
+	for (int v = 0; v < MBGRDVIZ_MAX_VIEWS; v++)
+		if (gvViewAlive(m, v))
+			return m->views[v].win;
+	return nullptr;
+}
+
+// the survey dialog goes away with the window, parked (Hide) or closed
 struct GvCloseFilter : QObject {
 	using QObject::QObject;
 	bool eventFilter(QObject *o, QEvent *e) override {
-		if (e->type() == QEvent::Close && g_gv && g_gv->survey)
+		if ((e->type() == QEvent::Close || e->type() == QEvent::Hide) && g_gv && o == g_gv->win && g_gv->survey)
 			g_gv->survey->hide();
+		return QObject::eventFilter(o, e);
+	}
+};
+
+// a grid file dropped anywhere on the tool's window opens as Load grid opens one
+struct GvDropFilter : QObject {
+	MbGrdViz *m;
+	GvDropFilter(QObject *parent, MbGrdViz *mm) : QObject(parent), m(mm) {}
+	static QStringList files(const QMimeData *md) {
+		QStringList out;
+		if (md && md->hasUrls())
+			for (const QUrl &u : md->urls())
+				if (u.isLocalFile())
+					out << u.toLocalFile();
+		return out;
+	}
+	bool eventFilter(QObject *o, QEvent *e) override {
+		if (e->type() == QEvent::DragEnter || e->type() == QEvent::DragMove) {
+			auto *de = static_cast<QDragMoveEvent *>(e);
+			if (!files(de->mimeData()).isEmpty()) {
+				de->acceptProposedAction();
+				return true;
+			}
+		}
+		else if (e->type() == QEvent::Drop) {
+			auto *de = static_cast<QDropEvent *>(e);
+			const QStringList fl = files(de->mimeData());
+			if (!fl.isEmpty()) {
+				de->acceptProposedAction();
+				// after the drop returns: the open is a long, blocking read
+				QTimer::singleShot(0, m->win, [mm = m, fl]() {
+					for (const QString &f : fl) {
+						if (mm->host.base.rememberDir)
+							mm->host.base.rememberDir(f);
+						gvOpenPrimaryFile(mm, f);
+					}
+				});
+				return true;
+			}
+		}
 		return QObject::eventFilter(o, e);
 	}
 };
@@ -1003,6 +1078,7 @@ MbGrdViz *gvBuild(QWidget *parent, const MbGrdVizHost &host) {
 	m->navList = gvChild<QListWidget>(win, "navList", missing);
 	m->routeInfo = gvChild<QLabel>(win, "labelRouteInfo", missing);
 	m->status = gvChild<QLabel>(win, "labelStatus", missing);
+	QPushButton *loadGrid = gvChild<QPushButton>(win, "loadGridButton", missing);
 	struct Act {
 		const char *name;
 		std::function<void()> fn;
@@ -1030,7 +1106,7 @@ MbGrdViz *gvBuild(QWidget *parent, const MbGrdVizHost &host) {
 		{"actionSaveSisAsciiPlan1", [m]() { gvDoSave(m, MBGRDVIZ_SAVE_SISASCIIPLAN1, gvFileDialog(m, true, "Save Route as SIS ASCIIPlan line File", "All Files (*)")); }},
 		{"actionSaveSisAsciiPlan2", [m]() { gvDoSave(m, MBGRDVIZ_SAVE_SISASCIIPLAN2, gvFileDialog(m, true, "Save Route as SIS ASCIIPlan route File", "All Files (*)")); }},
 		{"actionSaveProfile", [m]() { gvDoSave(m, MBGRDVIZ_SAVE_PROFILE, gvFileDialog(m, true, "Save Profile File", "All Files (*)")); }},
-		{"actionQuit", [m]() { m->win->close(); }},
+		{"actionQuit", [m]() { mbParkQuit(m->parking); }},
 		{"actionMbedit", [m]() { gvOpenEditor(m, 0); }},
 		{"actionMbeditviz", [m]() { gvOpenEditor(m, 1); }},
 		{"actionMbnavedit", [m]() { gvOpenEditor(m, 2); }},
@@ -1066,6 +1142,10 @@ MbGrdViz *gvBuild(QWidget *parent, const MbGrdVizHost &host) {
 		}
 	});
 	QObject::connect(m->routeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), win, [m](int) { gvRouteInfo(m); });
+	QObject::connect(loadGrid, &QPushButton::clicked, win, [m]() { gvOpenPrimary(m); });
+	// drops: the window takes them (no child of it accepts drops, so they all land here)
+	win->setAcceptDrops(true);
+	win->installEventFilter(new GvDropFilter(win, m));
 	QObject::connect(m->navList, &QListWidget::itemChanged, win, [](QListWidgetItem *it) {
 		mbgrdviz_nav_select(it->data(Qt::UserRole).toInt(), it->checkState() == Qt::Checked ? 1 : 0);
 	});
@@ -1073,6 +1153,7 @@ MbGrdViz *gvBuild(QWidget *parent, const MbGrdVizHost &host) {
 	QObject::connect(m->timer, &QTimer::timeout, win, [m]() { gvTick(m); });
 	m->timer->start(1000);
 	win->installEventFilter(new GvCloseFilter(win));
+	m->parking = mbParkable(win, host.base, "mbgrdviz", [m]() { return gvParkWhere(m); });
 	return m;
 }
 
@@ -1108,9 +1189,7 @@ bool mbgrdvizOpenWindow(QWidget *parent, const MbGrdVizHost &host, void *win, co
 		m->win->show();
 	}
 	MbGrdViz *m = g_gv;
-	m->win->showNormal();
-	m->win->raise();
-	m->win->activateWindow();
+	mbParkShow(m->parking);                              // a parked one comes back off its handle
 	if (win)
 		gvBind(m, win);
 	if (!file.isEmpty() && m->host.openFile) {
@@ -1255,6 +1334,6 @@ bool mbgrdvizSelectNav(int nav, bool selected) {
 bool mbgrdvizClose() {
 	if (!g_gv)
 		return false;
-	g_gv->win->close();
+	mbParkQuit(g_gv->parking);
 	return true;
 }

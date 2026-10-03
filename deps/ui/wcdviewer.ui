@@ -1,0 +1,522 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>WcdViewerWindow</class>
+ <widget class="QMainWindow" name="WcdViewerWindow">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>1000</width>
+    <height>400</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>KMWCD Viewer – Amplitude + Geo-Metadata (SPO)</string>
+  </property>
+  <widget class="QWidget" name="centralwidget">
+   <layout class="QHBoxLayout" name="mainLayout"><property name="spacing"><number>4</number></property><property name="leftMargin"><number>4</number></property><property name="topMargin"><number>4</number></property><property name="rightMargin"><number>4</number></property><property name="bottomMargin"><number>2</number></property>
+    <item>
+     <layout class="QVBoxLayout" name="leftColumn" stretch="1,0">
+      <property name="spacing">
+       <number>2</number>
+      </property>
+      <item>
+       <widget class="QWidget" name="canvasHost">
+        <property name="sizePolicy">
+         <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+          <horstretch>1</horstretch>
+          <verstretch>1</verstretch>
+         </sizepolicy>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QWidget" name="picksPanel">
+        <property name="visible">
+         <bool>false</bool>
+        </property>
+        <property name="sizePolicy">
+         <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+          <horstretch>0</horstretch>
+          <verstretch>0</verstretch>
+         </sizepolicy>
+        </property>
+        <layout class="QVBoxLayout" name="picksLayout">
+         <property name="spacing">
+          <number>2</number>
+         </property>
+         <property name="leftMargin">
+          <number>0</number>
+         </property>
+         <property name="topMargin">
+          <number>0</number>
+         </property>
+         <property name="rightMargin">
+          <number>0</number>
+         </property>
+         <property name="bottomMargin">
+          <number>0</number>
+         </property>
+         <item>
+          <widget class="QTableWidget" name="table">
+           <property name="verticalScrollBarPolicy">
+            <enum>Qt::ScrollBarAsNeeded</enum>
+           </property>
+           <property name="horizontalScrollBarPolicy">
+            <enum>Qt::ScrollBarAlwaysOff</enum>
+           </property>
+           <property name="editTriggers">
+            <set>QAbstractItemView::NoEditTriggers</set>
+           </property>
+           <property name="selectionMode">
+            <enum>QAbstractItemView::ExtendedSelection</enum>
+           </property>
+           <property name="selectionBehavior">
+            <enum>QAbstractItemView::SelectRows</enum>
+           </property>
+           <column>
+            <property name="text">
+             <string>Ping</string>
+            </property>
+           </column>
+           <column>
+            <property name="text">
+             <string>UTC</string>
+            </property>
+           </column>
+           <column>
+            <property name="text">
+             <string>AcrossTrack_m</string>
+            </property>
+           </column>
+           <column>
+            <property name="text">
+             <string>Depth_m</string>
+            </property>
+           </column>
+           <column>
+            <property name="text">
+             <string>ShipLat</string>
+            </property>
+           </column>
+           <column>
+            <property name="text">
+             <string>ShipLon</string>
+            </property>
+           </column>
+           <column>
+            <property name="text">
+             <string>PointLat</string>
+            </property>
+           </column>
+           <column>
+            <property name="text">
+             <string>PointLon</string>
+            </property>
+           </column>
+           <column>
+            <property name="text">
+             <string>Azimuth</string>
+            </property>
+           </column>
+          </widget>
+         </item>
+         <item>
+          <layout class="QHBoxLayout" name="picksButtons">
+           <item>
+            <widget class="QPushButton" name="btnSaveTxt">
+             <property name="text">
+              <string>Save as TXT</string>
+             </property>
+             <property name="toolTip">
+              <string>Write the picked positions to a tab-separated text file, with a header line.</string>
+             </property>
+             <property name="autoDefault">
+              <bool>false</bool>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QPushButton" name="btnRemove">
+             <property name="text">
+              <string>Remove selected</string>
+             </property>
+             <property name="autoDefault">
+              <bool>false</bool>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QPushButton" name="btnClear">
+             <property name="text">
+              <string>Clear</string>
+             </property>
+             <property name="toolTip">
+              <string>Empty the table and remove the picks' marks from the plot.</string>
+             </property>
+             <property name="autoDefault">
+              <bool>false</bool>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <spacer name="picksSpacer">
+             <property name="orientation">
+              <enum>Qt::Horizontal</enum>
+             </property>
+             <property name="sizeHint" stdset="0">
+              <size>
+               <width>40</width>
+               <height>10</height>
+              </size>
+             </property>
+            </spacer>
+           </item>
+          </layout>
+         </item>
+        </layout>
+       </widget>
+      </item>
+     </layout>
+    </item>
+    <item>
+     <widget class="QWidget" name="controlPanel">
+      <property name="minimumSize">
+       <size>
+        <width>196</width>
+        <height>0</height>
+       </size>
+      </property>
+      <property name="maximumSize">
+       <size>
+        <width>196</width>
+        <height>16777215</height>
+       </size>
+      </property>
+      <layout class="QVBoxLayout" name="panelLayout"><property name="spacing"><number>3</number></property>
+       <property name="leftMargin">
+        <number>0</number>
+       </property>
+       <property name="rightMargin">
+        <number>0</number>
+       </property>
+       <item>
+        <widget class="QPushButton" name="btnOpen">
+         <property name="text">
+          <string>Open .kmwcd/.kmall</string>
+         </property>
+         <property name="toolTip">
+          <string>Open a Kongsberg water column file (.kmwcd) or a .kmall that carries water column (#MWC) datagrams. A .kmwcd's bottom detections and navigation come from its companion .kmall when it has none of its own.</string>
+         </property>
+         <property name="autoDefault">
+          <bool>false</bool>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QLabel" name="labelFile">
+         <property name="text">
+          <string>No file loaded</string>
+         </property>
+         <property name="wordWrap">
+          <bool>true</bool>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <layout class="QHBoxLayout" name="fileButtons">
+         <item>
+          <widget class="QPushButton" name="btnSave">
+           <property name="text">
+            <string>Save Image</string>
+           </property>
+           <property name="toolTip">
+            <string>Save the plot as PNG or JPEG at twice the screen resolution, with the file name and the ping's metadata written at the bottom.</string>
+           </property>
+           <property name="autoDefault">
+            <bool>false</bool>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QPushButton" name="btnHelp">
+           <property name="text">
+            <string>Help</string>
+           </property>
+           <property name="toolTip">
+            <string>How to use the viewer, where to find example data, and the credits of the original tool.</string>
+           </property>
+           <property name="autoDefault">
+            <bool>false</bool>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </item>
+       <item>
+        <layout class="QHBoxLayout" name="checkRow">
+         <item>
+          <widget class="QCheckBox" name="chkBottom">
+           <property name="text">
+            <string>Bottom</string>
+           </property>
+           <property name="toolTip">
+            <string>Overlay the ping's bottom detections (#MRZ): red = amplitude detection, dark blue = phase detection, green = rejected; filled = normal, hollow = extra detection.</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QCheckBox" name="chkPick">
+           <property name="text">
+            <string>Pick</string>
+           </property>
+           <property name="toolTip">
+            <string>Pick mode: a left click on the plot records the nearest sample (across-track, depth) with the vessel's position and the point's own latitude and longitude in the Picked Positions table, and marks it on the plot.</string>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </item>
+       <item>
+        <layout class="QGridLayout" name="valuesGrid"><property name="horizontalSpacing"><number>4</number></property><property name="verticalSpacing"><number>2</number></property>
+         <item row="0" column="0">
+          <widget class="QLabel" name="labelDmin">
+           <property name="text">
+            <string>Depth min</string>
+           </property>
+          </widget>
+         </item>
+         <item row="0" column="1">
+          <widget class="QDoubleSpinBox" name="dmin">
+           <property name="maximumSize">
+            <size>
+             <width>92</width>
+             <height>16777215</height>
+            </size>
+           </property>
+           <property name="decimals">
+            <number>1</number>
+           </property>
+           <property name="maximum">
+            <double>100000.000000000000000</double>
+           </property>
+          </widget>
+         </item>
+         <item row="1" column="0">
+          <widget class="QLabel" name="labelDmax">
+           <property name="text">
+            <string>Depth max</string>
+           </property>
+          </widget>
+         </item>
+         <item row="1" column="1">
+          <widget class="QDoubleSpinBox" name="dmax">
+           <property name="maximumSize">
+            <size>
+             <width>92</width>
+             <height>16777215</height>
+            </size>
+           </property>
+           <property name="decimals">
+            <number>1</number>
+           </property>
+           <property name="maximum">
+            <double>100000.000000000000000</double>
+           </property>
+          </widget>
+         </item>
+         <item row="2" column="0">
+          <widget class="QLabel" name="labelAmin">
+           <property name="text">
+            <string>Amp min</string>
+           </property>
+          </widget>
+         </item>
+         <item row="2" column="1">
+          <widget class="QDoubleSpinBox" name="amin">
+           <property name="maximumSize">
+            <size>
+             <width>92</width>
+             <height>16777215</height>
+            </size>
+           </property>
+           <property name="decimals">
+            <number>1</number>
+           </property>
+           <property name="maximum">
+            <double>1000000.000000000000000</double>
+           </property>
+          </widget>
+         </item>
+         <item row="3" column="0">
+          <widget class="QLabel" name="labelAmax">
+           <property name="text">
+            <string>Amp max</string>
+           </property>
+          </widget>
+         </item>
+         <item row="3" column="1">
+          <widget class="QDoubleSpinBox" name="amax">
+           <property name="maximumSize">
+            <size>
+             <width>92</width>
+             <height>16777215</height>
+            </size>
+           </property>
+           <property name="decimals">
+            <number>1</number>
+           </property>
+           <property name="maximum">
+            <double>1000000.000000000000000</double>
+           </property>
+          </widget>
+         </item>
+         <item row="4" column="0">
+          <widget class="QLabel" name="labelXmax">
+           <property name="text">
+            <string>Across max</string>
+           </property>
+          </widget>
+         </item>
+         <item row="4" column="1">
+          <widget class="QDoubleSpinBox" name="xmax">
+           <property name="maximumSize">
+            <size>
+             <width>92</width>
+             <height>16777215</height>
+            </size>
+           </property>
+           <property name="toolTip">
+            <string>Fixed across-track half width of the plot, so it does not jump from ping to ping. 0 = fit each ping.</string>
+           </property>
+           <property name="decimals">
+            <number>1</number>
+           </property>
+           <property name="maximum">
+            <double>1000000.000000000000000</double>
+           </property>
+          </widget>
+         </item>
+         <item row="5" column="0">
+          <widget class="QLabel" name="labelReplay">
+           <property name="text">
+            <string>Pings / s</string>
+           </property>
+          </widget>
+         </item>
+         <item row="5" column="1">
+          <widget class="QDoubleSpinBox" name="replayRate">
+           <property name="maximumSize">
+            <size>
+             <width>92</width>
+             <height>16777215</height>
+            </size>
+           </property>
+           <property name="decimals">
+            <number>1</number>
+           </property>
+           <property name="minimum">
+            <double>0.100000000000000</double>
+           </property>
+           <property name="maximum">
+            <double>10.000000000000000</double>
+           </property>
+           <property name="singleStep">
+            <double>0.100000000000000</double>
+           </property>
+           <property name="value">
+            <double>2.000000000000000</double>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </item>
+       <item>
+        <widget class="QPushButton" name="btnReplay">
+         <property name="text">
+          <string>Replay</string>
+         </property>
+         <property name="toolTip">
+          <string>Play the pings one after another at the rate above; press again to stop.</string>
+         </property>
+         <property name="checkable">
+          <bool>true</bool>
+         </property>
+         <property name="autoDefault">
+          <bool>false</bool>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <layout class="QHBoxLayout" name="pingRow">
+         <item>
+          <widget class="QLabel" name="labelPingTitle">
+           <property name="text">
+            <string>Ping</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QSlider" name="slider">
+           <property name="orientation">
+            <enum>Qt::Horizontal</enum>
+           </property>
+           <property name="toolTip">
+            <string>The ping on display. The mouse wheel and the Left / Right arrow keys step one ping.</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QLabel" name="labelPing">
+           <property name="minimumSize">
+            <size>
+             <width>30</width>
+             <height>0</height>
+            </size>
+           </property>
+           <property name="text">
+            <string>0</string>
+           </property>
+           <property name="alignment">
+            <set>Qt::AlignRight|Qt::AlignVCenter</set>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </item>
+       <item>
+        <widget class="QLabel" name="labelMeta">
+         <property name="text">
+          <string/>
+         </property>
+         <property name="wordWrap">
+          <bool>true</bool>
+         </property>
+         <property name="textInteractionFlags">
+          <set>Qt::TextSelectableByMouse</set>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <spacer name="panelSpacer">
+         <property name="orientation">
+          <enum>Qt::Vertical</enum>
+         </property>
+         <property name="sizeHint" stdset="0">
+          <size>
+           <width>10</width>
+           <height>40</height>
+          </size>
+         </property>
+        </spacer>
+       </item>
+      </layout>
+     </widget>
+    </item>
+   </layout>
+  </widget>
+  <widget class="QStatusBar" name="statusbar"/>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

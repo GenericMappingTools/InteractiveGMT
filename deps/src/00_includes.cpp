@@ -271,6 +271,9 @@
 #ifdef GMTVTK_PCE                           // EXPERIMENTAL pointCloudEditor (IGMT_WITH_PCE)
 #include "pointcloudeditor/pce_window.h"
 #endif
+#ifdef GMTVTK_WCDVIEWER                     // EXPERIMENTAL water column viewer (IGMT_WITH_WCDVIEWER)
+#include "wcdviewer/wcd_window.h"
+#endif
 #include <vtkAppendPolyData.h>
 #include <vtkColorTransferFunction.h>
 #include <vtkDiscretizableColorTransferFunction.h>

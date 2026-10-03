@@ -32,12 +32,31 @@
      <rect>
       <x>70</x>
       <y>10</y>
-      <width>440</width>
+      <width>350</width>
       <height>24</height>
      </rect>
     </property>
     <property name="toolTip">
-     <string>The InteractiveGMT window the actions work on. A window joins this list when Tools &gt; Survey planning (mbgrdviz) is chosen in it, or when a grid is opened from here.</string>
+     <string>The grid the actions work on (one per InteractiveGMT window). A window joins this list when Geophysics &gt; MB-System &gt; Survey planning (mbgrdviz) is chosen in it, or when a grid is loaded or dropped here.</string>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="loadGridButton">
+    <property name="geometry">
+     <rect>
+      <x>425</x>
+      <y>10</y>
+      <width>85</width>
+      <height>24</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Load grid…</string>
+    </property>
+    <property name="toolTip">
+     <string>Open a grid to plan on (same as File &gt; Open Primary Grid). A grid file can also be dropped on this window.</string>
+    </property>
+    <property name="autoDefault">
+     <bool>false</bool>
     </property>
    </widget>
    <widget class="QGroupBox" name="groupRoutes">

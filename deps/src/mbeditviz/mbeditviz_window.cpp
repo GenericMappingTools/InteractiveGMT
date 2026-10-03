@@ -72,6 +72,7 @@ const double kHaxby[11][3] = {{0.950, 0.950, 0.950}, {1.000, 0.729, 0.522}, {1.0
 
 // ---- mbeditviz_callbacks.c's globals --------------------------------------------------------
 struct MbEditViz {
+	MbParking *parking = nullptr;        // X / minimise park it in Scene Objects (mbParkable)
 	MbEditVizHost host;
 	QMainWindow *win = nullptr;
 
@@ -172,8 +173,8 @@ void mapClose() {
 	MbEditViz *m = g_mv;
 	void *map = m->map;
 	m->map = nullptr;
-	if (map && m->host.mapAlive && m->host.mapAlive(map) && m->host.mapClose)
-		m->host.mapClose(map);
+	if (map && m->host.mapClose)
+		m->host.mapClose(map);   // lets go of the handle; the grid (if still there) stays in its window
 }
 
 // grid height at (x, y) of the map, or 0 (mbview_getzdata, nearest node)
@@ -361,10 +362,11 @@ void doViewGrid() {
 		const std::vector<float> z = mapGridValues();
 		const double x1 = mbev_grid.boundsutm[0] + (mbev_grid.n_columns - 1) * mbev_grid.dx;
 		const double y1 = mbev_grid.boundsutm[2] + (mbev_grid.n_rows - 1) * mbev_grid.dy;
-		const QByteArray title = QString("MBeditviz Survey Viewer (%1)").arg(mbev_grid.projection_id).toUtf8();
-		m->map = m->host.mapOpen ? m->host.mapOpen(title.constData(), z.data(), mbev_grid.n_columns, mbev_grid.n_rows,
-		                                           mbev_grid.boundsutm[0], x1, mbev_grid.boundsutm[2], y1, m->cz.data(),
-		                                           m->crgb.data(), (int)m->cz.size())
+		// into the window mbeditviz was opened from, as a new element named for what it is
+		const QByteArray title = QString("mbeditviz bathymetry (%1)").arg(mbev_grid.projection_id).toUtf8();
+		m->map = m->host.mapOpen ? m->host.mapOpen(m->host.base.parkScene, title.constData(), z.data(), mbev_grid.n_columns,
+		                                           mbev_grid.n_rows, mbev_grid.boundsutm[0], x1, mbev_grid.boundsutm[2], y1,
+		                                           m->cz.data(), m->crgb.data(), (int)m->cz.size())
 		                         : nullptr;
 		mbev_instance = 0;
 
@@ -405,12 +407,9 @@ void doViewGrid() {
 			QSignalBlocker b(m->secondaryCheck);
 			m->secondaryCheck->setChecked(false);
 		}
-		if (m->map && m->host.mapWindow) {
-			if (QWidget *w = m->host.mapWindow(m->map)) {
-				w->raise();
-				w->activateWindow();
-			}
-		}
+		// NO raise of the map's window here (mbview popped its own survey window to the front). The grid
+		// now lands in the iGMT window mbeditviz was opened from; raising THAT window buried mbeditviz and
+		// every dialog it owns behind it. The tool stays in front, the window shows its new element.
 	}
 
 	/* reset the gui */
@@ -823,7 +822,7 @@ void openSoundingEditor() {
 	n.flagsparsevoxels = &mbeditviz_mb3dsoundings_flagsparsevoxels;
 	n.colorsoundings = &mbeditviz_mb3dsoundings_colorsoundings;
 	n.optimizebiasvalues = &mbeditviz_mb3dsoundings_optimizebiasvalues;
-	const bool ok = mb3dsdgOpen(m->win, m->host.base.uiDir, m->host.base.icon, &mbev_selected, n);
+	const bool ok = mb3dsdgOpen(m->win, m->host.base, &mbev_selected, n);
 	if (ok)
 		mbev_selected.displayed = true;
 }
@@ -1148,7 +1147,7 @@ MbEditViz *build(QWidget *parent, const MbEditVizHost &host) {
 	});
 
 	QObject::connect(m->actOpen, &QAction::triggered, win, []() { openDialog(); });
-	QObject::connect(actQuit, &QAction::triggered, win, &QWidget::close);
+	QObject::connect(actQuit, &QAction::triggered, win, [m]() { mbParkQuit(m->parking); });
 	QObject::connect(m->actNewGrid, &QAction::triggered, win, []() { doRegrid(); });
 	QObject::connect(actAbout, &QAction::triggered, win, []() { about(); });
 	QObject::connect(m->viewAllButton, &QPushButton::clicked, win, []() { doViewAll(true); });
@@ -1177,8 +1176,8 @@ MbEditViz *build(QWidget *parent, const MbEditVizHost &host) {
 		MbEditViz *mm = g_mv;
 		if (!mm)
 			return;
-		if (mm->map && !mapAlive()) {           // the survey map was closed: do_mbeditviz_mbview_dismiss_notify
-			mm->map = nullptr;
+		if (mm->map && !mapAlive()) {           // its grid was removed from the window: do_mbeditviz_mbview_dismiss_notify
+			mapClose();
 			doMbviewDismissNotify(0);
 		}
 		if (mbev_num_files > 0 && !mbev_message_on)
@@ -1192,6 +1191,7 @@ MbEditViz *build(QWidget *parent, const MbEditVizHost &host) {
 	m->timer->start();
 
 	win->installEventFilter(new MvCloseFilter(win));
+	m->parking = mbParkable(win, host.base, "mbeditviz");   // after the close filter: a park comes first
 	return m;
 }
 
@@ -1321,9 +1321,10 @@ bool mbeditvizOpenWindow(QWidget *parent, const MbEditVizHost &host, const QStri
 		QApplication::processEvents();
 	}
 	MbEditViz *m = g_mv;
-	m->win->showNormal();
-	m->win->raise();
-	m->win->activateWindow();
+	if (host.base.parkScene)
+		m->host.base.parkScene = host.base.parkScene;    // its 3-D sounding editor parks there too
+	mbParkRebind(m->parking, host.base.parkScene);
+	mbParkShow(m->parking);                              // a parked one comes back off its handle
 	if (!file.isEmpty()) {
 		mbev_mode_output = (outputMode == 1) ? MBEV_OUTPUT_MODE_BROWSE : MBEV_OUTPUT_MODE_EDIT;
 		{
@@ -1421,6 +1422,6 @@ bool mbeditvizCloseMap() {
 bool mbeditvizClose() {
 	if (!g_mv)
 		return false;
-	g_mv->win->close();
+	mbParkQuit(g_mv->parking);
 	return true;
 }

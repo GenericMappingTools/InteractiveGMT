@@ -65,12 +65,14 @@
      </item>
      <item>
       <widget class="QRadioButton" name="outputEdit">
+       <property name="toolTip"><string>Edit the soundings: every flag/unflag you make is written to the file's edit save file (.esf) and recorded for mbprocess. The original swath file itself is never changed.</string></property>
        <property name="text"><string>Output Edits</string></property>
        <property name="checked"><bool>true</bool></property>
       </widget>
      </item>
      <item>
       <widget class="QRadioButton" name="outputBrowse">
+       <property name="toolTip"><string>Look only: the soundings can be viewed and flagged on screen, but nothing is written — no edit save file, nothing for mbprocess.</string></property>
        <property name="text"><string>Browse Only</string></property>
       </widget>
      </item>

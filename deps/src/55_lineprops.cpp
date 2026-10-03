@@ -1308,7 +1308,8 @@ static void popupLineObjectMenu(Scene *s, const LineRef &lr, const QString &name
 	}
 	// A line overlay's rings can be FILLED (a polygon file, a traced picture's colour layer): the
 		// area takes the line colour, a ring inside a ring is a hole. Checkable, a state flipped both ways.
-		if (ovp && ovp->mode == 1) {
+		// Not on an overlay whose maker said it is never an area (Overlay::noFill: the MB-System swath tracks).
+		if (ovp && ovp->mode == 1 && !ovp->noFill) {
 			QAction *fa = m.addAction("Fill polygons");
 			fa->setCheckable(true);
 			fa->setChecked(ovp->filled);

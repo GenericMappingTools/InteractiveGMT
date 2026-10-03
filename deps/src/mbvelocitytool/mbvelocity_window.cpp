@@ -147,6 +147,7 @@ struct MvScale {
 
 // ---- the tool: mbvelocity_callbacks.c's globals ---------------------------------------------
 struct MbVelocity {
+	MbParking *parking = nullptr;        // X / minimise park it in Scene Objects (mbParkable)
 	MbEditHost host;
 	QMainWindow *win = nullptr;
 	MvCanvas *canvas = nullptr;
@@ -774,7 +775,7 @@ MbVelocity *mvBuild(QWidget *parent, const MbEditHost &host) {
 	g_xg.font.setStyleStrategy(QFont::NoAntialias);
 
 	// buttons
-	QObject::connect(quitButton, &QPushButton::clicked, win, &QWidget::close);
+	QObject::connect(quitButton, &QPushButton::clicked, win, [m]() { mbParkQuit(m->parking); });
 	QObject::connect(scalingButton, &QPushButton::clicked, win, [m]() { mvScalingDialog(m); });
 	QObject::connect(modeButton, &QPushButton::clicked, win, [m]() { mvModeDialog(m); });
 	QObject::connect(m->processButton, &QPushButton::clicked, win, [m]() { mvProcess(m); });
@@ -790,6 +791,7 @@ MbVelocity *mvBuild(QWidget *parent, const MbEditHost &host) {
 	QObject::connect(m->actSaveResiduals, &QAction::triggered, win, [m]() { mvSaveResiduals(m); });
 
 	win->installEventFilter(new MvCloseFilter(win));
+	m->parking = mbParkable(win, host, "mbvelocitytool");   // after the close filter: a park comes first
 	return m;
 }
 
@@ -957,9 +959,8 @@ bool mbvelocityOpenWindow(QWidget *parent, const MbEditHost &host, const QString
 		xgFlush();
 	}
 	MbVelocity *m = g_mv;
-	m->win->showNormal();
-	m->win->raise();
-	m->win->activateWindow();
+	mbParkRebind(m->parking, host.parkScene);
+	mbParkShow(m->parking);                              // a parked one comes back off its handle
 
 	// do_open_commandline: the swath file, then the editable SVP, then the display SVP
 	bool ok = true;
@@ -1033,6 +1034,6 @@ bool mbvelocitySavePng(const QString &path) {
 bool mbvelocityClose() {
 	if (!g_mv)
 		return false;
-	g_mv->win->close();
+	mbParkQuit(g_mv->parking);
 	return true;
 }

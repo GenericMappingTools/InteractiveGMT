@@ -317,6 +317,8 @@ struct Overlay {
 	// offer "Save as SVG / EPS / PDF…" of that trace. Empty = not one. A key, not the name: a rename
 	// must not orphan it.
 	std::string vwKey;
+	bool noFill = false;                     // suppresses ONLY "Fill polygons": set by the MB-System swath
+	                                          // tracks (mbHostAddTrack), a ship's track is never an area
 	bool noConvertToPoints = false;          // suppresses ONLY "Convert to points"/"Convert to line" in the
 	                                          // context menu, unlike isShapencBoundary which also drops
 	                                          // "Line length…"/"Azimuth…" -- for lines where scattering to

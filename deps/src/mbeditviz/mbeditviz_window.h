@@ -7,10 +7,10 @@
 //    mbeditviz_window.cpp                            the file list window (mbeditviz_callbacks.c)
 //    mb3dsoundings_window.cpp                        the 3-D sounding editor (libmbview mb3dsoundings), Qt+VTK
 //    deps/ui/mbeditviz*.ui, mb3dsoundings.ui         its windows and dialogs, loaded at run time
-//  libmbview's survey map is NOT ported: the grid and the navigation are shown in an ordinary
-//  InteractiveGMT window, which the viewer makes and drives through the map functions of
-//  MbEditVizHost (its own helpers are file-static in gmtvtk.cpp). The soundings to edit are chosen
-//  with a shape drawn on that map with the viewer's own Draw tools.
+//  libmbview's survey map is NOT ported: the grid and the navigation land in the InteractiveGMT
+//  window mbeditviz was opened from (a new element there, as every derived result does), driven
+//  through the map functions of MbEditVizHost (its own helpers are file-static in gmtvtk.cpp). The
+//  soundings to edit are chosen with a shape drawn on that window with the viewer's own Draw tools.
 //
 //  It reads swath files through the swath editor's MBIO loader (deps/src/mbedit/), so it is built
 //  only together with the editor.
@@ -40,12 +40,14 @@ struct MbEditVizShape {
 
 struct MbEditVizHost {
 	MbEditHost base;
-	// a new window showing the grid `z` (column-major, row 0 = south; NaN = no data) over the node
-	// range x0..x1, y0..y1 with the colour nodes cz -> crgb; returns its handle, or null
-	void *(*mapOpen)(const char *title, const float *z, int nx, int ny, double x0, double x1, double y0, double y1,
-	                 const double *cz, const double *crgb, int ncolor) = nullptr;
-	bool (*mapAlive)(void *map) = nullptr;
-	void (*mapClose)(void *map) = nullptr;
+	// the grid `z` (column-major, row 0 = south; NaN = no data) over the node range x0..x1, y0..y1
+	// with the colour nodes cz -> crgb, as a NEW ELEMENT named `title` in the viewer window `into`
+	// (the one mbeditviz was opened from; null: the most recent one). Its handle (the element, not a
+	// window), or null. A previous result of the same name in that window is replaced.
+	void *(*mapOpen)(void *into, const char *title, const float *z, int nx, int ny, double x0, double x1, double y0,
+	                 double y1, const double *cz, const double *crgb, int ncolor) = nullptr;
+	bool (*mapAlive)(void *map) = nullptr;   // false once its grid is gone from the window
+	void (*mapClose)(void *map) = nullptr;   // let go of it: the grid and its lines STAY in the window
 	// the same grid with new heights (the edits of the 3-D editor); the camera stays
 	bool (*mapUpdate)(void *map, const float *z, int nx, int ny, double x0, double x1, double y0, double y1, const double *cz,
 	                  const double *crgb, int ncolor) = nullptr;

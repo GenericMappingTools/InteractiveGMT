@@ -48,8 +48,10 @@
 #include <QVTKOpenGLNativeWidget.h>
 #include <vtkActor.h>
 #include <vtkActor2D.h>
+#include <vtkCallbackCommand.h>
 #include <vtkCamera.h>
 #include <vtkCellArray.h>
+#include <vtkCommand.h>
 #include <vtkCellData.h>
 #include <vtkGenericOpenGLRenderWindow.h>
 #include <vtkMatrix4x4.h>
@@ -61,6 +63,7 @@
 #include <vtkPolyDataMapper2D.h>
 #include <vtkProperty.h>
 #include <vtkProperty2D.h>
+#include <vtkRenderWindowInteractor.h>
 #include <vtkRenderer.h>
 #include <vtkSmartPointer.h>
 #include <vtkTransform.h>
@@ -75,8 +78,7 @@
 namespace {
 
 // ---- mb3dsoundingsprivate.h -------------------------------------------------------------------
-const int MBS_MOUSE_ROTATE = 0;
-const int MBS_MOUSE_PANZOOM = 1;
+const int MBS_EDIT_NONE = -1;          // no edit mode armed: the left button is the view's (iGMT)
 const int MBS_EDIT_TOGGLE = 0;
 const int MBS_EDIT_PICK = 1;
 const int MBS_EDIT_ERASE = 2;
@@ -136,13 +138,14 @@ void mbviewGetColor(double value, double min, double max, float below_red, float
 	}
 }
 
-class MsCanvas;
-
 // ---- mb3dsoundings_callbacks.c's `mb3dsoundings` struct ----------------------------------------
 struct Mb3dsdg {
+	MbParking *parking = nullptr;             // X / minimise park it in Scene Objects (mbParkable)
+	MbEditHost host;
 	QMainWindow *win = nullptr;
-	MsCanvas *canvas = nullptr;
-	QWidget *canvasW = nullptr;               // the same canvas, for the code above its class
+	// THE VIEWER'S OWN 3-D VIEW (MbEditHost::view3dMake): iGMT's navigation and gizmo, used as they are
+	QWidget *canvasW = nullptr;
+	void *view = nullptr;
 	vtkRenderWindow *rw = nullptr;
 	QString uiDir;
 	Mb3dsdgNotify notify;
@@ -150,8 +153,6 @@ struct Mb3dsdg {
 
 	QLabel *labelStatus = nullptr, *labelMouseMode = nullptr;
 	QRadioButton *modeButton[6] = {};
-	QRadioButton *mouseRotate1 = nullptr, *mousePanZoom1 = nullptr;
-	QAction *actMouseRotate = nullptr, *actMousePanZoom = nullptr;
 	QAction *actViewFlagged = nullptr, *actViewSecondary = nullptr, *actNoConnect = nullptr, *actConnectGood = nullptr,
 	        *actConnectAll = nullptr, *actBoundingBox = nullptr, *actScaleWithFlagged = nullptr, *actColorByFlag = nullptr,
 	        *actColorByTopo = nullptr, *actColorBySounding = nullptr, *actColorByAmp = nullptr;
@@ -165,24 +166,19 @@ struct Mb3dsdg {
 	vtkSmartPointer<vtkRenderer> ren;
 	vtkSmartPointer<vtkActor> pointsActor, infoActor, boxSolidActor, boxDotActor, profileActor;
 	vtkSmartPointer<vtkActor2D> grabActor;
-	vtkSmartPointer<vtkTransform> model;
 
-	int edit_mode = MBS_EDIT_TOGGLE;
-	int mouse_mode = MBS_MOUSE_ROTATE;
+	int edit_mode = MBS_EDIT_NONE;            // armed like an iGMT draw tool; none = the view navigates
 	bool keyreverse_mode = false;
 
-	/* drawing variables */
+	/* drawing variables: the view direction is the CAMERA's (iGMT navigation); the exaggeration is the
+	   gizmo's vertical exaggeration (the view's Scene::ve) */
 	double elevation = 0.0;
 	double azimuth = 0.0;
 	double exaggeration = 1.0;
-	double elevation_save = 0.0, azimuth_save = 0.0, exaggeration_save = 1.0;
 	int gl_width = 0, gl_height = 0;
-	double right = -1.0, left = 1.0, top = 1.0, bottom = -1.0;
-	double gl_offset_x = 0.0, gl_offset_y = 0.0, gl_offset_x_save = 0.0, gl_offset_y_save = 0.0;
-	double gl_size = 1.0, gl_size_save = 1.0;
 
 	/* button parameters */
-	bool button1down = false, button2down = false, button3down = false;
+	bool button1down = false;
 	int button_down_x = 0, button_down_y = 0, button_move_x = 0, button_move_y = 0, button_up_x = 0, button_up_y = 0;
 
 	/* edit grab parameters */
@@ -663,7 +659,7 @@ void msAddPoint(vtkPoints *pts, vtkCellArray *verts, vtkUnsignedCharArray *rgb, 
 	rgb->InsertNextTypedTuple(c);
 }
 
-// the composite transform model -> window pixel (origin bottom left), as gluProject applied it
+// the composite transform world -> window pixel (origin bottom left), as gluProject applied it
 void msProject(const double m[16], double x, double y, double z, int *wx, int *wy) {
 	const double X = m[0] * x + m[1] * y + m[2] * z + m[3];
 	const double Y = m[4] * x + m[5] * y + m[6] * z + m[7];
@@ -674,34 +670,52 @@ void msProject(const double m[16], double x, double y, double z, int *wx, int *w
 	*wy = (int)(0.5 * (ny + 1.0) * g_ms->gl_height);
 }
 
-void msPlot() {
+// The view's direction in mb3dsoundings' own terms, read off the CAMERA (iGMT's navigation moves it):
+// elevation 90 = looking straight down, 0 = level; azimuth = the bearing the view looks toward.
+void msCameraAngles() {
 	Mb3dsdg *m = g_ms;
-	if (!m || !m->canvas || !m->soundingdata)
+	vtkCamera *cam = m->ren->GetActiveCamera();
+	double pos[3], foc[3];
+	cam->GetPosition(pos);
+	cam->GetFocalPoint(foc);
+	const double d[3] = {foc[0] - pos[0], foc[1] - pos[1], foc[2] - pos[2]};
+	const double h = sqrt(d[0] * d[0] + d[1] * d[1]);
+	const double deg = 57.29577951308232;
+	m->elevation = atan2(-d[2], h) * deg;
+	m->azimuth = atan2(d[0], d[1]) * deg;
+	if (m->azimuth < 0.0)
+		m->azimuth += 360.0;
+}
+
+// the window pixel of every sounding, through the camera AS IT IS NOW: the edit functions read them,
+// so this runs right before each edit gesture (the view may have moved since the last draw)
+void msProjectAll() {
+	Mb3dsdg *m = g_ms;
+	if (!m || !m->soundingdata || !m->rw)
 		return;
-	mb3dsoundings_struct *soundingdata = m->soundingdata;
-	vtkRenderWindow *rw = m->rw;
-	const int *sz = rw->GetSize();
+	const int *sz = m->rw->GetSize();
 	m->gl_width = sz[0] > 0 ? sz[0] : 1;
 	m->gl_height = sz[1] > 0 ? sz[1] : 1;
+	vtkMatrix4x4 *proj = m->ren->GetActiveCamera()->GetCompositeProjectionTransformMatrix(
+	    (double)m->gl_width / (double)m->gl_height, -1.0, 1.0);
+	double mm[16];
+	for (int r = 0; r < 4; r++)
+		for (int c = 0; c < 4; c++)
+			mm[4 * r + c] = proj->GetElement(r, c);
+	mb3dsoundings_struct *soundingdata = m->soundingdata;
+	for (int i = 0; i < soundingdata->num_soundings; i++) {
+		mb3dsoundings_sounding_struct *sounding = &(soundingdata->soundings[i]);
+		msProject(mm, sounding->glx, sounding->gly, sounding->glz, &sounding->winx, &sounding->winy);
+	}
+}
 
-	/* set projection */
-	m->left = -1.0 / m->gl_size;
-	m->right = 1.0 / m->gl_size;
-	m->bottom = -1.0 / m->gl_size;
-	m->top = 1.0 / m->gl_size;
-	vtkCamera *cam = m->ren->GetActiveCamera();
-	cam->ParallelProjectionOn();
-	cam->SetPosition(0.0, 0.0, 1000.0);
-	cam->SetFocalPoint(0.0, 0.0, 0.0);
-	cam->SetViewUp(0.0, 1.0, 0.0);
-	cam->SetParallelScale(1.0 / m->gl_size);
-	cam->SetClippingRange(1.0, 2000.0);
-
-	/* set up translations */
-	m->model->Identity();
-	m->model->Translate(m->gl_offset_x, m->gl_offset_y, 0.0);
-	m->model->RotateX(m->elevation - 90.0);
-	m->model->RotateZ(m->azimuth);
+// the actors from the current soundings; no render (the view's StartEvent calls it too)
+void msBuildScene() {
+	Mb3dsdg *m = g_ms;
+	if (!m || !m->view || !m->soundingdata)
+		return;
+	mb3dsoundings_struct *soundingdata = m->soundingdata;
+	msCameraAngles();
 
 	/* Plot the bounding box if desired */
 	{
@@ -935,19 +949,13 @@ void msPlot() {
 		vtkPolyDataMapper::SafeDownCast(m->infoActor->GetMapper())->SetInputData(pd);
 	}
 
-	/* save the screen positions of the soundings to facilitate picking */
-	{
-		vtkMatrix4x4 *proj = cam->GetCompositeProjectionTransformMatrix((double)m->gl_width / (double)m->gl_height, -1.0, 1.0);
-		vtkNew<vtkMatrix4x4> full;
-		vtkMatrix4x4::Multiply4x4(proj, m->model->GetMatrix(), full);
-		double mm[16];
-		for (int r = 0; r < 4; r++)
-			for (int c = 0; c < 4; c++)
-				mm[4 * r + c] = full->GetElement(r, c);
-		for (int i = 0; i < soundingdata->num_soundings; i++) {
-			mb3dsoundings_sounding_struct *sounding = &(soundingdata->soundings[i]);
-			msProject(mm, sounding->glx, sounding->gly, sounding->glz, &sounding->winx, &sounding->winy);
-		}
+	/* the box the view frames: what the gizmo and its view keys fit, what a recentre may land on */
+	if (m->host.view3dSetBounds) {
+		const double b[6] = {soundingdata->scale * soundingdata->xmin, soundingdata->scale * soundingdata->xmax,
+		                     soundingdata->scale * soundingdata->ymin, soundingdata->scale * soundingdata->ymax,
+		                     m->exaggeration * soundingdata->zscale * soundingdata->zmin,
+		                     m->exaggeration * soundingdata->zscale * soundingdata->zmax};
+		m->host.view3dSetBounds(m->view, b);
 	}
 
 	/* plot grab rectangle (window pixels) */
@@ -972,8 +980,15 @@ void msPlot() {
 		pd->SetLines(lines);
 		vtkPolyDataMapper2D::SafeDownCast(m->grabActor->GetMapper())->SetInputData(pd);
 	}
+}
 
-	rw->Render();
+void msPlot() {
+	Mb3dsdg *m = g_ms;
+	if (!m || !m->view || !m->soundingdata)
+		return;
+	msBuildScene();
+	m->ren->ResetCameraClippingRange();
+	m->rw->Render();
 }
 
 // ---- status labels (mb3dsoundings_updatestatus / _updatelabelmousemode / _updatemodetoggles) -----
@@ -993,6 +1008,7 @@ void msUpdateStatus() {
 
 	/* else set standard status label */
 	else {
+		msCameraAngles();
 		snprintf(value_text, sizeof(value_text), "Azi:%.2f | Elev: %.2f | exagger:%.2f | Tot:%d Good:%d Flagged:%d", m->azimuth,
 		         m->elevation, m->exaggeration, soundingdata->num_soundings, soundingdata->num_soundings_unflagged,
 		         soundingdata->num_soundings_flagged);
@@ -1003,25 +1019,23 @@ void msUpdateStatus() {
 	m->labelStatus->setText(QString::fromLatin1(value_text));
 }
 
+// The mouse is iGMT's (the view's navigation and gizmo); only an ARMED edit mode takes the left button.
 void msUpdateLabelMouseMode() {
 	Mb3dsdg *m = g_ms;
 	static const char *const modes[6] = {"Toggle", "Pick", "Erase", "Restore", "Grab", "Info"};
-	const QString edit = QString("L: Edit (%1)").arg(modes[m->edit_mode]);
-	if (m->mouse_mode == MBS_MOUSE_PANZOOM)
-		m->labelMouseMode->setText("Mouse Mode:\n" + edit + "\nM: Pan\nR: Zoom");
-	else
-		m->labelMouseMode->setText("Mouse Mode:\n" + edit + "\nM: Rotate Soundings\nR: exaggeration");
+	const QString left = (m->edit_mode >= 0) ? QString("L: Edit (%1)").arg(modes[m->edit_mode]) : QString("L: Rotate");
+	m->labelMouseMode->setText("Mouse:\n" + left + "\nM: Pan\nR: Zoom");
 }
 
 void msUpdateCursor() {
 	Mb3dsdg *m = g_ms;
-	// mb3dsoundings' cursors: a target to pick, an exchange to sweep, a fleur while rotating
-	if (m->button2down || m->button3down)
-		m->canvasW->setCursor(Qt::SizeAllCursor);
-	else if (m->edit_mode == MBS_EDIT_ERASE || m->edit_mode == MBS_EDIT_RESTORE)
+	// mb3dsoundings' cursors while an edit mode is armed: a target to pick, an exchange to sweep
+	if (m->edit_mode == MBS_EDIT_ERASE || m->edit_mode == MBS_EDIT_RESTORE)
 		m->canvasW->setCursor(Qt::PointingHandCursor);
-	else
+	else if (m->edit_mode >= 0)
 		m->canvasW->setCursor(Qt::CrossCursor);
+	else
+		m->canvasW->unsetCursor();
 }
 
 void msUpdateModeToggles() {
@@ -1033,25 +1047,13 @@ void msUpdateModeToggles() {
 	msUpdateLabelMouseMode();
 }
 
+// arm an edit mode (MBS_EDIT_NONE disarms: the left button goes back to the view)
 void msSetEditMode(int mode) {
 	g_ms->edit_mode = mode;
 	msUpdateModeToggles();
 	msUpdateCursor();
 	msPlot();
 	msUpdateStatus();
-}
-
-void msSetMouseMode(int mode) {
-	Mb3dsdg *m = g_ms;
-	m->mouse_mode = mode;
-	{
-		QSignalBlocker b1(m->actMouseRotate), b2(m->actMousePanZoom), b3(m->mouseRotate1), b4(m->mousePanZoom1);
-		m->actMouseRotate->setChecked(mode == MBS_MOUSE_ROTATE);
-		m->actMousePanZoom->setChecked(mode == MBS_MOUSE_PANZOOM);
-		m->mouseRotate1->setChecked(mode == MBS_MOUSE_ROTATE);
-		m->mousePanZoom1->setChecked(mode == MBS_MOUSE_PANZOOM);
-	}
-	msUpdateLabelMouseMode();
 }
 
 // ---- the bias sliders (do_mb3dsdg_rollbias ... _snell) -------------------------------------------
@@ -1128,166 +1130,55 @@ void msOptimize(int mode) {
 	msPlot();
 }
 
-// ---- the canvas ------------------------------------------------------------------------------
-class MsCanvas : public QVTKOpenGLNativeWidget {
-public:
-	explicit MsCanvas(QWidget *parent) : QVTKOpenGLNativeWidget(parent) {
-		setFocusPolicy(Qt::StrongFocus);
-		setCursor(Qt::CrossCursor);
+// ---- the left button of an ARMED edit mode (do_mb3dsdg_glwda_input, button 1) ---------------------
+// The view (MbEditHost::view3dMake) hands it over only while an edit mode is armed, in window pixels
+// (device px, origin bottom left), and VTK never sees it. Everything else is iGMT's navigation.
+void msToolMouse(int what, int x, int y) {
+	Mb3dsdg *m = g_ms;
+	if (!m || !m->soundingdata || m->edit_mode < 0)
+		return;
+	msProjectAll();                      // the pixels of what is on screen NOW (the view may have moved)
+	if (what == 0) {                     // ButtonPress
+		m->button_down_x = x;
+		m->button_down_y = y;
+		m->button1down = true;
+		if (m->edit_mode == MBS_EDIT_TOGGLE || m->edit_mode == MBS_EDIT_PICK)
+			msPick(x, y);
+		else if (m->edit_mode == MBS_EDIT_ERASE || m->edit_mode == MBS_EDIT_RESTORE)
+			msEraseRestore(x, y);
+		else if (m->edit_mode == MBS_EDIT_GRAB)
+			msGrab(x, y, MBS_EDIT_GRAB_START);
+		else if (m->edit_mode == MBS_EDIT_INFO)
+			msInfo(x, y);
 	}
-
-	// window pixel (origin bottom left, device pixels) of a Qt position
-	void glPos(const QPointF &p, int *x, int *y) const {
-		const double dpr = devicePixelRatioF();
-		*x = (int)(p.x() * dpr);
-		*y = g_ms->gl_height - 1 - (int)(p.y() * dpr);
+	else if (what == 1 && m->button1down) {   // MotionNotify while pressed
+		m->button_move_x = x;
+		m->button_move_y = y;
+		if (m->edit_mode == MBS_EDIT_ERASE || m->edit_mode == MBS_EDIT_RESTORE)
+			msEraseRestore(x, y);
+		else if (m->edit_mode == MBS_EDIT_GRAB)
+			msGrab(x, y, MBS_EDIT_GRAB_MOVE);
 	}
-
-protected:
-	void resizeEvent(QResizeEvent *e) override {
-		QVTKOpenGLNativeWidget::resizeEvent(e);
-		if (g_ms && g_ms->soundingdata)
-			QMetaObject::invokeMethod(this, []() { if (g_ms) msPlot(); }, Qt::QueuedConnection);
-	}
-
-	void enterEvent(QEnterEvent *) override { setFocus(Qt::MouseFocusReason); }
-
-	// do_mb3dsdg_glwda_input, ButtonPress
-	void mousePressEvent(QMouseEvent *e) override {
-		Mb3dsdg *m = g_ms;
-		if (!m || !m->soundingdata)
-			return;
-		setFocus(Qt::MouseFocusReason);
-		glPos(e->position(), &m->button_down_x, &m->button_down_y);
-
-		/* If left mouse button is pushed */
-		if (e->button() == Qt::LeftButton) {
-			m->button1down = true;
-			if (m->edit_mode == MBS_EDIT_TOGGLE || m->edit_mode == MBS_EDIT_PICK)
-				msPick(m->button_down_x, m->button_down_y);
-			else if (m->edit_mode == MBS_EDIT_ERASE || m->edit_mode == MBS_EDIT_RESTORE)
-				msEraseRestore(m->button_down_x, m->button_down_y);
-			else if (m->edit_mode == MBS_EDIT_GRAB)
-				msGrab(m->button_down_x, m->button_down_y, MBS_EDIT_GRAB_START);
-			else if (m->edit_mode == MBS_EDIT_INFO)
-				msInfo(m->button_down_x, m->button_down_y);
-		}
-
-		/* If middle mouse button is pushed */
-		else if (e->button() == Qt::MiddleButton) {
-			m->button2down = true;
-			if (m->mouse_mode == MBS_MOUSE_ROTATE) {
-				m->azimuth_save = m->azimuth;
-				m->elevation_save = m->elevation;
-			}
-			else {
-				m->gl_offset_x_save = m->gl_offset_x;
-				m->gl_offset_y_save = m->gl_offset_y;
-			}
-			msUpdateCursor();
-		}
-
-		/* If right mouse button is pushed */
-		else if (e->button() == Qt::RightButton) {
-			m->button3down = true;
-			if (m->mouse_mode == MBS_MOUSE_ROTATE)
-				m->exaggeration_save = m->exaggeration;
-			else
-				m->gl_size_save = m->gl_size;
-			msUpdateCursor();
-		}
-	}
-
-	// MotionNotify while pressed
-	void mouseMoveEvent(QMouseEvent *e) override {
-		Mb3dsdg *m = g_ms;
-		if (!m || !m->soundingdata)
-			return;
-		glPos(e->position(), &m->button_move_x, &m->button_move_y);
-
-		/* If left mouse button is dragged */
-		if (m->button1down) {
-			if (m->edit_mode == MBS_EDIT_ERASE || m->edit_mode == MBS_EDIT_RESTORE)
-				msEraseRestore(m->button_move_x, m->button_move_y);
-			else if (m->edit_mode == MBS_EDIT_GRAB)
-				msGrab(m->button_move_x, m->button_move_y, MBS_EDIT_GRAB_MOVE);
-		}
-
-		/* If middle mouse button is dragged */
-		else if (m->button2down) {
-			if (m->mouse_mode == MBS_MOUSE_ROTATE) {
-				/* rotate viewpoint of 3D map */
-				m->azimuth = m->azimuth_save + 180.0 * ((double)(m->button_move_x - m->button_down_x)) / ((double)m->gl_width);
-				m->elevation =
-				    m->elevation_save + 180.0 * ((double)(m->button_down_y - m->button_move_y)) / ((double)m->gl_height);
-
-				/* keep elevation and azimuth values in appropriate bounds */
-				if (m->elevation > 180.0)
-					m->elevation -= 360.0;
-				if (m->elevation < -180.0)
-					m->elevation += 360.0;
-				if (m->azimuth < 0.0)
-					m->azimuth += 360.0;
-				if (m->azimuth > 360.0)
-					m->azimuth -= 360.0;
-			}
-			else {
-				/* pan (world units per window pixel, which the aspect-keeping view makes equal on both axes) */
-				const double perPixel = (m->top - m->bottom) / ((double)m->gl_height);
-				m->gl_offset_x = m->gl_offset_x_save + ((double)(m->button_move_x - m->button_down_x)) * perPixel;
-				m->gl_offset_y = m->gl_offset_y_save + ((double)(m->button_move_y - m->button_down_y)) * perPixel;
-			}
-			msUpdateStatus();
-			msPlot();
-		}
-
-		/* If right mouse button is dragged */
-		else if (m->button3down) {
-			if (m->mouse_mode == MBS_MOUSE_ROTATE) {
-				/* change vertical exaggeration of 3D map */
-				m->exaggeration =
-				    m->exaggeration_save * exp(((double)(m->button_move_y - m->button_down_y)) / ((double)m->gl_height));
-				msScaleZ();
-			}
-			else {
-				/* change zoom */
-				m->gl_size = m->gl_size_save * exp(((double)(m->button_move_y - m->button_down_y)) / ((double)m->gl_height));
-			}
-			msUpdateStatus();
-			msPlot();
-		}
-	}
-
-	// ButtonRelease
-	void mouseReleaseEvent(QMouseEvent *e) override {
-		Mb3dsdg *m = g_ms;
-		if (!m || !m->soundingdata)
-			return;
-		glPos(e->position(), &m->button_up_x, &m->button_up_y);
+	else if (what == 2) {                // ButtonRelease
+		m->button_up_x = x;
+		m->button_up_y = y;
 		if (m->button1down && m->edit_mode == MBS_EDIT_GRAB)
 			msGrab(m->button_down_x, m->button_down_y, MBS_EDIT_GRAB_END);
-
-		/* unset all buttondown flags */
 		m->button1down = false;
-		m->button2down = false;
-		m->button3down = false;
-
-		/* set edit cursor */
-		msUpdateCursor();
 		msPlot();
 	}
+}
 
-	void wheelEvent(QWheelEvent *) override {}       // no VTK camera interaction behind our back
-	void mouseDoubleClickEvent(QMouseEvent *) override {}
-
-	// KeyPress: the key macros
-	void keyPressEvent(QKeyEvent *e) override {
-		Mb3dsdg *m = g_ms;
-		const QString t = e->text();
-		if (!m || !m->soundingdata || t.isEmpty()) {
-			QVTKOpenGLNativeWidget::keyPressEvent(e);
-			return;
-		}
+// ---- the key macros (do_mb3dsdg_glwda_input, KeyPress / KeyRelease) ---------------------------
+// Each key reaches the view (iGMT's keys, the gizmo's included) FIRST. The gizmo owns x, c and e, so
+// mb3dsoundings' x / c (Flag View / Unflag View) and e (Erase mode) are not macros here: Flag and
+// Unflag View keep their other keys (< , and > .) and the Action menu; Erase keeps o.
+void msKeyEvent(QKeyEvent *e, bool press) {
+	Mb3dsdg *m = g_ms;
+	const QString t = e->text();
+	if (!m || !m->soundingdata || t.isEmpty())
+		return;
+	if (press) {
 		switch (t[0].toLatin1()) {
 		case 'G':
 		case 'g':
@@ -1335,14 +1226,10 @@ protected:
 			break;
 		case '<':
 		case ',':
-		case 'X':
-		case 'x':
 			msFlagView();
 			break;
 		case '>':
 		case '.':
-		case 'C':
-		case 'c':
 			msUnflagView();
 			break;
 		case '!':
@@ -1362,8 +1249,6 @@ protected:
 			break;
 		case 'O':
 		case 'o':
-		case 'E':
-		case 'e':
 			msSetEditMode(MBS_EDIT_ERASE);
 			break;
 		case 'P':
@@ -1388,12 +1273,7 @@ protected:
 			break;
 		}
 	}
-
-	void keyReleaseEvent(QKeyEvent *e) override {
-		Mb3dsdg *m = g_ms;
-		const QString t = e->text();
-		if (!m || t.isEmpty())
-			return;
+	else {
 		switch (t[0].toLatin1()) {
 		case 'G':
 		case 'g':
@@ -1427,7 +1307,7 @@ protected:
 			break;
 		}
 	}
-};
+}
 
 // ---- the window ------------------------------------------------------------------------------
 template <typename T>
@@ -1465,7 +1345,27 @@ vtkSmartPointer<vtkActor> msMakeActor(double pointSize, double lineWidth) {
 	return a;
 }
 
-Mb3dsdg *msBuild(QWidget *parent, const QString &uiDir, const QIcon &icon) {
+// the gizmo's vertical exaggeration IS the soundings' exaggeration: picked up before every frame
+void msVeCB(vtkObject *, unsigned long, void *, void *) {
+	Mb3dsdg *m = g_ms;
+	if (!m || !m->soundingdata || !m->host.view3dVE)
+		return;
+	const double ve = m->host.view3dVE(m->view);
+	if (ve != m->exaggeration) {
+		m->exaggeration = ve;
+		msScaleZ();
+		msBuildScene();                  // no render: this IS the render starting
+		msUpdateStatus();
+	}
+}
+
+Mb3dsdg *msBuild(QWidget *parent, const MbEditHost &host) {
+	const QString uiDir = host.uiDir;
+	const QIcon icon = host.icon;
+	if (!host.view3dMake) {
+		QMessageBox::warning(parent, "MBeditviz", "The 3-D soundings view needs the viewer's 3-D view.");
+		return nullptr;
+	}
 	QFile f(QDir(uiDir).filePath("mb3dsoundings.ui"));
 	if (!f.open(QIODevice::ReadOnly)) {
 		QMessageBox::warning(parent, "MBeditviz", QString("Cannot open %1").arg(f.fileName()));
@@ -1479,12 +1379,11 @@ Mb3dsdg *msBuild(QWidget *parent, const QString &uiDir, const QIcon &icon) {
 	}
 	auto *m = new Mb3dsdg;
 	m->uiDir = uiDir;
+	m->host = host;
 	QStringList missing;
 	const char *modes[6] = {"modeToggle", "modePick", "modeErase", "modeRestore", "modeGrab", "modeInfo"};
 	for (int i = 0; i < 6; i++)
 		m->modeButton[i] = msChild<QRadioButton>(win, modes[i], missing);
-	m->mouseRotate1 = msChild<QRadioButton>(win, "mouseRotate1", missing);
-	m->mousePanZoom1 = msChild<QRadioButton>(win, "mousePanZoom1", missing);
 	m->labelStatus = msChild<QLabel>(win, "labelStatus", missing);
 	m->labelMouseMode = msChild<QLabel>(win, "labelMouseMode", missing);
 	m->biasPanel = msChild<QWidget>(win, "biasPanel", missing);
@@ -1499,8 +1398,6 @@ Mb3dsdg *msBuild(QWidget *parent, const QString &uiDir, const QIcon &icon) {
 	m->val_timelag = msChild<QLabel>(win, "timelagSliderValue", missing);
 	m->val_snell = msChild<QLabel>(win, "snellSliderValue", missing);
 	auto *resetButton = msChild<QPushButton>(win, "resetButton", missing);
-	m->actMouseRotate = msChild<QAction>(win, "actionMouseRotate", missing);
-	m->actMousePanZoom = msChild<QAction>(win, "actionMousePanZoom", missing);
 	m->actViewFlagged = msChild<QAction>(win, "actionViewFlagged", missing);
 	m->actViewSecondary = msChild<QAction>(win, "actionViewSecondary", missing);
 	m->actNoConnect = msChild<QAction>(win, "actionNoConnect", missing);
@@ -1542,20 +1439,34 @@ Mb3dsdg *msBuild(QWidget *parent, const QString &uiDir, const QIcon &icon) {
 	if (!icon.isNull())
 		win->setWindowIcon(icon);
 
-	// the canvas
+	// THE VIEWER'S OWN 3-D VIEW: iGMT's mouse, keys and gizmo exactly as every iGMT 3-D view has them.
+	// mb3dsoundings' own camera (its model rotation, pan, zoom and mouse modes) is gone; an armed edit
+	// mode is the only thing that takes the left button.
 	auto *lay = new QVBoxLayout(host_w);
 	lay->setContentsMargins(0, 0, 0, 0);
-	m->canvas = new MsCanvas(host_w);
-	lay->addWidget(m->canvas);
-	vtkNew<vtkGenericOpenGLRenderWindow> rw;
-	m->canvas->setRenderWindow(rw);
-	m->canvasW = m->canvas;
-	m->rw = rw;
-	m->ren = vtkSmartPointer<vtkRenderer>::New();
+	vtkRenderer *ren = nullptr;
+	m->view = host.view3dMake(host_w, []() { return g_ms && g_ms->edit_mode >= 0; },
+	                          [](int what, int x, int y) { msToolMouse(what, x, y); },
+	                          [](QKeyEvent *e, bool press) { msKeyEvent(e, press); }, &m->canvasW, &ren);
+	lay->addWidget(m->canvasW);
+	m->ren = ren;
+	m->rw = ren->GetRenderWindow();
+	// mb3dsoundings' white ground: its colours ARE the flag code (good soundings and the box in black,
+	// manual flags red, filter blue, sonar green), and on a dark ground the good ones vanish
+	m->ren->GradientBackgroundOff();
 	m->ren->SetBackground(1.0, 1.0, 1.0);
-	rw->AddRenderer(m->ren);
-	m->model = vtkSmartPointer<vtkTransform>::New();
-	m->model->PreMultiply();
+	{
+		vtkNew<vtkCallbackCommand> veCB;
+		veCB->SetCallback(msVeCB);
+		m->ren->AddObserver(vtkCommand::StartEvent, veCB);
+	}
+	// the mouse modes (Rotate / Pan-Zoom) were mb3dsoundings' own navigation: iGMT's replaces them
+	for (const char *n : {"mouseRotate1", "mousePanZoom1"})
+		if (auto *w = win->findChild<QWidget *>(QString::fromLatin1(n)))
+			w->hide();
+	for (const char *n : {"actionMouseRotate", "actionMousePanZoom"})
+		if (auto *a = win->findChild<QAction *>(QString::fromLatin1(n)))
+			a->setVisible(false);
 	m->boxSolidActor = msMakeActor(1.0, 1.0);
 	m->boxSolidActor->GetProperty()->SetColor(0.0, 0.0, 0.0);
 	m->boxDotActor = msMakeActor(1.0, 1.0);
@@ -1564,10 +1475,8 @@ Mb3dsdg *msBuild(QWidget *parent, const QString &uiDir, const QIcon &icon) {
 	m->pointsActor = msMakeActor(3.0, 1.0);
 	m->infoActor = msMakeActor(6.0, 1.0);
 	for (vtkActor *a : {m->boxSolidActor.Get(), m->boxDotActor.Get(), m->profileActor.Get(), m->pointsActor.Get(),
-	                    m->infoActor.Get()}) {
-		a->SetUserTransform(m->model);
+	                    m->infoActor.Get()})
 		m->ren->AddActor(a);
-	}
 	{
 		vtkNew<vtkPolyDataMapper2D> m2;
 		vtkNew<vtkPolyData> empty;            // a first render may come before the first msPlot
@@ -1579,32 +1488,15 @@ Mb3dsdg *msBuild(QWidget *parent, const QString &uiDir, const QIcon &icon) {
 		m->ren->AddActor2D(m->grabActor);
 	}
 
-	// edit mode toggles
-	auto *gMode = new QButtonGroup(win);
+	// edit mode toggles, ARMED like iGMT's draw tools: a click arms that mode (the left button edits),
+	// a click on the armed one disarms it (the left button navigates again). One armed at a time.
 	for (int i = 0; i < 6; i++) {
-		gMode->addButton(m->modeButton[i], i);
-		QObject::connect(m->modeButton[i], &QRadioButton::toggled, win, [i](bool on) {
-			if (on && g_ms)
-				msSetEditMode(i);
+		m->modeButton[i]->setAutoExclusive(false);
+		QObject::connect(m->modeButton[i], &QRadioButton::clicked, win, [i](bool on) {
+			if (g_ms)
+				msSetEditMode(on ? i : MBS_EDIT_NONE);
 		});
 	}
-	// mouse modes: the menu pair and the radio pair are one setting
-	auto *gMouse = new QActionGroup(win);
-	gMouse->addAction(m->actMouseRotate);
-	gMouse->addAction(m->actMousePanZoom);
-	auto *gMouse1 = new QButtonGroup(win);
-	gMouse1->addButton(m->mouseRotate1);
-	gMouse1->addButton(m->mousePanZoom1);
-	QObject::connect(m->actMouseRotate, &QAction::triggered, win, []() { msSetMouseMode(MBS_MOUSE_ROTATE); });
-	QObject::connect(m->actMousePanZoom, &QAction::triggered, win, []() { msSetMouseMode(MBS_MOUSE_PANZOOM); });
-	QObject::connect(m->mouseRotate1, &QRadioButton::toggled, win, [](bool on) {
-		if (on)
-			msSetMouseMode(MBS_MOUSE_ROTATE);
-	});
-	QObject::connect(m->mousePanZoom1, &QRadioButton::toggled, win, [](bool on) {
-		if (on)
-			msSetMouseMode(MBS_MOUSE_PANZOOM);
-	});
 
 	// View menu
 	QObject::connect(m->actViewFlagged, &QAction::toggled, win, [](bool on) {
@@ -1631,12 +1523,19 @@ Mb3dsdg *msBuild(QWidget *parent, const QString &uiDir, const QIcon &icon) {
 		g_ms->view_profiles = MBS_VIEW_PROFILES_ALL;
 		msPlot();
 	});
-	// do_mb3dsdg_resetview
+	// do_mb3dsdg_resetview: exaggeration 1 (the gizmo's own), the opening direction, framed by the
+	// window's own fit
 	auto resetView = []() {
-		g_ms->elevation = 0.0;
-		g_ms->azimuth = 0.0;
-		g_ms->exaggeration = 1.0;
+		Mb3dsdg *mm = g_ms;
+		if (!mm || !mm->soundingdata)
+			return;
+		if (mm->host.view3dSetVE)
+			mm->host.view3dSetVE(mm->view, 1.0);
+		mm->exaggeration = 1.0;
 		msScaleZ();
+		msBuildScene();
+		if (mm->host.view3dFrame)
+			mm->host.view3dFrame(mm->view);
 		msUpdateStatus();
 		msPlot();
 	};
@@ -1710,7 +1609,7 @@ Mb3dsdg *msBuild(QWidget *parent, const QString &uiDir, const QIcon &icon) {
 		const int mode = optModes[i];
 		QObject::connect(actOpt[i], &QAction::triggered, win, [mode]() { msOptimize(mode); });
 	}
-	QObject::connect(actDismiss, &QAction::triggered, win, &QWidget::close);
+	QObject::connect(actDismiss, &QAction::triggered, win, []() { if (g_ms) mbParkQuit(g_ms->parking); });
 
 	// bias sliders: Motif's XmScale reported on release (and keyboard steps); the label follows live
 	struct SliderDef {
@@ -1746,8 +1645,7 @@ Mb3dsdg *msBuild(QWidget *parent, const QString &uiDir, const QIcon &icon) {
 } // namespace
 
 // ---- entry points ----------------------------------------------------------------------------
-bool mb3dsdgOpen(QWidget *parent, const QString &uiDir, const QIcon &icon, mb3dsoundings_struct *data,
-                 const Mb3dsdgNotify &notify) {
+bool mb3dsdgOpen(QWidget *parent, const MbEditHost &host, mb3dsoundings_struct *data, const Mb3dsdgNotify &notify) {
 	if (!data)
 		return false;
 
@@ -1783,11 +1681,13 @@ bool mb3dsdgOpen(QWidget *parent, const QString &uiDir, const QIcon &icon, mb3ds
 		fflush(stdout);
 	}
 
+	bool first = false;
 	if (!g_ms) {
-		Mb3dsdg *m = msBuild(parent, uiDir, icon);
+		Mb3dsdg *m = msBuild(parent, host);
 		if (!m)
 			return false;
 		g_ms = m;
+		m->parking = mbParkable(m->win, host, "mbeditviz 3-D soundings");   // after MsCloseFilter: a park comes first
 		QObject::connect(m->win, &QObject::destroyed, [m]() {
 			if (g_ms == m)
 				g_ms = nullptr;
@@ -1795,8 +1695,8 @@ bool mb3dsdgOpen(QWidget *parent, const QString &uiDir, const QIcon &icon, mb3ds
 		});
 		m->win->resize(1040, 600);
 		msUpdateModeToggles();
-		msSetMouseMode(m->mouse_mode);
 		msUpdateCursor();
+		first = true;
 	}
 	Mb3dsdg *m = g_ms;
 	m->notify = notify;
@@ -1809,9 +1709,8 @@ bool mb3dsdgOpen(QWidget *parent, const QString &uiDir, const QIcon &icon, mb3ds
 	m->last_sounding_defined = false;
 	m->last_sounding_edited = 0;
 
-	m->win->show();
-	m->win->raise();
-	m->win->activateWindow();
+	mbParkRebind(m->parking, host.parkScene);
+	mbParkShow(m->parking);              // a parked one comes back off its handle
 	QApplication::processEvents();
 
 	/* update gui widgets */
@@ -1820,7 +1719,10 @@ bool mb3dsdgOpen(QWidget *parent, const QString &uiDir, const QIcon &icon, mb3ds
 	/* recalculate vertical scaling */
 	msSetZScale();
 
-	/* replot the data */
+	/* replot the data; the first time, framed by the window's own fit */
+	msBuildScene();
+	if (first && m->host.view3dFrame)
+		m->host.view3dFrame(m->view);
 	msPlot();
 	msUpdateStatus();
 	return true;
@@ -1831,7 +1733,7 @@ void mb3dsdgEnd() {
 		return;
 	g_ms->notify = Mb3dsdgNotify();
 	g_ms->soundingdata = nullptr;
-	g_ms->win->close();
+	mbParkQuit(g_ms->parking);
 }
 
 void mb3dsdgPlot() {
@@ -1856,17 +1758,21 @@ void mb3dsdgGetBiasValues(double *rollbias, double *pitchbias, double *headingbi
 }
 
 bool mb3dsdgCanvasSize(int *w, int *h) {
-	if (!g_ms || !g_ms->canvas)
+	if (!g_ms || !g_ms->canvasW)
 		return false;
-	*w = g_ms->canvas->width();
-	*h = g_ms->canvas->height();
+	*w = g_ms->canvasW->width();
+	*h = g_ms->canvasW->height();
 	return true;
 }
 
+// one press-drag-release of the left button on the view, as a user makes it: it edits only with an
+// edit mode armed, so with none armed this arms Toggle first (what mb3dsoundings opened in)
 bool mb3dsdgMouseEdit(int x0, int y0, int x1, int y1) {
 	if (!mb3dsdgIsOpen())
 		return false;
-	MsCanvas *c = g_ms->canvas;
+	if (g_ms->edit_mode < 0)
+		msSetEditMode(MBS_EDIT_TOGGLE);
+	QWidget *c = g_ms->canvasW;
 	auto send = [c](QEvent::Type type, Qt::MouseButton b, Qt::MouseButtons held, int x, int y) {
 		const QPointF pos(x, y);
 		QMouseEvent ev(type, pos, c->mapToGlobal(pos), b, held, Qt::NoModifier);
@@ -1884,9 +1790,9 @@ bool mb3dsdgKey(int ch) {
 		return false;
 	const QString t = QString(QChar(char16_t(ch)));
 	QKeyEvent press(QEvent::KeyPress, 0, Qt::NoModifier, t);
-	QApplication::sendEvent(g_ms->canvas, &press);
+	QApplication::sendEvent(g_ms->canvasW, &press);
 	QKeyEvent release(QEvent::KeyRelease, 0, Qt::NoModifier, t);
-	QApplication::sendEvent(g_ms->canvas, &release);
+	QApplication::sendEvent(g_ms->canvasW, &release);
 	return true;
 }
 
@@ -1900,7 +1806,8 @@ bool mb3dsdgSetEditMode(int mode) {
 bool mb3dsdgSoundingPixel(int i, int *x, int *y) {
 	if (!mb3dsdgIsOpen() || i < 0 || i >= g_ms->soundingdata->num_soundings)
 		return false;
-	const double dpr = g_ms->canvas->devicePixelRatioF();
+	msProjectAll();
+	const double dpr = g_ms->canvasW->devicePixelRatioF();
 	const mb3dsoundings_sounding_struct &s = g_ms->soundingdata->soundings[i];
 	*x = (int)(s.winx / dpr);
 	*y = (int)((g_ms->gl_height - 1 - s.winy) / dpr);
@@ -1912,7 +1819,7 @@ bool mb3dsdgSavePng(const QString &path) {
 		return false;
 	msPlot();
 	vtkNew<vtkWindowToImageFilter> w2i;
-	w2i->SetInput(g_ms->canvas->renderWindow());
+	w2i->SetInput(g_ms->rw);
 	w2i->ReadFrontBufferOff();
 	w2i->Update();
 	vtkNew<vtkPNGWriter> png;

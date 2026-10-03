@@ -28417,6 +28417,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	auto *fMag    = new std::function<void()>();    // show Magnetics
 	auto *fGrav   = new std::function<void()>();    // show Gravity
 	auto *fPlates = new std::function<void()>();    // show Plates
+	auto *fMBSys  = new std::function<void()>();    // show MB-System
 	// Copernicus and Ocean Color used to be here as a seventh discipline and a tool below it. They
 	// are satellite data services, and they live in the Satellite menu now (built further down).
 
@@ -28429,7 +28430,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		});
 	};
 
-	*fGroup = [mGphy, s, fTsu, fSeis, fMag, fGrav, fPlates]() {
+	*fGroup = [mGphy, s, fTsu, fSeis, fMag, fGrav, fPlates, fMBSys]() {
 		mGphy->clear();
 		mGphy->setTitle("Geophysics ▾");
 		s->gphyPage = 0;                        // back at the discipline chooser
@@ -28438,6 +28439,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		mGphy->addAction("Magnetics",  [fMag]()    { (*fMag)(); });
 		mGphy->addAction("Gravity",    [fGrav]()   { (*fGrav)(); });
 		mGphy->addAction("Plates",     [fPlates]() { (*fPlates)(); });
+		mGphy->addAction("MB-System",  [fMBSys]()  { (*fMBSys)(); });
 	};
 	// Clicking the "Geophysics ›" row ITSELF (not one of the disciplines in its flyout) goes back to
 	// the neutral chooser — menubar title "Geophysics ▾", all disciplines listed. Qt never emits
@@ -28467,23 +28469,25 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// Page ids, the one mapping between a discipline's name and the number a session stores.
 	auto gphyPageId = [](const QString &n) {
 		return n == "Tsunamis" ? 1 : n == "Seismology" ? 2 : n == "Magnetics" ? 3 :
-		       n == "Gravity"  ? 4 : n == "Plates"     ? 5 : 0;   // 6 was Copernicus, now a Satellite entry
+		       n == "Gravity"  ? 4 : n == "Plates"     ? 5 :
+		       n == "MB-System" ? 7 : 0;   // 6 was Copernicus, now a Satellite entry; never reused
 	};
 	// Put the menu on a given page from OUTSIDE the menu code — what session restore calls. Same
 	// lambdas the menu items themselves run, so there is no second way to switch page.
-	s->gphySetPage = [fGroup, fTsu, fSeis, fMag, fGrav, fPlates](int p) {
+	s->gphySetPage = [fGroup, fTsu, fSeis, fMag, fGrav, fPlates, fMBSys](int p) {
 		switch (p) {
 			case 1: (*fTsu)();    break;
 			case 2: (*fSeis)();   break;
 			case 3: (*fMag)();    break;
 			case 4: (*fGrav)();   break;
 			case 5: (*fPlates)(); break;
+			case 7: (*fMBSys)();  break;
 			// 6 was Copernicus. A session saved on that page reopens on the chooser, below.
 			default: (*fGroup)(); break;
 		}
 	};
 
-	auto backItem = [mGphy, s, gphyPageId, fTsu, fSeis, fMag, fGrav, fPlates](const QString &current) {
+	auto backItem = [mGphy, s, gphyPageId, fTsu, fSeis, fMag, fGrav, fPlates, fMBSys](const QString &current) {
 		s->gphyPage = gphyPageId(current);      // every page announces itself here, once
 		// Single entry — itself a submenu, direct access to any OTHER discipline (skips the
 		// chooser page entirely). Each fXxx already reopens the menu itself at its end.
@@ -28493,6 +28497,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		if (current != "Magnetics")  mBack->addAction("Magnetics",  [fMag]()    { (*fMag)();    });
 		if (current != "Gravity")    mBack->addAction("Gravity",    [fGrav]()   { (*fGrav)();   });
 		if (current != "Plates")     mBack->addAction("Plates",     [fPlates]() { (*fPlates)(); });
+		if (current != "MB-System")  mBack->addAction("MB-System",  [fMBSys]()  { (*fMBSys)();  });
 		mGphy->addSeparator();
 	};
 
@@ -28854,6 +28859,128 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		reopen();
 	};
 
+	// MB-System discipline — the five MB-System ports, each its own window (or, for mbgrdviz, onto
+	// this one). Each entry is built only with its IGMT_WITH_* switch in CMakeLists.txt. This page is
+	// shown with mGphy->popup() (reopen), and a window shown while that popup still holds its grab
+	// does not come up (see "Compute Euler pole…" above) — so each open waits for the grab to go.
+	*fMBSys = [mGphy, win, s, backItem, reopen]() {
+		mGphy->clear();
+		mGphy->setTitle("MB-System ▾");
+		backItem("MB-System");
+		auto afterPopup = [win](std::function<void()> open) {
+			auto tries = std::make_shared<int>(0);
+			auto step = std::make_shared<std::function<void()>>();
+			*step = [win, open, tries, step]() {
+				if (QApplication::activePopupWidget() && ++*tries < 30) {
+					QTimer::singleShot(30, win, *step);
+					return;
+				}
+				open();
+			};
+			QTimer::singleShot(0, win, *step);
+		};
+		int n = 0;
+#ifdef GMTVTK_MBEDIT
+		// EXPERIMENTAL "Swath editor (mbedit)": MB-System's mbedit, ported (deps/src/mbedit/, its own
+		// window). Built only with IGMT_WITH_MBEDIT.
+		// Every one of them parks in THIS window's Scene Objects (host parkScene).
+		mGphy->addAction("Swath editor (mbedit)", [win, s, afterPopup]() {
+			afterPopup([win, s]() {
+				MbEditHost h = mbeditViewerHost();
+				h.parkScene = sceneAlive(s) ? s : nullptr;
+				mbeditOpenWindow(win, h);
+			});
+		});
+		++n;
+#endif
+#ifdef GMTVTK_MBVELOCITY
+		// EXPERIMENTAL "Sound velocity editor (mbvelocitytool)": MB-System's mbvelocitytool, ported
+		// (deps/src/mbvelocitytool/, its own window). Built only with IGMT_WITH_MBVELOCITYTOOL.
+		mGphy->addAction("Sound velocity editor (mbvelocitytool)", [win, s, afterPopup]() {
+			afterPopup([win, s]() {
+				MbEditHost h = mbvelocityViewerHost();
+				h.parkScene = sceneAlive(s) ? s : nullptr;
+				mbvelocityOpenWindow(win, h);
+			});
+		});
+		++n;
+#endif
+#ifdef GMTVTK_MBEDITVIZ
+		// EXPERIMENTAL "Bathymetry editor and patch test (mbeditviz)": MB-System's mbeditviz, ported
+		// (deps/src/mbeditviz/; its survey map is a window of this viewer). Built only with IGMT_WITH_MBEDITVIZ.
+		mGphy->addAction("Bathymetry editor and patch test (mbeditviz)", [win, s, afterPopup]() {
+			afterPopup([win, s]() {
+				MbEditVizHost h = mbeditvizViewerHost();
+				h.base.parkScene = sceneAlive(s) ? s : nullptr;
+				mbeditvizOpenWindow(win, h);
+			});
+		});
+		++n;
+#endif
+#ifdef GMTVTK_MBGRDVIZ
+		// EXPERIMENTAL "Survey planning (mbgrdviz)": MB-System's mbgrdviz, ported onto this window (its
+		// sites, routes and navigation become this window's elements). Built only with IGMT_WITH_MBGRDVIZ.
+		mGphy->addAction("Survey planning (mbgrdviz)", [win, s, afterPopup]() {
+			afterPopup([win, s]() {
+				if (!sceneAlive(s)) return;
+				MbGrdVizHost h = mbgrdvizViewerHost();
+				h.base.parkScene = s;
+				mbgrdvizOpenWindow(win, h, s);
+			});
+		});
+		++n;
+#endif
+#ifdef GMTVTK_PCE
+		// EXPERIMENTAL "Point cloud editor (pointCloudEditor)": MB-System's pointCloudEditor, ported (its own
+		// window), on this window's grid. Built only with IGMT_WITH_PCE.
+		mGphy->addAction("Point cloud editor (pointCloudEditor)", [win, s, afterPopup]() {
+			afterPopup([win, s]() {
+				if (!sceneAlive(s)) return;
+				PceHost h = pceViewerHost();
+				h.base.parkScene = s;
+				pceOpenWindow(win, h, s);
+			});
+		});
+		++n;
+#endif
+#ifdef GMTVTK_WCDVIEWER
+		// EXPERIMENTAL "Water column viewer (kmwcd_viewer)": a port of kmwcd_viewer.py (MARUM / MB-System),
+		// Kongsberg .kmwcd / .kmall water column. Its Julia side (src/wcdviewer.jl) is wired the first
+		// time it is opened, through the warm-up hook every tool fires -- nothing of it at start-up -- so
+		// the first open waits (wait cursor) the moment that takes. Built only with IGMT_WITH_WCDVIEWER.
+		mGphy->addAction("Water column viewer (kmwcd_viewer)", [win, s, afterPopup]() {
+			afterPopup([win, s]() {
+				auto open = [win, s]() {
+					WcdHost h = wcdViewerHost();
+					h.base.parkScene = sceneAlive(s) ? s : nullptr;
+					wcdOpenWindow(win, h);
+				};
+				if (wcdWired()) { open(); return; }
+				warmupTool("wcd");
+				QApplication::setOverrideCursor(Qt::WaitCursor);
+				auto tries = std::make_shared<int>(0);
+				auto step = std::make_shared<std::function<void()>>();
+				*step = [win, open, tries, step]() {
+					if (!wcdWired() && ++*tries < 200) {   // ~10 s, then say so instead of hanging
+						QTimer::singleShot(50, win, *step);
+						return;
+					}
+					QApplication::restoreOverrideCursor();
+					if (wcdWired())
+						open();
+					else
+						QMessageBox::warning(win, "Water column viewer",
+						                     "The water column viewer's Julia side did not answer (src/wcdviewer.jl).");
+				};
+				QTimer::singleShot(0, win, *step);
+			});
+		});
+		++n;
+#endif
+		if (n == 0) mGphy->addAction("(no MB-System tool in this build)")->setEnabled(false);
+		reopen();
+	};
+
 	(*fGroup)();   // initial population: the discipline chooser
 
 	// --- Satellite menu: SGP4/SDP4 orbit propagation (src/satellite.jl over deps/src/satellite.cpp
@@ -28990,31 +29117,8 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// "Vector Wizard": trace the picture on display (an image, or the picture a grid is drawn as)
 	// into filled vector layers with potrace — into this window, or to SVG / EPS / GMT.
 	mTools->addAction("Vector Wizard", [win, s]() { vectorWizardOpen(win, s); });
-#ifdef GMTVTK_MBEDIT
-	// EXPERIMENTAL "Swath editor (mbedit)": MB-System's mbedit, ported (deps/src/mbedit/, its own
-	// window). Built only with IGMT_WITH_MBEDIT in CMakeLists.txt.
-	mTools->addAction("Swath editor (mbedit)", [win]() { mbeditOpenWindow(win, mbeditViewerHost()); });
-#endif
-#ifdef GMTVTK_MBVELOCITY
-	// EXPERIMENTAL "Sound velocity editor (mbvelocitytool)": MB-System's mbvelocitytool, ported
-	// (deps/src/mbvelocitytool/, its own window). Built only with IGMT_WITH_MBVELOCITYTOOL.
-	mTools->addAction("Sound velocity editor (mbvelocitytool)", [win]() { mbvelocityOpenWindow(win, mbvelocityViewerHost()); });
-#endif
-#ifdef GMTVTK_MBEDITVIZ
-	// EXPERIMENTAL "Bathymetry editor and patch test (mbeditviz)": MB-System's mbeditviz, ported
-	// (deps/src/mbeditviz/; its survey map is a window of this viewer). Built only with IGMT_WITH_MBEDITVIZ.
-	mTools->addAction("Bathymetry editor and patch test (mbeditviz)", [win]() { mbeditvizOpenWindow(win, mbeditvizViewerHost()); });
-#endif
-#ifdef GMTVTK_MBGRDVIZ
-	// EXPERIMENTAL "Survey planning (mbgrdviz)": MB-System's mbgrdviz, ported onto this window (its
-	// sites, routes and navigation become this window's elements). Built only with IGMT_WITH_MBGRDVIZ.
-	mTools->addAction("Survey planning (mbgrdviz)", [win, s]() { mbgrdvizOpenWindow(win, mbgrdvizViewerHost(), s); });
-#endif
-#ifdef GMTVTK_PCE
-	// EXPERIMENTAL "Point cloud editor (pointCloudEditor)": MB-System's pointCloudEditor, ported (its own
-	// window), on this window's grid. Built only with IGMT_WITH_PCE.
-	mTools->addAction("Point cloud editor (pointCloudEditor)", [win, s]() { pceOpenWindow(win, pceViewerHost(), s); });
-#endif
+	// The five MB-System ports (mbedit, mbvelocitytool, mbeditviz, mbgrdviz, pointCloudEditor) live in
+	// Geophysics > MB-System (*fMBSys above).
 	// "Project" (port of Mirone's Projections > GDAL project): reproject the window's raster with
 	// gdalwarp. Needs something to warp, so it is offered only with a raster on screen.
 	mTools->addAction("Project…", [win, s]() {

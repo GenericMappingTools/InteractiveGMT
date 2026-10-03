@@ -19,6 +19,8 @@
 #include <QIcon>
 #include <QString>
 
+#include "../mbedit/mbedit_window.h"
+
 class QWidget;
 struct mb3dsoundings_struct;
 
@@ -34,9 +36,9 @@ struct Mb3dsdgNotify {
 	                           double *snell) = nullptr;
 };
 
-// mb3dsoundings_open: show `data` (raise the window, or make it); `uiDir` holds mb3dsoundings.ui.
-bool mb3dsdgOpen(QWidget *parent, const QString &uiDir, const QIcon &icon, mb3dsoundings_struct *data,
-                 const Mb3dsdgNotify &notify);
+// mb3dsoundings_open: show `data` (raise the window, or make it). `host` is mbeditviz's: its uiDir
+// holds mb3dsoundings.ui, and the window parks through it (mbParkable) like every MB-System tool.
+bool mb3dsdgOpen(QWidget *parent, const MbEditHost &host, mb3dsoundings_struct *data, const Mb3dsdgNotify &notify);
 // mb3dsoundings_end: close the window without notifying (the caller is tearing down).
 void mb3dsdgEnd();
 // mb3dsoundings_plot: redraw (the soundings were recoloured or moved by the caller).

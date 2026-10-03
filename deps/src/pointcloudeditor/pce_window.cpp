@@ -203,6 +203,7 @@ public:
 
 // ---- the editor --------------------------------------------------------------------------------
 struct Pce {
+	MbParking *parking = nullptr;        // X / minimise park it in Scene Objects (mbParkable)
 	PceHost host;
 	QMainWindow *win = nullptr;
 	QVTKOpenGLNativeWidget *canvas = nullptr;
@@ -905,8 +906,9 @@ Pce *pceBuild(QWidget *parent, const PceHost &host) {
 		m->host.base.rememberDir(fn);
 		pceOpenFile(m, fn);
 	});
-	QObject::connect(actQuit, &QAction::triggered, win, &QWidget::close);
+	QObject::connect(actQuit, &QAction::triggered, win, [m]() { mbParkQuit(m->parking); });
 	QObject::connect(m->actElev, &QAction::toggled, win, [m](bool on) { pceSetElevMode(m, on); });
+	m->parking = mbParkable(win, host.base, "pointCloudEditor");
 	return m;
 }
 
@@ -940,9 +942,8 @@ bool pceOpenWindow(QWidget *parent, const PceHost &host, void *win, const QStrin
 		QApplication::processEvents();
 	}
 	Pce *m = g_pce;
-	m->win->showNormal();
-	m->win->raise();
-	m->win->activateWindow();
+	mbParkRebind(m->parking, win ? win : host.base.parkScene);   // parks in the window it edits
+	mbParkShow(m->parking);                              // a parked one comes back off its handle
 	if (elevProfile != m->displayElevProfile_)
 		pceSetElevMode(m, elevProfile);
 	bool ok = true;
@@ -1045,6 +1046,6 @@ bool pceSavePng(const QString &path) {
 bool pceClose() {
 	if (!g_pce)
 		return false;
-	g_pce->win->close();
+	mbParkQuit(g_pce->parking);
 	return true;
 }

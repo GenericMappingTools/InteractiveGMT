@@ -1856,6 +1856,196 @@ GMTVTK_API void gmtvtk_set_about_info(const char *txt) {
 }
 
 #ifdef GMTVTK_MBEDIT
+// Parking for every MB-System tool window (MbEditHost::park & co., mbeditViewerHost): the viewer's
+// ONE parked-tool list, with the Show / Delete menu every parked tool has.
+static void mbHostPark(void *win, QWidget *tool, const char *label, std::function<void()> show,
+                       std::function<void()> remove) {
+	Scene *s = static_cast<Scene *>(win);
+	if (!sceneAlive(s) || !tool)
+		return;
+	parkTool(s, tool, QString::fromUtf8(label), IC_Polyline,
+	         QString::fromUtf8(label) + " — double-click to bring it back, click for Show / Delete", show,
+	         [show, remove](const QPoint &at) {
+		QMenu menu;
+		QAction *aShow = menu.addAction("Show");
+		menu.addSeparator();
+		QAction *aDel = menu.addAction("Delete");
+		QAction *pick = menu.exec(at);
+		if (pick == aShow)
+			show();
+		else if (pick == aDel)
+			remove();
+	});
+}
+static void mbHostUnpark(void *win, QWidget *tool) { unparkTool(static_cast<Scene *>(win), tool); }
+// the window it was opened from; else the most recent viewer window; else any open one
+static void *mbHostParkWhere(void *preferred) {
+	Scene *s = static_cast<Scene *>(preferred);
+	if (sceneAlive(s))
+		return s;
+	if (sceneAlive(g_lastScene))
+		return g_lastScene;
+	for (Scene *o : g_scenes)
+		if (sceneAlive(o) && o->win)
+			return o;
+	return nullptr;
+}
+static void mbHostParkOnMinimise(QWidget *tool, std::function<void()> park) { parkOnMinimise(tool, std::move(park)); }
+
+// An MB-System x,y line (a navigation track, a swath bound) laid on a viewer window: EXACTLY the
+// sequence Geography's lines go through (_add_geo_overlay, geography.jl) — the raw x,y with z = 0
+// (its true source z) through the overlay door, then THE one clamp (gmtvtk_line_clamp_h, the
+// handle's own "Clamp to ground"). Without the clamp the track hung at z = 0, off the relief, and
+// was invisible on a bathymetry surface while its Scene Objects row said it was there.
+GMTVTK_API int gmtvtk_line_clamp_h(void *scene, const char *name, int on);
+static bool mbHostAddTrack(void *win, const double *xyz, int npts, const int *segoff, int nseg, double r, double g,
+                           double b, double width, const char *name, const char *group) {
+	// a track is a LINE: "Convert to points" on it is an offer to turn a ship's track into a dot cloud
+	if (gmtvtk_add_overlay_ex4_h(win, xyz, npts, segoff, nseg, /*mode=lines*/1, r, g, b, width, 0.0, name, group, "",
+	                             /*noConvertToPoints=*/1, /*zIsPlaceholder=*/0, /*noDataTable=*/0, "") != 1)
+		return false;
+	// ...nor an area: no "Fill polygons" on it (the overlay just added is the last one)
+	Scene *s = static_cast<Scene *>(win);
+	if (sceneAlive(s) && !s->overlays.empty())
+		s->overlays.back().noFill = true;
+	gmtvtk_line_clamp_h(win, name, 1);   // no grid in the window: a no-op, the line stays flat
+	return true;
+}
+
+// THE VIEWER'S 3-D VIEW for an MB-System tool window (MbEditHost::view3d*): GLView, its own Scene,
+// the trackball style and enableGizmo — built exactly as the Fault plane demo builds its view
+// (68_faultdemo.cpp), so the tool navigates like every iGMT 3-D view and none of it is re-done.
+// The one thing GLView cannot know: while the tool has an edit mode ARMED, the left button is the
+// tool's. QVTKOpenGLNativeWidget::event() hands every event to VTK BEFORE any mouse*Event, so the
+// left button is taken here, in event(), before VTK can see it — the gizmo and the trackball then
+// never act on an edit. Unarmed, every event goes on to GLView untouched.
+class MbView3D : public GLView {
+public:
+	explicit MbView3D(QWidget *parent) : GLView() { setParent(parent); }
+	std::function<bool()> armed;
+	std::function<void(int, int, int)> tool;          // 0 press, 1 move, 2 release; device px, bottom-left
+	std::function<void(QKeyEvent *, bool)> key;
+	Scene *scene = nullptr;
+	std::vector<vtkProp *> ownProps;                  // the gizmo's: never framed, never a recentre target
+	bool leftOwned = false;                           // an armed press started here: its moves/release too
+protected:
+	bool event(QEvent *e) override {
+		const QEvent::Type t = e->type();
+		if (t == QEvent::MouseButtonPress || t == QEvent::MouseButtonDblClick || t == QEvent::MouseMove ||
+		    t == QEvent::MouseButtonRelease) {
+			auto *me = static_cast<QMouseEvent *>(e);
+			const bool left = me->button() == Qt::LeftButton;
+			const bool startsEdit = (t == QEvent::MouseButtonPress || t == QEvent::MouseButtonDblClick) && left &&
+			                        armed && armed();
+			if (startsEdit || leftOwned) {
+				double x, y;
+				displayPxFromQt(this, renderWindow(), me->position().toPoint(), x, y);
+				if (t == QEvent::MouseButtonPress && left) {
+					leftOwned = true;
+					if (tool) tool(0, int(x), int(y));
+				}
+				else if (t == QEvent::MouseMove && leftOwned) {
+					if (tool) tool(1, int(x), int(y));
+				}
+				else if (t == QEvent::MouseButtonRelease && left && leftOwned) {
+					leftOwned = false;
+					if (tool) tool(2, int(x), int(y));
+				}
+				return true;                          // VTK (gizmo, trackball) never sees an edit
+			}
+		}
+		return GLView::event(e);
+	}
+	void enterEvent(QEnterEvent *e) override {        // the tool window's sliders must not keep the keys
+		setFocus(Qt::MouseFocusReason);
+		GLView::enterEvent(e);
+	}
+	void keyPressEvent(QKeyEvent *e) override {
+		GLView::keyPressEvent(e);
+		if (key) key(e, true);
+	}
+	void keyReleaseEvent(QKeyEvent *e) override {
+		GLView::keyReleaseEvent(e);
+		if (key) key(e, false);
+	}
+};
+
+// the direction every iGMT 3-D window opens with (buildSceneContent, 70_window.cpp): azimuth 0 (looking
+// north), 35 degrees above the horizontal, +Z up, perspective. The fit along it is fitSnapView's.
+static void mbView3dSetDirection(vtkCamera *cam) {
+	const double el = 35.0 * vtkMath::Pi() / 180.0;
+	cam->ParallelProjectionOff();
+	cam->SetFocalPoint(0, 0, 0);
+	cam->SetPosition(0, -std::cos(el), std::sin(el));
+	cam->SetViewUp(0, 0, 1);
+}
+
+static void *mbView3dMake(QWidget *parent, std::function<bool()> armed, std::function<void(int, int, int)> tool,
+                          std::function<void(QKeyEvent *, bool)> key, QWidget **widget, vtkRenderer **ren) {
+	auto *v = new MbView3D(parent);
+	v->armed = std::move(armed);
+	v->tool = std::move(tool);
+	v->key = std::move(key);
+	vtkNew<vtkGenericOpenGLRenderWindow> rw;
+	v->setRenderWindow(rw);
+	vtkSmartPointer<vtkRenderer> r = vtkSmartPointer<vtkRenderer>::New();
+	applyBackgroundPref(r);                           // Preferences "Background color" — the ONE applier
+	rw->AddRenderer(r);
+	vtkNew<vtkInteractorStyleTrackballCamera> style;  // what buildAndShow installs under the gizmo
+	v->interactor()->SetInteractorStyle(style);
+	Scene *s = new Scene();
+	s->ren = r;
+	s->widget = v;
+	s->ve = 1.0;
+	v->s = s;
+	v->scene = s;
+	// the props the renderer holds BEFORE the gizmo goes in are none; whatever enableGizmo adds is its own
+	s->giz = enableGizmo(s, 0.01);
+	vtkPropCollection *pc = r->GetViewProps();
+	pc->InitTraversal();
+	while (vtkProp *p = pc->GetNextProp())
+		v->ownProps.push_back(p);
+	mbView3dSetDirection(r->GetActiveCamera());
+	// same teardown order as a window's: the gizmo comes off the renderer and the interactor first
+	QObject::connect(v, &QObject::destroyed, [s]() {
+		disableGizmo(s);
+		delete s;
+	});
+	*widget = v;
+	*ren = r;
+	return v;
+}
+static void mbView3dSetBounds(void *view, const double b[6]) {
+	auto *v = static_cast<MbView3D *>(view);
+	if (!v || !v->scene) return;
+	for (int i = 0; i < 6; ++i) v->scene->viewBounds[i] = b[i];
+	v->scene->viewBoundsOverride = true;          // what surfGetBounds hands the gizmo and fitSnapView
+	// a recentre ('c', the middle click) lands on the tool's content, never on the handle
+	v->scene->pickTargets.clear();
+	vtkPropCollection *pc = v->scene->ren->GetViewProps();
+	pc->InitTraversal();
+	while (vtkProp *p = pc->GetNextProp())
+		if (std::find(v->ownProps.begin(), v->ownProps.end(), p) == v->ownProps.end() && vtkActor::SafeDownCast(p))
+			v->scene->pickTargets.push_back(p);
+}
+static double mbView3dVE(void *view) {
+	auto *v = static_cast<MbView3D *>(view);
+	return (v && v->scene && v->scene->ve > 0.0) ? v->scene->ve : 1.0;
+}
+static void mbView3dSetVE(void *view, double ve) {
+	auto *v = static_cast<MbView3D *>(view);
+	if (v && v->scene && ve > 0.0) v->scene->ve = ve;
+}
+static void mbView3dFrame(void *view) {            // the window's own fit, from MB-System's opening direction
+	auto *v = static_cast<MbView3D *>(view);
+	if (!v || !v->scene) return;
+	mbView3dSetDirection(v->scene->ren->GetActiveCamera());
+	if (v->scene->giz)
+		for (int i = 0; i < 3; ++i) v->scene->giz->panOff[i] = 0.0;
+	fitSnapView(v->scene, false);
+	v->renderWindow()->Render();
+}
+
 // EXPERIMENTAL (IGMT_WITH_MBEDIT in CMakeLists.txt; Julia lists these in _LIB_OPTIONAL).
 // The swath bathymetry editor (MB-System's mbedit, ported: deps/src/mbedit/). Open it, as
 // `mbedit -I file -F format`; an empty file opens it with File > Open offered. useEsf decides
@@ -1934,12 +2124,48 @@ GMTVTK_API int gmtvtk_mbvelocity_close(void) {
 
 #ifdef GMTVTK_MBEDITVIZ
 // EXPERIMENTAL (IGMT_WITH_MBEDITVIZ in CMakeLists.txt; Julia lists these in _LIB_OPTIONAL).
-// mbeditviz's survey map: an ordinary window of this viewer, made and driven through the SAME calls
-// any host uses (gmtvtk_view_grid, gmtvtk_replace_base_grid_h, gmtvtk_add_overlay_ex2_h), plus three
-// read-only looks at it (its drawn shapes, its colour bar's colours, its window).
+// mbeditviz's survey map: the grid it makes is a NEW ELEMENT of the window mbeditviz was opened from
+// (the derived-variable display law), never a window of its own. It goes in through the SAME doors
+// every derived grid uses — gmtvtk_promote_surface_h (which is gmtvtk_add_surface_h unless the
+// window is an empty launcher), then gmtvtk_show_new_element_h (checked, the rest unchecked, its own
+// axes, Scene Objects unfolded) — and is re-gridded the way transplant.jl swaps one: the base grid
+// in place (gmtvtk_replace_base_grid_h), an extra removed and re-added under its name. The handle
+// mbeditviz holds is (window, element name, the line groups it added there).
 GMTVTK_API int gmtvtk_replace_base_grid_h(void *handle, const float *z, int nx, int ny, double x0, double x1, double y0,
                                           double y1, int geographic, const double *cz, const double *crgb, int ncolor,
                                           const char *name, int zlayout);   // defined further down
+GMTVTK_API int gmtvtk_promote_surface_h(void *handle, const float *z, int nx, int ny, double x0, double x1, double y0,
+                                        double y1, int geographic, const double *cz, const double *crgb, int ncolor,
+                                        const unsigned char *img, int iw, int ih, int ibands, int image_only,
+                                        const char *name, int zlayout);
+GMTVTK_API void gmtvtk_show_new_element_h(void *handle, const char *name, double x0, double x1, double y0, double y1,
+                                          double z0, double z1, int hasBbox, int keepMargin);
+GMTVTK_API int gmtvtk_add_surface_h(void *handle, const float *z, int nx, int ny, double x0, double x1, double y0,
+                                    double y1, int geographic, const double *cz, const double *crgb, int ncolor,
+                                    const unsigned char *img, int iw, int ih, int ibands, int image_only,
+                                    const char *name, int zlayout);
+GMTVTK_API int gmtvtk_remove_grid_h(void *handle, const char *name);
+GMTVTK_API int gmtvtk_remove_overlay_group_h(void *handle, const char *groupName);
+GMTVTK_API void *gmtvtk_open_empty(const char *title);
+
+struct MbVizMap {
+	Scene *s = nullptr;
+	std::string name;                    // the grid element's Scene Objects name
+};
+// the line groups each result put in its window, kept past mapClose so a re-grid under the same name
+// replaces them instead of piling a second copy on top (the "replace, never pile up" rule)
+static std::map<std::pair<Scene *, std::string>, std::set<std::string>> g_mbVizGroups;
+
+static bool mbVizIsBase(Scene *s, const std::string &name) {
+	return !s->emptyStart && !s->gridZ.empty() && s->surfName == name;
+}
+static ExtraObj *mbVizExtra(Scene *s, const std::string &name) {
+	for (auto &ex : s->extras)
+		if (!ex.isImage && ex.name == name)
+			return &ex;
+	return nullptr;
+}
+
 static MbEditVizHost mbeditvizViewerHost() {
 	MbEditVizHost h;
 	h.base = mbeditViewerHost();
@@ -1951,29 +2177,75 @@ static MbEditVizHost mbeditvizViewerHost() {
 			QApplication::processEvents();
 		}
 	};
-	h.mapOpen = [](const char *title, const float *z, int nx, int ny, double x0, double x1, double y0, double y1,
-	               const double *cz, const double *crgb, int ncolor) -> void * {
-		return gmtvtk_view_grid(z, nx, ny, x0, x1, y0, y1, /*geographic=*/0, cz, crgb, ncolor, nullptr, 0, 0, 0,
-		                        /*edges=*/0, /*triangulate=*/0, /*image_only=*/0, title, /*zlayout=BCB*/0);
+	h.mapOpen = [](void *into, const char *title, const float *z, int nx, int ny, double x0, double x1, double y0,
+	               double y1, const double *cz, const double *crgb, int ncolor) -> void * {
+		Scene *s = static_cast<Scene *>(mbHostParkWhere(into));   // the parent window, else the most recent
+		if (!s)
+			s = static_cast<Scene *>(gmtvtk_open_empty("MBeditviz"));
+		if (!sceneAlive(s) || !title || !title[0])
+			return nullptr;
+		const std::string name = title;
+		// a previous result of this name: its lines go, its grid is replaced
+		auto key = std::make_pair(s, name);
+		for (const std::string &g : g_mbVizGroups[key])
+			gmtvtk_remove_overlay_group_h(s, g.c_str());
+		g_mbVizGroups[key].clear();
+		int ok;
+		if (mbVizIsBase(s, name))
+			ok = gmtvtk_replace_base_grid_h(s, z, nx, ny, x0, x1, y0, y1, 0, cz, crgb, ncolor, title, 0);
+		else {
+			gmtvtk_remove_grid_h(s, title);
+			ok = gmtvtk_promote_surface_h(s, z, nx, ny, x0, x1, y0, y1, 0, cz, crgb, ncolor, nullptr, 0, 0, 0, 0, title, 0);
+		}
+		if (!ok || !sceneAlive(s))
+			return nullptr;
+		double z0 = 1e300, z1 = -1e300;
+		for (size_t i = 0; i < size_t(nx) * size_t(ny); i++)
+			if (!std::isnan(z[i])) {
+				z0 = std::min(z0, double(z[i]));
+				z1 = std::max(z1, double(z[i]));
+			}
+		if (z0 > z1) {
+			z0 = 0.0;
+			z1 = 1.0;
+		}
+		// THE transition every new raster takes: checked, the rest unchecked, its own axes
+		gmtvtk_show_new_element_h(s, title, x0, x1, y0, y1, z0, z1, /*hasBbox=*/1, /*keepMargin=*/0);
+		auto *mp = new MbVizMap;
+		mp->s = s;
+		mp->name = name;
+		return mp;
 	};
-	h.mapAlive = [](void *map) { return sceneAlive(static_cast<Scene *>(map)); };
-	h.mapClose = [](void *map) {
-		Scene *s = static_cast<Scene *>(map);
-		if (sceneAlive(s) && s->win)
-			s->win->close();
+	h.mapAlive = [](void *map) {
+		auto *mp = static_cast<MbVizMap *>(map);
+		return mp && sceneAlive(mp->s) && (mbVizIsBase(mp->s, mp->name) || mbVizExtra(mp->s, mp->name));
 	};
+	h.mapClose = [](void *map) { delete static_cast<MbVizMap *>(map); };   // the data stays in the window
 	h.mapUpdate = [](void *map, const float *z, int nx, int ny, double x0, double x1, double y0, double y1, const double *cz,
 	                 const double *crgb, int ncolor) {
-		return gmtvtk_replace_base_grid_h(map, z, nx, ny, x0, x1, y0, y1, 0, cz, crgb, ncolor, "", 0) == 1;
+		auto *mp = static_cast<MbVizMap *>(map);
+		if (!mp || !sceneAlive(mp->s))
+			return false;
+		Scene *s = mp->s;
+		const char *nm = mp->name.c_str();
+		if (mbVizIsBase(s, mp->name))
+			return gmtvtk_replace_base_grid_h(s, z, nx, ny, x0, x1, y0, y1, 0, cz, crgb, ncolor, nm, 0) == 1;
+		gmtvtk_remove_grid_h(s, nm);
+		return gmtvtk_add_surface_h(s, z, nx, ny, x0, x1, y0, y1, 0, cz, crgb, ncolor, nullptr, 0, 0, 0, 0, nm, 0) == 1;
 	};
 	h.mapAddLines = [](void *map, const double *xyz, int npts, const int *segoff, int nseg, double r, double g, double b,
 	                   double width, const char *name, const char *group) {
-		return gmtvtk_add_overlay_ex2_h(map, xyz, npts, segoff, nseg, /*mode=lines*/1, r, g, b, width, 0.0, name, group, "",
-		                                /*noConvertToPoints=*/0, /*zIsPlaceholder=*/1) == 1;
+		auto *mp = static_cast<MbVizMap *>(map);
+		if (!mp || !sceneAlive(mp->s))
+			return false;
+		if (group && group[0])
+			g_mbVizGroups[std::make_pair(mp->s, mp->name)].insert(group);
+		return mbHostAddTrack(mp->s, xyz, npts, segoff, nseg, r, g, b, width, name, group);
 	};
 	h.mapShapes = [](void *map) {
 		std::vector<MbEditVizShape> out;
-		Scene *s = static_cast<Scene *>(map);
+		auto *mp = static_cast<MbVizMap *>(map);
+		Scene *s = mp ? mp->s : nullptr;
 		if (!sceneAlive(s))
 			return out;
 		for (const auto &pg : s->polys) {
@@ -1987,16 +2259,23 @@ static MbEditVizHost mbeditvizViewerHost() {
 		}
 		return out;
 	};
-	h.mapColor = [](void *map, double z, double rgb[3]) {
-		Scene *s = static_cast<Scene *>(map);
-		if (!sceneAlive(s) || !s->bar || !s->bar->GetLookupTable())
+	h.mapColor = [](void *map, double z, double rgb[3]) {   // ITS grid's own colours, not the window's bar
+		auto *mp = static_cast<MbVizMap *>(map);
+		if (!mp || !sceneAlive(mp->s))
 			return false;
-		s->bar->GetLookupTable()->GetColor(z, rgb);
+		vtkScalarsToColors *lut = nullptr;
+		if (mbVizIsBase(mp->s, mp->name))
+			lut = mp->s->surfLut;
+		else if (ExtraObj *ex = mbVizExtra(mp->s, mp->name))
+			lut = ex->lut;
+		if (!lut)
+			return false;
+		lut->GetColor(z, rgb);
 		return true;
 	};
 	h.mapWindow = [](void *map) -> QWidget * {
-		Scene *s = static_cast<Scene *>(map);
-		return sceneAlive(s) ? s->win : nullptr;
+		auto *mp = static_cast<MbVizMap *>(map);
+		return (mp && sceneAlive(mp->s)) ? mp->s->win : nullptr;
 	};
 	return h;
 }
@@ -2060,6 +2339,20 @@ GMTVTK_API int gmtvtk_add_poly_full(void *handle, const double *xyz, int npts, i
                                     double fr, double fg, double fb, double fop, const char *name,
                                     const char *groupName);   // defined further down
 GMTVTK_API void *gmtvtk_open_empty(const char *title);      // defined further down
+// The grid a window shows, for mbgrdviz: THE active-grid resolver (the colour bar's and the
+// readout's), so the tool plans on the last opened grid, not on whichever came first. With every
+// surface unticked, the grid whose row is ticked (the colour bar's own rule). Needs a real heightfield.
+static ActiveGrid mbgrdvizShownGrid(Scene *s) {
+	if (!sceneAlive(s))
+		return ActiveGrid();
+	ActiveGrid ag = resolveActiveGrid(s);       // skips placeholders and images itself
+	if (!ag.valid)
+		ag = resolveActiveGrid(s, /*requireVisible=*/false);
+	if (!ag.valid || !ag.z || ag.nx < 2 || ag.ny < 2 || ag.z->size() < size_t(ag.nx) * size_t(ag.ny))
+		return ActiveGrid();
+	return ag;
+}
+
 static MbGrdVizHost mbgrdvizViewerHost() {
 	MbGrdVizHost h;
 	h.base = mbeditViewerHost();
@@ -2082,27 +2375,37 @@ static MbGrdVizHost mbgrdvizViewerHost() {
 	};
 	h.grid = [](void *win, MbGrdVizGrid &g) {
 		Scene *s = static_cast<Scene *>(win);
-		if (!sceneAlive(s) || s->emptyStart || s->imageOnly || s->gnx < 2 || s->gny < 2 ||
-		    s->gridZ.size() < size_t(s->gnx) * size_t(s->gny))
+		const ActiveGrid ag = mbgrdvizShownGrid(s);
+		if (!ag.valid)
 			return false;
-		g.z = s->gridZ;                          // column-major, row 0 = south: the tool's own layout
-		g.nx = s->gnx;
-		g.ny = s->gny;
-		g.x0 = s->gx0;
-		g.x1 = s->gx1;
-		g.y0 = s->gy0;
-		g.y1 = s->gy1;
-		g.dx = s->gdx > 0 ? s->gdx : (s->gx1 - s->gx0) / (s->gnx - 1);
-		g.dy = s->gdy > 0 ? s->gdy : (s->gy1 - s->gy0) / (s->gny - 1);
-		g.geographic = s->baseGeog != 0;
+		const bool base = ag.z == &s->gridZ;
+		g.z = *ag.z;                             // column-major, row 0 = south: the tool's own layout
+		g.nx = ag.nx;
+		g.ny = ag.ny;
+		g.x0 = ag.x0;
+		g.x1 = ag.x1;
+		g.y0 = ag.y0;
+		g.y1 = ag.y1;
+		g.dx = (base && s->gdx > 0) ? s->gdx : (ag.x1 - ag.x0) / (ag.nx - 1);
+		g.dy = (base && s->gdy > 0) ? s->gdy : (ag.y1 - ag.y0) / (ag.ny - 1);
+		g.geographic = ag.geog != 0;
 		if (s->crsEpsg > 0)
 			g.crs = "EPSG:" + std::to_string(s->crsEpsg);
 		else if (!s->crsProj4.empty())
 			g.crs = s->crsProj4;
 		else if (!s->crsWkt.empty())
 			g.crs = s->crsWkt;
-		g.name = s->win ? s->win->windowTitle().toStdString() : std::string();
+		g.name = !ag.name.empty() ? ag.name : (s->win ? s->win->windowTitle().toStdString() : std::string());
 		return true;
+	};
+	h.gridKey = [](void *win) -> std::string {
+		const ActiveGrid ag = mbgrdvizShownGrid(static_cast<Scene *>(win));
+		if (!ag.valid)
+			return std::string();
+		char k[128];
+		std::snprintf(k, sizeof(k), "|%p|%d|%d|%.17g|%.17g|%.17g|%.17g", static_cast<const void *>(ag.z->data()), ag.nx,
+		              ag.ny, ag.x0, ag.x1, ag.y0, ag.y1);
+		return ag.name + k;
 	};
 	h.openFile = [](void *win, const char *path) -> void * {
 		Scene *s = static_cast<Scene *>(win);
@@ -2232,11 +2535,7 @@ static MbGrdVizHost mbgrdvizViewerHost() {
 		sceneDeleteGroup(s, {GroupChild(GroupChild::SymbolLayer, std::string(name))});
 		return true;
 	};
-	h.addLines = [](void *win, const double *xyz, int npts, const int *segoff, int nseg, double r, double g, double b,
-	                double width, const char *name, const char *group) {
-		return gmtvtk_add_overlay_ex2_h(win, xyz, npts, segoff, nseg, /*mode=lines*/1, r, g, b, width, 0.0, name, group, "",
-		                                /*noConvertToPoints=*/0, /*zIsPlaceholder=*/1) == 1;
-	};
+	h.addLines = mbHostAddTrack;
 	h.addColoredPoints = [](void *win, const double *xyz, int npts, const double *rgb, double sizePx, const char *name,
 	                        const char *master) {
 		Scene *s = static_cast<Scene *>(win);
@@ -2377,6 +2676,60 @@ GMTVTK_API int gmtvtk_pce_close(void) {
 	return pceClose() ? 1 : 0;
 }
 #endif // GMTVTK_PCE
+
+#ifdef GMTVTK_WCDVIEWER
+// EXPERIMENTAL (IGMT_WITH_WCDVIEWER in CMakeLists.txt; Julia lists these in _LIB_OPTIONAL).
+// The water column viewer (port of kmwcd_viewer.py, deps/src/wcdviewer/). Its data side is Julia's
+// (src/wcdviewer.jl), wired the first time the viewer is opened -- never at start-up.
+static WcdHost g_wcdCallbacks;
+GMTVTK_API void gmtvtk_set_wcd_callbacks(void *open, void *ping, void *bottom, void *pick) {
+	g_wcdCallbacks.open = reinterpret_cast<decltype(g_wcdCallbacks.open)>(open);
+	g_wcdCallbacks.ping = reinterpret_cast<decltype(g_wcdCallbacks.ping)>(ping);
+	g_wcdCallbacks.bottom = reinterpret_cast<decltype(g_wcdCallbacks.bottom)>(bottom);
+	g_wcdCallbacks.pick = reinterpret_cast<decltype(g_wcdCallbacks.pick)>(pick);
+}
+static WcdHost wcdViewerHost() {
+	WcdHost h = g_wcdCallbacks;
+	h.base = mbeditViewerHost();
+	h.base.busyText = [](const char *text) {      // the app's ONE busy notice, named for this tool
+		if (!g_progress)
+			showBusyDialog("Water column viewer");
+		if (g_progress) {
+			g_progress->setLabelText(QString::fromUtf8(text));
+			QApplication::processEvents();
+		}
+	};
+	return h;
+}
+static bool wcdWired() { return g_wcdCallbacks.open && g_wcdCallbacks.ping; }
+
+// Open the viewer (or raise it), with `file` loaded when given. 1 = open.
+GMTVTK_API int gmtvtk_wcd_open(const char *file) {
+	ensureApp();
+	if (!wcdWired())
+		return 0;
+	return wcdOpenWindow(nullptr, wcdViewerHost(), QString::fromUtf8(file ? file : "")) ? 1 : 0;
+}
+// [open, npings, current ping, npicks, nbottom] -> out[0:n-1]
+GMTVTK_API int gmtvtk_wcd_state(int *out, int n) {
+	return wcdState(out, n);
+}
+GMTVTK_API int gmtvtk_wcd_set_ping(int i) {
+	return wcdSetPing(i) ? 1 : 0;
+}
+GMTVTK_API int gmtvtk_wcd_pick_at(double x, double depth) {
+	return wcdPickAt(x, depth) ? 1 : 0;
+}
+GMTVTK_API int gmtvtk_wcd_save_png(const char *path) {
+	return (path && wcdSavePng(QString::fromUtf8(path))) ? 1 : 0;
+}
+GMTVTK_API int gmtvtk_wcd_grab_window(const char *path) {
+	return (path && wcdGrabWindow(QString::fromUtf8(path))) ? 1 : 0;
+}
+GMTVTK_API int gmtvtk_wcd_close(void) {
+	return wcdClose() ? 1 : 0;
+}
+#endif // GMTVTK_WCDVIEWER
 
 // Set the path to the world logo image painted in the basemap picker (data/etopo4_logo.jpg).
 GMTVTK_API void gmtvtk_set_basemap_logo(const char *path) {
@@ -7949,6 +8302,12 @@ GMTVTK_API int gmtvtk_widget_enabled_test(const char *name) {
 // where it was — for the few items that press the REAL mouse, which needs the window on screen.
 // Menus, combo lists and tooltips are left alone. Returns the PREVIOUS state (0/1), so an item that
 // switches it off can put back exactly what it found; -1 without an application.
+// ...AND NO TEST EVER WAITS ON A DIALOG. A message box raised while the windows are parked is off
+// screen and modal: nobody can see it or press it, and the run used to hang on it for good (the
+// mbvelocitytool item, on "Unable to open the Levitus database"). Each one is recorded and dismissed
+// as it appears, so the item goes on to its own checks, and the run's verdict lists every box that
+// came up (gmtvtk_dismissed_dialogs_test, test/runtests.jl): a failure, said in the box's own words.
+static QStringList g_testDismissedDialogs;
 struct TestWindowParker : QObject {
 	bool on = false;
 	static QRect desk() {
@@ -7967,6 +8326,17 @@ struct TestWindowParker : QObject {
 		w->move(d.left() - w->frameGeometry().width() - 1000, d.top());
 	}
 	bool eventFilter(QObject *o, QEvent *e) override {
+		if (on && e->type() == QEvent::Show) {
+			if (auto *mb = qobject_cast<QMessageBox *>(o)) {
+				g_testDismissedDialogs << (mb->windowTitle() + ": " + mb->text() +
+				                           (mb->informativeText().isEmpty() ? QString() : " " + mb->informativeText()))
+				                              .simplified();
+				std::fprintf(stderr, "[test] dismissed a dialog no one could see: %s\n",
+				             g_testDismissedDialogs.back().toUtf8().constData());
+				QPointer<QMessageBox> box(mb);
+				QTimer::singleShot(0, mb, [box]() { if (box) box->done(QDialog::Rejected); });
+			}
+		}
 		if (on && (e->type() == QEvent::Show || e->type() == QEvent::Move)) {
 			QWidget *w = qobject_cast<QWidget *>(o);
 			if (eligible(w) && w->isVisible()) park(w);
@@ -7974,6 +8344,16 @@ struct TestWindowParker : QObject {
 		return QObject::eventFilter(o, e);
 	}
 };
+// the message boxes dismissed so far (see above), newline-separated into buf; returns how many
+GMTVTK_API int gmtvtk_dismissed_dialogs_test(char *buf, int cap) {
+	const QByteArray b = g_testDismissedDialogs.join('\n').toUtf8();
+	if (buf && cap > 0) {
+		const int n = std::min(int(b.size()), cap - 1);
+		std::memcpy(buf, b.constData(), size_t(n));
+		buf[n] = '\0';
+	}
+	return int(g_testDismissedDialogs.size());
+}
 GMTVTK_API int gmtvtk_hide_windows_test(int on) {
 	if (!QApplication::instance()) return -1;
 	// This DLL's own ensureApp() looks only at ITS g_app, which is still null here: the first test hook

@@ -24,6 +24,7 @@
 #include <QString>
 
 #include <array>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -66,7 +67,10 @@ struct MbGrdVizHost {
 	bool (*alive)(void *win) = nullptr;
 	QWidget *(*window)(void *win) = nullptr;
 	QString (*title)(void *win) = nullptr;
+	// the grid the window SHOWS (its last opened, topmost visible one), not merely its first
 	bool (*grid)(void *win, MbGrdVizGrid &g) = nullptr;
+	// a cheap identity of that grid (no copy of z): changes when another grid takes the window; "" = none
+	std::string (*gridKey)(void *win) = nullptr;
 	// open a file into the window through the viewer's ONE file-open door (a grid joins it as a
 	// raster of its own); with no window, into a new one. Returns the window it went into.
 	void *(*openFile)(void *win, const char *path) = nullptr;

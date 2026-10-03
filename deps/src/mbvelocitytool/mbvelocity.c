@@ -2716,10 +2716,13 @@ int mbvt_mbio_open(char *msg, int msglen) {
 
 	/* the Levitus database ships with MB-System: <prefix>/share/mbsystem, beside the <prefix>/bin
 	   (or lib) folder the library is in -- of the library's REAL folder (a library reached through a
-	   linked folder reports the link), else of the folder as named; INTERACTIVEGMT_LEVITUS overrides */
+	   linked folder reports the link), else of the folder as named; INTERACTIVEGMT_LEVITUS overrides.
+	   An MBIO used straight from an MB-System BUILD tree (<src>/build/src/mbio/mbio.dll) has no
+	   share/mbsystem: there the database is the source tree's src/share/LevitusAnnual82.dat. So each
+	   folder above the library, up to four, is asked for either layout. */
 	mbvt_levitus_path[0] = '\0';
 	{
-		char cand[3][MB_PATH_MAXLINE];
+		char cand[17][MB_PATH_MAXLINE];
 		int ncand = 0;
 		const char *env = getenv("INTERACTIVEGMT_LEVITUS");
 		if (env != NULL && env[0] != '\0')
@@ -2753,19 +2756,19 @@ int mbvt_mbio_open(char *msg, int msglen) {
 				continue;
 			char dir[MB_PATH_MAXLINE];
 			snprintf(dir, sizeof(dir), "%s", bases[b]);
-			for (int up = 0; up < 2; up++) {          /* strip the file name, then its folder */
+			for (int up = 0; up < 5; up++) {          /* the file name, then one folder at a time */
 				char *sep = strrchr(dir, '/');
 				char *sep2 = strrchr(dir, '\\');
 				if (sep2 > sep)
 					sep = sep2;
-				if (sep == NULL) {
-					dir[0] = '\0';
+				if (sep == NULL)
 					break;
-				}
 				*sep = '\0';
+				if (up == 0 || dir[0] == '\0' || ncand + 2 > 17)
+					continue;                          /* the library's own folder holds no share/ */
+				snprintf(cand[ncand++], MB_PATH_MAXLINE, "%s/share/mbsystem/LevitusAnnual82.dat", dir);   /* installed */
+				snprintf(cand[ncand++], MB_PATH_MAXLINE, "%s/src/share/LevitusAnnual82.dat", dir);        /* build tree */
 			}
-			if (dir[0] != '\0' && ncand < 3)
-				snprintf(cand[ncand++], MB_PATH_MAXLINE, "%s/share/mbsystem/LevitusAnnual82.dat", dir);
 		}
 		for (int i = 0; i < ncand; i++) {
 			struct stat st;
@@ -2774,8 +2777,8 @@ int mbvt_mbio_open(char *msg, int msglen) {
 				break;
 			}
 		}
-		if (mbvt_levitus_path[0] == '\0' && ncand > 0)    /* none there: name the first, for the message */
-			snprintf(mbvt_levitus_path, sizeof(mbvt_levitus_path), "%s", cand[ncand - 1]);
+		if (mbvt_levitus_path[0] == '\0' && ncand > 0)    /* none there: name the installed layout's, for the message */
+			snprintf(mbvt_levitus_path, sizeof(mbvt_levitus_path), "%s", cand[env != NULL && env[0] != '\0' && ncand > 1 ? 1 : 0]);
 	}
 
 	mbvt_mbio = t;

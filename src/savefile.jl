@@ -278,6 +278,8 @@ function _on_forget(scene::Ptr{Cvoid}, ckind::Cstring, cname::Cstring)::Cvoid
 		else
 			name = unsafe_string(cname)
 			_forget_object!(scene, kind, name)
+			# a Base Map tile removed from the window may be added again
+			haskey(_BASEMAP_LOADED, scene) && delete!(_BASEMAP_LOADED[scene], name)
 			# ... and the open-once filter: with this row gone the file it came from may no longer be
 			# displayed at all, and a file that is not displayed must be re-openable (dispatch.jl).
 			_forget_file_element!(scene, name)
@@ -327,6 +329,11 @@ function _forget_window!(scene::Ptr{Cvoid})
 		delete!(d, scene)
 	end
 	delete!(_BM1_SCENES, scene)          # a Set, not a Dict -- same purge, its own call
+	# THE BASE MAP TILES ALREADY ON THE WINDOW (basemap.jl's "already here -> ignore"). Pure Julia
+	# strings. Left behind, the next window opened at the same address took a closed window's tiles for
+	# its own and silently refused to add them (test-scene-gui.jl "basemap on populated window", after
+	# "basemap on empty launcher" closed its window).
+	delete!(_BASEMAP_LOADED, scene)
 	# THE TSUNAMI STATE. Pure Julia data (every buffer it hands the viewer is copied there:
 	# gmtvtk_aqua_set_bathy_h -> gridCopyToCM, the layer pushes likewise). Left behind, a new window
 	# opened at the same address — the off-screen staging windows above all — was taken for that dead

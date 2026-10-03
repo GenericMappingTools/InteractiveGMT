@@ -47,8 +47,9 @@
 				png = joinpath(d, "soundings.png")
 				@test IG._mbeditviz_editor_save_png(png) && filesize(png) > 2000
 
-				# 'x' = Flag View (the key macro): every good sounding on view flagged
-				@test IG._mbeditviz_editor_key('x')
+				# ',' = Flag View (the key macro; its 'x' is the gizmo's, as in every iGMT view): every good
+				# sounding on view flagged
+				@test IG._mbeditviz_editor_key(',')
 				s = IG._mbeditviz_state()
 				@test s.nflagged == n
 

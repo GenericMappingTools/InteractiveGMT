@@ -183,6 +183,7 @@ struct MbFile {
 
 // ---- the editor: mbedit_callbacks.c's globals ----------------------------------------------
 struct MbEdit {
+	MbParking *parking = nullptr;        // X / minimise park it in Scene Objects (mbParkable)
 	MbEditHost host;
 	QMainWindow *win = nullptr;
 	MbCanvas *canvas = nullptr;
@@ -1482,7 +1483,7 @@ MbEdit *meBuild(QWidget *parent, const MbEditHost &host) {
 		gPlot->addAction(a);
 
 	// buttons
-	QObject::connect(m->quitButton, &QPushButton::clicked, win, &QWidget::close);
+	QObject::connect(m->quitButton, &QPushButton::clicked, win, [m]() { mbParkQuit(m->parking); });
 	// do_next_buffer
 	QObject::connect(m->nextButton, &QPushButton::clicked, win, [m]() {
 		int quit = 0;
@@ -1634,6 +1635,7 @@ MbEdit *meBuild(QWidget *parent, const MbEditHost &host) {
 	m->fileListTimer->start();
 
 	win->installEventFilter(new MbCloseFilter(win));
+	m->parking = mbParkable(win, host, "mbedit");   // after the close filter: a park comes first
 	return m;
 }
 
@@ -1809,9 +1811,8 @@ bool mbeditOpenWindow(QWidget *parent, const MbEditHost &host, const QString &fi
 			QTimer::singleShot(0, m->win, [m]() { meOpenDialog(m); });
 	}
 	MbEdit *m = g_me;
-	m->win->showNormal();
-	m->win->raise();
-	m->win->activateWindow();
+	mbParkRebind(m->parking, host.parkScene);
+	mbParkShow(m->parking);                              // a parked one comes back off its handle
 	if (!file.isEmpty())
 		return meOpenInput(m, QDir::fromNativeSeparators(file).toUtf8(), format, useEsf);
 	return true;
@@ -1879,6 +1880,84 @@ bool mbeditSavePng(const QString &path) {
 bool mbeditClose() {
 	if (!g_me)
 		return false;
-	g_me->win->close();
+	mbParkQuit(g_me->parking);
 	return true;
+}
+
+// ---- parking: the ONE implementation every MB-System tool window uses (mbedit_window.h) ------
+struct MbParking : QObject {
+	QWidget *win;
+	MbEditHost host;
+	QString label;
+	std::function<void *()> where;
+	void *parkedIn = nullptr;            // the viewer window whose Scene Objects holds the handle
+	bool reallyClose = false;            // Quit / the handle's Delete
+
+	MbParking(QWidget *w, const MbEditHost &h, const QString &l, std::function<void *()> wh)
+		: QObject(w), win(w), host(h), label(l), where(std::move(wh)) {}
+	~MbParking() override { unparkNow(); }   // no handle may outlive the window it brings back
+
+	void unparkNow() {
+		if (parkedIn && host.unpark)
+			host.unpark(parkedIn, win);      // the host checks the viewer window is still alive
+		parkedIn = nullptr;
+	}
+	// hide and leave a handle; false when there is no viewer window to hold one
+	bool park() {
+		void *pref = where ? where() : nullptr;
+		void *into = host.parkWhere ? host.parkWhere(pref ? pref : host.parkScene) : nullptr;
+		if (!into || !host.park)
+			return false;
+		unparkNow();                         // re-parked elsewhere: never two handles
+		win->hide();
+		parkedIn = into;
+		const QByteArray l = label.toUtf8();
+		host.park(into, win, l.constData(), [this]() { mbParkShow(this); }, [this]() { mbParkQuit(this); });
+		return true;
+	}
+	bool eventFilter(QObject *o, QEvent *e) override {
+		if (o == win && e->type() == QEvent::Close && !reallyClose && park()) {
+			e->ignore();
+			return true;                     // the tool's own close filter (its quit) never sees it
+		}
+		return QObject::eventFilter(o, e);
+	}
+};
+
+MbParking *mbParkable(QWidget *win, const MbEditHost &host, const QString &label, std::function<void *()> where) {
+	if (!win)
+		return nullptr;
+	auto *p = new MbParking(win, host, label, std::move(where));
+	win->installEventFilter(p);
+	// minimise means park: the viewer's shared handler (it hides first; with nowhere to park, back it comes)
+	if (host.parkOnMinimise)
+		host.parkOnMinimise(win, [p]() {
+			if (!p->park())
+				p->win->show();
+		});
+	return p;
+}
+
+void mbParkShow(MbParking *p) {
+	if (!p)
+		return;
+	p->unparkNow();
+	p->win->setWindowState(p->win->windowState() & ~Qt::WindowMinimized);
+	p->win->showNormal();
+	p->win->raise();
+	p->win->activateWindow();
+}
+
+void mbParkRebind(MbParking *p, void *scene) {
+	if (p && scene)
+		p->host.parkScene = scene;
+}
+
+void mbParkQuit(MbParking *p) {
+	if (!p)
+		return;
+	p->reallyClose = true;
+	p->unparkNow();
+	if (!p->win->close())
+		p->reallyClose = false;              // the tool kept itself open: its X parks again
 }

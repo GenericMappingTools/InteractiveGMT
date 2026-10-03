@@ -121,13 +121,15 @@ InteractiveGMT._TEST_MODE[] = true
 # that bring their window back are the two that press the REAL mouse (test-aquamoto-transport-gui.jl),
 # for as long as they press. INTERACTIVEGMT_TEST_SHOW=1 leaves every window on screen, to watch a run.
 const _SHOW_GUI = lowercase(strip(get(ENV, "INTERACTIVEGMT_TEST_SHOW", "0"), [' ', '"', '\''])) in ("1", "true", "yes", "on")
+const _TEST_LIB = Ref{Ptr{Cvoid}}(C_NULL)        # the test DLL, for the dialog verdict at the end
 if _RUN_GUI && !_SHOW_GUI
 	let name = Sys.iswindows() ? "gmtvtk_test.dll" : Sys.isapple() ? "libgmtvtk_test.dylib" : "libgmtvtk_test.so",
 	    libs = filter(isfile, [joinpath(InteractiveGMT._PKGROOT, "deps", "build", name),
 	                           joinpath(first(Base.DEPOT_PATH), "gmtvtk_runtime", "deps", "build", name)])
 		ok = try
 			ccall(InteractiveGMT._fn(:gmtvtk_app_init), Cint, ()) == 1 && !isempty(libs) &&
-				ccall(InteractiveGMT.Libdl.dlsym(InteractiveGMT.Libdl.dlopen(first(libs)), :gmtvtk_hide_windows_test),
+				(_TEST_LIB[] = InteractiveGMT.Libdl.dlopen(first(libs)); true) &&
+				ccall(InteractiveGMT.Libdl.dlsym(_TEST_LIB[], :gmtvtk_hide_windows_test),
 				      Cint, (Cint,), 1) >= 0
 		catch e
 			@warn "tests: could not park the GUI windows off screen" exception = (e,)
@@ -137,11 +139,38 @@ if _RUN_GUI && !_SHOW_GUI
 	end
 end
 
-@run_package_tests verbose=true filter = ti ->
-	(_RUN_GUI || !(:gui in ti.tags)) && (_RUN_NET || !(:net in ti.tags)) &&
-	(isempty(_ONLY) || occursin(_ONLY, ti.name)) &&
-	(isempty(_ONLYFILE) || occursin(_ONLYFILE, ti.filename)) &&
-	(isempty(_ONLYTAG) || Symbol(_ONLYTAG) in ti.tags)
+# PROGRESS. TestItemRunner says nothing while it runs, and a full run takes many minutes. The filter
+# below sees every item before any runs, so it counts the ones that will run (N); the testset it is
+# given is made once per file and once per item as each STARTS, so each start is reported here:
+# a file as "── name", an item as "[k/N] elapsed  name". Printed to stdout and flushed at once, so a
+# log being tailed shows where the run is.
+const _PROGRESS_ITEMS = Set{String}()
+const _PROGRESS_DONE = Ref(0)
+const _PROGRESS_T0 = Ref(time())
+function _progress_testset(name::AbstractString; verbose::Bool = false)
+	if name in _PROGRESS_ITEMS
+		_PROGRESS_DONE[] += 1
+		t = round(Int, time() - _PROGRESS_T0[])
+		println("[", _PROGRESS_DONE[], "/", length(_PROGRESS_ITEMS), "] ", t ÷ 60, "m", lpad(t % 60, 2, '0'), "s  ", name)
+	else
+		println("── ", name)
+	end
+	flush(stdout)
+	return Test.DefaultTestSet(name; verbose = verbose)
+end
+function _progress_filter(ti)
+	# DROPPED FOR NOW (user, 2026-10-03): the PngQuant module is not included in the package
+	# (src/InteractiveGMT.jl, its include line commented out), so its unit tests cannot run.
+	occursin("test-pngquant", ti.filename) && return false
+	run = (_RUN_GUI || !(:gui in ti.tags)) && (_RUN_NET || !(:net in ti.tags)) &&
+	      (isempty(_ONLY) || occursin(_ONLY, ti.name)) &&
+	      (isempty(_ONLYFILE) || occursin(_ONLYFILE, ti.filename)) &&
+	      (isempty(_ONLYTAG) || Symbol(_ONLYTAG) in ti.tags)
+	run && push!(_PROGRESS_ITEMS, ti.name)
+	return run
+end
+
+@run_package_tests verbose=true filter = _progress_filter testset = _progress_testset
 
 # THE VERDICT ON THE WARNINGS. Every tool callback catches, logs "X FAILED: …" and returns 0, which
 # is right for the GUI and blind for a test: an item that asserts `call(kv) == 0` for a refusal it
@@ -158,6 +187,20 @@ end
 	isempty(bad) || @error "Tools failed with internal errors, not with a refusal a user could " *
 	                       "act on. Each of these is a bug:\n  " * join(bad, "\n  ")
 	@test isempty(bad)
+end
+
+# NO MESSAGE BOX CAME UP. With the windows parked off screen a modal box can be neither seen nor
+# pressed; the test DLL dismisses each one so the run cannot hang on it (gmtvtk_dismissed_dialogs_test)
+# -- and every one it had to dismiss is a failure here, in the box's own words.
+@testset "no dialog was raised that no one could see" begin
+	p = _TEST_LIB[] == C_NULL ? C_NULL : InteractiveGMT.Libdl.dlsym(_TEST_LIB[], :gmtvtk_dismissed_dialogs_test; throw_error = false)
+	if p !== nothing && p != C_NULL
+		buf = zeros(UInt8, 1 << 16)
+		n = ccall(p, Cint, (Ptr{UInt8}, Cint), buf, Cint(length(buf)))
+		n == 0 || @error "Message boxes came up during the run (dismissed so it could not hang):\n  " *
+		                 replace(String(buf[1:something(findfirst(==(0x00), buf), 1)-1]), "\n" => "\n  ")
+		@test n == 0
+	end
 end
 
 # ...and the wider rule, which is the one that stops a failure hiding: EVERY message in the sink got

@@ -1,0 +1,38 @@
+<h3>Water column viewer</h3>
+<p>Kongsberg EM multibeam water column (EM 124, 304, 712, 2040, ...), one ping at a time: raw beam
+amplitude (0.5&nbsp;dB units) against across-track distance and depth.</p>
+
+<h4>Files</h4>
+<ul>
+<li><b>.kmwcd</b> &mdash; the water column (<tt>#MWC</tt>), with position (<tt>#SPO</tt>) and heading
+(<tt>#SKM</tt>) for the time, speed and position shown.</li>
+<li><b>.kmall</b> &mdash; the same line's bathymetry. Beside the .kmwcd with the same name it supplies the
+<b>Bottom</b> detections (<tt>#MRZ</tt>). A .kmall holding water column itself can be opened directly.</li>
+</ul>
+
+<h4>Controls</h4>
+<ul>
+<li><b>Depth min/max</b>, <b>Amp min/max</b> &mdash; the depth window and the colour scale range.</li>
+<li><b>Across max</b> &mdash; a fixed half width so the plot does not jump between pings; 0 fits each ping.</li>
+<li><b>Ping</b> slider, its mouse wheel, <b>Left/Right</b> keys &mdash; one ping at a time;
+<b>Replay</b> plays them at <b>Pings / s</b>.</li>
+<li><b>Bottom</b> &mdash; red = amplitude detection, dark blue = phase, green = rejected; filled = normal,
+hollow = extra detection.</li>
+<li><b>Pick</b> &mdash; a left click on the plot records the nearest sample, marks it, and lists it under
+the plot with the ship's position and the point's own latitude/longitude (azimuth from the heading, else
+the course over ground). <b>Save as TXT</b>, <b>Remove selected</b>, <b>Clear</b>.</li>
+<li><b>Save Image</b> &mdash; PNG or JPEG at twice the screen resolution, with the ping's metadata on it.</li>
+</ul>
+
+<h4>Example data</h4>
+<p>NOAA Ship <i>Okeanos Explorer</i>, cruise EX2101, EM304 (public, no account):</p>
+<ul>
+<li><a href="https://noaa-wcsd-pds.s3.amazonaws.com/data/raw/Okeanos_Explorer/EX2101/EM304/0075_20210418_205810_EX2101_MB.kmwcd">0075_20210418_205810_EX2101_MB.kmwcd</a> (0.9 MB)</li>
+<li><a href="https://noaa-wcsd-pds.s3.amazonaws.com/data/raw/Okeanos_Explorer/EX2101/EM304/0001_20210502_134000_EX2101_MB.kmwcd">0001_20210502_134000_EX2101_MB.kmwcd</a> (3 MB)</li>
+</ul>
+<p>The whole collection: <a href="https://www.ncei.noaa.gov/products/water-column-sonar-data">NCEI Water Column Sonar Data</a>;
+the matching .kmall lines: <a href="https://www.ncei.noaa.gov/products/seafloor-mapping">NCEI seafloor mapping</a>.</p>
+
+<h4>Credits</h4>
+<p>A port of <a href="https://github.com/cdsferreira/wcd_viewer">KMWCD Viewer</a> (<tt>kmwcd_viewer.py</tt>, CC0&nbsp;1.0)
+by <b>Christian dos Santos Ferreira</b> (MARUM, University of Bremen).</p>

@@ -349,6 +349,9 @@ const _LIB_OPTIONAL = (
 	:gmtvtk_pce_open, :gmtvtk_pce_state, :gmtvtk_pce_set_edit_mode, :gmtvtk_pce_set_vertical_exagg,
 	:gmtvtk_pce_rubber_band, :gmtvtk_pce_set_elev_profile, :gmtvtk_pce_canvas_size, :gmtvtk_pce_save_png,
 	:gmtvtk_pce_close,
+	# EXPERIMENTAL water column viewer (deps/src/wcdviewer/, IGMT_WITH_WCDVIEWER)
+	:gmtvtk_set_wcd_callbacks, :gmtvtk_wcd_open, :gmtvtk_wcd_state, :gmtvtk_wcd_set_ping, :gmtvtk_wcd_pick_at,
+	:gmtvtk_wcd_save_png, :gmtvtk_wcd_grab_window, :gmtvtk_wcd_close,
 )
 
 # Why the library failed to load, kept so the FIRST viewer call can repeat it. __init__ is

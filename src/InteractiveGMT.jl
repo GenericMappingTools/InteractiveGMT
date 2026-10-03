@@ -168,6 +168,7 @@ isfile(joinpath(@__DIR__, "mbgrdviz.jl")) && include("mbgrdviz.jl")
 # EXPERIMENTAL pointCloudEditor (MB-System's pointCloudEditor, deps/src/pointcloudeditor/), switched the same
 # way: this line for the Julia side (`pointcloudeditor`), IGMT_WITH_PCE for the C side.
 isfile(joinpath(@__DIR__, "pointcloudeditor.jl")) && include("pointcloudeditor.jl")
+include("wcdviewer.jl")  # Geophysics > MB-System > Water column viewer (port of kmwcd_viewer.py; KMALL #MWC/#SPO/#SKM/#MRZ)
 include("isocs.jl")      # parse Mirone data/isocs/*.dat isochron header -> write via shapenc
 include("palettes.jl")   # Image > Color Palettes: the six palette families + CPT I/O (port of Mirone color_palettes.m)
 include("bandslist.jl")  # Image > Load Bands: multiband/.vrt band picker (port of Mirone bands_list.m)
