@@ -16,6 +16,17 @@ const _GMT_FFT_FWD     = Cint(0)
 const _GMT_FFT_INV     = Cint(1)
 const _GMT_FFT_COMPLEX = Cuint(1)   # gmt_resources.h: GMT_FFT_REAL = 0U, GMT_FFT_COMPLEX = 1U
 
+# EVERY GMT transform this package runs is preceded by this. On macOS GMT auto-selects Accelerate's
+# vDSP for radix-2 sizes, and its 2-D vDSP path SEGFAULTS on Apple silicon (vDSP_fft2d_zop <-
+# gmtfft_2d_vDSP <- GMT_FFT_2D), killing the whole Julia process. FFTW is linked into the same
+# GMT_jll. The choice lives on the API SESSION, and GMT.jl replaces that session (gmt_restart,
+# resetGMT) — so it is set on the LIVE one right before each transform, never once at startup.
+function _gmt_fft_session!()
+	Sys.isapple() || return nothing
+	ccall((:GMT_Set_Default, GMT.libgmt), Cint, (Ptr{Cvoid}, Cstring, Cstring), GMT.G_API[], "GMT_FFT", "fftw")
+	return nothing
+end
+
 function _gmt_fft_1d!(buf::Vector{Float32}, N::Integer, direction::Cint)
 	return ccall((:GMT_FFT_1D, GMT.libgmt), Cint,
 	             (Ptr{Cvoid}, Ptr{Cfloat}, UInt64, Cint, Cuint),
@@ -35,6 +46,7 @@ _from_interleaved(b::Vector{Float32}) =
 
 # Forward FFT of a real series -> complex spectrum (length N), through GMT.
 function _gmt_fft(y::AbstractVector{<:Real})
+	_gmt_fft_session!()
 	isdefined(GMT, :fft1d) && return GMT.fft1d(y)          # GMT.jl's own wrapper, once available
 	b = _to_interleaved(ComplexF64.(y))
 	_gmt_fft_1d!(b, length(y), _GMT_FFT_FWD) == 0 || error("GMT_FFT_1D forward failed")
@@ -43,6 +55,7 @@ end
 
 # Inverse FFT of a complex spectrum -> complex series (already 1/N-normalised by GMT).
 function _gmt_ifft(F::AbstractVector{<:Complex})
+	_gmt_fft_session!()
 	isdefined(GMT, :fft1d) && return GMT.fft1d(F; inverse=true)
 	b = _to_interleaved(F)
 	_gmt_fft_1d!(b, length(F), _GMT_FFT_INV) == 0 || error("GMT_FFT_1D inverse failed")

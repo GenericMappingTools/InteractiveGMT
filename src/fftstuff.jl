@@ -98,8 +98,8 @@ _fft_ishift(A::Matrix) = circshift(A, (-fld(size(A, 1), 2), -fld(size(A, 2), 2))
 # FFT tool touches a transform, so a change of entry point is a change in one spot.
 # ComplexF32 because that is what GMT_FFT_2D takes (GMT/src/fft1d.jl); the inverse NORMALISES, so a
 # forward+inverse round trip returns the input unchanged (verified: max|err| = 0, DC term = sum).
-_fft_fwd(Z::AbstractMatrix{<:Real}) = GMT.fft2d!(ComplexF32.(Z))
-_fft_inv(F::Matrix{ComplexF32}) = Float64.(real.(GMT.fft2d!(copy(F); inverse = true)))
+_fft_fwd(Z::AbstractMatrix{<:Real}) = (_gmt_fft_session!(); GMT.fft2d!(ComplexF32.(Z)))
+_fft_inv(F::Matrix{ComplexF32}) = (_gmt_fft_session!(); Float64.(real.(GMT.fft2d!(copy(F); inverse = true))))
 
 # ---------------------------------------------------------------------------------------------
 # The grid as a plain Float64 matrix, row 1 = south — through `_zmat`, THE accessor for Julia-side

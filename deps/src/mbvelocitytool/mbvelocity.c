@@ -61,6 +61,11 @@
  *     functions.
  *--------------------------------------------------------------------*/
 
+/* Dl_info / dladdr are GNU extensions: _GNU_SOURCE must precede the FIRST system header */
+#if !defined(_WIN32) && !defined(_GNU_SOURCE)
+#	define _GNU_SOURCE
+#endif
+
 #include <errno.h>
 #include <math.h>
 #include <stdbool.h>
@@ -81,7 +86,6 @@
 #		define R_OK 4
 #	endif
 #else
-#	define _GNU_SOURCE
 #	include <dlfcn.h>
 #	include <unistd.h>
 #endif

@@ -55,7 +55,8 @@ jobs:
             xvfb libxcb-cursor0 libxkbcommon-x11-0 \
             libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 \
             libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 \
-            libgl1 libglx0 libegl1 libopengl0 libglu1-mesa
+            libgl1 libglx0 libegl1 libopengl0 libglu1-mesa \
+            libxtst6
       - uses: julia-actions/julia-buildpkg@v1
       # GMT picks its FFT backend at runtime, and on Apple silicon it picks Accelerate's vDSP —
       # which SEGFAULTS (signal 11) inside vDSP_fft2d_zip, killing the whole test process:

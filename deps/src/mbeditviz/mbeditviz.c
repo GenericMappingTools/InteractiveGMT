@@ -57,6 +57,11 @@
  *     are static.
  *--------------------------------------------------------------------*/
 
+/* Dl_info / dladdr are GNU extensions: _GNU_SOURCE must precede the FIRST system header */
+#if !defined(_WIN32) && !defined(_GNU_SOURCE)
+#	define _GNU_SOURCE
+#endif
+
 #include <ctype.h>
 #include <math.h>
 #include <stdio.h>
@@ -71,9 +76,6 @@
 #	endif
 #	include <windows.h>
 #else
-#	ifndef _GNU_SOURCE
-#		define _GNU_SOURCE
-#	endif
 #	include <dlfcn.h>
 #endif
 

@@ -12,7 +12,7 @@
 @testitem "illumination: no method puts an Image drape on a shaded grid" tags=[:gui, :illum] begin
 	IG = InteractiveGMT
 	include(joinpath(@__DIR__, "ve_helpers.jl"))
-	using GMT
+	using InteractiveGMT.GMT
 	n = 120
 	z = Float32[10.0 + 5.0 * sin(i / 9) * cos(j / 7) + 0.3 * (i + j) / n for j in 1:n, i in 1:n]
 	for j in 1:n, i in 1:n

@@ -1485,7 +1485,7 @@ Mb3dsdg *msBuild(QWidget *parent, const MbEditHost &host) {
 		m->grabActor->SetMapper(m2);
 		m->grabActor->GetProperty()->SetColor(1.0, 1.0, 0.0);
 		m->grabActor->GetProperty()->SetLineWidth(3.0);
-		m->ren->AddActor2D(m->grabActor);
+		m->ren->AddViewProp(m->grabActor);	// AddActor2D: gone in VTK 9.7 (macOS CI)
 	}
 
 	// edit mode toggles, ARMED like iGMT's draw tools: a click arms that mode (the left button edits),

@@ -10,7 +10,7 @@
 
 @testitem "pointCloudEditor: grid in UTM, rubber-band erase/restore, exaggeration, elevation profile, swath" tags=[:gui] begin
 	IG = InteractiveGMT
-	using GMT
+	using InteractiveGMT.GMT
 	src = get(ENV, "INTERACTIVEGMT_PCE_TESTFILE",
 	          raw"C:\progs_cygw\MB-System_take2\test\utilities\testdata\mb57\TN136HS.309.snipped.mb57")
 	mbio = get(ENV, "INTERACTIVEGMT_MBIO", "")

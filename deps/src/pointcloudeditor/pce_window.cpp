@@ -307,7 +307,7 @@ void buildWidgets(Pce *m) {
 		bounds[1] = bounds[0] + 50.0;
 		buttonRepresentation->PlaceWidget(bounds.data());
 		textActor->SetDisplayPosition(int(bounds[0] + 12), int(bounds[2] + 20));
-		m->renderer3D_->AddActor2D(textActor);
+		m->renderer3D_->AddViewProp(textActor);	// AddActor2D: gone in VTK 9.7 (macOS CI)
 		m->buttonLabels_.push_back(textActor);
 		vtkNew<vtkButtonWidget> buttonWidget;
 		buttonWidget->SetInteractor(m->renderWindowInteractor_);

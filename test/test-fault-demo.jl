@@ -219,7 +219,7 @@ end
 # tsunami run that consumes both.
 @testitem "elastic: the field is sampled on the window's own grid" tags=[:unit] begin
 	IG = InteractiveGMT
-	using GMT
+	using InteractiveGMT.GMT
 	# A PIXEL-registered bathymetry: the case the text round-trip gets wrong.
 	G = GMT.mat2grid(zeros(Float32, 40, 60); x = collect(range(-3.0, 3.0, length = 61)),
 	                 y = collect(range(-2.0, 2.0, length = 41)), reg = 1)
@@ -244,7 +244,7 @@ end
 # reader keeps cell EDGES). `_okada_on_grid` is the one call that makes it hold.
 @testitem "elastic: the Okada grid matches its source grid exactly" tags=[:unit] begin
 	IG = InteractiveGMT
-	using GMT
+	using InteractiveGMT.GMT
 	okd(G) = IG._okada_on_grid(G; x_start = -1.0, y_start = 36.0, L = 20.0, W = 10.0,
 	                           depth = 0.0, strike = 45.0, dip = 30.0, rake = 90.0, slip = 5.0)
 	# Through a REAL GMT write/read round-trip, so the headers are the ones a dropped file really has

@@ -8386,8 +8386,8 @@ GMTVTK_API int gmtvtk_window_active_test(const char *name) {
 }
 
 // test hook: IS THIS TOP-LEVEL WINDOW OWNED BY ANOTHER WINDOW, in the window system's own sense (Windows:
-// GetWindow(GW_OWNER)) — an owned window can never go behind its owner. 1 owned, 0 not, -1 no such window
-// (or not Windows).
+// GetWindow(GW_OWNER); elsewhere its QWindow's transient parent) — an owned window can never go behind
+// its owner. 1 owned, 0 not, -1 no such window.
 #ifdef _WIN32
 extern "C" __declspec(dllimport) void *__stdcall GetWindow(void *hwnd, unsigned int cmd);   // user32; GW_OWNER = 4
 #endif
@@ -8398,7 +8398,9 @@ GMTVTK_API int gmtvtk_window_owned_test(const char *name) {
 #ifdef _WIN32
 		return GetWindow(reinterpret_cast<void *>(tl->winId()), 4u) ? 1 : 0;
 #else
-		return -1;
+		// Qt's portable name for the Windows owner: the transient parent (WM_TRANSIENT_FOR on X11)
+		QWindow *w = tl->windowHandle();
+		return (w && w->transientParent()) ? 1 : 0;
 #endif
 	}
 	return -1;

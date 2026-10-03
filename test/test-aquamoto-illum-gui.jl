@@ -24,7 +24,7 @@
 	end
 
 	mktempdir() do dir
-		nc = aqf_make_tsunami_nc(joinpath(dir, "tsu_illum.nc"))
+		nc = aqf_make_tsunami_nc(joinpath(dir, "tsu_illum.nc"); coast = true)
 		f = iview()
 		try
 			IG._on_drop(f.h, nc);  aqf_pump(40)
@@ -60,7 +60,7 @@ end
 	end
 
 	mktempdir() do dir
-		nc = aqf_make_tsunami_nc(joinpath(dir, "tsu_illum2.nc"))
+		nc = aqf_make_tsunami_nc(joinpath(dir, "tsu_illum2.nc"); coast = true)
 		f = iview()
 		try
 			IG._on_drop(f.h, nc);  aqf_pump(40)
@@ -94,7 +94,7 @@ end
 	end
 
 	mktempdir() do dir
-		nc = aqf_make_tsunami_nc(joinpath(dir, "tsu_illum3.nc"))
+		nc = aqf_make_tsunami_nc(joinpath(dir, "tsu_illum3.nc"); coast = true)
 		f = iview()
 		try
 			IG._on_drop(f.h, nc);  aqf_pump(40)

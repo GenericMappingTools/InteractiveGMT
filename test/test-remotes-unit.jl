@@ -2,8 +2,8 @@
 # files, no network.
 
 @testitem "RemoteS: helpers and scene names" tags=[:unit, :remotes] begin
-	using InteractiveGMT, GMT
-	import GMT.Dates: DateTime, datetime2julian
+	using InteractiveGMT, InteractiveGMT.GMT
+	import InteractiveGMT.GMT.Dates: DateTime, datetime2julian
 	const R = InteractiveGMT.RemoteS
 
 	@test R.guess_increment_from_coordvecs([1., 1, 1, 1], [1., 1, 1, 1]) == [1.0, 1.0]
@@ -20,7 +20,7 @@
 end
 
 @testitem "RemoteS: spectral indices, one engine for every input form" tags=[:unit, :remotes] begin
-	using InteractiveGMT, GMT
+	using InteractiveGMT, InteractiveGMT.GMT
 	const R = InteractiveGMT.RemoteS
 
 	names = [R.Lsat8_desc[k] for k = 1:7]
@@ -62,7 +62,7 @@ end
 end
 
 @testitem "RemoteS: an N/S flip is a layout change, never a reversed buffer" tags=[:unit, :remotes] begin
-	using InteractiveGMT, GMT
+	using InteractiveGMT, InteractiveGMT.GMT
 	const R = InteractiveGMT.RemoteS
 	@test R._flip_ns_layout("TRB") == "BRB"
 	@test R._flip_ns_layout("BRB") == "TRB"
@@ -75,7 +75,7 @@ end
 end
 
 @testitem "RemoteS: truecolor" tags=[:unit, :remotes] begin
-	using InteractiveGMT, GMT
+	using InteractiveGMT, InteractiveGMT.GMT
 	const R = InteractiveGMT.RemoteS
 	I = R.truecolor(mat2img(rand(UInt16,32,32)), mat2img(rand(UInt16,32,32)), mat2img(rand(UInt16,32,32)))
 	@test I isa GMTimage{UInt8,3} && size(I) == (32, 32, 3)
@@ -85,7 +85,7 @@ end
 end
 
 @testitem "RemoteS: CART classification tree" tags=[:unit, :remotes] begin
-	using InteractiveGMT, GMT
+	using InteractiveGMT, InteractiveGMT.GMT
 	const R = InteractiveGMT.RemoteS
 
 	# Two features, three classes cut by x1 < 0.3, x1 >= 0.3 & x2 < 0.5, else.
@@ -109,8 +109,8 @@ end
 end
 
 @testitem "RemoteS: orbits on InteractiveGMT's SGP4" tags=[:unit, :remotes, :satellite] begin
-	using InteractiveGMT, GMT
-	import GMT.Dates: DateTime
+	using InteractiveGMT, InteractiveGMT.GMT
+	import InteractiveGMT.GMT.Dates: DateTime
 	const R = InteractiveGMT.RemoteS
 	tle = ["1 27424U 02022A   21245.83760660  .00000135  00000-0  39999-4 0  9997",
 	       "2 27424  98.2123 186.0654 0002229  67.6025 313.3829 14.57107527 28342"]	# AQUA, Sept 2021

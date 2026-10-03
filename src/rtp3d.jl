@@ -120,6 +120,7 @@ function _rtp3d(f3d::Matrix{Float64}, incl_fld::Float64, decl_fld::Float64, incl
 	# It replaces a separable row-then-column loop over `fft1d` — same maths one dimension at a time,
 	# but that loop could not run at all: it handed `fft1d` row/column VIEWS, and its methods take a
 	# `Vector`, so every RTP died with `MethodError: no method matching fft1d(::SubArray{...})`.
+	_gmt_fft_session!()
 	F = GMT.fft2d!(ComplexF32.(f3d .- mfin))
 	fout = real.(GMT.fft2d!(ComplexF32.(F ./ O); inverse = true))
 	return fout, k

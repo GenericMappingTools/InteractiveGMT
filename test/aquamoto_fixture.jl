@@ -204,27 +204,139 @@ function aqf_on_screen(body)
 	end
 end
 
-function aqf_realpress(h, dir, down)
-	if down
+# REAL OS mouse input, one implementation per window system, the same four operations each:
+#   aqf_os_prepare()       anything the system needs before a foreign-looking click lands
+#   aqf_os_move(x, y)      put the pointer at screen pixel (x, y) (gmtvtk_aqua_arrow_screen_test's units)
+#   aqf_os_button(down)    press / release the LEFT button where the pointer is
+#   aqf_os_title_at(x, y)  the title of the top-level window the WINDOW SYSTEM finds under (x, y)
+if Sys.iswindows()
+	function aqf_os_prepare()                   # an ALT tap lifts Windows' foreground lock
 		ccall((:keybd_event, "user32"), Cvoid, (UInt8, UInt8, UInt32, UInt), 0x12, 0, 0, 0)
 		ccall((:keybd_event, "user32"), Cvoid, (UInt8, UInt8, UInt32, UInt), 0x12, 0, 2, 0)
+	end
+	aqf_os_move(x, y) = ccall((:SetCursorPos, "user32"), Cint, (Cint, Cint), x, y)
+	aqf_os_button(down) = ccall((:mouse_event, "user32"), Cvoid, (UInt32, UInt32, UInt32, UInt32, UInt),
+	                            down ? 0x0002 : 0x0004, 0, 0, 0, 0)
+	function aqf_os_title_at(x, y)
+		buf = zeros(UInt16, 256)
+		hw = ccall((:WindowFromPoint, "user32"), Ptr{Cvoid}, (NTuple{2,Cint},), (Cint(x), Cint(y)))
+		ccall((:GetWindowTextW, "user32"), Cint, (Ptr{Cvoid}, Ptr{UInt16}, Cint),
+		      ccall((:GetAncestor, "user32"), Ptr{Cvoid}, (Ptr{Cvoid}, UInt32), hw, 2), buf, 256)
+		return transcode(String, buf[1:findfirst(==(0), buf)-1])
+	end
+elseif Sys.isapple()
+	const AQF_CG = "/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices"
+	const AQF_CF = "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation"
+	struct AqfCGPoint; x::Float64; y::Float64; end
+	struct AqfCGRect;  x::Float64; y::Float64; w::Float64; h::Float64; end
+	const AQF_PT = Ref(AqfCGPoint(0, 0))       # Quartz works in POINTS, the hook hands out pixels
+	function aqf_cg_scale()
+		mode = ccall((:CGDisplayCopyDisplayMode, AQF_CG), Ptr{Cvoid}, (UInt32,), ccall((:CGMainDisplayID, AQF_CG), UInt32, ()))
+		pw = ccall((:CGDisplayModeGetPixelWidth, AQF_CG), Csize_t, (Ptr{Cvoid},), mode)
+		w  = ccall((:CGDisplayModeGetWidth, AQF_CG), Csize_t, (Ptr{Cvoid},), mode)
+		ccall((:CGDisplayModeRelease, AQF_CG), Cvoid, (Ptr{Cvoid},), mode)
+		return w == 0 ? 1.0 : pw / w
+	end
+	function aqf_cg_post(type::UInt32)
+		ev = ccall((:CGEventCreateMouseEvent, AQF_CG), Ptr{Cvoid}, (Ptr{Cvoid}, UInt32, AqfCGPoint, UInt32),
+		           C_NULL, type, AQF_PT[], 0)
+		ccall((:CGEventPost, AQF_CG), Cvoid, (UInt32, Ptr{Cvoid}), 0, ev)   # kCGHIDEventTap
+		ccall((:CFRelease, AQF_CF), Cvoid, (Ptr{Cvoid},), ev)
+	end
+	aqf_os_prepare() = nothing
+	function aqf_os_move(x, y)
+		s = aqf_cg_scale()
+		AQF_PT[] = AqfCGPoint(x / s, y / s)
+		aqf_cg_post(UInt32(5))                  # kCGEventMouseMoved
+	end
+	aqf_os_button(down) = aqf_cg_post(UInt32(down ? 1 : 2))    # kCGEventLeftMouseDown / Up
+	aqf_cf_key(name) = unsafe_load(cglobal((name, AQF_CG), Ptr{Cvoid}))
+	function aqf_cf_string(s::Ptr{Cvoid})
+		s == C_NULL && return ""
+		buf = zeros(UInt8, 512)
+		ok = ccall((:CFStringGetCString, AQF_CF), UInt8, (Ptr{Cvoid}, Ptr{UInt8}, Clong, UInt32), s, buf, 512, 0x08000100)
+		return ok == 0 ? "" : unsafe_string(pointer(buf))
+	end
+	function aqf_cf_int(n::Ptr{Cvoid})
+		v = Ref{Int32}(0)
+		n == C_NULL || ccall((:CFNumberGetValue, AQF_CF), UInt8, (Ptr{Cvoid}, Clong, Ptr{Int32}), n, 3, v)
+		return Int(v[])
+	end
+	# The FRONTMOST normal-layer window whose frame holds the point, from the window server's own list.
+	# A window of another process answers "<pid N: name>", so it can never pass for ours.
+	function aqf_os_title_at(x, y)
+		px, py = AQF_PT[].x, AQF_PT[].y
+		arr = ccall((:CGWindowListCopyWindowInfo, AQF_CG), Ptr{Cvoid}, (UInt32, UInt32), 1, 0)  # on screen, front to back
+		get(d, k) = ccall((:CFDictionaryGetValue, AQF_CF), Ptr{Cvoid}, (Ptr{Cvoid}, Ptr{Cvoid}), d, aqf_cf_key(k))
+		try
+			for i in 0:ccall((:CFArrayGetCount, AQF_CF), Clong, (Ptr{Cvoid},), arr) - 1
+				d = ccall((:CFArrayGetValueAtIndex, AQF_CF), Ptr{Cvoid}, (Ptr{Cvoid}, Clong), arr, i)
+				aqf_cf_int(get(d, :kCGWindowLayer)) == 0 || continue
+				r = Ref(AqfCGRect(0, 0, 0, 0))
+				ccall((:CGRectMakeWithDictionaryRepresentation, AQF_CG), UInt8, (Ptr{Cvoid}, Ptr{AqfCGRect}),
+				      get(d, :kCGWindowBounds), r) == 0 && continue
+				(r[].x <= px < r[].x + r[].w && r[].y <= py < r[].y + r[].h) || continue
+				name = aqf_cf_string(get(d, :kCGWindowName))
+				pid = aqf_cf_int(get(d, :kCGWindowOwnerPID))
+				return pid == getpid() ? name : "<pid $pid: $name>"
+			end
+			return ""
+		finally
+			ccall((:CFRelease, AQF_CF), Cvoid, (Ptr{Cvoid},), arr)
+		end
+	end
+else                                            # X11 (Xvfb on CI): the XTEST extension is real input
+	const AQF_X11 = "libX11.so.6"
+	const AQF_XTST = "libXtst.so.6"
+	const AQF_DPY = Ref{Ptr{Cvoid}}(C_NULL)
+	aqf_dpy() = (AQF_DPY[] == C_NULL && (AQF_DPY[] = ccall((:XOpenDisplay, AQF_X11), Ptr{Cvoid}, (Ptr{Cchar},), C_NULL));
+	             @assert AQF_DPY[] != C_NULL "no X display"; AQF_DPY[])
+	aqf_os_prepare() = nothing
+	function aqf_os_move(x, y)
+		ccall((:XTestFakeMotionEvent, AQF_XTST), Cint, (Ptr{Cvoid}, Cint, Cint, Cint, Culong), aqf_dpy(), -1, x, y, 0)
+		ccall((:XSync, AQF_X11), Cint, (Ptr{Cvoid}, Cint), aqf_dpy(), 0)
+	end
+	function aqf_os_button(down)
+		ccall((:XTestFakeButtonEvent, AQF_XTST), Cint, (Ptr{Cvoid}, Cuint, Cint, Culong), aqf_dpy(), 1, down ? 1 : 0, 0)
+		ccall((:XSync, AQF_X11), Cint, (Ptr{Cvoid}, Cint), aqf_dpy(), 0)
+	end
+	# Walk down from the root along the windows the SERVER says hold the pointer (a window manager's
+	# frame first, if there is one) and return the first name found on the way.
+	function aqf_os_title_at(x, y)
+		dpy = aqf_dpy()
+		w = ccall((:XDefaultRootWindow, AQF_X11), Culong, (Ptr{Cvoid},), dpy)
+		rr = Ref{Culong}(0); ch = Ref{Culong}(0); i4 = [Ref{Cint}(0) for _ in 1:4]; m = Ref{Cuint}(0)
+		while true
+			ccall((:XQueryPointer, AQF_X11), Cint,
+			      (Ptr{Cvoid}, Culong, Ref{Culong}, Ref{Culong}, Ref{Cint}, Ref{Cint}, Ref{Cint}, Ref{Cint}, Ref{Cuint}),
+			      dpy, w, rr, ch, i4[1], i4[2], i4[3], i4[4], m)
+			ch[] == 0 && return ""
+			w = ch[]
+			p = Ref{Ptr{Cchar}}(C_NULL)
+			if ccall((:XFetchName, AQF_X11), Cint, (Ptr{Cvoid}, Culong, Ref{Ptr{Cchar}}), dpy, w, p) != 0 && p[] != C_NULL
+				name = unsafe_string(p[])
+				ccall((:XFree, AQF_X11), Cint, (Ptr{Cvoid},), p[])
+				isempty(name) || return name
+			end
+		end
+	end
+end
+
+function aqf_realpress(h, dir, down)
+	if down
+		aqf_os_prepare()
 		x = Ref{Cint}(0); y = Ref{Cint}(0)
 		@assert ccall(GmtvtkTest._test_fn(:gmtvtk_aqua_arrow_screen_test), Cint,
 		              (Ptr{Cvoid}, Cint, Ptr{Cint}, Ptr{Cint}), h, Cint(dir), x, y) == 1
 		aqf_pump(10)
-		ccall((:SetCursorPos, "user32"), Cint, (Cint, Cint), x[], y[])
+		aqf_os_move(x[], y[])
 		sleep(0.6)                                # the foreground switch finishes before the press lands
-		buf = zeros(UInt16, 256)
-		hw = ccall((:WindowFromPoint, "user32"), Ptr{Cvoid}, (NTuple{2,Cint},), (x[], y[]))
-		ccall((:GetWindowTextW, "user32"), Cint, (Ptr{Cvoid}, Ptr{UInt16}, Cint),
-		      ccall((:GetAncestor, "user32"), Ptr{Cvoid}, (Ptr{Cvoid}, UInt32), hw, 2), buf, 256)
-		under = transcode(String, buf[1:findfirst(==(0), buf)-1])
-		@test under == "Aquamoto"                 # the click lands on the arrow, not on another app
+		@test aqf_os_title_at(x[], y[]) == "Aquamoto"   # the click lands on the arrow, not on another app
 		v = Int(ccall(GmtvtkTest._test_fn(:gmtvtk_aqua_slider_value_test), Cint, (Ptr{Cvoid},), h))
-		ccall((:mouse_event, "user32"), Cvoid, (UInt32, UInt32, UInt32, UInt32, UInt), 0x0002, 0, 0, 0, 0)
+		aqf_os_button(true)
 		return v
 	end
-	ccall((:mouse_event, "user32"), Cvoid, (UInt32, UInt32, UInt32, UInt32, UInt), 0x0004, 0, 0, 0, 0)
+	aqf_os_button(false)
 	sleep(0.3)                                  # the up is queued: let the pump deliver it
 	return Int(ccall(GmtvtkTest._test_fn(:gmtvtk_aqua_slider_value_test), Cint, (Ptr{Cvoid},), h))
 end
