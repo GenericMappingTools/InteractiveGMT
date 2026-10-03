@@ -951,6 +951,7 @@ bool mbvelocityOpenWindow(QWidget *parent, const MbEditHost &host, const QString
 		});
 
 		m->win->show();
+		mbPlaceRight(m->win, parent);
 		/* finally allow expose plots */
 		m->expose_plot_ok = true;
 		// the canvas gets its size (and so its image) once the window is laid out

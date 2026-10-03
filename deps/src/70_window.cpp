@@ -28939,10 +28939,8 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		};
 		int n = 0;
 #ifdef GMTVTK_MBEDIT
-		// EXPERIMENTAL "Swath editor (mbedit)": MB-System's mbedit, ported (deps/src/mbedit/, its own
-		// window). Built only with IGMT_WITH_MBEDIT.
 		// Every one of them parks in THIS window's Scene Objects (host parkScene).
-		mGphy->addAction("Swath editor (mbedit)", [win, s, afterPopup]() {
+		mGphy->addAction("MBedit", [win, s, afterPopup]() {
 			afterPopup([win, s]() {
 				MbEditHost h = mbeditViewerHost();
 				h.parkScene = sceneAlive(s) ? s : nullptr;
@@ -28953,21 +28951,20 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		// "CUBE gridding": MB-System's CUBE (mbgrid -F9's engine, deps/src/cube/) on swath files or a
 		// datalist, read through the editor's MBIO (loaded first, the way every tool here loads it).
 		// It is the Interpolate dialog preset on CUBE -- one dialog, one Julia path (src/cube.jl).
-		mGphy->addAction("CUBE gridding (mbgrid -F9)", [win, s, afterPopup]() {
+		mGphy->addAction("CUBE gridding", [win, s, afterPopup]() {
 			afterPopup([win, s]() {
 				if (!mbeditLoadMbio(win, mbeditViewerHost())) return;
 				auto *w = new InterpolationDialog(win, s);
 				if (!w->dlg) return;
 				w->presetCube();
 				w->dlg->show();
+				mbPlaceRight(w->dlg, win);
 			});
 		});
 		++n;
 #endif
 #ifdef GMTVTK_MBVELOCITY
-		// EXPERIMENTAL "Sound velocity editor (mbvelocitytool)": MB-System's mbvelocitytool, ported
-		// (deps/src/mbvelocitytool/, its own window). Built only with IGMT_WITH_MBVELOCITYTOOL.
-		mGphy->addAction("Sound velocity editor (mbvelocitytool)", [win, s, afterPopup]() {
+		mGphy->addAction("MBvelocitytool", [win, s, afterPopup]() {
 			afterPopup([win, s]() {
 				MbEditHost h = mbvelocityViewerHost();
 				h.parkScene = sceneAlive(s) ? s : nullptr;
@@ -28977,9 +28974,9 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		++n;
 #endif
 #ifdef GMTVTK_MBEDITVIZ
-		// EXPERIMENTAL "Bathymetry editor and patch test (mbeditviz)": MB-System's mbeditviz, ported
+		// EXPERIMENTAL "MBeditviz": MB-System's mbeditviz, ported
 		// (deps/src/mbeditviz/; its survey map is a window of this viewer). Built only with IGMT_WITH_MBEDITVIZ.
-		mGphy->addAction("Bathymetry editor and patch test (mbeditviz)", [win, s, afterPopup]() {
+		mGphy->addAction("MBeditviz", [win, s, afterPopup]() {
 			afterPopup([win, s]() {
 				MbEditVizHost h = mbeditvizViewerHost();
 				h.base.parkScene = sceneAlive(s) ? s : nullptr;
@@ -28989,9 +28986,9 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		++n;
 #endif
 #ifdef GMTVTK_MBGRDVIZ
-		// EXPERIMENTAL "Survey planning (mbgrdviz)": MB-System's mbgrdviz, ported onto this window (its
+		// EXPERIMENTAL "MBgrdviz": MB-System's mbgrdviz, ported onto this window (its
 		// sites, routes and navigation become this window's elements). Built only with IGMT_WITH_MBGRDVIZ.
-		mGphy->addAction("Survey planning (mbgrdviz)", [win, s, afterPopup]() {
+		mGphy->addAction("MBgrdviz", [win, s, afterPopup]() {
 			afterPopup([win, s]() {
 				if (!sceneAlive(s)) return;
 				MbGrdVizHost h = mbgrdvizViewerHost();
@@ -29015,11 +29012,11 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		++n;
 #endif
 #ifdef GMTVTK_WCDVIEWER
-		// EXPERIMENTAL "Water column viewer (kmwcd_viewer)": a port of kmwcd_viewer.py (MARUM / MB-System),
+		// EXPERIMENTAL "Water column viewer": a port of kmwcd_viewer.py (MARUM / MB-System),
 		// Kongsberg .kmwcd / .kmall water column. Its Julia side (src/wcdviewer.jl) is wired the first
 		// time it is opened, through the warm-up hook every tool fires -- nothing of it at start-up -- so
 		// the first open waits (wait cursor) the moment that takes. Built only with IGMT_WITH_WCDVIEWER.
-		mGphy->addAction("Water column viewer (kmwcd_viewer)", [win, s, afterPopup]() {
+		mGphy->addAction("Water column viewer", [win, s, afterPopup]() {
 			afterPopup([win, s]() {
 				auto open = [win, s]() {
 					WcdHost h = wcdViewerHost();

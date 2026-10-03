@@ -939,6 +939,7 @@ bool pceOpenWindow(QWidget *parent, const PceHost &host, void *win, const QStrin
 			delete m;
 		});
 		m->win->show();
+		mbPlaceRight(m->win, parent);
 		QApplication::processEvents();
 	}
 	Pce *m = g_pce;

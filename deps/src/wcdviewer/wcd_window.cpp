@@ -758,6 +758,7 @@ bool wcdOpenWindow(QWidget *parent, const WcdHost &host, const QString &file) {
 			delete m;
 		});
 		m->win->show();
+		mbPlaceRight(m->win, parent);
 	}
 	Wcd *m = g_wcd;
 	mbParkRebind(m->parking, host.base.parkScene);

@@ -52,6 +52,7 @@
 #include <QPointer>
 #include <QPushButton>
 #include <QRadioButton>
+#include <QScreen>
 #include <QSignalBlocker>
 #include <QSlider>
 #include <QSpinBox>
@@ -69,6 +70,7 @@
 #	include <windows.h>
 #endif
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <functional>
@@ -819,10 +821,9 @@ void meBuildFileList(MbEdit *m) {
 		m->fileList->clear();
 		for (int i = 0; i < numfiles; i++) {
 			const MbFile &f = m->files[i];
-			const char *lockstr = (m->currentfile == i) ? "<loaded>" : (f.lock ? "<Locked>" : "        ");
-			const char *esfstr = f.esf ? "<esf>" : "     ";
+			// the file and its format only: no Motif status prefixes (<loaded>/<Locked>/<esf>)
 			char value_text[2 * 1024];
-			snprintf(value_text, sizeof(value_text), "%s %s %s %3d", lockstr, esfstr, f.path.c_str(), f.format);
+			snprintf(value_text, sizeof(value_text), "%s %d", f.path.c_str(), f.format);
 			m->fileList->addItem(QString::fromUtf8(value_text));
 		}
 		/* reinstate selection if the number of items is the same as before */
@@ -1803,6 +1804,7 @@ bool mbeditOpenWindow(QWidget *parent, const MbEditHost &host, const QString &fi
 		});
 
 		m->win->show();
+		mbPlaceRight(m->win, parent);
 		m->expose_plot_ok = true;
 		// the canvas gets its size (and so its image) once the window is laid out
 		QApplication::processEvents();
@@ -1883,6 +1885,26 @@ bool mbeditClose() {
 		return false;
 	mbParkQuit(g_me->parking);
 	return true;
+}
+
+// ---- first placement: the ONE every MB-System tool window uses (mbedit_window.h) -------------
+void mbPlaceRight(QWidget *tool, QWidget *viewer) {
+	if (!tool || !viewer)
+		return;
+	QWidget *vw = viewer->window();
+	if (!vw || vw == tool)
+		return;
+	const QRect v = vw->frameGeometry();
+	const QRect t = tool->frameGeometry();
+	int x = v.x() + v.width() - t.width();
+	int y = v.y() + (v.height() - t.height()) / 2;
+	QScreen *scr = vw->screen();
+	if (scr) {
+		const QRect a = scr->availableGeometry();
+		x = std::max(a.left(), std::min(x, a.x() + a.width() - t.width()));
+		y = std::max(a.top(), std::min(y, a.y() + a.height() - t.height()));
+	}
+	tool->move(x, y);   // a top-level's move() places its frame
 }
 
 // ---- parking: the ONE implementation every MB-System tool window uses (mbedit_window.h) ------

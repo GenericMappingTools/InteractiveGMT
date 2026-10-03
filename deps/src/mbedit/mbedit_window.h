@@ -71,6 +71,11 @@ void mbParkShow(MbParking *p);   // bring it back (the handle, or the menu entry
 void mbParkQuit(MbParking *p);   // close for good (Quit, the handle's Delete)
 void mbParkRebind(MbParking *p, void *scene);   // opened again from `scene`: park there from now on (null: keep)
 
+// Where every MB-System tool window first comes up: against the RIGHT edge of the viewer window it was
+// opened from (`viewer`, any widget of it), keeping that window's vertical centre, kept on its screen.
+// Call it right after the window's FIRST show() (its frame size is known then), never on a re-show.
+void mbPlaceRight(QWidget *tool, QWidget *viewer);
+
 // Open the editor, or raise it if it is already open (the engine is a single instance: its
 // state is file-static, as in mbedit). With a `file` (a swath file or a datalist) it is loaded
 // at once, as `mbedit -I file -F format` does; without one, File > Open is offered.

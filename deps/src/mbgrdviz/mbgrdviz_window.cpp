@@ -41,11 +41,14 @@
 #include <QMenu>
 #include <QMessageBox>
 #include <QProcess>
+#include <QPointer>
 #include <QPushButton>
 #include <QSignalBlocker>
 #include <QSpinBox>
+#include <QTextBrowser>
 #include <QTimer>
 #include <QUiLoader>
+#include <QVBoxLayout>
 
 #include <algorithm>
 #include <cmath>
@@ -82,6 +85,9 @@ struct MbGrdViz {
 	QComboBox *viewCombo = nullptr;
 	QComboBox *routeCombo = nullptr;
 	QComboBox *areaCombo = nullptr;
+	MbGrdVizLine selLine;                                // the last line selected in the view with a double-click
+	void *selLineWin = nullptr;                          // the window it was selected in (null: none)
+	std::string selNow;                                  // the name selected at the last look ("" = none)
 	QComboBox *regionCombo = nullptr;
 	QDoubleSpinBox *areaWidth = nullptr;
 	QListWidget *navList = nullptr;
@@ -275,7 +281,7 @@ int gvBind(MbGrdViz *m, void *win) {
 
 // ---- the pull / push of routes and sites (see the head of this file) -------------------------
 bool gvIsAreaLine(MbGrdViz *m, const MbGrdVizLine &l) {
-	return m->areaCombo && !l.closed && l.v.size() == 2 && m->areaCombo->currentText() == QString::fromStdString(l.name);
+	return m->areaCombo && !l.closed && l.v.size() >= 2 && m->areaCombo->currentText() == QString::fromStdString(l.name);
 }
 
 void gvPull(MbGrdViz *m) {
@@ -516,6 +522,30 @@ void gvRefreshLists(MbGrdViz *m) {
 			}
 		}
 	}
+	// the line selected in the view with a double-click (a ship track too): an Area centre line by its
+	// first-to-last chord. Kept as selected while that line is in the window; a NEW selection is chosen.
+	bool pickSel = false;
+	if (gvViewAlive(m, v) && m->host.selectedLine) {
+		MbGrdVizLine l;
+		std::string now;
+		if (m->host.selectedLine(m->views[v].win, l)) {
+			now = l.name;
+			m->selLine = l;
+			m->selLineWin = m->views[v].win;
+		}
+		pickSel = !now.empty() && now != m->selNow;
+		m->selNow = now;
+	}
+	if (m->selLineWin && gvViewAlive(m, v) && m->selLineWin == m->views[v].win && m->host.hasLine &&
+	    m->host.hasLine(m->selLineWin, m->selLine.name.c_str())) {
+		const QString n = QString::fromStdString(m->selLine.name);
+		if (!lines2.contains(n))
+			lines2 << n;
+	}
+	else {
+		m->selLineWin = nullptr;
+		m->selLine = MbGrdVizLine();
+	}
 	auto refill = [](QComboBox *c, const QStringList &items, const QString &first) {
 		const QString keep = c->currentText();
 		QStringList want;
@@ -535,6 +565,13 @@ void gvRefreshLists(MbGrdViz *m) {
 	};
 	refill(m->routeCombo, routes, "All routes");
 	refill(m->areaCombo, lines2, "");
+	if (pickSel) {
+		const int k = m->areaCombo->findText(QString::fromStdString(m->selNow));
+		if (k >= 0) {
+			QSignalBlocker b(m->areaCombo);
+			m->areaCombo->setCurrentIndex(k);
+		}
+	}
 	refill(m->regionCombo, rects, "");
 
 	// the navigation (shared by every view, as libmbview's nav list), checkable
@@ -893,6 +930,11 @@ bool gvShape(MbGrdViz *m, const QString &name, MbGrdVizLine &out) {
 			out = l;
 			return true;
 		}
+	// the line selected in the view with a double-click (an imported line, a ship track)
+	if (m->selLineWin == m->views[m->current].win && QString::fromStdString(m->selLine.name) == name) {
+		out = m->selLine;
+		return true;
+	}
 	return false;
 }
 
@@ -951,9 +993,11 @@ bool gvOpenRegion(MbGrdViz *m) {
 // ---- the survey dialog (do_mbgrdviz_make_survey, _generate_survey, _arearoute_*) ------------
 bool gvSetArea(MbGrdViz *m) {
 	MbGrdVizLine l;
-	if (!gvShape(m, m->areaCombo->currentText(), l) || l.v.size() != 2)
+	if (!gvShape(m, m->areaCombo->currentText(), l) || l.v.size() < 2 || l.closed)
 		return false;
-	return mbgrdviz_set_area(m->current, l.v[0][0], l.v[0][1], l.v[1][0], l.v[1][1], m->areaWidth->value()) == 1;
+	// a two-point line is the centre line itself; a longer one (a ship track) counts by its first-to-last chord
+	const auto &a = l.v.front(), &b = l.v.back();
+	return mbgrdviz_set_area(m->current, a[0], a[1], b[0], b[1], m->areaWidth->value()) == 1;
 }
 
 // do_mbgrdviz_arearoute_recalc: the sensitivity of the controls, then the info text
@@ -1008,8 +1052,8 @@ QString gvGenerate(MbGrdViz *m) {
 	gvSurveyRead(m);
 	gvPull(m);
 	if (!gvSetArea(m)) {
-		QMessageBox::information(m->win, "MBgrdviz", "Draw a line (two points) across the survey area's length in the "
-		                                             "window, and choose it as the Area centre line.");
+		QMessageBox::information(m->win, "MBgrdviz", "Draw a line (two points) across the survey area's length in the window, or double-click a line or ship track in it, "
+		                                             "and choose it as the Area centre line.");
 		return QString();
 	}
 	const int r = mbgrdviz_generate_survey(m->current);
@@ -1040,8 +1084,8 @@ bool gvMakeSurvey(MbGrdViz *m) {
 		return false;
 	gvPull(m);
 	if (!gvSetArea(m)) {
-		QMessageBox::information(m->win, "MBgrdviz", "Draw a line (two points) across the survey area's length in the "
-		                                             "window, and choose it as the Area centre line.");
+		QMessageBox::information(m->win, "MBgrdviz", "Draw a line (two points) across the survey area's length in the window, or double-click a line or ship track in it, "
+		                                             "and choose it as the Area centre line.");
 		return false;
 	}
 	if (!m->survey) {
@@ -1124,6 +1168,87 @@ void gvAbout(MbGrdViz *m) {
 	                   "Ported to InteractiveGMT: the grids, sites, routes and navigation are shown in InteractiveGMT "
 	                   "windows.<br>MBIO: " +
 	                       QString::fromUtf8(mbedit_mbio_version()));
+}
+
+// Help > How to use MBgrdviz (F1): the working guide to this panel, non-modal so it can stay open
+// beside it while the user works. One instance, raised when asked again.
+void gvHelp(MbGrdViz *m) {
+	static QPointer<QDialog> dlg;
+	if (!dlg) {
+		dlg = new QDialog(m->win);
+		dlg->setAttribute(Qt::WA_DeleteOnClose);
+		dlg->setWindowTitle("How to use MBgrdviz");
+		dlg->setWindowFlags(Qt::Dialog | Qt::WindowCloseButtonHint);
+		auto *lay = new QVBoxLayout(dlg);
+		auto *tb = new QTextBrowser(dlg);
+		tb->setOpenExternalLinks(false);
+		tb->setHtml(
+			"<h3>MBgrdviz &mdash; survey planning on a grid</h3>"
+			"<p>MBgrdviz plans and reviews swath surveys on a bathymetry grid. It has no map of its own: "
+			"it works <b>on an InteractiveGMT window</b>. What you draw there is what it plans with, and "
+			"what it makes (routes, sites, tracks) lands there as Scene Objects elements.</p>"
+
+			"<h4>1. Pick the grid (View)</h4>"
+			"<p><b>View</b> lists the windows MBgrdviz plans on; the actions work on the one chosen there, on "
+			"the grid that window shows. A window joins the list when <i>Survey planning (mbgrdviz)</i> is "
+			"opened from it, or when a grid is loaded with <b>Load grid&hellip;</b> / File &gt; Open Primary "
+			"Grid, or dropped on this panel. <i>Open Overlay Grid</i> adds another grid to the same window.</p>"
+
+			"<h4>2. Routes</h4>"
+			"<p><b>Every open polyline in the window is a route.</b> Draw one with the window's "
+			"<i>Polyline</i> (or <i>Line</i>) tool, or read one with File &gt; Open Route File. Move its "
+			"waypoints with the window's own vertex editing (double-click the line). The <b>Route</b> box "
+			"chooses which route the writers save (File &gt; Save Route File, Save Route As &gt; Hypack, "
+			"Kongsberg, SIS, TECDIS, Greensea, &hellip;) and which one <i>Save Profile File</i> follows; "
+			"<i>All routes</i> saves every one. The line under it gives the route's length and waypoints.</p>"
+
+			"<h4>3. Sites</h4>"
+			"<p><b>Every one-point symbol in the window is a site.</b> Place them with the window's "
+			"<i>Symbols</i> tool, or read them with File &gt; Open Site File; File &gt; Save Site File writes "
+			"them all.</p>"
+
+			"<h4>4. Navigation (ship tracks)</h4>"
+			"<p>File &gt; <i>Open Navigation</i> reads the ship track of swath files (or a datalist); "
+			"<i>Open Swath Data</i> adds the swath edges too. Each track is a line of the window, listed in "
+			"<b>Navigation</b>. Check the tracks you want, or press <b>Pick in view</b> and click tracks in "
+			"the window (each click checks or unchecks one; press again to stop). Then <b>Action &gt; Open "
+			"Selected Nav in</b> MBedit (ping editor), MBeditviz (3-D bathymetry editor and patch test), "
+			"MBnavedit or MBvelocitytool opens the checked files. The same editors are on each track's "
+			"right-click menu, under <i>MB-System</i>.</p>"
+
+			"<h4>5. Generate a survey (Area)</h4>"
+			"<ol>"
+			"<li>Give the area a <b>centre line</b>: draw a two-point line along the survey's length "
+			"(<i>Line</i> tool), or double-click a line or ship track in the window. A selected line is "
+			"chosen in <b>Area centre line</b> by itself; a line with more than two points counts by the "
+			"straight chord from its first to its last point.</li>"
+			"<li>Set <b>Area width (m)</b> across that line (0 = half its length).</li>"
+			"<li>Press <b>Survey&hellip;</b> (or Action &gt; Generate Survey Route from Area). In the dialog "
+			"choose uniform line spacing or spacing by swath width (with the platform: surface vessel, "
+			"constant altitude or constant depth), the start corner, cross lines, the route name and colour, "
+			"then <b>Generate Route</b>. The lawnmower route appears in the window as a new route, ready "
+			"to be saved in any of the route formats.</li>"
+			"</ol>"
+
+			"<h4>6. Region</h4>"
+			"<p>Draw a rectangle in the window (<i>Rectangle</i> tool), choose it in <b>Region</b>, and "
+			"Action &gt; <i>Open Region as New View</i> cuts that part of the grid into a new window to plan "
+			"on in detail.</p>"
+
+			"<h4>Good to know</h4>"
+			"<ul>"
+			"<li>The window is the truth: deleting, renaming or moving a line or symbol there changes the "
+			"route or site it is.</li>"
+			"<li>Closing or minimising this panel parks it as a row in the window's Scene Objects; "
+			"double-click that row to bring it back. File &gt; Quit closes it for good.</li>"
+			"<li>Hover any control of the panel for a short description.</li>"
+			"</ul>");
+		lay->addWidget(tb);
+		dlg->resize(560, 620);
+	}
+	dlg->show();
+	dlg->raise();
+	dlg->activateWindow();
 }
 
 // the window to park in (mbParkable): the view it plans on, else any bound one
@@ -1245,6 +1370,7 @@ MbGrdViz *gvBuild(QWidget *parent, const MbGrdVizHost &host) {
 		{"actionMbvelocitytool", [m]() { gvOpenEditor(m, 3); }},
 		{"actionOpenRegion", [m]() { gvOpenRegion(m); }},
 		{"actionMakeSurvey", [m]() { gvMakeSurvey(m); }},
+		{"actionHelp", [m]() { gvHelp(m); }},
 		{"actionAbout", [m]() { gvAbout(m); }},
 	};
 	std::vector<QAction *> found;
@@ -1286,6 +1412,9 @@ MbGrdViz *gvBuild(QWidget *parent, const MbGrdVizHost &host) {
 	QObject::connect(m->navPick, &QPushButton::toggled, win, [m](bool on) { gvPickNav(m, on); });
 	QObject::connect(m->routeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), win, [m](int) { gvRouteInfo(m); });
 	QObject::connect(loadGrid, &QPushButton::clicked, win, [m]() { gvOpenPrimary(m); });
+	// "Survey...": the Action menu's Generate Survey Route from Area, beside the line it works on
+	if (auto *survey = win->findChild<QPushButton *>("surveyButton"))
+		QObject::connect(survey, &QPushButton::clicked, win, [m]() { gvMakeSurvey(m); });
 	// drops: the window takes them (no child of it accepts drops, so they all land here)
 	win->setAcceptDrops(true);
 	win->installEventFilter(new GvDropFilter(win, m));
@@ -1331,6 +1460,7 @@ bool mbgrdvizOpenWindow(QWidget *parent, const MbGrdVizHost &host, void *win, co
 			delete m;
 		});
 		m->win->show();
+		mbPlaceRight(m->win, parent);
 	}
 	MbGrdViz *m = g_gv;
 	mbParkShow(m->parking);                              // a parked one comes back off its handle

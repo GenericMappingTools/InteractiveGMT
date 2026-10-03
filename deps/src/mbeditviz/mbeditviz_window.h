@@ -30,11 +30,15 @@
 class QWidget;
 
 // A shape drawn on the map with the viewer's Draw tools: its Scene Objects name and its vertices
-// in the map's own coordinates (lon/lat on a geographic window, else projected metres).
+// in the map's own coordinates (lon/lat on a geographic window, else projected metres). The line the
+// user SELECTED on the map with a double-click (a navigation track, any imported line) is one too:
+// `selected` marks it, and `nav` is its MB-System navigation name when it is a track ("" otherwise).
 struct MbEditVizShape {
 	std::string name;
 	bool closed = false;
 	bool isRect = false;
+	bool selected = false;
+	std::string nav;
 	std::vector<std::array<double, 2>> v;
 };
 

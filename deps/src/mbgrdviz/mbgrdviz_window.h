@@ -77,6 +77,10 @@ struct MbGrdVizHost {
 	// a new window showing this grid (Open Region as New View)
 	void *(*newWindow)(const char *title, const MbGrdVizGrid &g) = nullptr;
 	std::vector<MbGrdVizLine> (*lines)(void *win) = nullptr;
+	// the line selected in the window with a double-click (a drawn line, or an imported one such as a
+	// ship track, edited in place), false = none; and whether a line of this name is still in the window
+	bool (*selectedLine)(void *win, MbGrdVizLine &l) = nullptr;
+	bool (*hasLine)(void *win, const char *name) = nullptr;
 	bool (*addLine)(void *win, const MbGrdVizLine &l) = nullptr;
 	bool (*removeLine)(void *win, const char *name) = nullptr;
 	std::vector<MbGrdVizPoint> (*points)(void *win) = nullptr;

@@ -260,7 +260,8 @@ endif()
 # src/pointcloudeditor/. ON/OFF with this ONE line (Tools menu entry and gmtvtk_pce_* exports sit behind
 # #ifdef GMTVTK_PCE). It grids swath files with the mbeditviz engine and projects through mbgrdviz's MBIO
 # glue, so it is built only with both.
-set(IGMT_WITH_PCE ON)
+# OFF since 2026-10-03 (user): not good enough yet -- left out of iGMT, code kept for a future revisit.
+set(IGMT_WITH_PCE OFF)
 
 set(PCE_SRC)
 if(IGMT_WITH_PCE AND MBEDITVIZ_SRC AND MBGRDVIZ_SRC AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/pointcloudeditor/pce_window.cpp")

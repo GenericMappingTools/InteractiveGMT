@@ -83,6 +83,8 @@ struct MbEditViz {
 	QAction *actOpen = nullptr, *actNewGrid = nullptr;
 	QGroupBox *mapGroup = nullptr;
 	QComboBox *shapeCombo = nullptr;
+	QString lastSelectedLine;                // the line selected on the map when the list was last filled
+	QStringList lastShapes;                  // the map's shapes then (shapeNames)
 	QDoubleSpinBox *areaAspect = nullptr;
 	QCheckBox *secondaryCheck = nullptr;
 
@@ -300,12 +302,6 @@ void doUpdateFilelist() {
 	MbEditViz *m = g_mv;
 	if (!m)
 		return;
-	const char *lockedstr = "<Locked>";
-	const char *unlockedstr = "        ";
-	const char *loadedstr = "<loaded>";
-	const char *esfyesstr = "<esf>";
-	const char *esfnostr = "     ";
-
 	/* check to see if anything has changed */
 	bool update_filelist = (m->fileList->count() != mbev_num_files);
 
@@ -362,15 +358,9 @@ void doUpdateFilelist() {
 
 		/* build available file list */
 		for (int i = 0; i < mbev_num_files; i++) {
-			struct mbev_file_struct *file = &(mbev_files[i]);
-			const char *lockstrptr = file->load_status ? loadedstr : (file->locked ? lockedstr : unlockedstr);
-			const char *esfstrptr = file->esf_exists ? esfyesstr : esfnostr;
-			const char athchar = (file->n_async_heading > 0) ? 'H' : ' ';
-			const char atschar = (file->n_async_sensordepth > 0) ? 'S' : ' ';
-			const char atachar = (file->n_async_attitude > 0) ? 'A' : ' ';
+			// the file and its format only: no Motif status prefixes (<loaded>/<Locked>/<esf>/HSA)
 			char string[MB_PATH_MAXLINE + 40];
-			snprintf(string, sizeof(string), "%s %s %c%c%c %s %d", lockstrptr, esfstrptr, athchar, atschar, atachar,
-			         mbev_files[i].name, mbev_files[i].format);
+			snprintf(string, sizeof(string), "%s %d", mbev_files[i].name, mbev_files[i].format);
 			m->fileList->addItem(QString::fromUtf8(string));
 		}
 
@@ -598,6 +588,24 @@ T *child(QWidget *root, const char *name, QStringList &missing) {
 	return w;
 }
 
+// The tool's own dialogs (Grid Parameters, Open) are windows of their own: whatever takes the tool or
+// its grid away -- park, minimise, Quit, a re-open on new data, the grid's Apply, the map going --
+// takes them with it, gone from the screen NOW (painted away before any long work starts), never left
+// standing as ghosts with nothing behind them.
+void hideToolDialogs(bool paintNow = true) {
+	MbEditViz *m = g_mv;
+	if (!m)
+		return;
+	bool hid = false;
+	for (QDialog *d : {m->gridDlg, m->openDlg})
+		if (d && d->isVisible()) {
+			d->hide();
+			hid = true;
+		}
+	if (hid && paintNow)
+		QApplication::processEvents();
+}
+
 bool buildGridDialog() {
 	MbEditViz *m = g_mv;
 	if (m->gridDlg)
@@ -642,12 +650,12 @@ bool buildGridDialog() {
 	});
 	QObject::connect(m->cellSizeSlider, &QSlider::sliderReleased, d, []() { doChangeCellSize(g_mv->cellSizeSlider->value()); });
 	// pushButton_gridparameters_apply: dismiss the dialog, then do_mbeditviz_updategrid
-	QObject::connect(apply, &QPushButton::clicked, d, [d]() {
+	QObject::connect(apply, &QPushButton::clicked, d, []() {
 		doGridAlgorithmChange();
-		d->hide();
+		hideToolDialogs();
 		doUpdateGrid();
 	});
-	QObject::connect(dismiss, &QPushButton::clicked, d, &QDialog::hide);
+	QObject::connect(dismiss, &QPushButton::clicked, d, []() { hideToolDialogs(); });
 	return true;
 }
 
@@ -824,6 +832,7 @@ void doDeleteSelected() {
 }
 
 void doQuit() {
+	hideToolDialogs();
 	msgOn("Shutting down...");
 
 	/* destroy any mbview window */
@@ -967,6 +976,41 @@ int setNav(const std::vector<std::array<double, 2>> &poly) {
 	return nselected;
 }
 
+// mbview's nav pick on a navigation TRACK selected on the map: every ping of the loaded file that track
+// is the navigation of. A track is known by its file's name (mbeditviz's own tracks carry it verbatim,
+// mbgrdviz's may carry a path, or " (swath bounds)" on the bounds line). 0 = no loaded file is that track.
+int setNavTrack(const std::string &nav) {
+	MbEditViz *m = g_mv;
+	QString want = QString::fromStdString(nav);
+	if (want.endsWith(" (swath bounds)"))
+		want.chop(int(strlen(" (swath bounds)")));
+	const QString wantBase = QFileInfo(QDir::fromNativeSeparators(want)).fileName();
+	m->navs.clear();
+	m->navpts.clear();
+	int nselected = 0;
+	for (int ifile = 0; ifile < mbev_num_files; ifile++) {
+		struct mbev_file_struct *file = &mbev_files[ifile];
+		if (!file->load_status)
+			continue;
+		const QString name = QString::fromUtf8(file->name);
+		const bool hit = name == want || QFileInfo(QDir::fromNativeSeparators(name)).fileName() == wantBase;
+		std::vector<mbview_navpointw_struct> pts((size_t)MAX(1, file->num_pings));
+		for (int iping = 0; iping < file->num_pings; iping++) {
+			pts[iping].selected = hit;
+			if (hit)
+				nselected++;
+		}
+		m->navpts.push_back(std::move(pts));
+	}
+	for (auto &p : m->navpts) {
+		mbview_nav_struct n;
+		n.navpts = p.data();
+		m->navs.push_back(n);
+	}
+	m->shared.navs = m->navs.data();
+	return nselected;
+}
+
 // the shapes drawn on the map, in the ENGINE's coordinates (UTM metres): on a geographic window they
 // were drawn in lon/lat and are carried over here, the one place the selections read them
 std::vector<MbEditVizShape> mapShapes() {
@@ -986,14 +1030,30 @@ std::vector<MbEditVizShape> mapShapes() {
 
 void refillShapes() {
 	MbEditViz *m = g_mv;
-	const QString keep = m->shapeCombo->currentText();
+	QString keep = m->shapeCombo->currentText();
 	QSignalBlocker b(m->shapeCombo);
 	m->shapeCombo->clear();
-	for (const MbEditVizShape &s : mapShapes())
-		m->shapeCombo->addItem(QString::fromStdString(s.name));
+	QString sel;
+	for (const MbEditVizShape &s : mapShapes()) {
+		const QString nm = QString::fromStdString(s.name);
+		m->shapeCombo->addItem(nm);
+		if (s.selected)
+			sel = nm;
+	}
+	if (!sel.isEmpty() && sel != m->lastSelectedLine)
+		keep = sel;                              // a line just selected on the map is the one meant
+	m->lastSelectedLine = sel;
 	const int i = m->shapeCombo->findText(keep);
 	if (i >= 0)
 		m->shapeCombo->setCurrentIndex(i);
+}
+
+// the shape names as the map has them now (the timer re-fills the list when they change)
+QStringList shapeNames(const std::vector<MbEditVizShape> &shapes) {
+	QStringList out;
+	for (const MbEditVizShape &s : shapes)
+		out << QString::fromStdString(s.name) + (s.selected ? "\n*" : "");
+	return out;
 }
 
 bool selectWith(int what, const QString &name) {
@@ -1007,8 +1067,22 @@ bool selectWith(int what, const QString &name) {
 			shape = &s;
 	if (!shape || shape->v.empty()) {
 		QMessageBox::information(m->win, "MBeditviz",
-		                         "Draw a shape on the survey map first (Draw tools: Rectangle, Line, Polygon), then choose it here.");
+		                         "Draw a shape on the survey map first (Draw tools: Rectangle, Line, Polygon), or "
+		                         "double-click a navigation track on it, then choose it here.");
 		return false;
+	}
+	// Nav on a navigation TRACK selected on the map: the pings of that track (mbview's nav pick on a
+	// nav line), whatever its shape
+	if (what == 2 && !shape->nav.empty() && !shape->closed) {
+		if (setNavTrack(shape->nav) == 0) {
+			QMessageBox::information(m->win, "MBeditviz",
+			                         QString("No file loaded in MBeditviz is the track \"%1\".")
+			                             .arg(QString::fromStdString(shape->nav)));
+			return false;
+		}
+		mbeditviz_selectnav(0);
+		openSoundingEditor();
+		return true;
 	}
 	std::vector<std::array<double, 2>> v = shape->v;
 	if (v.size() > 1 && v.front() == v.back())
@@ -1038,7 +1112,7 @@ bool selectWith(int what, const QString &name) {
 	}
 	else {
 		if (v.size() < 3) {
-			QMessageBox::information(m->win, "MBeditviz", "Selecting navigation needs a closed shape (a rectangle or a polygon).");
+			QMessageBox::information(m->win, "MBeditviz", "Selecting navigation needs a closed shape (a rectangle or a polygon) or a navigation track.");
 			return false;
 		}
 		if (setNav(v) == 0) {
@@ -1059,6 +1133,11 @@ public:
 protected:
 	// do_mbeditviz_quit
 	bool eventFilter(QObject *o, QEvent *e) override {
+		// the window going off screen by any route (park, minimise, close) takes its dialogs along
+		if (g_mv && o == g_mv->win &&
+		    (e->type() == QEvent::Hide ||
+		     (e->type() == QEvent::WindowStateChange && g_mv->win->isMinimized())))
+			hideToolDialogs(/*paintNow=*/false);   // inside an event: no nested event loop
 		if (e->type() == QEvent::Close && g_mv && o == g_mv->win) {
 			if (g_mv->timer)
 				g_mv->timer->stop();
@@ -1240,15 +1319,18 @@ MbEditViz *build(QWidget *parent, const MbEditVizHost &host) {
 		if (!mm)
 			return;
 		if (mm->map && !mapAlive()) {           // its grid was removed from the window: do_mbeditviz_mbview_dismiss_notify
+			hideToolDialogs();
 			mapClose();
 			doMbviewDismissNotify(0);
 		}
 		if (mbev_num_files > 0 && !mbev_message_on)
 			doUpdateFilelist();
 		if (mapAlive() && mm->mapGroup->isEnabled()) {
-			const std::vector<MbEditVizShape> s = mapShapes();
-			if ((int)s.size() != mm->shapeCombo->count())
+			const QStringList now = shapeNames(mapShapes());   // a line selected / let go of counts too
+			if (now != mm->lastShapes) {
+				mm->lastShapes = now;
 				refillShapes();
+			}
 		}
 	});
 	m->timer->start();
@@ -1388,6 +1470,7 @@ bool mbeditvizOpenWindow(QWidget *parent, const MbEditVizHost &host, const QStri
 			delete m;
 		});
 		m->win->show();
+		mbPlaceRight(m->win, parent);
 		QApplication::processEvents();
 	}
 	MbEditViz *m = g_mv;

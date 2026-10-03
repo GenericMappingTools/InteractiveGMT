@@ -201,6 +201,16 @@ function _open_spec_into(scene::Ptr{Cvoid}, spec::AbstractString, name::Abstract
 	if _bands_open_first!(scene, String(spec), String(name), empty, String(recent))
 		return
 	end
+	# An MB-System swath file (.mbXX / .mbXXX, XX = the MBIO format number) or datalist (.mb-1, a list of
+	# swath files: all their soundings, as one cloud) is read through MB-System's own library — the ONE
+	# swath-sounding reader, `_cube_swath_dataset` (cube.jl) — into lon/lat/z soundings, and from there it
+	# is EXACTLY a .laz: the same point-cloud promotion / overlay path below.
+	if occursin(r"^\.mb(\d{2,3}|-1)$", lowercase(splitext(String(spec))[2]))
+		data = _cube_swath_dataset(String(spec))
+		isempty(recent) || _record_recent(recent, data)
+		_drop_into(scene, data, name; promote=empty, source=String(spec))
+		return
+	end
 	n_layers, zmin, zmax = _cube_probe(spec)
 	if n_layers > 1
 		# A header that carries no global z-range (a band stack has none) MUST be scanned: the range is

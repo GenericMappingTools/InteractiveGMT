@@ -167,12 +167,31 @@
       <rect>
        <x>120</x>
        <y>22</y>
-       <width>214</width>
+       <width>144</width>
        <height>24</height>
       </rect>
      </property>
      <property name="toolTip">
-      <string>A line drawn in the window (two points): the centre line of the survey area, from its start to its end.</string>
+      <string>The centre line of the survey area, from its start to its end: a two-point line drawn in the window, or the line selected in it with a double-click (a multi-point line or a ship track counts by its first-to-last chord). Survey... then generates the route.</string>
+     </property>
+    </widget>
+    <widget class="QPushButton" name="surveyButton">
+     <property name="geometry">
+      <rect>
+       <x>268</x>
+       <y>22</y>
+       <width>66</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Survey...</string>
+     </property>
+     <property name="toolTip">
+      <string>Generate Survey Route from Area (the Action menu's entry) over the Area centre line and width.</string>
+     </property>
+     <property name="autoDefault">
+      <bool>false</bool>
      </property>
     </widget>
     <widget class="QLabel" name="labelAreaWidth">
@@ -333,6 +352,8 @@
     <property name="title">
      <string>Help</string>
     </property>
+    <addaction name="actionHelp"/>
+    <addaction name="separator"/>
     <addaction name="actionAbout"/>
    </widget>
    <addaction name="menuFile"/>
@@ -482,6 +503,14 @@
   <action name="actionMakeSurvey">
    <property name="text">
     <string>Generate Survey Route from Area</string>
+   </property>
+  </action>
+  <action name="actionHelp">
+   <property name="text">
+    <string>How to use MBgrdviz</string>
+   </property>
+   <property name="shortcut">
+    <string>F1</string>
    </property>
   </action>
   <action name="actionAbout">

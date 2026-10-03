@@ -2173,6 +2173,9 @@ struct MbVizMap {
 // the line groups each result put in its window, kept past mapClose so a re-grid under the same name
 // replaces them instead of piling a second copy on top (the "replace, never pile up" rule)
 static std::map<std::pair<Scene *, std::string>, std::set<std::string>> g_mbVizGroups;
+// mbeditviz's own navigation tracks, by actor (compared, never dereferenced): their navigation name,
+// which they do NOT carry as Overlay::mbNav (that puts the "MB-System" editors menu on a line)
+static std::map<vtkActor *, std::string> g_mbVizTrackNav;
 
 static bool mbVizIsBase(Scene *s, const std::string &name) {
 	return !s->emptyStart && !s->gridZ.empty() && s->surfName == name;
@@ -2284,7 +2287,15 @@ static MbEditVizHost mbeditvizViewerHost() {
 			return false;
 		if (group && group[0])
 			g_mbVizGroups[std::make_pair(mp->s, mp->name)].insert(group);
-		return mbHostAddTrack(mp->s, xyz, npts, segoff, nseg, r, g, b, width, name, group);
+		if (!mbHostAddTrack(mp->s, xyz, npts, segoff, nseg, r, g, b, width, name, group))
+			return false;
+		// mbeditviz's OWN tracks are already in an editor: no "MB-System" menu on them (or on their
+		// group), which would open mbeditviz from mbeditviz's own output again and again. Their
+		// navigation name is kept here instead, for the map's nav pick (mapShapes).
+		Overlay &ov = mp->s->overlays.back();
+		g_mbVizTrackNav[ov.actor.Get()] = ov.mbNav;
+		ov.mbNav.clear();
+		return true;
 	};
 	h.mapShapes = [](void *map) {
 		std::vector<MbEditVizShape> out;
@@ -2299,6 +2310,27 @@ static MbEditVizHost mbeditvizViewerHost() {
 			sh.isRect = pg.isRect;
 			for (const auto &p : pg.v)
 				sh.v.push_back({p[0], p[1]});
+			out.push_back(std::move(sh));
+		}
+		// the imported line selected with a double-click (edited in place, Scene::ovEdit): a navigation
+		// track is a source line as good as a drawn one
+		const EditVerts e = editVerts(s);
+		if (e.ov && e.valid()) {
+			MbEditVizShape sh;
+			sh.name = e.ov->name;
+			sh.closed = e.closedRing();
+			sh.selected = true;
+			sh.nav = e.ov->mbNav;
+			if (sh.nav.empty()) {
+				auto it = g_mbVizTrackNav.find(e.ov->actor.Get());
+				if (it != g_mbVizTrackNav.end())
+					sh.nav = it->second;
+			}
+			for (int i = 0; i < e.n(); i++) {
+				double p[3];
+				e.get(i, p);
+				sh.v.push_back({p[0], p[1]});
+			}
 			out.push_back(std::move(sh));
 		}
 		return out;
@@ -2513,6 +2545,34 @@ static MbGrdVizHost mbgrdvizViewerHost() {
 			out.push_back(std::move(l));
 		}
 		return out;
+	};
+	h.selectedLine = [](void *win, MbGrdVizLine &l) {
+		Scene *s = static_cast<Scene *>(win);
+		if (!sceneAlive(s))
+			return false;
+		const EditVerts e = editVerts(s);   // the ONE view of what a double-click selected
+		if (!e.valid() || e.n() < 2 || e.closedRing() || (e.pg && e.pg->closed))
+			return false;
+		l = MbGrdVizLine();
+		l.name = e.pg ? e.pg->name : e.ov->name;
+		for (int i = 0; i < e.n(); i++) {
+			double p[3];
+			e.get(i, p);
+			l.v.push_back({p[0], p[1], p[2]});
+		}
+		return true;
+	};
+	h.hasLine = [](void *win, const char *name) {
+		Scene *s = static_cast<Scene *>(win);
+		if (!sceneAlive(s) || !name)
+			return false;
+		for (const auto &pg : s->polys)
+			if (pg.name == name)
+				return true;
+		for (const auto &ov : s->overlays)
+			if (ov.name == name)
+				return true;
+		return false;
 	};
 	h.addLine = [](void *win, const MbGrdVizLine &l) {
 		std::vector<double> xyz;
