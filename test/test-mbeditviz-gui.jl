@@ -82,8 +82,9 @@ end
 
 # :gui scenario for the 3D Soundings PANE of a swath point cloud: MB-System's own test file, opened like any file
 # into an empty window (it comes up as a point cloud), gets the 3-D sounding editor as a narrow right-side pane of
-# THAT window, on the mbeditviz engine with no window of its own. An edit made through the pane (Pick, on the
-# window's own view) reaches the edit save file when the pane closes, and closing it frees the engine.
+# THAT window, its soundings read by MB-System's mbgetdata (no mbeditviz engine, no grid). An edit made through
+# the pane (Pick, on the window's own view) takes a sounding off the good ones, and reaches the edit save file
+# when the pane closes.
 @testitem "3D Soundings pane: a swath cloud gets the editor docked in its window, edits reach the .esf" tags=[:gui] begin
 	IG = InteractiveGMT
 	src = get(ENV, "INTERACTIVEGMT_MBEDITVIZ_TESTFILE",
@@ -104,28 +105,28 @@ end
 				IG._start_pump()
 				IG._on_drop(h, f)                    # the file door: a point cloud + its pane
 				pump()
-				s = IG._mbeditviz_state()
-				@test s.open && s.numloaded == 1 && s.editor
-				@test s.nselected > 0
-				nf = s.nflagged
-				# Pick (edit mode 1) on a good sounding, through the WINDOW's view
+				# the pane's soundings (MB-System's mbgetdata) are there: its good-sounding count
+				good() = ccall(IG._fn(:gmtvtk_mb_cloud_good_h), Cint, (Ptr{Cvoid}, Ptr{Cdouble}, Cint), h, C_NULL, 0)
+				n0 = good()
+				@test n0 > 0
+				@test ccall(IG._fn(:gmtvtk_has_surface), Cint, (Ptr{Cvoid},), h) == 1
+				# Pick (edit mode 1) on a good sounding, through the WINDOW's view: one fewer good sounding
 				@test IG._mbeditviz_editor_mode(1)
 				picked = false
-				for i in 0:min(s.nselected, 200)-1
+				for i in 0:199
 					IG._mbeditviz_editor_click(i)
-					IG._mbeditviz_state().nflagged > nf && (picked = true; break)
+					pump()
+					good() < n0 && (picked = true; break)
 				end
 				@test picked
 				@test !isfile(f * ".esf") || filesize(f * ".esf") == 0   # written at close, not before
-				# closing the pane writes the edits and frees the engine; the cloud window stays
-				@test IG._mbeditviz_close_editor()
-				pump()
-				@test !IG._mbeditviz_state().open
-				@test isfile(f * ".esf") && filesize(f * ".esf") > 0
-				@test ccall(IG._fn(:gmtvtk_has_surface), Cint, (Ptr{Cvoid},), h) == 1
-			finally
-				IG._mbeditviz_close_editor()
+				# closing the window closes its pane, and the pane writes its edits to the .esf
 				ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), h)
+				h = C_NULL
+				pump()
+				@test isfile(f * ".esf") && filesize(f * ".esf") > 0
+			finally
+				h == C_NULL || ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), h)
 				pump()
 			end
 		end
