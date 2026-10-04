@@ -953,6 +953,9 @@ static void lineGroupRenamePrompt(Scene *s, const std::string &gname);   // ask,
 // handle (55_lineprops.cpp): the tracks of a group, and the submenu itself (nothing added for none).
 static std::vector<std::string> lineGroupMbNavs(Scene *s, const std::string &gname);
 static std::vector<std::pair<std::string, int>> lineGroupMbFiles(Scene *s, const std::string &gname);
+// A point cloud's Scene Objects menus (50_scene.cpp): its master handle and its "Points" row
+static void cloudObjectMenu(Scene *s, const QPoint &gp);
+static void cloudPointsMenu(Scene *s, const QPoint &gp);
 static void addMbSystemMenu(QMenu &m, const std::vector<std::string> &navs, QWidget *parent = nullptr,
                             const std::vector<std::pair<std::string, int>> &own = {});
 static void overlayBuildFill(Overlay &ov);                                 // filled overlay's triangles (50_scene.cpp)

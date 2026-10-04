@@ -577,7 +577,7 @@ static void textLabelMenu(Scene *s, vtkProp3D *act, const QPoint &globalPos) {
 // colourbar / profile). Drawn into a 16x16 transparent pixmap (matches the small checkbox).
 enum ObjIcon { IC_Surface, IC_Image, IC_Line, IC_Points, IC_Curtain,
                IC_Polygon, IC_Polyline, IC_Rect, IC_Circle, IC_Text, IC_ColorBar, IC_Profile, IC_NestRect,
-               IC_Axes, IC_StraightLine, IC_Beachball, IC_LineArea };
+               IC_Axes, IC_StraightLine, IC_Beachball, IC_LineArea, IC_Cloud };
 
 static QPixmap makeObjectIcon(int kind) {
 	// Drawn in a 16-unit coordinate space but rasterised at high DPI (supersampled) so the glyph
@@ -640,6 +640,18 @@ static QPixmap makeObjectIcon(int kind) {
 		p.setPen(Qt::NoPen); p.setBrush(QColor(210, 90, 60));
 		const QPointF pts[5] = {{3,5},{8,3},{13,6},{5,12},{11,12}};
 		for (auto &q : pts) p.drawEllipse(q, 1.8, 1.8);
+		break;
+	}
+	case IC_Cloud: {                                           // point cloud: a dense dot swarm, coloured by depth
+		static const double xy[22][2] = {{2,9},{3.5,7},{4,11},{5,5.5},{5.5,9},{6.5,12.5},{7,7},{7.5,3.5},
+		                                 {8,10},{8.5,13.5},{9,5.5},{9.5,8.5},{10,12},{10.5,3},{11,6.5},
+		                                 {11.5,10},{12,13},{12.5,4.5},{13,8},{13.5,11.5},{14.5,6},{6,2.5}};
+		p.setPen(Qt::NoPen);
+		for (const auto &q : xy) {
+			const double t = (q[1] - 2.0) / 12.0;                // top blue -> bottom yellow, like the CPT
+			p.setBrush(QColor::fromHsvF(0.66 * (1.0 - t), 0.85, 0.9));
+			p.drawEllipse(QPointF(q[0], q[1]), 1.0, 1.0);
+		}
 		break;
 	}
 	case IC_Curtain: {                                         // hanging panel with a wavy bottom
@@ -3024,7 +3036,27 @@ static void rebuildSceneObjects(Scene *s) {
 
 	// ── GRID GROUPS ── each grid = [surface][drape?][colorbar][axes], split by a light rule. A bare
 	// image (view_image) is its own group (image row + axes). Non-grid objects follow, after a rule.
-	if (!s->imageOnly) {
+	if (!s->imageOnly && s->surfCloud) {
+		// A POINT CLOUD is not a grid: its own icon, its own menus (no grid Save / grdinfo / stacking),
+		// a "Points" row for the point properties, and the colour bar + axes it really owns.
+		if (vtkProp3D *sp = surfProp(s)) {
+			const QString nm = s->surfName.empty() ? QString("Point cloud") : QString::fromStdString(s->surfName);
+			beginGroupHandle(nm, IC_Cloud, baseGrpOnOf(sp),
+			        [s](const QPoint &g) { cloudObjectMenu(s, g); },
+			        [s](const QPoint &g) { cloudObjectMenu(s, g); },
+			        "Checkbox toggles the whole group · click for Info / Remove",
+			        /*startFolded=*/true);
+			makeRow("Points", IC_Cloud, sp->GetVisibility() != 0,
+			        [s, sp](bool on) { sp->SetVisibility(on ? 1 : 0); refreshGridColorbar(s); },
+			        [s](const QPoint &g) { cloudPointsMenu(s, g); },
+			        "Click for point size / shape / colour",
+			        [s](const QPoint &g) { cloudPointsMenu(s, g); });
+			colorbarRow(&s->surfShowBar, -1);
+			axesRow(&s->baseAxes);
+			endGroup();
+		}
+	}
+	else if (!s->imageOnly) {
 		if (vtkProp3D *sp = surfProp(s)) {                  // base relief grid group — header IS the surface handle
 			const QString nm = (aquaWrap && !s->aquaVarLabel.empty()) ? QString::fromStdString(s->aquaVarLabel)
 			                  : s->surfName.empty() ? QString("Surface") : QString::fromStdString(s->surfName);
@@ -6015,6 +6047,86 @@ static void applyLineStyle(Scene *s, vtkActor *a, int style) {
 	if (s->widget) s->widget->renderWindow()->Render();
 }
 
+// THE point properties of any element drawn as points (a points overlay, a point cloud): size, with a
+// live spinbox (mirrors the Line Properties dialog), and the round-points toggle.
+static void addPointsPropsActions(QMenu &m, Scene *s, vtkActor *a) {
+	if (!s || !a) return;
+	QWidget *win = s->win;
+	m.addAction("Point size…", [=]() {
+		QDialog dlg(win);
+		dlg.setWindowTitle("Point size");
+		QFormLayout *form = new QFormLayout(&dlg);
+		QDoubleSpinBox *szBox = new QDoubleSpinBox(&dlg);
+		szBox->setRange(1.0, 60.0); szBox->setSingleStep(1.0); szBox->setDecimals(1);
+		szBox->setValue(a->GetProperty()->GetPointSize());
+		QObject::connect(szBox, QOverload<double>::of(&QDoubleSpinBox::valueChanged), [s, a](double sz) {
+			a->GetProperty()->SetPointSize(sz);
+			if (s->widget) s->widget->renderWindow()->Render();   // apply as the value changes
+		});
+		form->addRow("Size (px)", szBox);
+		QDialogButtonBox *bb = new QDialogButtonBox(QDialogButtonBox::Close, &dlg);
+		QObject::connect(bb, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+		QObject::connect(bb, &QDialogButtonBox::rejected, &dlg, &QDialog::accept);
+		form->addRow(bb);
+		dlg.exec();
+	});
+	QAction *rp = m.addAction("Round points", [=]() {
+		a->GetProperty()->SetRenderPointsAsSpheres(!a->GetProperty()->GetRenderPointsAsSpheres());
+		s->widget->renderWindow()->Render();
+	});
+	rp->setCheckable(true); rp->setChecked(a->GetProperty()->GetRenderPointsAsSpheres());
+}
+
+// A point cloud's "Points" row (the window's primary cloud, Scene::surfCloud): the point properties
+// every points element has, and how the points are coloured -- by Z through the cloud's palette (its
+// Color Bar), or one solid colour.
+static void cloudPointsMenu(Scene *s, const QPoint &gp) {
+	auto *a = s ? vtkActor::SafeDownCast(surfProp(s)) : nullptr;
+	if (!a) return;
+	QMenu m(s->widget);
+	addPointsPropsActions(m, s, a);
+	m.addSeparator();
+	auto *mp = a->GetMapper();
+	QAction *aByZ = m.addAction("Colour by Z", [s, mp]() {
+		if (mp) mp->ScalarVisibilityOn();
+		s->widget->renderWindow()->Render();
+	});
+	aByZ->setCheckable(true);
+	aByZ->setChecked(mp && mp->GetScalarVisibility());
+	m.addAction("Solid colour…", [s, a, mp]() {
+		double c[3]; a->GetProperty()->GetColor(c);
+		const QColor q = QColorDialog::getColor(QColor::fromRgbF(c[0], c[1], c[2]), s->win, "Point colour");
+		if (!q.isValid()) return;
+		a->GetProperty()->SetColor(q.redF(), q.greenF(), q.blueF());
+		if (mp) mp->ScalarVisibilityOff();
+		s->widget->renderWindow()->Render();
+	});
+	m.exec(gp);
+}
+
+// A point cloud's master handle: what means something for the cloud as a whole.
+static void cloudObjectMenu(Scene *s, const QPoint &gp) {
+	if (!s) return;
+	const QString nm = s->surfName.empty() ? QString("Point cloud") : QString::fromStdString(s->surfName);
+	QMenu m(s->widget);
+	QAction *aInfo = m.addAction("Info…");
+	m.addSeparator();
+	QAction *aRem = m.addAction("Remove");                   // the cloud + colour bar + axes; window stays open
+	QAction *c = m.exec(gp);
+	if (!c) return;
+	if (c == aInfo) {
+		if (!s->cloudPD) return;
+		double b[6]; s->cloudPD->GetBounds(b);
+		QMessageBox::information(s->win, nm,
+			QString("Points: %1\nX: %2  to  %3\nY: %4  to  %5\nZ: %6  to  %7")
+				.arg(qlonglong(s->cloudPD->GetNumberOfPoints()))
+				.arg(b[0], 0, 'g', 10).arg(b[1], 0, 'g', 10).arg(b[2], 0, 'g', 10)
+				.arg(b[3], 0, 'g', 10).arg(b[4], 0, 'g', 8).arg(b[5], 0, 'g', 8));
+		return;
+	}
+	if (c == aRem) sceneRemoveSurface(s);
+}
+
 // Per-element context menu for an overlay (lines: colour / width / style / tubes; points:
 // colour / size / round). Pops on a RIGHT-click only (customContextMenuRequested, 70_window.cpp);
 // no visual selection state, just the menu.
@@ -6071,31 +6183,8 @@ static void popupOverlayMenu(Scene *s, vtkActor *a, int mode, const QPoint &glob
 		});
 		tu->setCheckable(true); tu->setChecked(a->GetProperty()->GetRenderLinesAsTubes());
 	}
-	else {                                   // points: size + round toggle
-		m.addAction("Point size…", [=]() {           // live spinbox (mirror the Line Properties dialog)
-			QDialog dlg(win);
-			dlg.setWindowTitle("Point size");
-			QFormLayout *form = new QFormLayout(&dlg);
-			QDoubleSpinBox *szBox = new QDoubleSpinBox(&dlg);
-			szBox->setRange(1.0, 60.0); szBox->setSingleStep(1.0); szBox->setDecimals(1);
-			szBox->setValue(a->GetProperty()->GetPointSize());
-			QObject::connect(szBox, QOverload<double>::of(&QDoubleSpinBox::valueChanged), [s, a](double sz) {
-				a->GetProperty()->SetPointSize(sz);
-				if (s->widget) s->widget->renderWindow()->Render();   // apply as the value changes
-			});
-			form->addRow("Size (px)", szBox);
-			QDialogButtonBox *bb = new QDialogButtonBox(QDialogButtonBox::Close, &dlg);
-			QObject::connect(bb, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
-			QObject::connect(bb, &QDialogButtonBox::rejected, &dlg, &QDialog::accept);
-			form->addRow(bb);
-			dlg.exec();
-		});
-		QAction *rp = m.addAction("Round points", [=]() {
-			a->GetProperty()->SetRenderPointsAsSpheres(!a->GetProperty()->GetRenderPointsAsSpheres());
-			s->widget->renderWindow()->Render();
-		});
-		rp->setCheckable(true); rp->setChecked(a->GetProperty()->GetRenderPointsAsSpheres());
-	}
+	else                                     // points: size + round toggle
+		addPointsPropsActions(m, s, a);
 	m.addSeparator();
 	m.addAction("Hide overlay", [=]() {
 		a->SetVisibility(0);
