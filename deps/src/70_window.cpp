@@ -21508,10 +21508,12 @@ public:
 		f.close();
 		if (!dlg) { qWarning("InterpolationDialog: QUiLoader failed to load the .ui"); return; }
 		dlg->setAttribute(Qt::WA_DeleteOnClose);
-		dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint);
+		// the minimise button PARKS it in Scene Objects (the shared handler), the X closes it
+		dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint | Qt::WindowMinimizeButtonHint);
 		dlg->setWindowModality(Qt::NonModal);
 		dlg->setWindowTitle("Interpolate");
 		QDialog *d = dlg;
+		parkOnMinimise(d, [this]() { parkNow(); });
 
 		geo = GeoGridGeometry::adopt(d);       // the SAME block grdsample uses, wiring and all
 		methodCb = d->findChild<QComboBox *>("cb_method");
@@ -21603,7 +21605,39 @@ public:
 		// The green ? disk opens the page of the module CURRENTLY selected, not a fixed one.
 		addManualButton(d, [this]() { return method(); });
 
-		QObject::connect(d, &QObject::destroyed, d, [this]() { delete this; });
+		QObject::connect(d, &QObject::destroyed, d, [this, d]() {
+			if (sceneAlive(scn)) unparkTool(scn, d);     // never leave a row for a destroyed dialog
+			delete this;
+		});
+	}
+
+	// Minimised: hidden, with a handle in Scene Objects. Double-click (or Show) brings it back.
+	void parkNow() {
+		if (!dlg || !sceneAlive(scn)) return;
+		dlg->hide();
+		parkTool(scn, dlg, dlg->windowTitle(), IC_Surface,
+		         "Minimised " + dlg->windowTitle() + " dialog — double-click to bring it back, click for Show / Close",
+		         [this]() { unpark(); },
+		         [this](const QPoint &g) {
+			         QMenu m;
+			         QAction *aShow = m.addAction("Show");
+			         m.addSeparator();
+			         QAction *aClose = m.addAction("Close");
+			         QAction *pick = m.exec(g);
+			         if (pick == aShow) unpark();
+			         else if (pick == aClose && dlg) {
+				         unparkTool(scn, dlg);
+				         dlg->close();                 // WA_DeleteOnClose: the dialog and this wrapper go
+			         }
+		         });
+	}
+	void unpark() {
+		if (!dlg) return;
+		unparkTool(scn, dlg);
+		dlg->setWindowState(dlg->windowState() & ~Qt::WindowMinimized);
+		dlg->showNormal();
+		dlg->raise();
+		dlg->activateWindow();
 	}
 
 	QString method() const { return methodCb ? methodCb->currentData().toString() : QString("surface"); }

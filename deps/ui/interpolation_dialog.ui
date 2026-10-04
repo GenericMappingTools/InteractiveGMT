@@ -6,7 +6,7 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>600</width>
+    <width>545</width>
     <height>470</height>
    </rect>
   </property>
@@ -83,13 +83,13 @@
       <item row="1" column="1"><widget class="QLineEdit" name="xMin"><property name="minimumWidth"><number>80</number></property><property name="maximumWidth"><number>110</number></property></widget></item>
       <item row="1" column="2"><widget class="QLineEdit" name="xMax"><property name="minimumWidth"><number>80</number></property><property name="maximumWidth"><number>110</number></property></widget></item>
       <item row="1" column="3"><widget class="QLineEdit" name="xInc"><property name="minimumWidth"><number>80</number></property><property name="maximumWidth"><number>110</number></property></widget></item>
-      <item row="1" column="4"><widget class="QLineEdit" name="xN"><property name="minimumWidth"><number>80</number></property><property name="maximumWidth"><number>110</number></property></widget></item>
+      <item row="1" column="4"><widget class="QLineEdit" name="xN"><property name="minimumWidth"><number>40</number></property><property name="maximumWidth"><number>55</number></property></widget></item>
 
       <item row="2" column="0"><widget class="QLabel" name="yDirLab"><property name="text"><string>Y Direction</string></property></widget></item>
       <item row="2" column="1"><widget class="QLineEdit" name="yMin"><property name="minimumWidth"><number>80</number></property><property name="maximumWidth"><number>110</number></property></widget></item>
       <item row="2" column="2"><widget class="QLineEdit" name="yMax"><property name="minimumWidth"><number>80</number></property><property name="maximumWidth"><number>110</number></property></widget></item>
       <item row="2" column="3"><widget class="QLineEdit" name="yInc"><property name="minimumWidth"><number>80</number></property><property name="maximumWidth"><number>110</number></property></widget></item>
-      <item row="2" column="4"><widget class="QLineEdit" name="yN"><property name="minimumWidth"><number>80</number></property><property name="maximumWidth"><number>110</number></property></widget></item>
+      <item row="2" column="4"><widget class="QLineEdit" name="yN"><property name="minimumWidth"><number>40</number></property><property name="maximumWidth"><number>55</number></property></widget></item>
 
       <item row="1" column="5" rowspan="2">
        <widget class="QToolButton" name="helpBtn">
@@ -234,12 +234,6 @@
       <widget class="QPushButton" name="push_compute">
        <property name="minimumSize"><size><width>90</width><height>24</height></size></property>
        <property name="text"><string>Compute</string></property>
-      </widget>
-     </item>
-     <item>
-      <widget class="QPushButton" name="push_close">
-       <property name="minimumSize"><size><width>70</width><height>24</height></size></property>
-       <property name="text"><string>Close</string></property>
       </widget>
      </item>
     </layout>
