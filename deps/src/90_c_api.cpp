@@ -2094,8 +2094,10 @@ struct MbAttach : QObject {
 		    t == QEvent::MouseButtonRelease) {
 			auto *me = static_cast<QMouseEvent *>(e);
 			const bool left = me->button() == Qt::LeftButton;
+			// Shift+left starts the tool even unarmed: on a swath cloud's window (the only window this is
+			// attached to) Shift+left-drag is the tool's Grab (the tool switches to it for that drag)
 			const bool startsEdit = (t == QEvent::MouseButtonPress || t == QEvent::MouseButtonDblClick) && left &&
-			                        armed && armed();
+			                        ((armed && armed()) || (me->modifiers() & Qt::ShiftModifier));
 			if (startsEdit || leftOwned) {
 				double x, y;
 				displayPxFromQt(s->widget, s->widget->renderWindow(), me->position().toPoint(), x, y);
@@ -2539,6 +2541,23 @@ GMTVTK_API int gmtvtk_mb_cloud_good_h(void *handle, double *xyz, int cap) {
 	if (!sceneAlive(s))
 		return -1;
 	return mb3dsdgCloudGood(s, xyz, cap);
+}
+// CUBE flagging on window `handle`'s swath-cloud pane: the good soundings (gmtvtk_mb_cloud_good_h's
+// order) where bad[i] != 0 become FILTER flags of the pane, saved by its Save. How many, -1 = no pane.
+GMTVTK_API int gmtvtk_mb_cloud_flag_h(void *handle, const unsigned char *bad, int n) {
+	Scene *s = static_cast<Scene *>(handle);
+	if (!sceneAlive(s))
+		return -1;
+	return mb3dsdgCloudFlag(s, bad, n);
+}
+// CUBE flagging of swath files with no pane: n soundings (ping index, beam) written as FILTER flags to
+// each file's .esf -- `files` '\n'-separated, ptime / pfile (nping) every ping's time and file index.
+// n, or -1 on failure.
+GMTVTK_API int gmtvtk_mb_esf_flag(const char *files, const double *ptime, const int *pfile, int nping,
+                                  const int *ping, const int *beam, int n) {
+	ensureApp();                              // the MBIO loader may ask through a message box
+	const QStringList fl = QString::fromUtf8(files ? files : "").split('\n', Qt::SkipEmptyParts);
+	return mb3dsdgEsfFlag(mbeditViewerHost(), fl, ptime, pfile, nping, ping, beam, n);
 }
 // The ship's navigation lines of that pane's window: n ping positions (lon, lat), `line` (n) the index
 // into `files` ('\n'-separated) of the file each belongs to -- one track per file, named for it, laid

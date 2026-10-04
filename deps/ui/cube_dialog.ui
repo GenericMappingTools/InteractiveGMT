@@ -3,7 +3,7 @@
  <class>CubeDialog</class>
  <widget class="QDialog" name="CubeDialog">
   <property name="geometry">
-   <rect><x>0</x><y>0</y><width>470</width><height>506</height></rect>
+   <rect><x>0</x><y>0</y><width>470</width><height>538</height></rect>
   </property>
   <property name="windowTitle">
    <string>CUBE gridding (MB-System)</string>
@@ -156,29 +156,49 @@
     <property name="text"><string>...</string></property>
    </widget>
   </widget>
-  <widget class="QLabel" name="lb_out">
+  <widget class="QRadioButton" name="rb_grid">
    <property name="geometry"><rect><x>11</x><y>440</y><width>90</width><height>22</height></rect></property>
+   <property name="text"><string>Make grid</string></property>
+   <property name="checked"><bool>true</bool></property>
+   <property name="toolTip"><string>Grid the soundings with CUBE: depth (and, if asked, its uncertainty, hypotheses, ratio and soundings used)</string></property>
+  </widget>
+  <widget class="QRadioButton" name="rb_flag">
+   <property name="geometry"><rect><x>110</x><y>440</y><width>120</width><height>22</height></rect></property>
+   <property name="text"><string>Flag soundings</string></property>
+   <property name="toolTip"><string>CUBE as a filter, like mbfilter: no grid. The soundings that miss CUBE's chosen depth at their node by more than k standard deviations (sounding and node together) are flagged -- in the 3D Soundings pane (written to the .esf by its Save), or straight into each swath file's .esf</string></property>
+  </widget>
+  <widget class="QLabel" name="lb_flagk">
+   <property name="geometry"><rect><x>240</x><y>440</y><width>130</width><height>22</height></rect></property>
+   <property name="text"><string>beyond k std. dev.  k =</string></property>
+  </widget>
+  <widget class="QLineEdit" name="edit_flagk">
+   <property name="geometry"><rect><x>372</x><y>440</y><width>50</width><height>22</height></rect></property>
+   <property name="text"><string>2.5</string></property>
+   <property name="toolTip"><string>A sounding is flagged when |depth - CUBE depth| &gt; k * sqrt(sounding variance + node variance)</string></property>
+  </widget>
+  <widget class="QLabel" name="lb_out">
+   <property name="geometry"><rect><x>11</x><y>472</y><width>90</width><height>22</height></rect></property>
    <property name="text"><string>Save result to</string></property>
   </widget>
   <widget class="QLineEdit" name="edit_outfile">
-   <property name="geometry"><rect><x>105</x><y>440</y><width>322</width><height>22</height></rect></property>
+   <property name="geometry"><rect><x>105</x><y>472</y><width>322</width><height>22</height></rect></property>
    <property name="toolTip"><string>Optional output grid file. Leave empty to keep the result only in this window.</string></property>
   </widget>
   <widget class="QToolButton" name="btn_outfile">
-   <property name="geometry"><rect><x>431</x><y>440</y><width>28</width><height>22</height></rect></property>
+   <property name="geometry"><rect><x>431</x><y>472</y><width>28</width><height>22</height></rect></property>
    <property name="text"><string>...</string></property>
   </widget>
   <widget class="QWidget" name="manualHolder">
-   <property name="geometry"><rect><x>11</x><y>471</y><width>26</width><height>26</height></rect></property>
+   <property name="geometry"><rect><x>11</x><y>503</y><width>26</width><height>26</height></rect></property>
    <property name="toolTip"><string>Open full manual page</string></property>
   </widget>
   <widget class="QCheckBox" name="chk_verbose">
-   <property name="geometry"><rect><x>45</x><y>472</y><width>80</width><height>24</height></rect></property>
+   <property name="geometry"><rect><x>45</x><y>504</y><width>80</width><height>24</height></rect></property>
    <property name="text"><string>Verbose</string></property>
    <property name="toolTip"><string>Let the module report its progress in the Julia console (-V)</string></property>
   </widget>
   <widget class="QPushButton" name="push_compute">
-   <property name="geometry"><rect><x>369</x><y>470</y><width>90</width><height>26</height></rect></property>
+   <property name="geometry"><rect><x>369</x><y>502</y><width>90</width><height>26</height></rect></property>
    <property name="text"><string>Compute</string></property>
    <property name="autoDefault"><bool>false</bool></property>
   </widget>

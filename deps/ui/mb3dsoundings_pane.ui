@@ -7,7 +7,7 @@
     <x>0</x>
     <y>0</y>
     <width>150</width>
-    <height>426</height>
+    <height>458</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -204,7 +204,7 @@
     <bool>false</bool>
    </property>
   </widget>
-  <widget class="QPushButton" name="cubeButton">
+  <widget class="QPushButton" name="cubeFilterButton">
    <property name="geometry">
     <rect>
      <x>6</x>
@@ -214,10 +214,29 @@
     </rect>
    </property>
    <property name="toolTip">
-    <string>Grid these soundings with MB-System's CUBE: the good soundings as they stand in the pane, edits included</string>
+    <string>CUBE as a filter: flag the soundings that miss CUBE's surface by more than k standard deviations (Save writes the flags to the .esf). Its dialog can also make the CUBE grid (Make grid)</string>
    </property>
    <property name="text">
-    <string>CUBE gridding</string>
+    <string>CUBE filter</string>
+   </property>
+   <property name="autoDefault">
+    <bool>false</bool>
+   </property>
+  </widget>
+  <widget class="QPushButton" name="gridButton">
+   <property name="geometry">
+    <rect>
+     <x>6</x>
+     <y>308</y>
+     <width>138</width>
+     <height>26</height>
+    </rect>
+   </property>
+   <property name="toolTip">
+    <string>Grid these soundings (Interpolate, set to mbgrid): only the good ones, as they stand in the pane -- the flagged soundings never enter the surface</string>
+   </property>
+   <property name="text">
+    <string>Gridding</string>
    </property>
    <property name="autoDefault">
     <bool>false</bool>
@@ -227,7 +246,7 @@
    <property name="geometry">
     <rect>
      <x>6</x>
-     <y>310</y>
+     <y>342</y>
      <width>138</width>
      <height>110</height>
     </rect>

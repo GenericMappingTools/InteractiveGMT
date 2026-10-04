@@ -200,13 +200,40 @@ function _mb_pings(path::String)
 end
 
 # The GOOD soundings of a swath file / datalist as an x,y,z point table (lon, lat, elevation).
+# Which beams of mbgetdata's ping x beam arrays are GOOD soundings: present, and not shifted away as
+# flagged by -A-1000000. One mask for every reader of "the good soundings".
+_mb_good_mask(lon::Matrix{Float64}, lat::Matrix{Float64}, z::Matrix{Float64}) =
+	.!isnan.(z) .& .!isnan.(lon) .& .!isnan.(lat) .& (abs.(z) .< 500000.0)
+
 function _mb_good_dataset(path::String)::GMTdataset
 	lon, lat, z = _mb_soundings(path)
-	good = .!isnan.(z) .& .!isnan.(lon) .& .!isnan.(lat) .& (abs.(z) .< 500000.0)
+	good = _mb_good_mask(lon, lat, z)
 	any(good) || error("no good sounding in $(basename(path))")
 	D = GMT.mat2ds([lon[good] lat[good] z[good]]; geom = GMT.wkbPoint)
 	D.proj4 = "+proj=longlat +datum=WGS84"
 	return D
+end
+
+# Flag, in each swath file's .esf, the good soundings of `path` (a swath file or datalist) where
+# `flagged` is true -- `flagged` in _mb_good_dataset's order (column-major over mbgetdata's ping x beam
+# arrays). Each one is keyed by its ping time and beam, as MB-System's edit save files are, and saved as
+# a FILTER flag by the same routine the 3D Soundings pane's Save uses (gmtvtk_mb_esf_flag).
+function _mb_flag_to_esf(path::String, flagged::Vector{Bool})
+	lon, lat, z = _mb_soundings(path)
+	idx = findall(vec(_mb_good_mask(lon, lat, z)))
+	length(idx) == length(flagged) ||
+		error("$(length(flagged)) flags for $(length(idx)) good soundings in $(basename(path))")
+	ptime, pfile, files = _mb_pings(path)
+	nping = size(z, 1)
+	length(ptime) == nping || error("mblist lists $(length(ptime)) pings, mbgetdata $nping")
+	sel = idx[flagged]
+	ping = Cint[(k - 1) % nping for k in sel]
+	beam = Cint[(k - 1) ÷ nping for k in sel]
+	isempty(ping) && return 0
+	n = ccall(_fn(:gmtvtk_mb_esf_flag), Cint, (Cstring, Ptr{Cdouble}, Ptr{Cint}, Cint, Ptr{Cint}, Ptr{Cint}, Cint),
+	          join(files, '\n'), ptime, pfile, Cint(nping), ping, beam, Cint(length(ping)))
+	n < 0 && error("the edits could not be written to the .esf of $(basename(path))")
+	return Int(n)
 end
 
 # The GOOD soundings of window `scene`'s 3D Soundings pane as they stand -- the pane's edits included --

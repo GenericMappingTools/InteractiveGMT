@@ -74,7 +74,9 @@ struct MbEditHost {
 	QWidget *(*addPane)(void *scene, QWidget *content, const char *title, std::function<void()> paneClosed) = nullptr;
 	// CUBE gridding (Geophysics > MB-System > CUBE gridding's dialog) on that window's swath point cloud,
 	// `name` the cloud's: its input is the pane's soundings, not a file
-	void (*openCubeOnCloud)(void *scene, const char *name) = nullptr;
+	void (*openCubeOnCloud)(void *scene, const char *name, bool filter) = nullptr;   // filter: Flag soundings preset
+	// the Interpolate dialog on that window's swath point cloud (its good soundings), set to mbgrid
+	void (*openGridOnCloud)(void *scene, const char *name) = nullptr;
 };
 
 // Make a tool window parkable — the ONE implementation every MB-System tool uses. Install it AFTER

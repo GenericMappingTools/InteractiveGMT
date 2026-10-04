@@ -351,6 +351,8 @@ const _LIB_OPTIONAL = (
 	:gmtvtk_mb_cloud_pane_h,          # the 3D Soundings pane of a swath point cloud (drop.jl)
 	:gmtvtk_mb_cloud_nav_h,           # that pane's ship navigation lines (drop.jl)
 	:gmtvtk_mb_cloud_good_h,          # that pane's good soundings, CUBE's input (interpolate.jl)
+	:gmtvtk_mb_cloud_flag_h,          # CUBE flagging into that pane (interpolate.jl)
+	:gmtvtk_mb_esf_flag,              # CUBE flagging straight into swath files' .esf (drop.jl)
 	# EXPERIMENTAL mbgrdviz (deps/src/mbgrdviz/, IGMT_WITH_MBGRDVIZ)
 	:gmtvtk_mbgrdviz_open, :gmtvtk_mbgrdviz_state, :gmtvtk_mbgrdviz_open_file, :gmtvtk_mbgrdviz_save,
 	:gmtvtk_mbgrdviz_select_route, :gmtvtk_mbgrdviz_set_area, :gmtvtk_mbgrdviz_set_region,

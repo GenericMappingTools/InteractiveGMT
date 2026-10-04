@@ -35,7 +35,8 @@ struct Mb3dsdgNotify {
 	void (*optimizebiasvalues)(int mode, double *rollbias, double *pitchbias, double *headingbias, double *timelag,
 	                           double *snell) = nullptr;
 	void (*save)() = nullptr;   // the pane's Save button: write the edits so far (null: no button)
-	void (*cube)() = nullptr;   // the pane's CUBE gridding button: CUBE on the pane's soundings
+	void (*cube)(bool filter) = nullptr;   // the pane's CUBE filter button (true: Flag soundings preset)
+	void (*grid)() = nullptr;              // the pane's Gridding button: grid the pane's good soundings
 };
 
 // mb3dsoundings_open: show `data` (raise the window, or make it). `host` is mbeditviz's: its uiDir

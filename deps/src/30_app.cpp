@@ -1998,7 +1998,8 @@ static void mbView3dDetach(void *view);
 static vtkActor *mbAttachCloudActor(void *view);
 static void mbAttachFrame(void *view);
 static QWidget *mbAddPane(void *scene, QWidget *content, const char *title, std::function<void()> closed);
-static void mbOpenCubeOnCloud(void *scene, const char *name);   // 70_window.cpp
+static void mbOpenCubeOnCloud(void *scene, const char *name, bool filter);   // 70_window.cpp
+static void mbOpenGridOnCloud(void *scene, const char *name);                 // 70_window.cpp
 static MbEditHost mbeditViewerHost() {
 	MbEditHost h;
 	h.uiDir = gmtvtkUiDir();
@@ -2037,6 +2038,7 @@ static MbEditHost mbeditViewerHost() {
 	h.attachFrame = mbAttachFrame;
 	h.addPane = mbAddPane;
 	h.openCubeOnCloud = mbOpenCubeOnCloud;
+	h.openGridOnCloud = mbOpenGridOnCloud;
 	return h;
 }
 #endif // GMTVTK_MBEDIT

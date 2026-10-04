@@ -89,7 +89,7 @@ function _cube_m_per_deg(lon0::Float64, lat0::Float64)::NTuple{2,Float64}
 	return (dx, dy)
 end
 
-# --- swath data (Geophysics > MB-System > CUBE gridding) -------------------------------------------
+# --- swath data (Geophysics > MB-System > CUBE filter) ----------------------------------------------
 # A swath file or an MB-System datalist is read by THE swath-sounding reader, `_mb_good_dataset`
 # (drop.jl: MB-System's mbgetdata), into an ordinary x,y,z table: longitude, latitude, elevation, good
 # beams only. From there it is gridded exactly as a table is.
@@ -178,6 +178,10 @@ Either may be left out: it is then what GMT would choose for the data (its limit
 - `geographic = nothing`  `true`/`false`, or `nothing` to let GMT guess from the data.
 - `registration`          `:gridline` (default) or `:pixel`.
 - `verbose = false`       CUBE's per-sounding DEBUG trace (very long).
+- `flag_k = nothing`      CUBE as a sounding filter: a number k also returns `flagged`, one Bool per
+                          input sounding, true where it misses CUBE's depth at its node by more than
+                          k standard deviations (sounding and node together). `nothing`: `flagged`
+                          is `nothing`.
 
 Every option also accepts the string form the Interpolate dialog sends.
 """
@@ -208,7 +212,8 @@ cubegrid(data; kwargs...) = cubegrid_all(data; kwargs...).depth
 function _cubegrid(x::Vector{Float64}, y::Vector{Float64}, z::Vector{Float64}, data;
                    region = nothing, inc = nothing, iho_order = :order1a, method = :local,
                    tvu = nothing, thu = nothing, variance = :cube, noqueue = false, paramfile = "",
-                   zdown = false, geographic = nothing, registration = :gridline, verbose = false)
+                   zdown = false, geographic = nothing, registration = :gridline, verbose = false,
+                   flag_k = nothing)
 	region === nothing && error("cubegrid needs a region")
 	inc    === nothing && error("cubegrid needs an inc")
 	length(x) == length(y) == length(z) ||
@@ -282,6 +287,7 @@ function _cubegrid(x::Vector{Float64}, y::Vector{Float64}, z::Vector{Float64}, d
 		gr = Ref(g)
 		ccall(_fn(:mb_cube_grid_free), Cvoid, (Ref{Ptr{Cvoid}},), gr)
 	end
+	flagged = flag_k === nothing ? nothing : _cube_flags(depth, tvar, xm, ym, cdx, cdy, zd, zu, conf, Float64(flag_k))
 	down || (zd .= .-zd)                       # back to the input's own z convention (NaN stays NaN)
 
 	# GMTgrid's coordinate convention (as mbgrid.jl): nx node centres for gridline, nx+1 cell edges for pixel.
@@ -293,5 +299,32 @@ function _cubegrid(x::Vector{Float64}, y::Vector{Float64}, z::Vector{Float64}, d
 	nset = count(!isnan, zd)
 	G = mk(zd)
 	G.remark = "CUBE: $nset of $(nx * ny) nodes set from $(length(z)) soundings"
-	return (depth = G, uncertainty = mk(zu), n_hypotheses = mk(zh), ratio = mk(zr), n_points = mk(zn))
+	return (depth = G, uncertainty = mk(zu), n_hypotheses = mk(zh), ratio = mk(zr), n_points = mk(zn),
+	        flagged = flagged)
+end
+
+# CUBE as a sounding FILTER: a sounding is flagged when it misses the depth CUBE chose at its node by
+# more than k standard deviations of the two together, |d - D| > k * sqrt(s_sounding^2 + s_node^2).
+# CUBE itself keeps no record of which soundings it accepted (each one updates the nearest hypothesis
+# and is gone), so the test is against its result -- the surface it built from them. `depth` / `tvar`
+# are what was inserted (positive down, vertical variance), `xm, ym` the soundings in CUBE's metric
+# frame, where node (iy from the south, col) sits at (col*cdx, iy*cdy); `zd` / `zu` the extracted depth
+# and 95% uncertainty (GMT's column layout, row 1 = south), `conf` CUBE's std-dev -> 95% scale. A
+# sounding whose node got no estimate is not judged.
+function _cube_flags(depth::Vector{Float64}, tvar::Vector{Float64}, xm::Vector{Float64}, ym::Vector{Float64},
+                     cdx::Float64, cdy::Float64, zd::Matrix{Float32}, zu::Matrix{Float32}, conf::Float64,
+                     k::Float64)::Vector{Bool}
+	k > 0 || error("CUBE flagging: k must be positive, got $k")
+	ny, nx = size(zd)
+	out = falses(length(depth))
+	for i in eachindex(depth)
+		col = round(Int, xm[i] / cdx) + 1
+		row = round(Int, ym[i] / cdy) + 1
+		(1 <= col <= nx && 1 <= row <= ny) || continue
+		D = zd[row, col]
+		isnan(D) && continue
+		su = zu[row, col] / conf
+		out[i] = abs(depth[i] - D) > k * sqrt(tvar[i] + (isnan(su) ? 0.0 : su * su))
+	end
+	return Vector{Bool}(out)
 end

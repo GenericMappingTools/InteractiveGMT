@@ -22025,11 +22025,38 @@ public:
 			optKv(kv, optionSpec(m), vals);
 		}
 
+		if (cloudInput) kv << "cloud=1";                 // the input is the window's swath point cloud
 		showBusyDialog("Griding…");
 		const int ok = g_juliaInterpolate(scn, kv.join("\n").toUtf8().constData());
 		closeBusyDialog();
 		if (!ok) QMessageBox::warning(d, "Interpolate",
 		                              "Griding failed — see this window's Errors console for details.");
+	}
+
+	// The 3D Soundings pane's Gridding: the input is that window's swath point cloud -- its GOOD
+	// soundings as they stand in the pane (the flagged ones never enter the surface) -- named in the
+	// input box, which then takes no file. Set to mbgrid, the region and spacing those soundings call for
+	// shown in the geometry boxes.
+	bool cloudInput = false;
+	void presetCloud(const QString &name) {
+		cloudInput = true;
+		if (methodCb) {
+			const int i = methodCb->findData("mbgrid");
+			if (i >= 0) methodCb->setCurrentIndex(i);
+		}
+		if (coordsCb) {                                  // swath soundings are longitude/latitude
+			const int i = coordsCb->findData("geog");
+			if (i >= 0) coordsCb->setCurrentIndex(i);
+		}
+		if (inEdit) {
+			inEdit->setText(name + " (point cloud)");
+			inEdit->setReadOnly(true);
+		}
+		if (dlg) {
+			if (auto *b = dlg->findChild<QToolButton *>("btn_infile")) b->setEnabled(false);
+			dlg->setWindowTitle("Gridding - " + name);
+		}
+		fillCubeGeometry(QString());
 	}
 };
 
@@ -22102,6 +22129,18 @@ public:
 			if (sceneAlive(scn)) unparkTool(scn, d);
 			delete this;
 		});
+		// Make grid / Flag soundings: what only one of them uses is live only with it
+		auto syncResult = [d]() {
+			auto *rf = d->findChild<QRadioButton *>("rb_flag");
+			const bool flag = rf && rf->isChecked();
+			for (const char *nm : {"lb_flagk", "edit_flagk"})
+				if (auto *w = d->findChild<QWidget *>(nm)) w->setEnabled(flag);
+			for (const char *nm : {"lb_out", "edit_outfile", "btn_outfile", "opt_extra"})
+				if (auto *w = d->findChild<QWidget *>(nm)) w->setEnabled(!flag);
+		};
+		if (auto *rf = d->findChild<QRadioButton *>("rb_flag"))
+			QObject::connect(rf, &QRadioButton::toggled, d, syncResult);
+		syncResult();
 		// the green ? disk every module dialog carries (the Interpolate dialog's, on CUBE), in its
 		// .ui placeholder; then the tooltips are reflowed, as every dialog's last construction step
 		if (auto *holder = d->findChild<QWidget *>("manualHolder")) {
@@ -22126,7 +22165,7 @@ public:
 		if (R.isEmpty() || R.contains("//") || R.startsWith('/') || R.endsWith('/'))
 			R.clear();                                   // empty: CUBE's own choice for the soundings (src/cube.jl)
 		auto checked = [this](const char *name) {
-			auto *c = dlg->findChild<QCheckBox *>(name);
+			auto *c = dlg->findChild<QAbstractButton *>(name);
 			return c && c->isChecked();
 		};
 		QStringList kv;
@@ -22141,7 +22180,12 @@ public:
 		if (auto *e = dlg->findChild<QLineEdit *>("edit_outfile"))
 			if (!e->text().trimmed().isEmpty()) kv << "outfile=" + e->text().trimmed();
 		InterpolationDialog::optKv(kv, spec, InterpolationDialog::optHarvest(spec, optW));
-		showBusyDialog("CUBE gridding...");
+		const bool flag = checked("rb_flag");
+		if (flag) {                                      // CUBE as a sounding filter: flags, no grid
+			kv << "mode=flag";
+			if (auto *e = dlg->findChild<QLineEdit *>("edit_flagk")) kv << "flag_k=" + e->text().trimmed();
+		}
+		showBusyDialog(flag ? "CUBE flagging soundings..." : "CUBE gridding...");
 		const int ok = g_juliaInterpolate(scn, kv.join("\n").toUtf8().constData());
 		closeBusyDialog();
 		if (!ok) QMessageBox::warning(dlg, "CUBE gridding", "Griding failed — see this window's Errors console for details.");
@@ -22179,7 +22223,8 @@ public:
 
 #ifdef GMTVTK_MBEDIT
 // CUBE gridding on window `s`'s input: `in` a swath file / datalist, or "" for its swath point cloud
-static void openCubeDialog(Scene *s, const QString &in, const QString &name) {
+// `filter`: opened as CUBE filter (Flag soundings selected) instead of CUBE gridding (Make grid)
+static void openCubeDialog(Scene *s, const QString &in, const QString &name, bool filter = false) {
 	if (!sceneAlive(s) || !s->win)
 		return;
 	auto *w = new CubeDialog(s->win, s, in, name);
@@ -22187,12 +22232,29 @@ static void openCubeDialog(Scene *s, const QString &in, const QString &name) {
 		delete w;
 		return;
 	}
+	if (filter) {
+		if (auto *rb = w->dlg->findChild<QRadioButton *>("rb_flag")) rb->setChecked(true);
+		w->dlg->setWindowTitle("CUBE filter - " + name);
+	}
 	w->dlg->show();
 	mbPlaceRight(w->dlg, s->win);
 }
-// MbEditHost::openCubeOnCloud: the 3D Soundings pane's CUBE gridding button
-static void mbOpenCubeOnCloud(void *scene, const char *name) {
-	openCubeDialog(static_cast<Scene *>(scene), QString(), QString::fromUtf8(name ? name : ""));
+// MbEditHost::openGridOnCloud: the 3D Soundings pane's Gridding button -- the Interpolate dialog on the
+// window's swath point cloud, set to mbgrid
+static void mbOpenGridOnCloud(void *scene, const char *name) {
+	Scene *s = static_cast<Scene *>(scene);
+	if (!sceneAlive(s) || !s->win)
+		return;
+	auto *w = new InterpolationDialog(s->win, s);
+	if (!w->dlg)
+		return;
+	w->presetCloud(QString::fromUtf8(name ? name : ""));
+	w->dlg->show();
+	mbPlaceRight(w->dlg, s->win);
+}
+// MbEditHost::openCubeOnCloud: the 3D Soundings pane's CUBE filter button
+static void mbOpenCubeOnCloud(void *scene, const char *name, bool filter) {
+	openCubeDialog(static_cast<Scene *>(scene), QString(), QString::fromUtf8(name ? name : ""), filter);
 }
 #endif
 
@@ -29218,17 +29280,16 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 			});
 		});
 		++n;
-		// "CUBE gridding": MB-System's CUBE (mbgrid -F9's engine, deps/src/cube/) on swath files or a
-		// datalist, read through the editor's MBIO (loaded first, the way every tool here loads it).
-		// It is the Interpolate dialog preset on CUBE -- one dialog, one Julia path (src/cube.jl).
-		// Its input: the window's swath point cloud when it has one, else a swath file / datalist asked
-		// for here (the dialog itself has no input row).
-		mGphy->addAction("CUBE gridding", [win, s, afterPopup]() {
+		// "CUBE filter": MB-System's CUBE (mbgrid -F9's engine, deps/src/cube/) flagging the soundings its
+		// surface does not support; its dialog also makes the CUBE grid (Make grid). Its input: the
+		// window's swath point cloud when it has one, else a swath file / datalist asked for here (the
+		// dialog itself has no input row), read through the editor's MBIO (loaded first).
+		mGphy->addAction("CUBE filter", [win, s, afterPopup]() {
 			afterPopup([win, s]() {
 				if (!mbeditLoadMbio(win, mbeditViewerHost())) return;
 #ifdef GMTVTK_MBEDITVIZ
 				if (mb3dsdgCloudGood(s, nullptr, 0) >= 0) {
-					openCubeDialog(s, QString(), mb3dsdgCloudName(s));
+					openCubeDialog(s, QString(), mb3dsdgCloudName(s), true);
 					return;
 				}
 #endif
@@ -29236,7 +29297,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 					"MB-System swath data (*.mb-1 *.mb* *.all *.kmall *.s7k *.gsf);;All files (*)");
 				if (p.isEmpty()) return;
 				rememberStartDir(p);
-				openCubeDialog(s, p, QFileInfo(p).fileName());
+				openCubeDialog(s, p, QFileInfo(p).fileName(), true);
 			});
 		});
 		++n;

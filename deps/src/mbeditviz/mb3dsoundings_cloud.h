@@ -28,6 +28,13 @@ bool mb3dsdgOpenCloud(void *scene, const MbEditHost &host, const double *lon, co
 // The pane's GOOD soundings as they stand (its edits included), lon/lat/z triples into xyz (up to cap of
 // them; xyz may be null to count). The count, or -1 when `scene` has no swath-cloud pane.
 int mb3dsdgCloudGood(void *scene, double *xyz, int cap);
+// CUBE flagging, on the pane: the good soundings (mb3dsdgCloudGood's order) where bad[i] != 0 are flagged
+// as FILTERED, as edits of the pane (shown at once, written to the .esf by its Save). How many, -1 = no pane.
+int mb3dsdgCloudFlag(void *scene, const unsigned char *bad, int n);
+// CUBE flagging, straight into the swath files' .esf (no pane): n soundings by ping index and beam, a
+// ping's time ptime[ping] in files[pfile[ping]], saved as FILTER flags. n, or -1 on failure.
+int mb3dsdgEsfFlag(const MbEditHost &host, const QStringList &files, const double *ptime, const int *pfile,
+                   int nping, const int *ping, const int *beam, int n);
 // The name of `scene`'s swath-cloud pane cloud ("" when it has none)
 QString mb3dsdgCloudName(void *scene);
 

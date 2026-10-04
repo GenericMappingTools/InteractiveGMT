@@ -133,41 +133,49 @@ void cloudColor(int color) {
 // .esf with MB-System's own edit-save routines (the way MBedit saves them): mb_esf_load in APPEND mode,
 // mb_esf_save per beam by ping time, mb_esf_close, and editing switched on in the file's .par
 // (mb_pr_update_edit) so mbprocess applies them. The saved edits are then cleared.
-void cloudSaveEdits(Cloud *c) {
-	if (!c || c->edits.empty())
-		return;
+// THE .esf writer: `edits` (by ping index and beam) appended to each file's edit save file, by ping time
+// (pingTime[ping]) in its file (files[pingFile[ping]]). The names of the files that failed.
+QStringList saveEsfEdits(const QStringList &files, const std::vector<double> &pingTime,
+                         const std::vector<int> &pingFile, const std::vector<CloudEdit> &edits) {
 	QStringList failed;
-	for (int f = 0; f < c->files.size(); f++) {
+	for (int f = 0; f < files.size(); f++) {
 		bool any = false;
-		for (const auto &e : c->edits)
-			if (e.ping >= 0 && e.ping < int(c->pingFile.size()) && c->pingFile[e.ping] == f) {
+		for (const auto &e : edits)
+			if (e.ping >= 0 && e.ping < int(pingFile.size()) && pingFile[e.ping] == f) {
 				any = true;
 				break;
 			}
 		if (!any)
 			continue;
 		char file[MB_PATH_MAXLINE], esffile[MB_PATH_MAXLINE];
-		snprintf(file, sizeof(file), "%s", c->files[f].toUtf8().constData());
+		snprintf(file, sizeof(file), "%s", files[f].toUtf8().constData());
 		struct mb_esf_struct esf;
 		memset(&esf, 0, sizeof(esf));
 		int error = MB_ERROR_NO_ERROR;
 		if (mb_esf_load(0, "iGMT", file, false, MBP_ESF_APPEND, esffile, &esf, &error) != MB_SUCCESS) {
-			failed << QFileInfo(c->files[f]).fileName();
+			failed << QFileInfo(files[f]).fileName();
 			continue;
 		}
-		for (const auto &e : c->edits) {
-			if (e.ping < 0 || e.ping >= int(c->pingFile.size()) || c->pingFile[e.ping] != f)
+		for (const auto &e : edits) {
+			if (e.ping < 0 || e.ping >= int(pingFile.size()) || pingFile[e.ping] != f)
 				continue;
 			int action = MBP_EDIT_FLAG;
 			if (mb_beam_ok(e.flag))
 				action = MBP_EDIT_UNFLAG;
 			else if (mb_beam_check_flag_filter(e.flag) || mb_beam_check_flag_filter2(e.flag))
 				action = MBP_EDIT_FILTER;
-			mb_esf_save(0, &esf, c->pingTime[e.ping], e.beam, action, &error);
+			mb_esf_save(0, &esf, pingTime[e.ping], e.beam, action, &error);
 		}
 		mb_esf_close(0, &esf, &error);
 		mb_pr_update_edit(0, file, MBP_EDIT_ON, esffile, &error);
 	}
+	return failed;
+}
+
+void cloudSaveEdits(Cloud *c) {
+	if (!c || c->edits.empty())
+		return;
+	const QStringList failed = saveEsfEdits(c->files, c->pingTime, c->pingFile, c->edits);
 	if (failed.isEmpty())
 		c->edits.clear();
 	else
@@ -179,9 +187,15 @@ void cloudSave() {
 }
 
 // CUBE gridding: the host's CUBE dialog, its input these soundings (mb3dsdgCloudGood)
-void cloudCube() {
+// Gridding: the host's gridding dialog (Interpolate, on mbgrid), its input these soundings
+void cloudGrid() {
+	if (g_cloud && g_cloud->host.openGridOnCloud)
+		g_cloud->host.openGridOnCloud(g_cloud->scene, g_cloud->name.toUtf8().constData());
+}
+
+void cloudCube(bool filter) {
 	if (g_cloud && g_cloud->host.openCubeOnCloud)
-		g_cloud->host.openCubeOnCloud(g_cloud->scene, g_cloud->name.toUtf8().constData());
+		g_cloud->host.openCubeOnCloud(g_cloud->scene, g_cloud->name.toUtf8().constData(), filter);
 }
 
 // the pane is gone: what is not saved yet is saved, the soundings released
@@ -193,6 +207,43 @@ void cloudDismiss() {
 }
 
 } // namespace
+
+int mb3dsdgCloudFlag(void *scene, const unsigned char *bad, int n) {
+	if (!g_cloud || g_cloud->scene != scene || !bad)
+		return -1;
+	int i = 0, nflag = 0;
+	for (auto &s : g_cloud->s) {
+		if (!mb_beam_ok(s.beamflag))
+			continue;                                // only the good soundings are in `bad`, in order
+		if (i >= n)
+			break;
+		if (bad[i++]) {
+			s.beamflag = char(MB_FLAG_FLAG + MB_FLAG_FILTER);
+			g_cloud->data.num_soundings_unflagged--;
+			g_cloud->data.num_soundings_flagged++;
+			cloudEdit(0, s.iping, s.ibeam, s.beamflag, MB3DSDG_EDIT_NOFLUSH);
+			nflag++;
+		}
+	}
+	if (nflag)
+		mb3dsdgPlot();
+	return nflag;
+}
+
+int mb3dsdgEsfFlag(const MbEditHost &host, const QStringList &files, const double *ptime, const int *pfile,
+                   int nping, const int *ping, const int *beam, int n) {
+	if (!ptime || !pfile || !ping || !beam || nping <= 0 || n < 0 || files.isEmpty())
+		return -1;
+	if (!mbeditLoadMbio(nullptr, host))
+		return -1;
+	std::vector<CloudEdit> edits;
+	edits.reserve(size_t(n));
+	for (int i = 0; i < n; i++)
+		edits.push_back({ping[i], beam[i], char(MB_FLAG_FLAG + MB_FLAG_FILTER)});
+	const QStringList failed = saveEsfEdits(files, std::vector<double>(ptime, ptime + nping),
+	                                        std::vector<int>(pfile, pfile + nping), edits);
+	return failed.isEmpty() ? n : -1;
+}
 
 QString mb3dsdgCloudName(void *scene) {
 	return (g_cloud && g_cloud->scene == scene) ? g_cloud->name : QString();
@@ -286,6 +337,7 @@ bool mb3dsdgOpenCloud(void *scene, const MbEditHost &host, const double *lon, co
 	n.colorsoundings = &cloudColor;
 	n.save = &cloudSave;
 	n.cube = &cloudCube;
+	n.grid = &cloudGrid;
 	if (!mb3dsdgOpenPane(scene, host, &c->data, n)) {
 		g_cloud = nullptr;
 		delete c;

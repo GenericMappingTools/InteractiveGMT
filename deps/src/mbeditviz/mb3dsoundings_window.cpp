@@ -28,6 +28,11 @@
 #include <QAction>
 #include <QActionGroup>
 #include <QApplication>
+#include <QCursor>
+#include <QSet>
+#include <QVTKOpenGLNativeWidget.h>
+#include <QPainter>
+#include <QPixmap>
 #include <QButtonGroup>
 #include <QCloseEvent>
 #include <QDir>
@@ -89,7 +94,7 @@ const int MBS_EDIT_RESTORE = 3;
 const int MBS_EDIT_GRAB = 4;
 const int MBS_EDIT_INFO = 5;
 const double MBS_PICK_THRESHOLD = 50;
-const double MBS_ERASE_THRESHOLD = 15;
+const double MBS_ERASE_THRESHOLD = 10;   // Erase / Restore reach, screen px (15 in mb3dsoundings; the cursor circle shows it)
 const int MBS_EDIT_GRAB_START = 0;
 const int MBS_EDIT_GRAB_MOVE = 1;
 const int MBS_EDIT_GRAB_END = 2;
@@ -210,6 +215,12 @@ struct Mb3dsdg {
 	// actor's scale; the other actors take the same scale before each frame. The controls are a narrow
 	// dock of that window; `win` is built but never shown (its View menu and actions are reused).
 	bool pane = false;
+	QPointer<QWidget> paneCanvas;            // the window's view, while it lives (its cursor is reset at close)
+	QCursor editCursor;                      // the armed mode's cursor (msUpdateCursor), held on the view by
+	bool editCursorOn = false;               // cursorWatch whoever else sets one
+	QPointer<QObject> cursorWatch;
+	bool shiftGrab = false;                  // a Shift+left-drag is running Grab; shiftGrabPrev comes back after
+	int shiftGrabPrev = -1;
 	void *scene = nullptr;
 	QWidget *paneDock = nullptr;
 	QRadioButton *paneMode[7] = {};           // Navigate + the six edit modes
@@ -1115,18 +1126,93 @@ void msUpdateStatus() {
 
 	/* put up the new status string */
 	m->labelStatus->setText(QString::fromLatin1(value_text));
-	if (m->paneStatus)                       // the pane: the same text, one item per line
-		m->paneStatus->setText(QString::fromLatin1(value_text).replace(" | ", "\n"));
+	if (m->paneStatus) {                     // the pane: one item per line, the counts only (the window
+		                                     // shows its own view angles and exaggeration)
+		if (m->edit_mode == MBS_EDIT_INFO && m->last_sounding_defined &&
+		    m->last_sounding_edited < soundingdata->num_soundings)
+			m->paneStatus->setText(QString::fromLatin1(value_text).replace(" | ", "\n"));
+		else
+			m->paneStatus->setText(QString("Tot:%1\nGood:%2\nFlagged:%3").arg(soundingdata->num_soundings)
+			                       .arg(soundingdata->num_soundings_unflagged).arg(soundingdata->num_soundings_flagged));
+	}
 }
 
 
 void msUpdateCursor() {
 	Mb3dsdg *m = g_ms;
-	// mb3dsoundings' cursors while an edit mode is armed: a target to pick, an exchange to sweep
-	if (m->edit_mode == MBS_EDIT_ERASE || m->edit_mode == MBS_EDIT_RESTORE)
-		m->canvasW->setCursor(Qt::PointingHandCursor);
-	else if (m->edit_mode >= 0)
-		m->canvasW->setCursor(Qt::CrossCursor);
+	// mb3dsoundings' cursors while an edit mode is armed. Pick, Erase and Restore: a circle as wide as
+	// their reach (msToolMouse: Pick takes the nearest sounding within MBS_PICK_THRESHOLD screen pixels,
+	// Erase / Restore every one within MBS_ERASE_THRESHOLD). The rest: a cross.
+	auto ring = [m](double radius, const QColor &col) {
+		const qreal dpr = m->canvasW->devicePixelRatioF();
+		const int r = int(radius), side = 2 * r + 4;
+		QPixmap pm(int(side * dpr), int(side * dpr));
+		pm.setDevicePixelRatio(dpr);
+		pm.fill(Qt::transparent);
+		QPainter p(&pm);
+		p.setRenderHint(QPainter::Antialiasing, true);
+		const QPointF c(side / 2.0, side / 2.0);
+		p.setBrush(Qt::NoBrush);
+		p.setPen(QPen(Qt::white, 3.0));      // a light rim under a dark line: seen on any ground
+		p.drawEllipse(c, r, r);
+		p.setPen(QPen(col, 1.4));
+		p.drawEllipse(c, r, r);
+		p.drawLine(c - QPointF(2, 0), c + QPointF(2, 0));
+		p.drawLine(c - QPointF(0, 2), c + QPointF(0, 2));
+		p.end();
+		return QCursor(pm, side / 2, side / 2);
+	};
+	QCursor cur(Qt::ArrowCursor);
+	const bool armedMode = m->edit_mode >= 0;
+	if (m->edit_mode == MBS_EDIT_PICK)
+		cur = ring(MBS_PICK_THRESHOLD, QColor(200, 0, 0));
+	else if (m->edit_mode == MBS_EDIT_ERASE)
+		cur = ring(MBS_ERASE_THRESHOLD, QColor(200, 0, 0));
+	else if (m->edit_mode == MBS_EDIT_RESTORE)
+		cur = ring(MBS_ERASE_THRESHOLD, QColor(0, 120, 0));
+	else if (armedMode)
+		cur = QCursor(Qt::CrossCursor);
+	// VTK puts its "default" cursor back on the widget at every hover (the view's widgets ask for it),
+	// so the edit cursor must BE the view's default -- setCursor alone lasts until the mouse moves
+	if (auto *vw = qobject_cast<QVTKOpenGLNativeWidget *>(m->canvasW))
+		vw->setDefaultCursor(cur);
+	m->editCursor = cur;
+	m->editCursorOn = armedMode;
+	// ...and whoever else sets one on the view while a mode is armed is overridden: the watcher puts the
+	// edit cursor back at every cursor change (and says, once per kind, what replaced it)
+	if (!m->cursorWatch) {
+		struct CursorWatch : QObject {
+			bool busy = false;
+			QSet<int> told;
+			using QObject::QObject;
+			bool eventFilter(QObject *o, QEvent *e) override {
+				if (e->type() != QEvent::CursorChange || busy || !g_ms || !g_ms->editCursorOn)
+					return false;
+				auto *w = qobject_cast<QWidget *>(o);
+				if (!w)
+					return false;
+				const QCursor &want = g_ms->editCursor;
+				const QCursor now = w->cursor();
+				const bool same = now.shape() == want.shape() &&
+				                  (want.shape() != Qt::BitmapCursor || now.pixmap().cacheKey() == want.pixmap().cacheKey());
+				if (same)
+					return false;
+				if (!told.contains(int(now.shape()))) {
+					told.insert(int(now.shape()));
+					fprintf(stderr, "3D Soundings: the view's cursor was replaced (Qt shape %d) in edit mode %d; put back\n",
+					        int(now.shape()), g_ms->edit_mode);
+				}
+				busy = true;
+				w->setCursor(want);
+				busy = false;
+				return false;
+			}
+		};
+		m->cursorWatch = new CursorWatch(m->canvasW);
+		m->canvasW->installEventFilter(m->cursorWatch);
+	}
+	if (armedMode)
+		m->canvasW->setCursor(cur);
 	else
 		m->canvasW->unsetCursor();
 }
@@ -1555,7 +1641,22 @@ Mb3dsdg *msBuild(QWidget *parent, const MbEditHost &host, void *paneScene = null
 	// mode is the only thing that takes the left button.
 	vtkRenderer *ren = nullptr;
 	auto armed = []() { return g_ms && g_ms->edit_mode >= 0; };
-	auto tool = [](int what, int x, int y) { msToolMouse(what, x, y); };
+	// Shift+left-drag in the pane's window (the host hands it over even unarmed): Grab, for that drag
+	// only -- the edit mode in force is put back on release
+	auto tool = [](int what, int x, int y) {
+		if (!g_ms) return;
+		if (what == 0 && g_ms->pane && (QApplication::keyboardModifiers() & Qt::ShiftModifier) &&
+		    g_ms->edit_mode != MBS_EDIT_GRAB) {
+			g_ms->shiftGrabPrev = g_ms->edit_mode;
+			g_ms->shiftGrab = true;
+			msSetEditMode(MBS_EDIT_GRAB);
+		}
+		msToolMouse(what, x, y);
+		if (what == 2 && g_ms && g_ms->shiftGrab) {
+			g_ms->shiftGrab = false;
+			msSetEditMode(g_ms->shiftGrabPrev);
+		}
+	};
 	auto key = [](QKeyEvent *e, bool press) { msKeyEvent(e, press); };
 	if (paneScene) {
 		// PANE MODE: the iGMT window's own view (its navigation, gizmo, keys) takes the same three hooks
@@ -1567,6 +1668,7 @@ Mb3dsdg *msBuild(QWidget *parent, const MbEditHost &host, void *paneScene = null
 		}
 		m->pane = true;
 		m->scene = paneScene;
+		m->paneCanvas = m->canvasW;
 	}
 	else {
 		auto *lay = new QVBoxLayout(host_w);
@@ -1890,6 +1992,14 @@ namespace {
 void msPaneTeardown(Mb3dsdg *m) {
 	if (!m || g_ms != m || !m->pane)
 		return;
+	m->editCursorOn = false;
+	if (m->cursorWatch)
+		delete m->cursorWatch.data();
+	if (m->paneCanvas) {                     // the window keeps living: its own arrow back
+		if (auto *vw = qobject_cast<QVTKOpenGLNativeWidget *>(m->paneCanvas.data()))
+			vw->setDefaultCursor(QCursor(Qt::ArrowCursor));
+		m->paneCanvas->unsetCursor();
+	}
 	if (m->paneDock) {                       // ended from here (not by the dock's own close): the dock goes
 		QWidget *dock = m->paneDock;         // too, without calling back into a tool that is already gone
 		QObject::disconnect(dock, &QObject::destroyed, nullptr, nullptr);
@@ -1984,11 +2094,17 @@ bool mb3dsdgOpenPane(void *scene, const MbEditHost &host, mb3dsoundings_struct *
 					QApplication::restoreOverrideCursor();
 				}
 			});
-		// CUBE gridding: the caller opens CUBE on these soundings
-		if (auto *cb = content->findChild<QPushButton *>("cubeButton"))
+		// Gridding: the caller opens its gridding on these soundings (the good ones only)
+		if (auto *gb = content->findChild<QPushButton *>("gridButton"))
+			QObject::connect(gb, &QPushButton::clicked, content, []() {
+				if (g_ms && g_ms->notify.grid)
+					g_ms->notify.grid();
+			});
+		// CUBE filter: the caller opens CUBE on these soundings, set to flag (its dialog also grids)
+		if (auto *cb = content->findChild<QPushButton *>("cubeFilterButton"))
 			QObject::connect(cb, &QPushButton::clicked, content, []() {
 				if (g_ms && g_ms->notify.cube)
-					g_ms->notify.cube();
+					g_ms->notify.cube(true);
 			});
 		if (auto *vb = content->findChild<QToolButton *>("viewButton"))
 			vb->setMenu(m->win->findChild<QMenu *>("menuView"));

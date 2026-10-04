@@ -145,6 +145,25 @@ function _on_interpolate(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		# depth is the one the shared derived-variable transition leaves showing.
 		extra = method == "cube" && _mb_bool(string(pop!(kw, :extra, "false")))
 		method == "cube" && _cube_fill_geometry!(kw, D)  # empty region/spacing: GMT's choice for the data
+		# CUBE as a sounding filter (the CUBE gridding dialog's "Flag soundings"): no grid, the soundings
+		# CUBE's surface does not support are flagged where they live -- in the window's 3D Soundings pane
+		# (saved with its Save), or straight into each swath file's .esf.
+		if method == "cube" && _get(d, "mode") == "flag"
+			pop!(kw, :extra, nothing)
+			k = parse(Float64, _get(d, "flag_k", "2.5"))
+			f = cubegrid_all(D; kw..., flag_k = k).flagged
+			nf = count(f)
+			if cloud
+				ccall(_fn(:gmtvtk_mb_cloud_flag_h), Cint, (Ptr{Cvoid}, Ptr{UInt8}, Cint), scene, UInt8.(f), Cint(length(f)))
+				_viewer_log_info(scene, "CUBE flagged $nf of $(length(f)) soundings in the 3D Soundings pane (Save writes them to the .esf)")
+			elseif swath
+				_mb_flag_to_esf(String(infile), f)
+				_viewer_log_info(scene, "CUBE flagged $nf of $(length(f)) soundings, written to the .esf of each swath file")
+			else
+				error("CUBE flagging needs swath data (a swath file, a datalist or a swath point cloud)")
+			end
+			return Cint(1)
+		end
 		if extra
 			nt = cubegrid_all(D; kw...)
 			for (G, t) in ((nt.uncertainty, "CUBE uncertainty (95%)"), (nt.n_hypotheses, "CUBE hypotheses"),
