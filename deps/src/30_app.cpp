@@ -1985,6 +1985,14 @@ static void mbView3dSetBounds(void *view, const double b[6]);
 static double mbView3dVE(void *view);
 static void mbView3dSetVE(void *view, double ve);
 static void mbView3dFrame(void *view);
+// ...and on an existing viewer window (the 3D Soundings pane; defined in 90_c_api.cpp)
+static void *mbView3dAttach(void *scene, std::function<bool()> armed, std::function<void(int, int, int)> tool,
+                            std::function<void(QKeyEvent *, bool)> key, QWidget **widget, vtkRenderer **ren);
+static void mbView3dDetach(void *view);
+static vtkActor *mbAttachCloudActor(void *view);
+static void mbAttachFrame(void *view);
+static QWidget *mbAddPane(void *scene, QWidget *content, const char *title, std::function<void()> closed);
+static void mbOpenCubeOnCloud(void *scene, const char *name);   // 70_window.cpp
 static MbEditHost mbeditViewerHost() {
 	MbEditHost h;
 	h.uiDir = gmtvtkUiDir();
@@ -2017,6 +2025,12 @@ static MbEditHost mbeditViewerHost() {
 	h.view3dVE = mbView3dVE;
 	h.view3dSetVE = mbView3dSetVE;
 	h.view3dFrame = mbView3dFrame;
+	h.view3dAttach = mbView3dAttach;
+	h.view3dDetach = mbView3dDetach;
+	h.attachCloudActor = mbAttachCloudActor;
+	h.attachFrame = mbAttachFrame;
+	h.addPane = mbAddPane;
+	h.openCubeOnCloud = mbOpenCubeOnCloud;
 	return h;
 }
 #endif // GMTVTK_MBEDIT

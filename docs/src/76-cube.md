@@ -20,7 +20,7 @@ implementation, [bathycube](https://github.com/noaa-ocs-hydrography/bathycube) (
 | Menu | **GMT ▸ Interpolate**, Griding Method ▸ *CUBE (bathymetry with uncertainty)* — x,y,z tables (and swath data too) |
 | Julia | `cubegrid`, `cubegrid_all` (`src/cube.jl`) |
 | C | `deps/src/cube/mb_cube.c` + `mb_cube.h` — verbatim copy of MB-System's `src/mbaux/mb_cube.{c,h}` |
-| C | `deps/src/cube/cube_swath.c` — reads the soundings of swath data through MB-System's MBIO |
+| Julia | swath data (`.mbNN`, `.mb-1`, ...) read by MB-System's `mbgetdata` (`_mb_good_dataset`, `src/drop.jl`), the reader every swath read in iGMT shares |
 | Tests | MB-System `test/mbaux/mb_cube_test.cc` (24 GTest cases, bathycube's own expected values) |
 
 ---

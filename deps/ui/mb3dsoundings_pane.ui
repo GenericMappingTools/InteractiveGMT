@@ -1,0 +1,251 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>Mb3dSoundingsPane</class>
+ <widget class="QWidget" name="Mb3dSoundingsPane">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>150</width>
+    <height>426</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>3D Soundings</string>
+  </property>
+  <widget class="QToolButton" name="viewButton">
+   <property name="geometry">
+    <rect>
+     <x>6</x>
+     <y>6</y>
+     <width>66</width>
+     <height>24</height>
+    </rect>
+   </property>
+   <property name="toolTip">
+    <string>What is shown: flagged soundings, profiles, the bounding box, the colouring</string>
+   </property>
+   <property name="text">
+    <string>View</string>
+   </property>
+   <property name="popupMode">
+    <enum>QToolButton::ToolButtonPopupMode::InstantPopup</enum>
+   </property>
+  </widget>
+  <widget class="QToolButton" name="actionButton">
+   <property name="geometry">
+    <rect>
+     <x>78</x>
+     <y>6</y>
+     <width>66</width>
+     <height>24</height>
+    </rect>
+   </property>
+   <property name="toolTip">
+    <string>Filter by sparse voxels; colour the unflagged soundings</string>
+   </property>
+   <property name="text">
+    <string>Action</string>
+   </property>
+   <property name="popupMode">
+    <enum>QToolButton::ToolButtonPopupMode::InstantPopup</enum>
+   </property>
+  </widget>
+  <widget class="QRadioButton" name="modeNavigate">
+   <property name="geometry">
+    <rect>
+     <x>8</x>
+     <y>40</y>
+     <width>136</width>
+     <height>22</height>
+    </rect>
+   </property>
+   <property name="toolTip">
+    <string>The left button rotates the view, as in every iGMT window: no editing</string>
+   </property>
+   <property name="text">
+    <string>Navigate</string>
+   </property>
+   <property name="checked">
+    <bool>true</bool>
+   </property>
+  </widget>
+  <widget class="QRadioButton" name="modeToggle">
+   <property name="geometry">
+    <rect>
+     <x>8</x>
+     <y>64</y>
+     <width>136</width>
+     <height>22</height>
+    </rect>
+   </property>
+   <property name="toolTip">
+    <string>Left click toggles the sounding nearest the pointer (key Q)</string>
+   </property>
+   <property name="text">
+    <string>Toggle</string>
+   </property>
+  </widget>
+  <widget class="QRadioButton" name="modePick">
+   <property name="geometry">
+    <rect>
+     <x>8</x>
+     <y>88</y>
+     <width>136</width>
+     <height>22</height>
+    </rect>
+   </property>
+   <property name="toolTip">
+    <string>Left click flags the good sounding nearest the pointer (key W)</string>
+   </property>
+   <property name="text">
+    <string>Pick</string>
+   </property>
+  </widget>
+  <widget class="QRadioButton" name="modeErase">
+   <property name="geometry">
+    <rect>
+     <x>8</x>
+     <y>112</y>
+     <width>136</width>
+     <height>22</height>
+    </rect>
+   </property>
+   <property name="toolTip">
+    <string>Left drag flags every good sounding it sweeps over (key O)</string>
+   </property>
+   <property name="text">
+    <string>Erase</string>
+   </property>
+  </widget>
+  <widget class="QRadioButton" name="modeRestore">
+   <property name="geometry">
+    <rect>
+     <x>8</x>
+     <y>136</y>
+     <width>136</width>
+     <height>22</height>
+    </rect>
+   </property>
+   <property name="toolTip">
+    <string>Left drag unflags every flagged sounding it sweeps over (key R)</string>
+   </property>
+   <property name="text">
+    <string>Restore</string>
+   </property>
+  </widget>
+  <widget class="QRadioButton" name="modeGrab">
+   <property name="geometry">
+    <rect>
+     <x>8</x>
+     <y>160</y>
+     <width>136</width>
+     <height>22</height>
+    </rect>
+   </property>
+   <property name="toolTip">
+    <string>Left drag a rectangle: every good sounding inside it is flagged (key T)</string>
+   </property>
+   <property name="text">
+    <string>Grab</string>
+   </property>
+  </widget>
+  <widget class="QRadioButton" name="modeInfo">
+   <property name="geometry">
+    <rect>
+     <x>8</x>
+     <y>184</y>
+     <width>136</width>
+     <height>22</height>
+    </rect>
+   </property>
+   <property name="toolTip">
+    <string>Left click shows the file, ping, beam and values of the nearest sounding (key Y)</string>
+   </property>
+   <property name="text">
+    <string>Info</string>
+   </property>
+  </widget>
+  <widget class="QRadioButton" name="navButton">
+   <property name="geometry">
+    <rect>
+     <x>8</x>
+     <y>216</y>
+     <width>136</width>
+     <height>22</height>
+    </rect>
+   </property>
+   <property name="toolTip">
+    <string>Show / hide the ship's navigation lines (one per swath file, at the sea surface)</string>
+   </property>
+   <property name="text">
+    <string>Navigation tracks</string>
+   </property>
+   <property name="autoExclusive">
+    <bool>false</bool>
+   </property>
+  </widget>
+  <widget class="QPushButton" name="saveButton">
+   <property name="geometry">
+    <rect>
+     <x>6</x>
+     <y>244</y>
+     <width>138</width>
+     <height>26</height>
+    </rect>
+   </property>
+   <property name="toolTip">
+    <string>Write the edits made so far to each swath file's edit save file (.esf)</string>
+   </property>
+   <property name="text">
+    <string>Save .esf</string>
+   </property>
+   <property name="autoDefault">
+    <bool>false</bool>
+   </property>
+  </widget>
+  <widget class="QPushButton" name="cubeButton">
+   <property name="geometry">
+    <rect>
+     <x>6</x>
+     <y>276</y>
+     <width>138</width>
+     <height>26</height>
+    </rect>
+   </property>
+   <property name="toolTip">
+    <string>Grid these soundings with MB-System's CUBE: the good soundings as they stand in the pane, edits included</string>
+   </property>
+   <property name="text">
+    <string>CUBE gridding</string>
+   </property>
+   <property name="autoDefault">
+    <bool>false</bool>
+   </property>
+  </widget>
+  <widget class="QLabel" name="labelStatus">
+   <property name="geometry">
+    <rect>
+     <x>6</x>
+     <y>310</y>
+     <width>138</width>
+     <height>110</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string/>
+   </property>
+   <property name="alignment">
+    <set>Qt::AlignmentFlag::AlignLeading|Qt::AlignmentFlag::AlignLeft|Qt::AlignmentFlag::AlignTop</set>
+   </property>
+   <property name="wordWrap">
+    <bool>true</bool>
+   </property>
+   <property name="textInteractionFlags">
+    <set>Qt::TextInteractionFlag::TextSelectableByMouse</set>
+   </property>
+  </widget>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

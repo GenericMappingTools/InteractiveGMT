@@ -3219,7 +3219,7 @@ static void rebuildSceneObjects(Scene *s) {
 				QAction *aCpt = nullptr, *aBlack = nullptr;
 				// A group of MB-System navigation tracks: mbgrdviz's Action menu editors, on every track
 				// of the group (each submenu item does its own work, so `pick` matches nothing below).
-				addMbSystemMenu(m, lineGroupMbNavs(s, gn));
+				addMbSystemMenu(m, lineGroupMbNavs(s, gn), s->win, lineGroupMbFiles(s, gn));
 				QAction *aVw = vwKey.empty() ? nullptr : m.addAction("Save as SVG / EPS / PDF…");
 				if (aVw) m.addSeparator();
 				if (cptable) {

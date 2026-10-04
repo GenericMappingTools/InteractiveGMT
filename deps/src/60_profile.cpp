@@ -414,7 +414,9 @@ protected:
 	void recenterAt(const QPoint &p) {
 		if (!s || !s->ren) return;
 		double x, y; devPx(p, x, y);
-		if (camRecenterOnPick(s->ren, sceneRecenterTargets(s), x, y)) renderWindow()->Render();
+		const bool moved = (s->surfCloud && s->cloudPD) ? camRecenterOnCloud(s, x, y)   // a point cloud
+		                                                : camRecenterOnPick(s->ren, sceneRecenterTargets(s), x, y);
+		if (moved) renderWindow()->Render();
 	}
 	void panBy(const QPoint &prev, const QPoint &cur) {
 		if (!s || !s->ren) return;

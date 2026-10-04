@@ -179,7 +179,7 @@ include("RemoteS/remotes_gui.jl") # Satellite > Remote sensing: the dialogs over
 
 export gmtscript, gmtreplay,
        view_grid, view_image, view_points, view_fv, view_demo, iview,
-       add!, setvisible!, setopacity!, add_curtain!, add_isosurface!, add_symbols!, show_table, selection, isalive,
+       add!, setvisible!, setopacity!, add_curtain!, add_isosurface!, add_symbols!, show_table, selection, selection_ids, isalive,
        poly2fv, colorize_by_z!, save_png, wait_windows, stereo!, movie, MovieFrame, orbit!, replace_grid!,
        set_layer!, nlayers, add_label!, add_progress!, remove_annotation!, movie_annotations,
        xyplot, clear!, profile_to_xyplot, xtime!, logscale!, stickplot, xyinfo!, xynowcross!,

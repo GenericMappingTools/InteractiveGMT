@@ -126,6 +126,7 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_symbol_set_world_size_h, :gmtvtk_fit_camera_for_orbit_h,
 	:gmtvtk_add_curtain_h, :gmtvtk_add_curtain_file_h,
 	:gmtvtk_view_points, :gmtvtk_promote_points_h, :gmtvtk_selection_count, :gmtvtk_get_selection,
+	:gmtvtk_get_selection_xyz, :gmtvtk_set_cloud_selection_callback,   # a cloud selection reaches the REPL (points.jl)
 	:gmtvtk_set_object_visible, :gmtvtk_set_axes_shown_h, :gmtvtk_set_extra_owner_h, :gmtvtk_restack_grid_h, :gmtvtk_refit_view_h,
 	:gmtvtk_view_fv, :gmtvtk_promote_fv_h, :gmtvtk_set_julia_eval, :gmtvtk_set_table, :gmtvtk_log_error, :gmtvtk_log_info,
 	:gmtvtk_error_box, :gmtvtk_get_xfac,
@@ -334,7 +335,6 @@ const _LIB_OPTIONAL = (
 	:mb_cube_method_from_name, :mb_cube_variance_from_name, :mb_cube_strerror,
 	:mb_cube_grid_new, :mb_cube_grid_insert, :mb_cube_grid_flush, :mb_cube_grid_get_values,
 	:mb_cube_grid_free,
-	:gmtvtk_cube_swath_read, :gmtvtk_cube_swath_take,   # swath soundings through the editor's MBIO (IGMT_WITH_MBEDIT)
 	# EXPERIMENTAL swath editor (deps/src/mbedit/, built only with IGMT_WITH_MBEDIT in CMakeLists.txt)
 	:gmtvtk_mbedit_open, :gmtvtk_mbedit_state, :gmtvtk_mbedit_key, :gmtvtk_mbedit_click,
 	:gmtvtk_mbedit_save_png, :gmtvtk_mbedit_close,
@@ -348,6 +348,9 @@ const _LIB_OPTIONAL = (
 	:gmtvtk_mbeditviz_select_box, :gmtvtk_mbeditviz_editor_key, :gmtvtk_mbeditviz_editor_mode,
 	:gmtvtk_mbeditviz_editor_click, :gmtvtk_mbeditviz_editor_save_png, :gmtvtk_mbeditviz_close_editor,
 	:gmtvtk_mbeditviz_close_map, :gmtvtk_mbeditviz_close,
+	:gmtvtk_mb_cloud_pane_h,          # the 3D Soundings pane of a swath point cloud (drop.jl)
+	:gmtvtk_mb_cloud_nav_h,           # that pane's ship navigation lines (drop.jl)
+	:gmtvtk_mb_cloud_good_h,          # that pane's good soundings, CUBE's input (interpolate.jl)
 	# EXPERIMENTAL mbgrdviz (deps/src/mbgrdviz/, IGMT_WITH_MBGRDVIZ)
 	:gmtvtk_mbgrdviz_open, :gmtvtk_mbgrdviz_state, :gmtvtk_mbgrdviz_open_file, :gmtvtk_mbgrdviz_save,
 	:gmtvtk_mbgrdviz_select_route, :gmtvtk_mbgrdviz_set_area, :gmtvtk_mbgrdviz_set_region,

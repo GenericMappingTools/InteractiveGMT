@@ -11,7 +11,7 @@ Qt + VTK viewer, colouring each point by its **z** through the GMT colormap `cma
 GMT name, e.g. `:turbo`, `:roma`, `:geo`; `nothing` = the built-in ramp). Returns a
 `QtPoints` handle immediately; the window stays live while you keep using the REPL.
 
-**Ctrl+right-drag** a box over the cloud to select points (TOGGLE — re-dragging the same
+**Shift+left-drag** (or **Ctrl+right-drag**) a box over the cloud to select points (TOGGLE — re-dragging the same
 box deselects; **Ctrl+Z** undoes the last change). Plain right-drag stays the dolly. The
 selected points are highlighted in `pickcolor` and kept for you — read them back with
 [`selection`](@ref), which returns a copy of the picked `x y z [...]` rows (or `nothing`).
@@ -66,4 +66,53 @@ function selection(fig::QtPoints)
 	got <= 0 && return fig.D[1:0, :]
 	rows = Int.(ids[1:got]) .+ 1            # 0-based C ids -> 1-based Julia rows
 	return fig.D[rows, :]
+end
+
+# The window of the last cloud selection change, whichever door opened it (view_points, a drop,
+# File > Open): the C side reports every change (_on_cloud_selection), so `selection()` needs no handle.
+const _LAST_CLOUD_SEL = Ref{Ptr{Cvoid}}(C_NULL)
+
+function _on_cloud_selection(scene::Ptr{Cvoid}, n::Cint)::Cvoid
+	_LAST_CLOUD_SEL[] = scene    # silent: the REPL is not written to; `selection()` reads it when asked
+	return
+end
+
+function _register_cloud_select()
+	fptr = @cfunction((s, n) -> Base.invokelatest(_on_cloud_selection, s, n), Cvoid, (Ptr{Cvoid}, Cint))
+	ccall(_fn(:gmtvtk_set_cloud_selection_callback), Cvoid, (Ptr{Cvoid},), fptr)
+	return
+end
+
+"""
+	selection() -> Matrix{Float64}
+
+The points selected in the LAST point cloud you selected in — **Shift+left-drag** (or
+Ctrl+right-drag) a box over any cloud, however it was opened (`view_points`, a dropped `.laz`,
+an MB-System swath file, File > Open) — as an `n×3` matrix of `x y z` rows. Empty (0×3) when
+nothing is selected or that window is closed.
+"""
+function selection()
+	h = _LAST_CLOUD_SEL[]
+	h == C_NULL && return zeros(0, 3)
+	n = ccall(_fn(:gmtvtk_selection_count), Cint, (Ptr{Cvoid},), h)   # 0 for a closed window
+	n <= 0 && return zeros(0, 3)
+	xyz = Vector{Cdouble}(undef, 3n)
+	got = ccall(_fn(:gmtvtk_get_selection_xyz), Cint, (Ptr{Cvoid}, Ptr{Cdouble}, Cint), h, xyz, n)
+	k = Int(got)
+	return permutedims(reshape(xyz[1:3k], 3, k))
+end
+
+"""
+	selection_ids() -> Vector{Int}
+
+The 1-based indices, into the cloud's own points, of the rows `selection()` returns.
+"""
+function selection_ids()
+	h = _LAST_CLOUD_SEL[]
+	h == C_NULL && return Int[]
+	n = ccall(_fn(:gmtvtk_selection_count), Cint, (Ptr{Cvoid},), h)
+	n <= 0 && return Int[]
+	ids = Vector{Cint}(undef, n)
+	got = ccall(_fn(:gmtvtk_get_selection), Cint, (Ptr{Cvoid}, Ptr{Cint}, Cint), h, ids, Cint(n))
+	return Int.(ids[1:got]) .+ 1
 end

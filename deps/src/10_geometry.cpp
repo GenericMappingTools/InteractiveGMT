@@ -324,6 +324,9 @@ struct Overlay {
 	                                          // mbgrdviz knows it (a later Rename does not orphan it). Non-empty
 	                                          // puts the "MB-System" submenu (the Action menu's editors) on its
 	                                          // row and on its group's handle. "" = not a track.
+	std::string mbFile;                      // the swath file of a track no mbgrdviz knows (a swath cloud's
+	int mbFormat = 0;                        // navigation, gmtvtk_mb_cloud_nav_h) and its MBIO format: the
+	                                          // "MB-System" submenu opens the editors on it. "" = mbgrdviz's
 	bool noConvertToPoints = false;         // suppresses ONLY "Convert to points"/"Convert to line" in the
 	                                          // context menu, unlike isShapencBoundary which also drops
 	                                          // "Line length…"/"Azimuth…" -- for lines where scattering to
@@ -949,7 +952,9 @@ static void lineGroupRenamePrompt(Scene *s, const std::string &gname);   // ask,
 // The "MB-System" submenu (mbgrdviz's Action menu editors) of a navigation track and of its group's
 // handle (55_lineprops.cpp): the tracks of a group, and the submenu itself (nothing added for none).
 static std::vector<std::string> lineGroupMbNavs(Scene *s, const std::string &gname);
-static void addMbSystemMenu(QMenu &m, const std::vector<std::string> &navs);
+static std::vector<std::pair<std::string, int>> lineGroupMbFiles(Scene *s, const std::string &gname);
+static void addMbSystemMenu(QMenu &m, const std::vector<std::string> &navs, QWidget *parent = nullptr,
+                            const std::vector<std::pair<std::string, int>> &own = {});
 static void overlayBuildFill(Overlay &ov);                                 // filled overlay's triangles (50_scene.cpp)
 static bool overlayActorFilled(Scene *s, vtkActor *a);                     // ...is this actor one? (50_scene.cpp)
 static void vwSaveProduct(Scene *s, const std::string &key);               // Vector Wizard product -> SVG/EPS/PDF (50_scene.cpp)
@@ -1661,7 +1666,8 @@ struct Scene {
 	vtkSmartPointer<vtkPolyData>  cloudPD;        // the point cloud (set by view_points; null for grids)
 	std::string hoverInfo;                        // text of the symbol tooltip currently shown ("" = none)
 	bool   rbEnabled   = false;                   // rubber-band selection active (point clouds only)
-	bool   rbSelecting = false;                   // mid Ctrl+right-drag
+	bool   rbSelecting = false;                   // mid Ctrl+right-drag or Shift+left-drag
+	bool   rbByLeft    = false;                   // ...and it is the Shift+left one
 	bool   rbConsume   = false;                   // swallow the context menu this right-release triggers
 	int    rbX0 = 0, rbY0 = 0;                    // drag start (VTK display px)
 	double rbR = 0.83, rbG = 0.83, rbB = 0.83;    // highlight colour for the picked points
@@ -3107,12 +3113,31 @@ static bool camRecenterOnPick(vtkRenderer *ren, const std::vector<vtkProp *> &ta
 	return true;
 }
 
+// camRecenterOnPick's gesture on a POINT CLOUD. vtkCellPicker cannot pick a cloud: measured on a swath
+// cloud it returned one and the same point wherever the pointer was, so 'c' jumped there once and then
+// never moved again. The cloud is aimed by THE cloud pick, pickCloudPointAt (below, the hover
+// readout's own): the nearest cloud point under the pointer, in scaled world coords.
+static bool pickCloudPointAt(Scene *s, int dx, int dy, double w[3]);
+static bool camRecenterOnCloud(Scene *s, double x, double y) {
+	vtkCamera *cam = (s && s->ren) ? s->ren->GetActiveCamera() : nullptr;
+	double pick[3];
+	if (!cam || !s->surf || !s->surf->GetVisibility() || !pickCloudPointAt(s, int(x), int(y), pick)) return false;
+	double pos[3], fp[3]; cam->GetPosition(pos); cam->GetFocalPoint(fp);
+	const double d[3] = { pos[0]-fp[0], pos[1]-fp[1], pos[2]-fp[2] };
+	cam->SetFocalPoint(pick);
+	cam->SetPosition(pick[0]+d[0], pick[1]+d[1], pick[2]+d[2]);
+	s->ren->ResetCameraClippingRange();
+	return true;
+}
+
 // The same gesture aimed by the MOUSE POINTER instead of a click position — what the 'c' key needs.
 // Returns false when there is no widget, or the pointer is over nothing pickable.
 static bool camRecenterAtCursor(Scene *s) {
 	if (!s || !s->ren || !s->widget) return false;
 	double dx, dy;
 	displayPxFromQt(s->widget, s->widget->renderWindow(), s->widget->mapFromGlobal(QCursor::pos()), dx, dy);
+	if (s->surfCloud && s->cloudPD)                       // a point cloud: vtkCellPicker cannot pick it
+		return camRecenterOnCloud(s, dx, dy);
 	return camRecenterOnPick(s->ren, sceneRecenterTargets(s), dx, dy);
 }
 static inline void surfGetScale(Scene *s, double sc[3]) {

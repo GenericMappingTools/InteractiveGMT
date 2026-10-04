@@ -1254,22 +1254,52 @@ static std::vector<std::string> lineGroupMbNavs(Scene *s, const std::string &gna
 
 // "MB-System": mbgrdviz's Action menu editors (Open Selected Nav in MBedit / MBeditviz / MBnavedit /
 // MBvelocitytool), here on THESE tracks instead of the ones checked in the tool's Navigation list.
-// The tool does the opening (mbgrdvizNavEditor), so the menu and the Action menu are one path. Added
-// only for tracks the open mbgrdviz knows; nothing at all otherwise.
-static void addMbSystemMenu(QMenu &m, const std::vector<std::string> &navs) {
+// The tool does the opening (mbgrdvizNavEditor), so the menu and the Action menu are one path. Tracks
+// no mbgrdviz knows but that carry their own swath file (`own`: Overlay::mbFile / mbFormat, a swath
+// cloud's navigation) get the same editors through the same mbRunNavEditor, parked on `parent`.
+// Nothing at all when neither kind is there.
+#ifdef GMTVTK_MBGRDVIZ
+static MbGrdVizHost mbgrdvizViewerHost();   // 90_c_api.cpp
+#endif
+static void addMbSystemMenu(QMenu &m, const std::vector<std::string> &navs, QWidget *parent,
+                            const std::vector<std::pair<std::string, int>> &own) {
 #ifdef GMTVTK_MBGRDVIZ
 	std::vector<std::string> known;
 	for (const std::string &n : navs)
 		if (mbgrdvizNavIndex(n) >= 0) known.push_back(n);
-	if (known.empty()) return;
+	QStringList files;
+	std::vector<int> formats;
+	if (known.empty())
+		for (const auto &f : own) {
+			files << QString::fromStdString(f.first);
+			formats.push_back(f.second);
+		}
+	if (known.empty() && files.isEmpty()) return;
 	QMenu *mb = m.addMenu("MB-System");
 	static const char *const kLabels[4] = { "Open in MBedit", "Open in MBeditviz", "Open in MBnavedit", "Open in MBvelocitytool" };
-	for (int which = 0; which < 4; ++which)
-		mb->addAction(kLabels[which], [which, known]() { mbgrdvizNavEditor(which, known); });
+	for (int which = 0; which < 4; ++which) {
+		if (!known.empty())
+			mb->addAction(kLabels[which], [which, known]() { mbgrdvizNavEditor(which, known); });
+		else
+			mb->addAction(kLabels[which], [which, files, formats, parent]() {
+				mbRunNavEditor(mbgrdvizViewerHost(), parent, which, files, formats);
+			});
+	}
 	m.addSeparator();
 #else
-	(void)m; (void)navs;
+	(void)m; (void)navs; (void)parent; (void)own;
 #endif
+}
+
+// The own swath files (Overlay::mbFile, with its format) of a group's tracks, each once, in order.
+static std::vector<std::pair<std::string, int>> lineGroupMbFiles(Scene *s, const std::string &gname) {
+	std::vector<std::pair<std::string, int>> out;
+	if (!s || gname.empty()) return out;
+	for (auto &o : s->overlays)
+		if (o.groupName == gname && !o.mbFile.empty() &&
+		    std::find_if(out.begin(), out.end(), [&](const auto &p) { return p.first == o.mbFile; }) == out.end())
+			out.push_back({o.mbFile, o.mbFormat});
+	return out;
 }
 
 // The unified right-click menu for a line object: "Line properties…" plus the kind's own actions
@@ -1311,8 +1341,12 @@ static void popupLineObjectMenu(Scene *s, const LineRef &lr, const QString &name
 
 	// An MB-System navigation track (or its swath bounds): its first properties are the editors
 	// mbgrdviz's Action menu opens, on THIS track.
-	if (ovp && !ovp->mbNav.empty())
-		addMbSystemMenu(m, { ovp->mbNav });
+	if (ovp && !ovp->mbNav.empty()) {
+		std::vector<std::pair<std::string, int>> own;
+		if (!ovp->mbFile.empty())
+			own.push_back({ovp->mbFile, ovp->mbFormat});
+		addMbSystemMenu(m, { ovp->mbNav }, s->win, own);
+	}
 
 	// EVERY nested rectangle carries the nesting actions at the TOP of the menu, so the chain can
 	// be extended from any level (each "New nested grid" inherits its parent's nesting behaviour).

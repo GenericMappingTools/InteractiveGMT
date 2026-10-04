@@ -36,12 +36,14 @@
 #include <QLabel>
 #include <QMainWindow>
 #include <QMessageBox>
+#include <QMenu>
 #include <QMouseEvent>
 #include <QPointer>
 #include <QPushButton>
 #include <QRadioButton>
 #include <QSignalBlocker>
 #include <QSlider>
+#include <QToolButton>
 #include <QUiLoader>
 #include <QVBoxLayout>
 
@@ -57,6 +59,7 @@
 #include <vtkMatrix4x4.h>
 #include <vtkNew.h>
 #include <vtkPNGWriter.h>
+#include <vtkPointData.h>
 #include <vtkPoints.h>
 #include <vtkPolyData.h>
 #include <vtkPolyDataMapper.h>
@@ -201,6 +204,20 @@ struct Mb3dsdg {
 	int last_sounding_edited = 0;
 
 	int key_g_down = 0, key_z_down = 0, key_s_down = 0, key_a_down = 0, key_d_down = 0;
+
+	// PANE MODE (mb3dsdgOpenPane): no window of its own. The soundings are drawn INTO the iGMT window's
+	// own cloud actor (pointsActor borrows it), in TRUE coords (glx/gly/glz = lon, lat, z) under that
+	// actor's scale; the other actors take the same scale before each frame. The controls are a narrow
+	// dock of that window; `win` is built but never shown (its View menu and actions are reused).
+	bool pane = false;
+	void *scene = nullptr;
+	QWidget *paneDock = nullptr;
+	QRadioButton *paneMode[7] = {};           // Navigate + the six edit modes
+	QLabel *paneStatus = nullptr;
+	std::function<void(bool)> navShow;             // the window's navigation lines on / off (mb3dsdgSetNavToggle)
+	vtkSmartPointer<vtkPolyData> cloudOrigInput;   // the cloud actor's own data and colouring, put back at close
+	int cloudOrigScalarMode = 0, cloudOrigColorMode = 0, cloudOrigScalarVis = 1;
+	unsigned long startTag = 0;
 };
 Mb3dsdg *g_ms = nullptr;
 
@@ -223,9 +240,23 @@ void msFlushPrevious() {
 		(g_ms->notify.edit)(0, 0, 0, MB_FLAG_NULL, MB3DSDG_EDIT_FLUSHPREVIOUS);
 }
 
+// PANE MODE: a sounding's drawn position is its own TRUE position -- x, y = the beam's lon/lat (the
+// pane's soundings carry them there, mb3dsdgOpenCloud) and its z -- since the iGMT window's cloud
+// actor that draws it carries the window's scale.
+void msPaneTrue(mb3dsoundings_sounding_struct *sounding) {
+	sounding->glx = (float)sounding->x;
+	sounding->gly = (float)sounding->y;
+	sounding->glz = (float)sounding->z;
+}
+
 // ---- mb3dsoundings_scale / _scalez / _setzscale ------------------------------------------------
 void msScale() {
 	mb3dsoundings_struct *soundingdata = g_ms->soundingdata;
+	if (g_ms->pane) {
+		for (int i = 0; i < soundingdata->num_soundings; i++)
+			msPaneTrue(&soundingdata->soundings[i]);
+		return;
+	}
 	for (int i = 0; i < soundingdata->num_soundings; i++) {
 		mb3dsoundings_sounding_struct *sounding = &(soundingdata->soundings[i]);
 		sounding->glx = (float)(soundingdata->scale * sounding->x);
@@ -236,6 +267,8 @@ void msScale() {
 
 void msScaleZ() {
 	mb3dsoundings_struct *soundingdata = g_ms->soundingdata;
+	if (g_ms->pane)                          // true z under the window's own exaggeration
+		return;
 	for (int i = 0; i < soundingdata->num_soundings; i++) {
 		mb3dsoundings_sounding_struct *sounding = &(soundingdata->soundings[i]);
 		sounding->glz = (float)(g_ms->exaggeration * soundingdata->zscale * (sounding->z - soundingdata->zorigin));
@@ -243,7 +276,7 @@ void msScaleZ() {
 }
 
 // Is this sounding drawn by msBuildScene in the current view? The SAME tests its point loops make
-// (each colour mode's own, the original's parenthesis included), so the box can never hold a
+// (each colour mode's own), so the box can never hold a
 // sounding the view does not show.
 static bool msSoundingShown(const Mb3dsdg *m, const mb3dsoundings_sounding_struct *sounding) {
 	if (mb_beam_ok(sounding->beamflag))
@@ -255,7 +288,7 @@ static bool msSoundingShown(const Mb3dsdg *m, const mb3dsoundings_sounding_struc
 		       mb_beam_check_flag_filter2(sounding->beamflag) || mb_beam_check_flag_sonar(sounding->beamflag) ||
 		       (m->view_secondary && mb_beam_check_flag_multipick(sounding->beamflag));
 	return !mb_beam_check_flag_null(sounding->beamflag) &&
-	       (!mb_beam_check_flag_multipick(sounding->beamflag || m->view_secondary));
+	       (m->view_secondary || !mb_beam_check_flag_multipick(sounding->beamflag));
 }
 
 // The vertical box hugs the soundings the view DRAWS (only the unflagged ones of those when
@@ -290,6 +323,8 @@ void msSetZScale() {
 	soundingdata->zorigin = 0.5 * (zmin + zmax);
 	soundingdata->zmin = -0.5 * (zmax - zmin);
 	soundingdata->zmax = 0.5 * (zmax - zmin);
+	if (g_ms->pane)                          // true z: drawn under the window's own exaggeration
+		return;
 	for (int i = 0; i < soundingdata->num_soundings; i++) {
 		soundingdata->soundings[i].glz =
 		    (float)(g_ms->exaggeration * soundingdata->zscale * (soundingdata->soundings[i].z - soundingdata->zorigin));
@@ -668,6 +703,29 @@ void msAddPoint(vtkPoints *pts, vtkCellArray *verts, vtkUnsignedCharArray *rgb, 
 	rgb->InsertNextTypedTuple(c);
 }
 
+// A FLAGGED sounding, in every colour mode, is drawn in the colour of its flag -- manual red, filter
+// blue, sonar green, secondary pick cyan (the Color by Flag State colours) -- so a pick shows as a
+// change of colour, never as a sounding that blends into the depth / amplitude colours or vanishes.
+// true = it was a flagged sounding and was added (the caller then skips its own colour).
+bool msAddFlagged(const Mb3dsdg *m, vtkPoints *pts, vtkCellArray *verts, vtkUnsignedCharArray *rgb,
+                  const mb3dsoundings_sounding_struct *s) {
+	if (mb_beam_ok(s->beamflag))
+		return false;
+	if (mb_beam_check_flag_multipick(s->beamflag) && !m->view_secondary)
+		return true;                         // secondary picks: shown only when asked (View menu)
+	if (mb_beam_check_flag_manual(s->beamflag))
+		msAddPoint(pts, verts, rgb, s, 1.0f, 0.0f, 0.0f);
+	else if (mb_beam_check_flag_filter(s->beamflag) || mb_beam_check_flag_filter2(s->beamflag))
+		msAddPoint(pts, verts, rgb, s, 0.0f, 0.0f, 1.0f);
+	else if (mb_beam_check_flag_sonar(s->beamflag))
+		msAddPoint(pts, verts, rgb, s, 0.0f, 1.0f, 0.0f);
+	else if (m->view_secondary && mb_beam_check_flag_multipick(s->beamflag))
+		msAddPoint(pts, verts, rgb, s, 0.0f, 1.0f, 1.0f);
+	else
+		msAddPoint(pts, verts, rgb, s, 1.0f, 0.0f, 0.0f);   // any other flag: shown flagged, never hidden
+	return true;
+}
+
 // the composite transform world -> window pixel (origin bottom left), as gluProject applied it
 void msProject(const double m[16], double x, double y, double z, int *wx, int *wy) {
 	const double X = m[0] * x + m[1] * y + m[2] * z + m[3];
@@ -712,9 +770,12 @@ void msProjectAll() {
 		for (int c = 0; c < 4; c++)
 			mm[4 * r + c] = proj->GetElement(r, c);
 	mb3dsoundings_struct *soundingdata = m->soundingdata;
+	double sc[3] = {1.0, 1.0, 1.0};          // pane mode: true coords under the window's cloud-actor scale
+	if (m->pane && m->pointsActor)
+		m->pointsActor->GetScale(sc);
 	for (int i = 0; i < soundingdata->num_soundings; i++) {
 		mb3dsoundings_sounding_struct *sounding = &(soundingdata->soundings[i]);
-		msProject(mm, sounding->glx, sounding->gly, sounding->glz, &sounding->winx, &sounding->winy);
+		msProject(mm, sc[0] * sounding->glx, sc[1] * sounding->gly, sc[2] * sounding->glz, &sounding->winx, &sounding->winy);
 	}
 }
 
@@ -731,12 +792,34 @@ void msBuildScene() {
 		vtkNew<vtkPoints> pts;
 		vtkNew<vtkCellArray> solid, dotted;
 		if (m->view_boundingbox) {
-			const double glxmin = soundingdata->scale * soundingdata->xmin;
-			const double glxmax = soundingdata->scale * soundingdata->xmax;
-			const double glymin = soundingdata->scale * soundingdata->ymin;
-			const double glymax = soundingdata->scale * soundingdata->ymax;
-			const double glzmin = m->exaggeration * soundingdata->zscale * soundingdata->zmin;
-			const double glzmax = m->exaggeration * soundingdata->zscale * soundingdata->zmax;
+			double glxmin = soundingdata->scale * soundingdata->xmin;
+			double glxmax = soundingdata->scale * soundingdata->xmax;
+			double glymin = soundingdata->scale * soundingdata->ymin;
+			double glymax = soundingdata->scale * soundingdata->ymax;
+			double glzmin = m->exaggeration * soundingdata->zscale * soundingdata->zmin;
+			double glzmax = m->exaggeration * soundingdata->zscale * soundingdata->zmax;
+			if (m->pane) {                       // the box of the shown soundings, in their true coords
+				bool first = true;
+				for (int i = 0; i < soundingdata->num_soundings; i++) {
+					const mb3dsoundings_sounding_struct *s = &(soundingdata->soundings[i]);
+					if (!msSoundingShown(m, s) || (!m->view_scalewithflagged && !mb_beam_ok(s->beamflag)))
+						continue;
+					if (first) {
+						glxmin = glxmax = s->glx;
+						glymin = glymax = s->gly;
+						glzmin = glzmax = s->glz;
+						first = false;
+					}
+					else {
+						glxmin = MIN(glxmin, (double)s->glx);
+						glxmax = MAX(glxmax, (double)s->glx);
+						glymin = MIN(glymin, (double)s->gly);
+						glymax = MAX(glymax, (double)s->gly);
+						glzmin = MIN(glzmin, (double)s->glz);
+						glzmax = MAX(glzmax, (double)s->glz);
+					}
+				}
+			}
 			auto loop = [&](bool full, const double v[4][3]) {
 				vtkIdType ids[5];
 				for (int k = 0; k < 4; k++)
@@ -834,18 +917,7 @@ void msBuildScene() {
 
 				/* plot flagged sounding if requested */
 				else if (m->view_flagged) {
-					if (mb_beam_check_flag_manual(sounding->beamflag)) {
-						msAddPoint(pts, verts, rgb, sounding, 1.0f, 0.0f, 0.0f);
-					}
-					else if (mb_beam_check_flag_filter(sounding->beamflag) || mb_beam_check_flag_filter2(sounding->beamflag)) {
-						msAddPoint(pts, verts, rgb, sounding, 0.0f, 0.0f, 1.0f);
-					}
-					else if (mb_beam_check_flag_sonar(sounding->beamflag)) {
-						msAddPoint(pts, verts, rgb, sounding, 0.0f, 1.0f, 0.0f);
-					}
-					else if (m->view_secondary && mb_beam_check_flag_multipick(sounding->beamflag)) {
-						msAddPoint(pts, verts, rgb, sounding, 0.0f, 1.0f, 1.0f);
-					}
+					msAddFlagged(m, pts, verts, rgb, sounding);   // the same flag colours every mode uses
 				}
 			}
 		}
@@ -855,11 +927,14 @@ void msBuildScene() {
 			for (int i = 0; i < soundingdata->num_soundings; i++) {
 				mb3dsoundings_sounding_struct *sounding = &(soundingdata->soundings[i]);
 
-				/* plot sounding (the original's test, parenthesis included) */
+				/* plot sounding: good, or flagged when flagged soundings are shown. The original passed
+				   "beamflag || view_secondary" into the unparenthesised multipick macro, which made EVERY
+				   flagged sounding a secondary pick and hid it in this colour mode (and the two below) */
 				if (mb_beam_ok(sounding->beamflag) ||
 				    (m->view_flagged && !mb_beam_check_flag_null(sounding->beamflag) &&
-				     (!mb_beam_check_flag_multipick(sounding->beamflag || m->view_secondary)))) {
-					msAddPoint(pts, verts, rgb, sounding, sounding->r, sounding->g, sounding->b);
+				     (m->view_secondary || !mb_beam_check_flag_multipick(sounding->beamflag)))) {
+					if (!msAddFlagged(m, pts, verts, rgb, sounding))
+						msAddPoint(pts, verts, rgb, sounding, sounding->r, sounding->g, sounding->b);
 				}
 			}
 		}
@@ -888,7 +963,9 @@ void msBuildScene() {
 				mb3dsoundings_sounding_struct *sounding = &(soundingdata->soundings[i]);
 				if (mb_beam_ok(sounding->beamflag) ||
 				    (m->view_flagged && !mb_beam_check_flag_null(sounding->beamflag) &&
-				     (!mb_beam_check_flag_multipick(sounding->beamflag || m->view_secondary)))) {
+				     (m->view_secondary || !mb_beam_check_flag_multipick(sounding->beamflag)))) {
+					if (msAddFlagged(m, pts, verts, rgb, sounding))
+						continue;
 					float r, g, b;
 					mbviewGetColor(sounding->z, zmin, zmax, colortable_haxby_red[0], colortable_haxby_green[0],
 					               colortable_haxby_blue[0], colortable_haxby_red[MBV_NUM_COLORS - 1],
@@ -908,7 +985,7 @@ void msBuildScene() {
 				mb3dsoundings_sounding_struct *sounding = &(soundingdata->soundings[i]);
 				if (mb_beam_ok(sounding->beamflag) ||
 				    (m->view_flagged && !mb_beam_check_flag_null(sounding->beamflag) &&
-				     (!mb_beam_check_flag_multipick(sounding->beamflag || m->view_secondary)))) {
+				     (m->view_secondary || !mb_beam_check_flag_multipick(sounding->beamflag)))) {
 					if (first) {
 						first = false;
 						ampmin = sounding->a;
@@ -924,7 +1001,9 @@ void msBuildScene() {
 				mb3dsoundings_sounding_struct *sounding = &(soundingdata->soundings[i]);
 				if (mb_beam_ok(sounding->beamflag) ||
 				    (m->view_flagged && !mb_beam_check_flag_null(sounding->beamflag) &&
-				     (!mb_beam_check_flag_multipick(sounding->beamflag || m->view_secondary)))) {
+				     (m->view_secondary || !mb_beam_check_flag_multipick(sounding->beamflag)))) {
+					if (msAddFlagged(m, pts, verts, rgb, sounding))
+						continue;
 					float r, g, b;
 					mbviewGetColor(sounding->a, ampmin, ampmax, 0.0f, 0.0f, 1.0f, 1.0f, 0.0f, 0.0f, colortable_redtoblue_red,
 					               colortable_redtoblue_green, colortable_redtoblue_blue, &r, &g, &b);
@@ -935,8 +1014,17 @@ void msBuildScene() {
 		vtkNew<vtkPolyData> pd;
 		pd->SetPoints(pts);
 		pd->SetVerts(verts);
-		pd->GetCellData()->SetScalars(rgb);
-		vtkPolyDataMapper::SafeDownCast(m->pointsActor->GetMapper())->SetInputData(pd);
+		// one vertex per sounding: its colour is a POINT colour (a decimated LOD of the pane's cloud
+		// actor keeps point data, not cell data)
+		pd->GetPointData()->SetScalars(rgb);
+		if (auto *pm = vtkPolyDataMapper::SafeDownCast(m->pointsActor->GetMapper())) {
+			pm->SetInputData(pd);
+			if (m->pane) {                       // the window's cloud mapper: our colours, as they are
+				pm->SetScalarModeToUsePointData();
+				pm->SetColorModeToDirectScalars();
+				pm->ScalarVisibilityOn();
+			}
+		}
 	}
 
 	/* If in info mode and sounding picked plot it green if view color by flag, black otherwise */
@@ -958,8 +1046,9 @@ void msBuildScene() {
 		vtkPolyDataMapper::SafeDownCast(m->infoActor->GetMapper())->SetInputData(pd);
 	}
 
-	/* the box the view frames: what the gizmo and its view keys fit, what a recentre may land on */
-	if (m->host.view3dSetBounds) {
+	/* the box the view frames: what the gizmo and its view keys fit, what a recentre may land on
+	   (pane mode: the window frames its own data) */
+	if (!m->pane && m->host.view3dSetBounds) {
 		const double b[6] = {soundingdata->scale * soundingdata->xmin, soundingdata->scale * soundingdata->xmax,
 		                     soundingdata->scale * soundingdata->ymin, soundingdata->scale * soundingdata->ymax,
 		                     m->exaggeration * soundingdata->zscale * soundingdata->zmin,
@@ -1026,6 +1115,8 @@ void msUpdateStatus() {
 
 	/* put up the new status string */
 	m->labelStatus->setText(QString::fromLatin1(value_text));
+	if (m->paneStatus)                       // the pane: the same text, one item per line
+		m->paneStatus->setText(QString::fromLatin1(value_text).replace(" | ", "\n"));
 }
 
 
@@ -1046,6 +1137,11 @@ void msUpdateModeToggles() {
 		QSignalBlocker b(m->modeButton[i]);
 		m->modeButton[i]->setChecked(i == m->edit_mode);
 	}
+	for (int i = 0; i < 7; i++)              // the pane: [0] Navigate = no edit mode, then the six
+		if (m->paneMode[i]) {
+			QSignalBlocker b(m->paneMode[i]);
+			m->paneMode[i]->setChecked(i == m->edit_mode + 1);
+		}
 }
 
 // arm an edit mode (MBS_EDIT_NONE disarms: the left button goes back to the view)
@@ -1349,6 +1445,16 @@ vtkSmartPointer<vtkActor> msMakeActor(double pointSize, double lineWidth) {
 // the gizmo's vertical exaggeration IS the soundings' exaggeration: picked up before every frame
 void msVeCB(vtkObject *, unsigned long, void *, void *) {
 	Mb3dsdg *m = g_ms;
+	if (m && m->pane) {                      // pane: the box/profiles/info take the window's cloud scale
+		if (!m->pointsActor)
+			return;
+		double sc[3];
+		m->pointsActor->GetScale(sc);
+		for (vtkActor *a : {m->boxSolidActor.Get(), m->boxDotActor.Get(), m->profileActor.Get(), m->infoActor.Get()})
+			if (a)
+				a->SetScale(sc);
+		return;
+	}
 	if (!m || !m->soundingdata || !m->host.view3dVE)
 		return;
 	const double ve = m->host.view3dVE(m->view);
@@ -1360,10 +1466,15 @@ void msVeCB(vtkObject *, unsigned long, void *, void *) {
 	}
 }
 
-Mb3dsdg *msBuild(QWidget *parent, const MbEditHost &host) {
+// `paneScene`: build for PANE MODE on that iGMT window (its view, its cloud actor); null = own window
+Mb3dsdg *msBuild(QWidget *parent, const MbEditHost &host, void *paneScene = nullptr) {
 	const QString uiDir = host.uiDir;
 	const QIcon icon = host.icon;
-	if (!host.view3dMake) {
+	if (paneScene && (!host.view3dAttach || !host.attachCloudActor || !host.addPane)) {
+		QMessageBox::warning(parent, "MBeditviz", "The 3-D soundings pane needs the viewer's window hooks.");
+		return nullptr;
+	}
+	if (!paneScene && !host.view3dMake) {
 		QMessageBox::warning(parent, "MBeditviz", "The 3-D soundings view needs the viewer's 3-D view.");
 		return nullptr;
 	}
@@ -1442,33 +1553,69 @@ Mb3dsdg *msBuild(QWidget *parent, const MbEditHost &host) {
 	// THE VIEWER'S OWN 3-D VIEW: iGMT's mouse, keys and gizmo exactly as every iGMT 3-D view has them.
 	// mb3dsoundings' own camera (its model rotation, pan, zoom and mouse modes) is gone; an armed edit
 	// mode is the only thing that takes the left button.
-	auto *lay = new QVBoxLayout(host_w);
-	lay->setContentsMargins(0, 0, 0, 0);
 	vtkRenderer *ren = nullptr;
-	m->view = host.view3dMake(host_w, []() { return g_ms && g_ms->edit_mode >= 0; },
-	                          [](int what, int x, int y) { msToolMouse(what, x, y); },
-	                          [](QKeyEvent *e, bool press) { msKeyEvent(e, press); }, &m->canvasW, &ren);
-	lay->addWidget(m->canvasW);
+	auto armed = []() { return g_ms && g_ms->edit_mode >= 0; };
+	auto tool = [](int what, int x, int y) { msToolMouse(what, x, y); };
+	auto key = [](QKeyEvent *e, bool press) { msKeyEvent(e, press); };
+	if (paneScene) {
+		// PANE MODE: the iGMT window's own view (its navigation, gizmo, keys) takes the same three hooks
+		m->view = host.view3dAttach(paneScene, armed, tool, key, &m->canvasW, &ren);
+		if (!m->view) {
+			delete win;
+			delete m;
+			return nullptr;
+		}
+		m->pane = true;
+		m->scene = paneScene;
+	}
+	else {
+		auto *lay = new QVBoxLayout(host_w);
+		lay->setContentsMargins(0, 0, 0, 0);
+		m->view = host.view3dMake(host_w, armed, tool, key, &m->canvasW, &ren);
+		lay->addWidget(m->canvasW);
+	}
 	m->ren = ren;
 	m->rw = ren->GetRenderWindow();
-	// mb3dsoundings' white ground: its colours ARE the flag code (good soundings and the box in black,
-	// manual flags red, filter blue, sonar green), and on a dark ground the good ones vanish
-	m->ren->GradientBackgroundOff();
-	m->ren->SetBackground(1.0, 1.0, 1.0);
+	if (!m->pane) {
+		// mb3dsoundings' white ground: its colours ARE the flag code (good soundings and the box in black,
+		// manual flags red, filter blue, sonar green), and on a dark ground the good ones vanish
+		m->ren->GradientBackgroundOff();
+		m->ren->SetBackground(1.0, 1.0, 1.0);
+	}
 	{
 		vtkNew<vtkCallbackCommand> veCB;
 		veCB->SetCallback(msVeCB);
-		m->ren->AddObserver(vtkCommand::StartEvent, veCB);
+		m->startTag = m->ren->AddObserver(vtkCommand::StartEvent, veCB);
 	}
 	m->boxSolidActor = msMakeActor(1.0, 1.0);
 	m->boxSolidActor->GetProperty()->SetColor(0.0, 0.0, 0.0);
 	m->boxDotActor = msMakeActor(1.0, 1.0);
 	m->boxDotActor->GetProperty()->SetColor(0.75, 0.75, 0.75);
 	m->profileActor = msMakeActor(1.0, 1.0);
-	m->pointsActor = msMakeActor(3.0, 1.0);
 	m->infoActor = msMakeActor(6.0, 1.0);
-	for (vtkActor *a : {m->boxSolidActor.Get(), m->boxDotActor.Get(), m->profileActor.Get(), m->pointsActor.Get(),
-	                    m->infoActor.Get()})
+	if (m->pane) {
+		// the soundings go INTO the window's cloud actor: its data and colouring kept to be put back
+		m->pointsActor = host.attachCloudActor(m->view);
+		auto *pm = m->pointsActor ? vtkPolyDataMapper::SafeDownCast(m->pointsActor->GetMapper()) : nullptr;
+		if (!pm) {
+			if (host.view3dDetach)
+				host.view3dDetach(m->view);
+			m->ren->RemoveObserver(m->startTag);
+			delete win;
+			delete m;
+			return nullptr;
+		}
+		m->cloudOrigInput = pm->GetInput();
+		m->cloudOrigScalarMode = pm->GetScalarMode();
+		m->cloudOrigColorMode = pm->GetColorMode();
+		m->cloudOrigScalarVis = pm->GetScalarVisibility();
+		m->boxSolidActor->GetProperty()->SetColor(1.0, 1.0, 1.0);   // on the window's own (dark) ground
+	}
+	else {
+		m->pointsActor = msMakeActor(3.0, 1.0);
+		m->ren->AddActor(m->pointsActor);
+	}
+	for (vtkActor *a : {m->boxSolidActor.Get(), m->boxDotActor.Get(), m->profileActor.Get(), m->infoActor.Get()})
 		m->ren->AddActor(a);
 	{
 		vtkNew<vtkPolyDataMapper2D> m2;
@@ -1524,6 +1671,13 @@ Mb3dsdg *msBuild(QWidget *parent, const MbEditHost &host) {
 		Mb3dsdg *mm = g_ms;
 		if (!mm || !mm->soundingdata)
 			return;
+		if (mm->pane) {                      // the window's own fit; its exaggeration stays the window's
+			if (mm->host.attachFrame)
+				mm->host.attachFrame(mm->view);
+			msPlot();
+			msUpdateStatus();
+			return;
+		}
 		if (mm->host.view3dSetVE)
 			mm->host.view3dSetVE(mm->view, 1.0);
 		mm->exaggeration = 1.0;
@@ -1681,6 +1835,8 @@ bool mb3dsdgOpen(QWidget *parent, const MbEditHost &host, mb3dsoundings_struct *
 	}
 
 	bool first = false;
+	if (g_ms && g_ms->pane)                  // one editor at a time: a cloud's pane goes for the window
+		mb3dsdgEnd();
 	if (!g_ms) {
 		Mb3dsdg *m = msBuild(parent, host);
 		if (!m)
@@ -1727,9 +1883,179 @@ bool mb3dsdgOpen(QWidget *parent, const MbEditHost &host, mb3dsoundings_struct *
 	return true;
 }
 
+namespace {
+// The pane is gone (its dock closed, or its window closing): the window's cloud actor gets its own data
+// and colouring back, the tool's actors and hooks come off the window, the caller is told, and the
+// tool goes.
+void msPaneTeardown(Mb3dsdg *m) {
+	if (!m || g_ms != m || !m->pane)
+		return;
+	if (m->paneDock) {                       // ended from here (not by the dock's own close): the dock goes
+		QWidget *dock = m->paneDock;         // too, without calling back into a tool that is already gone
+		QObject::disconnect(dock, &QObject::destroyed, nullptr, nullptr);
+		dock->close();
+	}
+	m->paneDock = nullptr;
+	if (auto *pm = m->pointsActor ? vtkPolyDataMapper::SafeDownCast(m->pointsActor->GetMapper()) : nullptr) {
+		pm->SetInputData(m->cloudOrigInput);
+		pm->SetScalarMode(m->cloudOrigScalarMode);
+		pm->SetColorMode(m->cloudOrigColorMode);
+		pm->SetScalarVisibility(m->cloudOrigScalarVis);
+	}
+	if (m->ren) {
+		for (vtkActor *a : {m->boxSolidActor.Get(), m->boxDotActor.Get(), m->profileActor.Get(), m->infoActor.Get()})
+			if (a)
+				m->ren->RemoveActor(a);
+		m->ren->RemoveViewProp(m->grabActor);
+		m->ren->RemoveObserver(m->startTag);
+	}
+	if (m->host.view3dDetach)
+		m->host.view3dDetach(m->view);
+	m->view = nullptr;
+	// redrawn only while the window stays on screen (not when the pane goes because the window closes)
+	QWidget *sw = m->host.sceneWindow ? m->host.sceneWindow(m->scene) : nullptr;
+	if (sw && sw->isVisible() && m->rw)
+		m->rw->Render();
+	auto dismiss = m->notify.dismiss;
+	m->notify = Mb3dsdgNotify();
+	m->soundingdata = nullptr;
+	g_ms = nullptr;                          // gone NOW: a new editor may open before the deferred delete
+	if (dismiss)
+		dismiss();
+	m->win->deleteLater();                  // destroyed -> m deleted (mb3dsdgOpenPane)
+}
+} // namespace
+
+bool mb3dsdgOpenPane(void *scene, const MbEditHost &host, mb3dsoundings_struct *data, const Mb3dsdgNotify &notify) {
+	if (!data || !scene)
+		return false;
+	if (g_ms && !(g_ms->pane && g_ms->scene == scene))
+		mb3dsdgEnd();                        // one 3-D sounding editor at a time: the other one goes
+	if (!g_ms) {
+		Mb3dsdg *m = msBuild(nullptr, host, scene);
+		if (!m)
+			return false;
+		g_ms = m;
+		QObject::connect(m->win, &QObject::destroyed, [m]() {
+			if (g_ms == m)
+				g_ms = nullptr;
+			delete m;
+		});
+		// the pane: mb3dsoundings_pane.ui, its radios on the SAME msSetEditMode, its View menu the window's
+		// own, its Action menu the window's minus Apply Bias and the Optimize entries
+		QFile f(QDir(host.uiDir).filePath("mb3dsoundings_pane.ui"));
+		QWidget *content = nullptr;
+		if (f.open(QIODevice::ReadOnly)) {
+			QUiLoader loader;
+			content = loader.load(&f, nullptr);
+		}
+		if (!content) {
+			QMessageBox::warning(nullptr, "3D Soundings", "Cannot load mb3dsoundings_pane.ui");
+			m->notify = Mb3dsdgNotify();
+			msPaneTeardown(m);
+			return false;
+		}
+		const char *modes[7] = {"modeNavigate", "modeToggle", "modePick", "modeErase", "modeRestore", "modeGrab", "modeInfo"};
+		auto *group = new QButtonGroup(content);
+		for (int i = 0; i < 7; i++) {
+			m->paneMode[i] = content->findChild<QRadioButton *>(modes[i]);
+			if (m->paneMode[i])
+				group->addButton(m->paneMode[i], i);
+		}
+		QObject::connect(group, &QButtonGroup::idClicked, content, [](int id) {
+			if (g_ms)
+				msSetEditMode(id == 0 ? MBS_EDIT_NONE : id - 1);
+		});
+		m->paneStatus = content->findChild<QLabel *>("labelStatus");
+		// Navigation: the window's navigation lines on / off (the host's setter, mb3dsdgSetNavToggle)
+		if (auto *nb = content->findChild<QRadioButton *>("navButton")) {
+			nb->setAutoExclusive(false);
+			QObject::connect(nb, &QRadioButton::toggled, content, [](bool on) {
+				if (g_ms && g_ms->navShow)
+					g_ms->navShow(on);
+			});
+		}
+		// Save: the caller writes the edits made so far (the swath files' .esf); the pane stays open
+		if (auto *sb = content->findChild<QPushButton *>("saveButton"))
+			QObject::connect(sb, &QPushButton::clicked, content, []() {
+				if (g_ms && g_ms->notify.save) {
+					QApplication::setOverrideCursor(Qt::WaitCursor);
+					g_ms->notify.save();
+					QApplication::restoreOverrideCursor();
+				}
+			});
+		// CUBE gridding: the caller opens CUBE on these soundings
+		if (auto *cb = content->findChild<QPushButton *>("cubeButton"))
+			QObject::connect(cb, &QPushButton::clicked, content, []() {
+				if (g_ms && g_ms->notify.cube)
+					g_ms->notify.cube();
+			});
+		if (auto *vb = content->findChild<QToolButton *>("viewButton"))
+			vb->setMenu(m->win->findChild<QMenu *>("menuView"));
+		if (auto *ab = content->findChild<QToolButton *>("actionButton")) {
+			auto *menu = new QMenu(content);
+			for (const char *n : {"actionFlagSparseA", "actionFlagSparseB", "actionFlagSparseC", "actionFlagSparseD",
+			                      "actionFlagSparseE", "actionFlagSparseF"})
+				if (auto *a = m->win->findChild<QAction *>(n))
+					menu->addAction(a);
+			menu->addSeparator();
+			for (const char *n : {"actionColorBlack", "actionColorRed", "actionColorYellow", "actionColorGreen",
+			                      "actionColorBlueGreen", "actionColorBlue", "actionColorPurple"})
+				if (auto *a = m->win->findChild<QAction *>(n))
+					menu->addAction(a);
+			ab->setMenu(menu);
+		}
+		// on the window's own ground the flag colours' black good soundings would vanish: the pane opens
+		// coloured by soundings (the topography scale stretched over them)
+		m->view_color = MBS_VIEW_COLOR_SOUNDING;
+		if (m->actColorBySounding)
+			m->actColorBySounding->setChecked(true);
+		m->paneDock = host.addPane(scene, content, "3D Soundings", [m]() {
+			if (g_ms != m)
+				return;
+			m->paneDock = nullptr;           // the dock is being destroyed: never touched again
+			msPaneTeardown(m);
+		});
+		if (!m->paneDock) {
+			m->notify = Mb3dsdgNotify();
+			msPaneTeardown(m);
+			return false;
+		}
+	}
+	Mb3dsdg *m = g_ms;
+	m->notify = notify;
+	m->soundingdata = data;
+	m->last_sounding_defined = false;
+	m->last_sounding_edited = 0;
+	msScale();
+	msSetZScale();
+	msUpdateModeToggles();
+	msUpdateCursor();
+	msPlot();
+	msUpdateStatus();
+	return true;
+}
+
+// The pane's Navigation toggle drives `show` (the host's own visibility setter for the window's
+// navigation lines); its box starts at `on`, what the lines are now.
+void mb3dsdgSetNavToggle(std::function<void(bool)> show, bool on) {
+	Mb3dsdg *m = g_ms;
+	if (!m || !m->pane)
+		return;
+	m->navShow = std::move(show);
+	if (auto *nb = m->paneDock ? m->paneDock->findChild<QRadioButton *>("navButton") : nullptr) {
+		QSignalBlocker b(nb);
+		nb->setChecked(on);
+	}
+}
+
 void mb3dsdgEnd() {
 	if (!g_ms)
 		return;
+	if (g_ms->pane) {
+		msPaneTeardown(g_ms);                // synchronous; its caller is told (a cloud's edits get saved)
+		return;
+	}
 	g_ms->notify = Mb3dsdgNotify();
 	g_ms->soundingdata = nullptr;
 	mbParkQuit(g_ms->parking);

@@ -194,9 +194,7 @@ set(IGMT_WITH_MBEDIT ON)
 # linked: mbedit.c loads it at run time, so nothing here needs MB-System to build.
 set(MBEDIT_SRC)
 if(IGMT_WITH_MBEDIT AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/mbedit/mbedit.c")
-  # src/cube/cube_swath.c reads swath soundings for CUBE through the editor's MBIO table, so it is
-  # built only with the editor.
-  set(MBEDIT_SRC src/mbedit/mbedit.c src/mbedit/mbedit_window.cpp src/cube/cube_swath.c)
+  set(MBEDIT_SRC src/mbedit/mbedit.c src/mbedit/mbedit_window.cpp)
   add_compile_definitions(GMTVTK_MBEDIT)
   if(MSVC)
     # the engine keeps mbedit_prog.c's own sprintf/strcpy, line for line
@@ -230,7 +228,7 @@ set(IGMT_WITH_MBEDITVIZ ON)
 
 set(MBEDITVIZ_SRC)
 if(IGMT_WITH_MBEDITVIZ AND MBEDIT_SRC AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/mbeditviz/mbeditviz.c")
-  set(MBEDITVIZ_SRC src/mbeditviz/mbeditviz.c src/mbeditviz/mbeditviz_window.cpp src/mbeditviz/mb3dsoundings_window.cpp)
+  set(MBEDITVIZ_SRC src/mbeditviz/mbeditviz.c src/mbeditviz/mbeditviz_window.cpp src/mbeditviz/mb3dsoundings_window.cpp src/mbeditviz/mb3dsoundings_cloud.cpp)
   add_compile_definitions(GMTVTK_MBEDITVIZ)
   if(MSVC)
     # the engine keeps mbeditviz_prog.c's own sprintf/strcpy/strdup, line for line

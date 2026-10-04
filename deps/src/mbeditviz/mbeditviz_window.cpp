@@ -47,6 +47,7 @@
 #include <QPointer>
 #include <QPushButton>
 #include <QRadioButton>
+#include <QRegularExpression>
 #include <QSignalBlocker>
 #include <QSlider>
 #include <QSpinBox>
@@ -862,11 +863,54 @@ void doQuit() {
 	doMessageOff();
 }
 
+// A datalist (format -1), read HERE, line by line, with MB-System's datalist rules: `path format
+// [weight]` per line; '#' comments and '$' directives skipped; an "R:" (raw) / "P:" (processed) status
+// prefix dropped; a path not absolute is relative to the datalist's own folder; a nested datalist
+// (format -1) followed. Each swath file goes to the engine exactly as a single file does
+// (mbeditviz_import_file). Read here because the MBIO library's own datalist reader can hand back no
+// entry at all (seen with the 5.8 build), and a datalist is a legitimate input: it must open.
+int importDatalist(const QString &path, int depth) {
+	QFile f(path);
+	if (depth > 16 || !f.open(QIODevice::ReadOnly | QIODevice::Text))
+		return 0;
+	const QString dir = QFileInfo(path).absolutePath();
+	int n = 0;
+	while (!f.atEnd()) {
+		QString line = QString::fromUtf8(f.readLine()).trimmed();
+		if (line.isEmpty() || line.startsWith('#') || line.startsWith('$'))
+			continue;
+		// "R:" / "P:" status prefix -- never a drive letter, whose colon is followed by a path separator
+		if (line.size() > 2 && (line[0] == 'R' || line[0] == 'P') && line[1] == ':' && line[2] != '/' && line[2] != '\\')
+			line = line.mid(2);
+		const QStringList tok = line.split(QRegularExpression("\\s+"), Qt::SkipEmptyParts);
+		if (tok.isEmpty())
+			continue;
+		QString file = QDir::fromNativeSeparators(tok[0]);
+		const bool absolute = file.startsWith('/') || (file.size() > 1 && file[1] == ':');
+		if (!absolute)
+			file = dir + '/' + file;
+		int format = tok.size() > 1 ? tok[1].toInt() : 0;
+		QByteArray fb = file.toUtf8();
+		if (format == 0)
+			mbeditviz_get_format(fb.data(), &format);
+		if (format == -1)
+			n += importDatalist(file, depth + 1);
+		else if (format > 0 && QFileInfo::exists(file) && mbeditviz_import_file(fb.data(), format) == MB_SUCCESS)
+			n++;
+	}
+	return n;
+}
+
 // do_mbeditviz_opendata
 int doOpenData(const QByteArray &input_file, int format) {
 	msgOn("Reading data list...");
 	QByteArray f = input_file;
-	mbeditviz_open_data(f.data(), format);
+	if (format == -1) {
+		mbev_status = importDatalist(QString::fromUtf8(input_file), 0) > 0 ? MB_SUCCESS : MB_FAILURE;
+		doUpdateGui();
+	}
+	else
+		mbeditviz_open_data(f.data(), format);
 	doMessageOff();
 	return (mbev_status);
 }

@@ -152,6 +152,7 @@ function _ensure_callbacks()
 	                    ("magfield-poles", _register_magfield_poles),
 	                    ("okada-inset", _register_okada_inset),
 	                    ("meca-props",  _register_meca_props),
+	                    ("cloud-select", _register_cloud_select),   # a cloud selection reaches the REPL (points.jl)
 	                    # the MBIO beside GMT_CUSTOM_LIBS's MB-System supplement (mbedit.jl, included only when present)
 	                    ("mbio-hint",   () -> isdefined(@__MODULE__, :_push_mbio_hint) &&
 	                                          Base.invokelatest(getfield(@__MODULE__, :_push_mbio_hint))))

@@ -34,11 +34,22 @@ struct Mb3dsdgNotify {
 	void (*colorsoundings)(int color) = nullptr;
 	void (*optimizebiasvalues)(int mode, double *rollbias, double *pitchbias, double *headingbias, double *timelag,
 	                           double *snell) = nullptr;
+	void (*save)() = nullptr;   // the pane's Save button: write the edits so far (null: no button)
+	void (*cube)() = nullptr;   // the pane's CUBE gridding button: CUBE on the pane's soundings
 };
 
 // mb3dsoundings_open: show `data` (raise the window, or make it). `host` is mbeditviz's: its uiDir
 // holds mb3dsoundings.ui, and the window parks through it (mbParkable) like every MB-System tool.
 bool mb3dsdgOpen(QWidget *parent, const MbEditHost &host, mb3dsoundings_struct *data, const Mb3dsdgNotify &notify);
+// The SAME editor as a narrow right-side PANE of the iGMT window `scene` (the 3D Soundings pane of a
+// swath point cloud): its soundings are drawn into that window's own cloud actor, its edit modes take
+// that window's left button only while armed ("Navigate" = none), View is the window's View menu,
+// Action its Action menu without Apply Bias and the Optimize entries. Closing the pane dismisses it
+// (notify.dismiss). One editor at a time: an open 3-D soundings window or pane is ended first.
+bool mb3dsdgOpenPane(void *scene, const MbEditHost &host, mb3dsoundings_struct *data, const Mb3dsdgNotify &notify);
+// The pane's Navigation toggle calls `show` (the host's visibility setter for the window's navigation
+// lines, ordinary line elements of the window); its box starts at `on`.
+void mb3dsdgSetNavToggle(std::function<void(bool)> show, bool on);
 // mb3dsoundings_end: close the window without notifying (the caller is tearing down).
 void mb3dsdgEnd();
 // mb3dsoundings_plot: redraw (the soundings were recoloured or moved by the caller).

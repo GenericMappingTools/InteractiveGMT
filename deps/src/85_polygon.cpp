@@ -549,6 +549,17 @@ static bool polyPickWorld(Scene *s, int mx, int my, double outTrue[3]) {
 		}
 		return false;
 	}
+	// A POINT CLOUD: vtkCellPicker cannot pick it (it answers one fixed point wherever the click is, so
+	// every vertex of a line drawn on a cloud landed on the same spot and the line drew nothing). THE
+	// cloud pick, pickCloudPointAt (the hover readout's), gives the cloud point under the click.
+	if (s->surfCloud) {
+		double w[3];
+		if (!pickCloudPointAt(s, mx, my, w)) return false;
+		double zz;
+		sceneWorldToGeo(s, w, outTrue[0], outTrue[1], zz);
+		outTrue[2] = s->globe ? zz : ((zsc != 0.0) ? w[2] / zsc : 0.0);
+		return true;
+	}
 	if (s->picker) {
 		if (s->picker->Pick((double)mx, (double)my, 0.0, s->ren) && s->picker->GetCellId() >= 0) {
 			double w[3]; s->picker->GetPickPosition(w);

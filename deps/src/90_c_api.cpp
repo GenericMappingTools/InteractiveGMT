@@ -405,6 +405,30 @@ GMTVTK_API int gmtvtk_get_selection(void *handle, int *out, int n) {
 	return k;
 }
 
+// The selected points themselves, in TRUE data coords (x,y,z triples, the order of
+// gmtvtk_get_selection's ids), up to `n` points. Returns the number copied. For a cloud opened by a
+// drop / File > Open, where the host holds no copy of the data to index into.
+GMTVTK_API int gmtvtk_get_selection_xyz(void *handle, double *xyz, int n) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !xyz || !s->cloudPD || !s->cloudPD->GetPoints())
+		return 0;
+	vtkPoints *pts = s->cloudPD->GetPoints();
+	const vtkIdType np = pts->GetNumberOfPoints();
+	int k = 0;
+	for (vtkIdType id : s->rbSel) {
+		if (k >= n) break;
+		if (id >= np) continue;
+		pts->GetPoint(id, xyz + 3 * k);
+		++k;
+	}
+	return k;
+}
+
+// The REPL side of a cloud selection (src/points.jl): called with (window, count) after every change.
+GMTVTK_API void gmtvtk_set_cloud_selection_callback(void *fn) {
+	g_juliaCloudSel = reinterpret_cast<JuliaCloudSelFn>(fn);
+}
+
 // Set the visibility of an extra object (dropped/added grid or image) found by its Scene Objects
 // name. Used to add a "layerN" blank grid HIDDEN: it still gets a (unchecked) Scene Objects
 // row, but its surface is not drawn. Re-renders + rebuilds the panel so the checkbox tracks it.
@@ -2049,6 +2073,112 @@ static void mbView3dFrame(void *view) {            // the window's own fit, from
 	v->renderWindow()->Render();
 }
 
+// THE SAME TOOL HOOKS ON AN EXISTING VIEWER WINDOW (MbEditHost::view3dAttach, the 3D Soundings pane).
+// MbView3D's left-button rule, applied to the window's own GLView from the outside: an event filter
+// sees every event before the widget does, so while the tool has an edit mode ARMED its left-button
+// gesture is taken here and VTK (gizmo, trackball) never sees it. Unarmed, everything goes on
+// untouched. Keys: only while armed, and AFTER the view has had them (the view's own keys first).
+struct MbAttach : QObject {
+	QPointer<QWidget> w;                     // the window's GLView, while it lives
+	Scene *s = nullptr;
+	std::function<bool()> armed;
+	std::function<void(int, int, int)> tool;
+	std::function<void(QKeyEvent *, bool)> key;
+	bool leftOwned = false;
+	bool inKey = false;
+	bool eventFilter(QObject *o, QEvent *e) override {
+		if (!sceneAlive(s) || o != s->widget)
+			return false;
+		const QEvent::Type t = e->type();
+		if (t == QEvent::MouseButtonPress || t == QEvent::MouseButtonDblClick || t == QEvent::MouseMove ||
+		    t == QEvent::MouseButtonRelease) {
+			auto *me = static_cast<QMouseEvent *>(e);
+			const bool left = me->button() == Qt::LeftButton;
+			const bool startsEdit = (t == QEvent::MouseButtonPress || t == QEvent::MouseButtonDblClick) && left &&
+			                        armed && armed();
+			if (startsEdit || leftOwned) {
+				double x, y;
+				displayPxFromQt(s->widget, s->widget->renderWindow(), me->position().toPoint(), x, y);
+				if (t == QEvent::MouseButtonPress && left) {
+					leftOwned = true;
+					if (tool) tool(0, int(x), int(y));
+				}
+				else if (t == QEvent::MouseMove && leftOwned) {
+					if (tool) tool(1, int(x), int(y));
+				}
+				else if (t == QEvent::MouseButtonRelease && left && leftOwned) {
+					leftOwned = false;
+					if (tool) tool(2, int(x), int(y));
+				}
+				return true;
+			}
+		}
+		else if ((t == QEvent::KeyPress || t == QEvent::KeyRelease) && !inKey && key && armed && armed()) {
+			inKey = true;
+			QApplication::sendEvent(o, e);       // the view's own keys first (this filter skips it: inKey)
+			inKey = false;
+			key(static_cast<QKeyEvent *>(e), t == QEvent::KeyPress);
+			return true;
+		}
+		return false;
+	}
+};
+static void *mbView3dAttach(void *scene, std::function<bool()> armed, std::function<void(int, int, int)> tool,
+                            std::function<void(QKeyEvent *, bool)> key, QWidget **widget, vtkRenderer **ren) {
+	Scene *s = static_cast<Scene *>(scene);
+	if (!sceneAlive(s) || !s->widget || !s->ren)
+		return nullptr;
+	auto *a = new MbAttach;                  // owned by the tool (view3dDetach), not by the window: the
+	a->w = s->widget;                        // window may die first, and the filter goes with it then
+	a->s = s;
+	a->armed = std::move(armed);
+	a->tool = std::move(tool);
+	a->key = std::move(key);
+	s->widget->installEventFilter(a);
+	*widget = s->widget;
+	*ren = s->ren;
+	return a;
+}
+static void mbView3dDetach(void *view) {
+	auto *a = static_cast<MbAttach *>(view);
+	if (!a) return;
+	if (a->w) {
+		a->w->removeEventFilter(a);
+		a->w->unsetCursor();
+	}
+	delete a;
+}
+// the window's own point-cloud actor (null when the window is not a cloud)
+static vtkActor *mbAttachCloudActor(void *view) {
+	auto *a = static_cast<MbAttach *>(view);
+	if (!a || !sceneAlive(a->s) || !a->s->surfCloud) return nullptr;
+	return a->s->surf.Get();
+}
+static void mbAttachFrame(void *view) {
+	auto *a = static_cast<MbAttach *>(view);
+	if (!a || !sceneAlive(a->s)) return;
+	fitSnapView(a->s, false);
+	if (a->s->widget) a->s->widget->renderWindow()->Render();
+}
+// a narrow right-side dock of the window holding `content`; `closed` runs once when it goes
+static QWidget *mbAddPane(void *scene, QWidget *content, const char *title, std::function<void()> closed) {
+	Scene *s = static_cast<Scene *>(scene);
+	if (!sceneAlive(s) || !s->win || !content) {
+		delete content;
+		return nullptr;
+	}
+	auto *dock = new QDockWidget(QString::fromUtf8(title ? title : ""), s->win);
+	dock->setAttribute(Qt::WA_DeleteOnClose);
+	dock->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
+	dock->setFeatures(QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetFloatable | QDockWidget::DockWidgetClosable);
+	content->setFixedWidth(content->width());   // narrow: the .ui's own width
+	dock->setWidget(content);
+	s->win->addDockWidget(Qt::RightDockWidgetArea, dock);
+	QObject::connect(dock, &QObject::destroyed, [closed]() { if (closed) closed(); });
+	dock->show();
+	return dock;
+}
+
 // EXPERIMENTAL (IGMT_WITH_MBEDIT in CMakeLists.txt; Julia lists these in _LIB_OPTIONAL).
 // The swath bathymetry editor (MB-System's mbedit, ported: deps/src/mbedit/). Open it, as
 // `mbedit -I file -F format`; an empty file opens it with File > Open offered. useEsf decides
@@ -2057,21 +2187,6 @@ static void mbView3dFrame(void *view) {            // the window's own fit, from
 // through GMT; "" = none. Every MB-System tool's loader tries it.
 GMTVTK_API void gmtvtk_mbedit_set_mbio_hint(const char *path) {
 	mbeditSetMbioHint(QString::fromUtf8(path ? path : ""));
-}
-// CUBE gridding of swath data (Geophysics > MB-System > CUBE gridding; src/cube.jl): the soundings
-// of a swath file or datalist (format -1), read through the swath editor's MBIO (loaded here first
-// the way every MB-System tool loads it). Returns the count held for gmtvtk_cube_swath_take, or -1
-// with the reason in msg. bounds = {w, e, s, n} or NULL.
-GMTVTK_API int64_t gmtvtk_cube_swath_read(const char *path, int format, const double *bounds, char *msg, int msglen) {
-	ensureApp();
-	if (!mbeditLoadMbio(nullptr, mbeditViewerHost())) {
-		if (msg && msglen > 0) snprintf(msg, size_t(msglen), "MB-System's MBIO library could not be loaded");
-		return -1;
-	}
-	return cube_swath_read(path, format, bounds, msg, msglen);
-}
-GMTVTK_API int64_t gmtvtk_cube_swath_take(double *lon, double *lat, double *depth, int64_t n) {
-	return cube_swath_take(lon, lat, depth, n);
 }
 GMTVTK_API int gmtvtk_mbedit_open(const char *file, int format, int useEsf) {
 	ensureApp();
@@ -2400,6 +2515,83 @@ GMTVTK_API int gmtvtk_mbeditviz_close_map(void) {
 }
 GMTVTK_API int gmtvtk_mbeditviz_close(void) {
 	return mbeditvizClose() ? 1 : 0;
+}
+// The 3D Soundings pane of the swath point cloud the window `handle` shows: its soundings, every one,
+// editable in a narrow right-side pane. 1 = open. The soundings are mbgetdata's (MB-System's GMT module, run by the host with -A-1000000): lon, lat, z
+// each nping x nbeam, column-major (ping fastest), NaN = no beam, flagged beams shifted by -1000000.
+// ptime / pfile: every ping's time and its file (an index into `files`, '\n'-separated) -- mblist -OM.F,
+// what the pane saves its edits by (each file's .esf).
+GMTVTK_API int gmtvtk_mb_cloud_pane_h(void *handle, const double *lon, const double *lat, const double *z, int nping,
+                                      int nbeam, const char *name, const double *ptime, const int *pfile,
+                                      const char *files) {
+	Scene *s = static_cast<Scene *>(handle);
+	if (!sceneAlive(s) || !s->surfCloud)
+		return 0;
+	const QStringList fl = QString::fromUtf8(files ? files : "").split('\n', Qt::SkipEmptyParts);
+	return mb3dsdgOpenCloud(s, mbeditViewerHost(), lon, lat, z, nping, nbeam, QString::fromUtf8(name ? name : ""), ptime,
+	                        pfile, fl) ? 1 : 0;
+}
+// The GOOD soundings of window `handle`'s swath-cloud pane as they stand (its edits included): lon/lat/z
+// triples into xyz (up to cap; null xyz counts). The count, -1 when the window has no such pane. What
+// the pane's CUBE gridding grids (src/interpolate.jl).
+GMTVTK_API int gmtvtk_mb_cloud_good_h(void *handle, double *xyz, int cap) {
+	Scene *s = static_cast<Scene *>(handle);
+	if (!sceneAlive(s))
+		return -1;
+	return mb3dsdgCloudGood(s, xyz, cap);
+}
+// The ship's navigation lines of that pane's window: n ping positions (lon, lat), `line` (n) the index
+// into `files` ('\n'-separated) of the file each belongs to -- one track per file, named for it, laid
+// through mbHostAddTrack (the door mbgrdviz's navigation takes: an ordinary line element, its Scene
+// Objects row under the master group `group`, double-click, properties). The pane's Navigation toggle
+// shows / hides them with gmtvtk_set_vector_visible_h, the one vector visibility setter. `formats`
+// (nformats, one per file) the MBIO formats: each track keeps its file and format (Overlay::mbFile /
+// mbFormat) for the "MB-System" menu mbgrdviz's tracks have. 1 = laid
+GMTVTK_API int gmtvtk_mb_cloud_nav_h(void *handle, const double *lon, const double *lat, const int *line, int n,
+                                     const char *files, const int *formats, int nformats, const char *group) {
+	Scene *s = static_cast<Scene *>(handle);
+	if (!sceneAlive(s) || !lon || !lat || !line || n < 2)
+		return 0;
+	const QStringList fl = QString::fromUtf8(files ? files : "").split('\n', Qt::SkipEmptyParts);
+	const std::string grp = group && *group ? group : "Navigation";
+	auto names = std::make_shared<std::vector<std::string>>();
+	std::vector<double> xyz;
+	auto flush = [&](int f) {
+		const int npts = int(xyz.size() / 3);
+		if (npts >= 2) {
+			std::string nm = (f >= 0 && f < fl.size()) ? QFileInfo(fl[f]).fileName().toStdString()
+			                                           : "track " + std::to_string(f + 1);
+			const int seg[2] = {0, npts};
+			if (mbHostAddTrack(s, xyz.data(), npts, seg, 1, 0.0, 0.0, 0.0, 1.5, nm.c_str(), grp.c_str())) {
+				names->push_back(nm);
+				// no mbgrdviz knows this track: it carries its own file, for its "MB-System" menu
+				if (f >= 0 && f < fl.size() && !s->overlays.empty()) {
+					s->overlays.back().mbFile = fl[f].toStdString();
+					s->overlays.back().mbFormat = (formats && f < nformats) ? formats[f] : 0;
+				}
+			}
+		}
+		xyz.clear();
+	};
+	for (int i = 0; i < n; i++) {
+		if (i > 0 && line[i] != line[i - 1])
+			flush(line[i - 1]);
+		if (std::isnan(lon[i]) || std::isnan(lat[i]) || (lon[i] == 0.0 && lat[i] == 0.0))
+			continue;
+		xyz.push_back(lon[i]);
+		xyz.push_back(lat[i]);
+		xyz.push_back(0.0);
+	}
+	flush(line[n - 1]);
+	if (names->empty())
+		return 0;
+	mb3dsdgSetNavToggle([s, names](bool on) {
+		if (!sceneAlive(s))
+			return;
+		for (const std::string &nm : *names)
+			gmtvtk_set_vector_visible_h(s, nm.c_str(), on ? 1 : 0);
+	}, true);
+	return 1;
 }
 #endif // GMTVTK_MBEDITVIZ
 
@@ -2775,16 +2967,21 @@ GMTVTK_API int gmtvtk_mbgrdviz_track_menu_test(void *handle, const char *element
 	if (!sceneAlive(s) || !element)
 		return 0;
 	std::vector<std::string> navs;
-	if (group)
+	std::vector<std::pair<std::string, int>> own;
+	if (group) {
 		navs = lineGroupMbNavs(s, element);
+		own = lineGroupMbFiles(s, element);
+	}
 	else
 		for (const auto &ov : s->overlays)
 			if (ov.name == element && !ov.mbNav.empty()) {
 				navs.push_back(ov.mbNav);
+				if (!ov.mbFile.empty())
+					own.push_back({ov.mbFile, ov.mbFormat});
 				break;
 			}
 	QMenu m;
-	addMbSystemMenu(m, navs);
+	addMbSystemMenu(m, navs, s->win, own);
 	std::string items;
 	int n = 0;
 	for (QAction *a : m.actions())

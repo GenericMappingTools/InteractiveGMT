@@ -22,6 +22,7 @@
 #define MBGRDVIZ_WINDOW_H_
 
 #include <QString>
+#include <QStringList>
 
 #include <array>
 #include <functional>
@@ -129,6 +130,10 @@ int mbgrdvizNavIndex(const std::string &name);
 // the Action menu's editor `which` (0 MBedit, 1 MBeditviz, 2 MBnavedit, 3 MBvelocitytool) on these
 // tracks instead of the checked ones: a track's own (and its group's) "MB-System" menu
 bool mbgrdvizNavEditor(int which, const std::vector<std::string> &names);
+// the editor `which` (as above) on these swath files, each with its MBIO format: what the Action menu and
+// every track's "MB-System" menu run, with or without an open mbgrdviz
+void mbRunNavEditor(const MbGrdVizHost &host, QWidget *parent, int which, const QStringList &files,
+                    const std::vector<int> &formats);
 bool mbgrdvizPickNav(bool on);                           // "Pick in view" down / up; true = armed
 int mbgrdvizNavSelected(int nav);                        // 1 checked, 0 not, -1 no such line
 bool mbgrdvizClose();

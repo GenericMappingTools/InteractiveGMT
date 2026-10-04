@@ -90,9 +90,9 @@ function _cube_m_per_deg(lon0::Float64, lat0::Float64)::NTuple{2,Float64}
 end
 
 # --- swath data (Geophysics > MB-System > CUBE gridding) -------------------------------------------
-# A swath file or an MB-System datalist is read through MBIO (deps/src/cube/cube_swath.c, the swath
-# editor's MBIO) into an ordinary x,y,z table: longitude, latitude, and ELEVATION (MBIO depth negated,
-# the GMT convention every other grid in iGMT uses). From there it is gridded exactly as a table is.
+# A swath file or an MB-System datalist is read by THE swath-sounding reader, `_mb_good_dataset`
+# (drop.jl: MB-System's mbgetdata), into an ordinary x,y,z table: longitude, latitude, elevation, good
+# beams only. From there it is gridded exactly as a table is.
 
 const _CUBE_SWATH_EXT = (".all", ".kmall", ".s7k", ".gsf", ".xtf", ".fbt")
 
@@ -102,30 +102,6 @@ function _cube_is_swath(path::AbstractString)::Bool
 	return ext == ".mb-1" || occursin(r"^\.mb\d+$", ext) || ext in _CUBE_SWATH_EXT
 end
 
-# One read per file: picking the file and pressing Compute must not read a survey twice.
-const _CUBE_SWATH_CACHE = Ref{Tuple{String,Float64,Any}}(("", 0.0, nothing))
-
-function _cube_swath_dataset(path::AbstractString)::GMTdataset
-	p = String(path)
-	isfile(p) || error("swath file not found: $p")
-	(cp, ct, cd) = _CUBE_SWATH_CACHE[]
-	(cp == p && ct == mtime(p) && cd !== nothing) && return cd
-	haskey(_LIB_FNS, :gmtvtk_cube_swath_read) ||
-		error("CUBE on swath data needs a viewer built with the MB-System tools (IGMT_WITH_MBEDIT)")
-	_push_mbio_hint()                    # the MBIO GMT loads with its MB-System supplement (mbedit.jl)
-	fmt = lowercase(splitext(p)[2]) == ".mb-1" ? Cint(-1) : Cint(0)
-	msg = zeros(UInt8, 1024)
-	n = ccall(_fn(:gmtvtk_cube_swath_read), Int64, (Cstring, Cint, Ptr{Cdouble}, Ptr{UInt8}, Cint),
-	          p, fmt, C_NULL, msg, Cint(length(msg)))
-	n < 0 && error("CUBE: " * unsafe_string(pointer(msg)))
-	n == 0 && error("CUBE: no good sounding in $p")
-	lon = Vector{Float64}(undef, n); lat = similar(lon); dep = similar(lon)
-	ccall(_fn(:gmtvtk_cube_swath_take), Int64, (Ptr{Cdouble}, Ptr{Cdouble}, Ptr{Cdouble}, Int64), lon, lat, dep, n)
-	D = GMT.mat2ds([lon lat (-dep)]; geom = GMT.wkbPoint)
-	D.proj4 = "+proj=longlat +datum=WGS84"
-	_CUBE_SWATH_CACHE[] = (p, mtime(p), D)
-	return D
-end
 
 # Region and spacing left empty: what GMT would choose for these soundings (the dialog's own prefill
 # for a table, _gridmeta_string), so a swath survey can be gridded without typing a region.
@@ -192,7 +168,7 @@ function cubegrid_all(data; kwargs...)
 	return _cubegrid(xx, yy, zz, data; kw...)
 end
 function cubegrid_all(path::String; kwargs...)
-	D = _cube_is_swath(path) ? _cube_swath_dataset(path) : GMT.gmtread(path; data = true)
+	D = _cube_is_swath(path) ? _mb_good_dataset(String(path)) : GMT.gmtread(path; data = true)
 	kw = Dict{Symbol,Any}(kwargs)
 	_cube_is_swath(path) && (haskey(kw, :geographic) || (kw[:geographic] = true))
 	return cubegrid_all(D; kw...)

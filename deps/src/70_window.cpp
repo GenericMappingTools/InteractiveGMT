@@ -21918,13 +21918,44 @@ public:
 			kv << "opt_" + o.key + "=" + v;
 		}
 
+		if (cloudInput) kv << "cloud=1";                 // the input is the window's swath point cloud
 		showBusyDialog("Griding…");
 		const int ok = g_juliaInterpolate(scn, kv.join("\n").toUtf8().constData());
 		closeBusyDialog();
 		if (!ok) QMessageBox::warning(d, "Interpolate",
 		                              "Griding failed — see this window's Errors console for details.");
 	}
+
+	// The 3D Soundings pane's CUBE gridding: the input is that window's swath point cloud -- its good
+	// soundings as they stand in the pane, edits included -- named in the input box, which takes no file.
+	bool cloudInput = false;
+	void presetCloud(const QString &name) {
+		presetCube();
+		cloudInput = true;
+		if (inEdit) {
+			inEdit->setText(name + " (point cloud)");
+			inEdit->setReadOnly(true);
+		}
+		if (dlg)
+			if (auto *b = dlg->findChild<QToolButton *>("btn_infile")) b->setEnabled(false);
+	}
 };
+
+#ifdef GMTVTK_MBEDIT
+// MbEditHost::openCubeOnCloud: Geophysics > MB-System > CUBE gridding's dialog on window `scene`'s swath
+// point cloud (the 3D Soundings pane's CUBE gridding button)
+static void mbOpenCubeOnCloud(void *scene, const char *name) {
+	Scene *s = static_cast<Scene *>(scene);
+	if (!sceneAlive(s) || !s->win)
+		return;
+	auto *w = new InterpolationDialog(s->win, s);
+	if (!w->dlg)
+		return;
+	w->presetCloud(QString::fromUtf8(name ? name : ""));
+	w->dlg->show();
+	mbPlaceRight(w->dlg, s->win);
+}
+#endif
 
 // ============================================================================================
 // BeachballWidget — schematic focal-mechanism "beachball" preview for the elastic-deformation

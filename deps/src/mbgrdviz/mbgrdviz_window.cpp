@@ -834,30 +834,13 @@ int gvNavIndex(const std::string &track) {
 
 // do_mbgrdviz_open_mbedit / _mbeditviz / _mbnavedit / _mbvelocitytool, on these files
 void gvRunEditor(MbGrdViz *m, int which, const std::vector<GvSel> &sel) {
-	if (sel.empty())
-		return;
-	if (which == 2) {   // mbnavedit: not ported, started as the program, as mbgrdviz does
-		QStringList args;
-		for (const GvSel &s : sel)
-			args << QString("-F%1").arg(s.format) << "-I" + s.path;
-		if (!QProcess::startDetached("mbnavedit", args))
-			QMessageBox::warning(m->win, "MBgrdviz", "Unable to start mbnavedit (MB-System's navigation editor is not "
-			                                         "part of InteractiveGMT, and was not found on the PATH).");
-		return;
-	}
-	if (which == 3) {   // mbvelocitytool reads one swath file
-		if (m->host.openMbvelocity)
-			m->host.openMbvelocity(m->win, sel[0].path, sel[0].format);
-		return;
-	}
-	bool first = true;
+	QStringList files;
+	std::vector<int> formats;
 	for (const GvSel &s : sel) {
-		if (which == 0 && m->host.openMbedit)
-			m->host.openMbedit(m->win, s.path, s.format);
-		else if (which == 1 && m->host.openMbeditviz)
-			m->host.openMbeditviz(m->win, s.path, s.format, first);   // mbeditviz holds the selection, nothing else
-		first = false;
+		files << s.path;
+		formats.push_back(s.format);
 	}
+	mbRunNavEditor(m->host, m->win, which, files, formats);
 }
 
 // the Action menu: the editor on the navigation checked in the Navigation list
@@ -1603,6 +1586,33 @@ bool mbgrdvizSelectNav(int nav, bool selected) {
 		}
 	}
 	return true;
+}
+
+// do_mbgrdviz_open_mbedit / _mbeditviz / _mbnavedit / _mbvelocitytool, on these files
+void mbRunNavEditor(const MbGrdVizHost &host, QWidget *parent, int which, const QStringList &files,
+                    const std::vector<int> &formats) {
+	if (files.isEmpty() || int(formats.size()) != files.size())
+		return;
+	if (which == 2) {   // mbnavedit: not ported, started as the program, as mbgrdviz does
+		QStringList args;
+		for (int i = 0; i < files.size(); i++)
+			args << QString("-F%1").arg(formats[i]) << "-I" + files[i];
+		if (!QProcess::startDetached("mbnavedit", args))
+			QMessageBox::warning(parent, "MBgrdviz", "Unable to start mbnavedit (MB-System's navigation editor is not "
+			                                         "part of InteractiveGMT, and was not found on the PATH).");
+		return;
+	}
+	if (which == 3) {   // mbvelocitytool reads one swath file
+		if (host.openMbvelocity)
+			host.openMbvelocity(parent, files[0], formats[0]);
+		return;
+	}
+	for (int i = 0; i < files.size(); i++) {
+		if (which == 0 && host.openMbedit)
+			host.openMbedit(parent, files[i], formats[i]);
+		else if (which == 1 && host.openMbeditviz)
+			host.openMbeditviz(parent, files[i], formats[i], i == 0);   // mbeditviz holds the selection, nothing else
+	}
 }
 
 int mbgrdvizNavIndex(const std::string &name) {

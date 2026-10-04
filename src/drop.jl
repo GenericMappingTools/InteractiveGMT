@@ -163,6 +163,65 @@ function _on_drop(scene::Ptr{Cvoid}, path::AbstractString)::Cvoid
 	return
 end
 
+# ---- THE swath-sounding reader: MB-System's mbgetdata -----------------------------------------------
+# Every swath read in iGMT (opening a .mbXX / .mb-1, CUBE gridding) goes through here. mbgetdata (the GMT
+# module of MB-System's supplement) reads the raw beams: lon, lat, z (up), each nping x nbeam, NaN where a
+# ping has no such beam; -A-1000000 moves every FLAGGED beam (the file's flags and its .esf edits) a
+# million metres away (up, as mbgetdata applies a negative -A). The path goes in as Windows writes it:
+# MB-System's datalist reader takes the "C:/..." entries of a datalist given as "C:/dir/list" for
+# relative paths and finds no file. One read per file (until it changes).
+const _MB_SOUNDINGS_CACHE = Ref{Tuple{String,Float64,Any}}(("", 0.0, nothing))
+function _mb_soundings(path::String)
+	isfile(path) || error("swath file not found: $path")
+	(cp, ct, cd) = _MB_SOUNDINGS_CACHE[]
+	(cp == path && ct == mtime(path) && cd !== nothing) && return cd
+	S = GMT.gmt("mbgetdata -I" * replace(path, '/' => '\\') * " -A-1000000")
+	(S isa AbstractVector && length(S) >= 3 && !isempty(S[1].data)) ||
+		error("mbgetdata gave no soundings for $(basename(path))")
+	r = (Float64.(S[1].data), Float64.(S[2].data), Float64.(S[3].data))
+	_MB_SOUNDINGS_CACHE[] = (path, mtime(path), r)
+	return r
+end
+
+# Every ping's time, ship position and file, in mbgetdata's ping order: MB-System's mblist -OM_X_Y.F (one
+# GMT record per ping: the time, the sensor navigation lon/lat, the file name as its text).
+# -> (times, file index per ping (0-based), files, navlon, navlat)
+function _mb_pings(path::String)
+	P = GMT.gmt("mblist -I" * replace(path, '/' => '\\') * " -OM_X_Y.F")
+	(P isa GMTdataset && !isempty(P.data)) || error("mblist gave no pings for $(basename(path))")
+	times = Float64.(P.data[:, 1])
+	files = String[]
+	idx = Vector{Cint}(undef, length(times))
+	for (k, f) in enumerate(P.text)
+		(isempty(files) || files[end] != f) && push!(files, f)
+		idx[k] = Cint(length(files) - 1)
+	end
+	return times, idx, files, Float64.(P.data[:, 2]), Float64.(P.data[:, 3])
+end
+
+# The GOOD soundings of a swath file / datalist as an x,y,z point table (lon, lat, elevation).
+function _mb_good_dataset(path::String)::GMTdataset
+	lon, lat, z = _mb_soundings(path)
+	good = .!isnan.(z) .& .!isnan.(lon) .& .!isnan.(lat) .& (abs.(z) .< 500000.0)
+	any(good) || error("no good sounding in $(basename(path))")
+	D = GMT.mat2ds([lon[good] lat[good] z[good]]; geom = GMT.wkbPoint)
+	D.proj4 = "+proj=longlat +datum=WGS84"
+	return D
+end
+
+# The GOOD soundings of window `scene`'s 3D Soundings pane as they stand -- the pane's edits included --
+# as the same x,y,z point table `_mb_good_dataset` makes (lon, lat, elevation): what its CUBE gridding grids.
+function _mb_cloud_dataset(scene::Ptr{Cvoid})::GMTdataset
+	n = Int(ccall(_fn(:gmtvtk_mb_cloud_good_h), Cint, (Ptr{Cvoid}, Ptr{Cdouble}, Cint), scene, C_NULL, 0))
+	n < 0 && error("this window has no swath point cloud (3D Soundings pane)")
+	n == 0 && error("the point cloud has no good sounding")
+	xyz = Vector{Float64}(undef, 3 * n)
+	ccall(_fn(:gmtvtk_mb_cloud_good_h), Cint, (Ptr{Cvoid}, Ptr{Cdouble}, Cint), scene, xyz, Cint(n))
+	D = GMT.mat2ds(permutedims(reshape(xyz, 3, n)); geom = GMT.wkbPoint)
+	D.proj4 = "+proj=longlat +datum=WGS84"
+	return D
+end
+
 # Open ONE grid/image source (`spec`, a plain path or a "file.nc?var" subdataset) into the window.
 # Header-probes for cube-ness first: a multi-layer 3-D cube goes to the slider dialog (lazy per-slice
 # reads); anything else is read whole and dispatched by type. `recent` is the path recorded in File >
@@ -202,13 +261,37 @@ function _open_spec_into(scene::Ptr{Cvoid}, spec::AbstractString, name::Abstract
 		return
 	end
 	# An MB-System swath file (.mbXX / .mbXXX, XX = the MBIO format number) or datalist (.mb-1, a list of
-	# swath files: all their soundings, as one cloud) is read through MB-System's own library — the ONE
-	# swath-sounding reader, `_cube_swath_dataset` (cube.jl) — into lon/lat/z soundings, and from there it
-	# is EXACTLY a .laz: the same point-cloud promotion / overlay path below.
+	# swath files) is read with MB-System's own mbgetdata (its GMT module), ONCE: every beam's lon/lat/z,
+	# ping x beam, every FLAGGED beam (the file's flags and its .esf edits) shifted by -1000000 by -A. The
+	# good soundings are the point cloud -- EXACTLY a .laz from there: the same promotion / overlay path
+	# below -- and all of them, flagged too, go to the window's 3D Soundings pane. The path as Windows
+	# writes it: MB-System's datalist reader takes the "C:/..." entries of a datalist given as
+	# "C:/dir/list" for relative paths and finds no file.
 	if occursin(r"^\.mb(\d{2,3}|-1)$", lowercase(splitext(String(spec))[2]))
-		data = _cube_swath_dataset(String(spec))
+		lon, lat, z = _mb_soundings(String(spec))
+		data = _mb_good_dataset(String(spec))
 		isempty(recent) || _record_recent(recent, data)
 		_drop_into(scene, data, name; promote=empty, source=String(spec))
+		_load_dialog_end()
+		if haskey(_LIB_FNS, :gmtvtk_mb_cloud_pane_h)
+			# every ping's time and file (MB-System's mblist -OM.F, the same ping order as mbgetdata):
+			# what the pane saves its edits by, in each file's .esf
+			ptime, pfile, files, navlon, navlat = _mb_pings(String(spec))
+			length(ptime) == size(z, 1) ||
+				error("mblist lists $(length(ptime)) pings, mbgetdata $(size(z, 1)): the edits could not be saved")
+			ccall(_fn(:gmtvtk_mb_cloud_pane_h), Cint,
+			      (Ptr{Cvoid}, Ptr{Cdouble}, Ptr{Cdouble}, Ptr{Cdouble}, Cint, Cint, Cstring, Ptr{Cdouble}, Ptr{Cint}, Cstring),
+			      scene, lon, lat, z, Cint(size(z, 1)), Cint(size(z, 2)), basename(String(spec)),
+			      ptime, pfile, join(files, '\n'))
+			# the ship's navigation lines, one per file, under one master group (the pane's Navigation toggle)
+			# each file's MBIO format, as MB-System names its files: <name>.mbNN (its "MB-System" menu)
+			fmts = Cint[(m = match(r"\.mb(\d+)$"i, f)) === nothing ? 0 : parse(Cint, m.captures[1]) for f in files]
+			haskey(_LIB_FNS, :gmtvtk_mb_cloud_nav_h) &&
+				ccall(_fn(:gmtvtk_mb_cloud_nav_h), Cint,
+				      (Ptr{Cvoid}, Ptr{Cdouble}, Ptr{Cdouble}, Ptr{Cint}, Cint, Cstring, Ptr{Cint}, Cint, Cstring),
+				      scene, navlon, navlat, pfile, Cint(length(navlon)), join(files, '\n'),
+				      fmts, Cint(length(fmts)), "Navigation - " * basename(String(spec)))
+		end
 		return
 	end
 	n_layers, zmin, zmax = _cube_probe(spec)

@@ -58,6 +58,46 @@ static void rbAreaPick(Scene *s, int x0, int y0, int x1, int y1, std::vector<vtk
 	}
 }
 
+// The Julia side of a selection (src/points.jl, registered lazily): told the window and how many
+// points are selected after every change (silently), so `selection()` needs no handle.
+typedef void (*JuliaCloudSelFn)(void *scene, int n);
+static JuliaCloudSelFn g_juliaCloudSel = nullptr;
+
+// A box drag starts: Shift+left or Ctrl+right, the same box either way.
+static void rbBegin(Scene *s, vtkRenderWindowInteractor *rwi, bool byLeft) {
+	s->rbX0 = rwi->GetEventPosition()[0];
+	s->rbY0 = rwi->GetEventPosition()[1];
+	s->rbSelecting = true;
+	s->rbByLeft = byLeft;
+	rbSetBox(s, s->rbX0, s->rbY0, s->rbX0, s->rbY0);
+	s->rbBox->SetVisibility(1);
+	// Interacting: the cloud draws its decimated LOD subset while the box follows the mouse (what the
+	// gizmo's rotate asks for too) -- a full-resolution redraw of every point on every mouse move is
+	// what made the drag crawl.
+	rwi->GetRenderWindow()->SetDesiredUpdateRate(15.0);
+	rwi->Render();
+}
+
+// ...and ends: the points in the box are TOGGLED in/out of the set (undo saved first), and Julia is told.
+static void rbFinish(Scene *s, vtkRenderWindowInteractor *rwi) {
+	s->rbSelecting = false;
+	const int x1 = rwi->GetEventPosition()[0], y1 = rwi->GetEventPosition()[1];
+	s->rbBox->SetVisibility(0);
+	std::vector<vtkIdType> hit;
+	rbAreaPick(s, s->rbX0, s->rbY0, x1, y1, hit);
+	s->rbUndo.push_back(std::vector<vtkIdType>(s->rbSel.begin(), s->rbSel.end()));
+	for (vtkIdType id : hit) {
+		auto it = s->rbSel.find(id);
+		if (it == s->rbSel.end()) s->rbSel.insert(id);
+		else                      s->rbSel.erase(it);
+	}
+	rbRebuildHighlight(s);
+	rwi->GetRenderWindow()->SetDesiredUpdateRate(0.0001);   // still again: full resolution
+	rwi->Render();
+	if (g_juliaCloudSel)
+		g_juliaCloudSel(s, int(s->rbSel.size()));
+}
+
 static void RubberCB(vtkObject *caller, unsigned long eid, void *clientData, void*) {
 	Scene *s = static_cast<Scene*>(clientData);
 	vtkRenderWindowInteractor *rwi = vtkRenderWindowInteractor::SafeDownCast(caller);
@@ -66,16 +106,17 @@ static void RubberCB(vtkObject *caller, unsigned long eid, void *clientData, voi
 	bool handled = false;
 
 	if (eid == vtkCommand::RightButtonPressEvent) {
-		// Hijack the right button ONLY when Ctrl is held: Ctrl+right-drag = box select
-		// (mirrors Ctrl+left-drag = profile). Plain right-drag stays the dolly, so the
-		// selector is always available yet never triggers navigation by accident.
+		// Hijack the right button ONLY when Ctrl is held: Ctrl+right-drag = box select.
+		// Plain right-drag stays the dolly, so the selector never triggers navigation by accident.
 		if (rwi->GetControlKey()) {
-			s->rbX0 = rwi->GetEventPosition()[0];
-			s->rbY0 = rwi->GetEventPosition()[1];
-			s->rbSelecting = true;
-			rbSetBox(s, s->rbX0, s->rbY0, s->rbX0, s->rbY0);
-			s->rbBox->SetVisibility(1);
-			rwi->Render();
+			rbBegin(s, rwi, false);
+			handled = true;
+		}
+	}
+	else if (eid == vtkCommand::LeftButtonPressEvent) {
+		// Shift+left-drag = the same box select (Ctrl+left-drag is the profile, plain left the gizmo).
+		if (rwi->GetShiftKey() && !rwi->GetControlKey()) {
+			rbBegin(s, rwi, true);
 			handled = true;
 		}
 	}
@@ -87,22 +128,15 @@ static void RubberCB(vtkObject *caller, unsigned long eid, void *clientData, voi
 		}
 	}
 	else if (eid == vtkCommand::RightButtonReleaseEvent) {
-		if (s->rbSelecting) {
-			s->rbSelecting = false;
-			const int x1 = rwi->GetEventPosition()[0], y1 = rwi->GetEventPosition()[1];
-			s->rbBox->SetVisibility(0);
-			std::vector<vtkIdType> hit;
-			rbAreaPick(s, s->rbX0, s->rbY0, x1, y1, hit);
-			// Save state for undo, then TOGGLE the newly picked ids in/out of the set.
-			s->rbUndo.push_back(std::vector<vtkIdType>(s->rbSel.begin(), s->rbSel.end()));
-			for (vtkIdType id : hit) {
-				auto it = s->rbSel.find(id);
-				if (it == s->rbSel.end()) s->rbSel.insert(id);
-				else                      s->rbSel.erase(it);
-			}
-			rbRebuildHighlight(s);
-			rwi->Render();
+		if (s->rbSelecting && !s->rbByLeft) {
+			rbFinish(s, rwi);
 			s->rbConsume = true;   // the context menu this right-release also triggers is swallowed
+			handled = true;
+		}
+	}
+	else if (eid == vtkCommand::LeftButtonReleaseEvent) {
+		if (s->rbSelecting && s->rbByLeft) {
+			rbFinish(s, rwi);
 			handled = true;
 		}
 	}
@@ -114,6 +148,8 @@ static void RubberCB(vtkObject *caller, unsigned long eid, void *clientData, voi
 				s->rbUndo.pop_back();
 				rbRebuildHighlight(s);
 				rwi->Render();
+				if (g_juliaCloudSel)
+					g_juliaCloudSel(s, int(s->rbSel.size()));
 			}
 			handled = true;
 		}
@@ -169,10 +205,13 @@ static void enableRubberBand(Scene *s, vtkSmartPointer<vtkPolyData> cloud, doubl
 	cmd->SetClientData(s);
 	s->rbCmd = cmd;
 	vtkRenderWindowInteractor *rwi = s->widget->interactor();
-	rwi->AddObserver(vtkCommand::RightButtonPressEvent, cmd, 10.0);
-	rwi->AddObserver(vtkCommand::MouseMoveEvent, cmd, 10.0);
-	rwi->AddObserver(vtkCommand::RightButtonReleaseEvent, cmd, 10.0);
-	rwi->AddObserver(vtkCommand::KeyPressEvent, cmd, 10.0);
+	// 11: ahead of the gizmo's left-button observers (10), which own every other left drag.
+	rwi->AddObserver(vtkCommand::RightButtonPressEvent, cmd, 11.0);
+	rwi->AddObserver(vtkCommand::LeftButtonPressEvent, cmd, 11.0);
+	rwi->AddObserver(vtkCommand::MouseMoveEvent, cmd, 11.0);
+	rwi->AddObserver(vtkCommand::RightButtonReleaseEvent, cmd, 11.0);
+	rwi->AddObserver(vtkCommand::LeftButtonReleaseEvent, cmd, 11.0);
+	rwi->AddObserver(vtkCommand::KeyPressEvent, cmd, 11.0);
 	s->rbEnabled = true;
 }
 

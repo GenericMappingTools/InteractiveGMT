@@ -127,8 +127,12 @@ function _on_interpolate(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 
 		# MB-System swath data (a datalist or a swath file) is CUBE's own input: read through MBIO into
 		# the same x,y,z table a text file gives (src/cube.jl), longitude/latitude by construction.
-		swath = method == "cube" && _cube_is_swath(infile)
-		D = swath ? _cube_swath_dataset(infile) : _interp_read(infile, _get(d, "headers"), _on(d, "toggle"))
+		# The 3D Soundings pane's CUBE gridding hands over the window's swath point cloud instead of a file:
+		# its good soundings as they stand in the pane, edits included.
+		cloud = _on(d, "cloud")
+		swath = method == "cube" && (cloud || _cube_is_swath(infile))
+		D = cloud ? _mb_cloud_dataset(scene) :
+		    swath ? _mb_good_dataset(String(infile)) : _interp_read(infile, _get(d, "headers"), _on(d, "toggle"))
 		swath && (d["coords"] = "geog")
 		# "auto" is what the dialog opens with: ask GMT the same question it asks itself elsewhere
 		# (GMT.guessgeog), never a private lon/lat range test of our own.

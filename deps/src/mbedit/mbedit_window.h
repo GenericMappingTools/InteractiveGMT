@@ -22,6 +22,7 @@
 class QWidget;
 class QKeyEvent;
 class vtkRenderer;
+class vtkActor;
 
 struct MbEditHost {
 	QString uiDir;                                   // deps/ui, where the mbedit*.ui files are
@@ -58,6 +59,22 @@ struct MbEditHost {
 	double (*view3dVE)(void *view) = nullptr;                            // the gizmo's vertical exaggeration
 	void (*view3dSetVE)(void *view, double ve) = nullptr;
 	void (*view3dFrame)(void *view) = nullptr;                           // Reset View: the window's own fit
+	// THE SAME, ON AN EXISTING VIEWER WINDOW (the 3D Soundings pane): the tool draws into the window's own
+	// renderer and takes the left button while armed, the keys after the view saw them (and only armed).
+	// `attachCloudActor` is the window's own point-cloud actor: the tool draws the soundings INTO it (its
+	// data in true x,y,z; the actor's scale is the window's data -> world mapping), so the cloud's row,
+	// LOD, recentre and readout stay the window's own;
+	// `addPane` puts `content` in a narrow right-side dock of that window (null: no window), and
+	// `paneClosed` is called once when the user closes it.
+	void *(*view3dAttach)(void *scene, std::function<bool()> armed, std::function<void(int, int, int)> tool,
+	                      std::function<void(QKeyEvent *, bool)> key, QWidget **widget, vtkRenderer **ren) = nullptr;
+	void (*view3dDetach)(void *view) = nullptr;
+	vtkActor *(*attachCloudActor)(void *view) = nullptr;
+	void (*attachFrame)(void *view) = nullptr;
+	QWidget *(*addPane)(void *scene, QWidget *content, const char *title, std::function<void()> paneClosed) = nullptr;
+	// CUBE gridding (Geophysics > MB-System > CUBE gridding's dialog) on that window's swath point cloud,
+	// `name` the cloud's: its input is the pane's soundings, not a file
+	void (*openCubeOnCloud)(void *scene, const char *name) = nullptr;
 };
 
 // Make a tool window parkable — the ONE implementation every MB-System tool uses. Install it AFTER

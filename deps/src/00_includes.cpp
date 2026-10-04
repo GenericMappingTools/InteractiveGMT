@@ -258,13 +258,13 @@
 #include "third_party/earcut/earcut.hpp"   // mapbox earcut (ISC): polygon-with-holes triangulation (overlayBuildFill)
 #ifdef GMTVTK_MBEDIT                        // EXPERIMENTAL swath editor, switched in CMakeLists.txt (IGMT_WITH_MBEDIT)
 #include "mbedit/mbedit_window.h"
-#include "cube/cube_swath.h"                // CUBE gridding of swath data: soundings through the editor's MBIO
 #endif
 #ifdef GMTVTK_MBVELOCITY                    // EXPERIMENTAL sound velocity tool (IGMT_WITH_MBVELOCITYTOOL)
 #include "mbvelocitytool/mbvelocity_window.h"
 #endif
 #ifdef GMTVTK_MBEDITVIZ                     // EXPERIMENTAL mbeditviz (IGMT_WITH_MBEDITVIZ)
 #include "mbeditviz/mbeditviz_window.h"
+#include "mbeditviz/mb3dsoundings_cloud.h"
 #endif
 #ifdef GMTVTK_MBGRDVIZ                      // EXPERIMENTAL mbgrdviz (IGMT_WITH_MBGRDVIZ)
 #include "mbgrdviz/mbgrdviz_window.h"
