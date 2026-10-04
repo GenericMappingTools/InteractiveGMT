@@ -28,6 +28,8 @@ bool mb3dsdgOpenCloud(void *scene, const MbEditHost &host, const double *lon, co
 // The pane's GOOD soundings as they stand (its edits included), lon/lat/z triples into xyz (up to cap of
 // them; xyz may be null to count). The count, or -1 when `scene` has no swath-cloud pane.
 int mb3dsdgCloudGood(void *scene, double *xyz, int cap);
+// The name of `scene`'s swath-cloud pane cloud ("" when it has none)
+QString mb3dsdgCloudName(void *scene);
 
 // The pane's Navigation toggle (mb3dsoundings_window.h): calls `show`; its box starts at `on`.
 void mb3dsdgSetNavToggle(std::function<void(bool)> show, bool on);

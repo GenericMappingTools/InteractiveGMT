@@ -1,0 +1,188 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>CubeDialog</class>
+ <widget class="QDialog" name="CubeDialog">
+  <property name="geometry">
+   <rect><x>0</x><y>0</y><width>470</width><height>506</height></rect>
+  </property>
+  <property name="windowTitle">
+   <string>CUBE gridding (MB-System)</string>
+  </property>
+  <widget class="QGroupBox" name="geoGroup">
+   <property name="geometry"><rect><x>11</x><y>8</y><width>448</width><height>94</height></rect></property>
+   <property name="title"><string>Griding Line Geometry</string></property>
+   <widget class="QLabel" name="minLab">
+    <property name="geometry"><rect><x>82</x><y>18</y><width>80</width><height>18</height></rect></property>
+    <property name="text"><string>Min</string></property>
+    <property name="alignment"><set>Qt::AlignHCenter|Qt::AlignVCenter</set></property>
+   </widget>
+   <widget class="QLabel" name="maxLab">
+    <property name="geometry"><rect><x>166</x><y>18</y><width>80</width><height>18</height></rect></property>
+    <property name="text"><string>Max</string></property>
+    <property name="alignment"><set>Qt::AlignHCenter|Qt::AlignVCenter</set></property>
+   </widget>
+   <widget class="QLabel" name="spacingLab">
+    <property name="geometry"><rect><x>250</x><y>18</y><width>80</width><height>18</height></rect></property>
+    <property name="text"><string>Spacing</string></property>
+    <property name="alignment"><set>Qt::AlignHCenter|Qt::AlignVCenter</set></property>
+   </widget>
+   <widget class="QLabel" name="nLinesLab">
+    <property name="geometry"><rect><x>334</x><y>18</y><width>60</width><height>18</height></rect></property>
+    <property name="text"><string># of lines</string></property>
+    <property name="alignment"><set>Qt::AlignHCenter|Qt::AlignVCenter</set></property>
+   </widget>
+   <widget class="QLabel" name="xDirLab">
+    <property name="geometry"><rect><x>8</x><y>38</y><width>72</width><height>22</height></rect></property>
+    <property name="text"><string>X Direction</string></property>
+   </widget>
+   <widget class="QLineEdit" name="xMin">
+    <property name="geometry"><rect><x>82</x><y>38</y><width>80</width><height>22</height></rect></property>
+   </widget>
+   <widget class="QLineEdit" name="xMax">
+    <property name="geometry"><rect><x>166</x><y>38</y><width>80</width><height>22</height></rect></property>
+   </widget>
+   <widget class="QLineEdit" name="xInc">
+    <property name="geometry"><rect><x>250</x><y>38</y><width>80</width><height>22</height></rect></property>
+   </widget>
+   <widget class="QLineEdit" name="xN">
+    <property name="geometry"><rect><x>334</x><y>38</y><width>60</width><height>22</height></rect></property>
+   </widget>
+   <widget class="QLabel" name="yDirLab">
+    <property name="geometry"><rect><x>8</x><y>64</y><width>72</width><height>22</height></rect></property>
+    <property name="text"><string>Y Direction</string></property>
+   </widget>
+   <widget class="QLineEdit" name="yMin">
+    <property name="geometry"><rect><x>82</x><y>64</y><width>80</width><height>22</height></rect></property>
+   </widget>
+   <widget class="QLineEdit" name="yMax">
+    <property name="geometry"><rect><x>166</x><y>64</y><width>80</width><height>22</height></rect></property>
+   </widget>
+   <widget class="QLineEdit" name="yInc">
+    <property name="geometry"><rect><x>250</x><y>64</y><width>80</width><height>22</height></rect></property>
+   </widget>
+   <widget class="QLineEdit" name="yN">
+    <property name="geometry"><rect><x>334</x><y>64</y><width>60</width><height>22</height></rect></property>
+   </widget>
+   <widget class="QToolButton" name="helpBtn">
+    <property name="geometry"><rect><x>404</x><y>38</y><width>32</width><height>48</height></rect></property>
+    <property name="text"><string>?</string></property>
+    <property name="toolTip"><string>Edit any two of Min/Max/Spacing/# and the rest are derived.</string></property>
+   </widget>
+  </widget>
+  <widget class="QLabel" name="refLab">
+   <property name="geometry"><rect><x>11</x><y>108</y><width>72</width><height>22</height></rect></property>
+   <property name="text"><string>OR Ref grid</string></property>
+  </widget>
+  <widget class="QLineEdit" name="refEdit">
+   <property name="geometry"><rect><x>85</x><y>108</y><width>342</width><height>22</height></rect></property>
+   <property name="toolTip"><string>Pick a grid/image; its region, spacing and size fill the boxes above.</string></property>
+  </widget>
+  <widget class="QToolButton" name="refBtn">
+   <property name="geometry"><rect><x>431</x><y>108</y><width>28</width><height>22</height></rect></property>
+   <property name="text"><string>...</string></property>
+  </widget>
+  <widget class="QCheckBox" name="chk_pixel">
+   <property name="geometry"><rect><x>11</x><y>138</y><width>140</width><height>22</height></rect></property>
+   <property name="text"><string>Pixel registration</string></property>
+   <property name="toolTip"><string>Pixel registration for the output grid (-r)</string></property>
+  </widget>
+  <widget class="QLabel" name="lb_coords">
+   <property name="geometry"><rect><x>170</x><y>138</y><width>76</width><height>22</height></rect></property>
+   <property name="text"><string>Coordinates</string></property>
+  </widget>
+  <widget class="QComboBox" name="cb_coords">
+   <property name="geometry"><rect><x>250</x><y>138</y><width>110</width><height>22</height></rect></property>
+   <property name="toolTip"><string>&lt;html&gt;Whether x,y are longitude/latitude (-fg). "auto" asks GMT to&lt;br&gt;guess from the data.&lt;/html&gt;</string></property>
+  </widget>
+  <widget class="QGroupBox" name="gb_cube">
+   <property name="geometry"><rect><x>11</x><y>168</y><width>448</width><height>262</height></rect></property>
+   <property name="title"><string>CUBE options</string></property>
+   <widget class="QLabel" name="lb_iho_order">
+    <property name="geometry"><rect><x>10</x><y>24</y><width>140</width><height>22</height></rect></property>
+    <property name="text"><string>IHO order</string></property>
+   </widget>
+   <widget class="QComboBox" name="opt_iho_order">
+    <property name="geometry"><rect><x>152</x><y>24</y><width>150</width><height>22</height></rect></property>
+   </widget>
+   <widget class="QLabel" name="lb_method">
+    <property name="geometry"><rect><x>10</x><y>50</y><width>140</width><height>22</height></rect></property>
+    <property name="text"><string>Hypothesis selection</string></property>
+   </widget>
+   <widget class="QComboBox" name="opt_method">
+    <property name="geometry"><rect><x>152</x><y>50</y><width>285</width><height>22</height></rect></property>
+   </widget>
+   <widget class="QLabel" name="lb_tvu">
+    <property name="geometry"><rect><x>10</x><y>76</y><width>140</width><height>22</height></rect></property>
+    <property name="text"><string>Vertical uncertainty a/b</string></property>
+   </widget>
+   <widget class="QLineEdit" name="opt_tvu">
+    <property name="geometry"><rect><x>152</x><y>76</y><width>120</width><height>22</height></rect></property>
+   </widget>
+   <widget class="QLabel" name="lb_thu">
+    <property name="geometry"><rect><x>10</x><y>102</y><width>140</width><height>22</height></rect></property>
+    <property name="text"><string>Horizontal uncertainty a/b</string></property>
+   </widget>
+   <widget class="QLineEdit" name="opt_thu">
+    <property name="geometry"><rect><x>152</x><y>102</y><width>120</width><height>22</height></rect></property>
+   </widget>
+   <widget class="QLabel" name="lb_variance">
+    <property name="geometry"><rect><x>10</x><y>128</y><width>140</width><height>22</height></rect></property>
+    <property name="text"><string>Reported uncertainty</string></property>
+   </widget>
+   <widget class="QComboBox" name="opt_variance">
+    <property name="geometry"><rect><x>152</x><y>128</y><width>200</width><height>22</height></rect></property>
+   </widget>
+   <widget class="QCheckBox" name="opt_zdown">
+    <property name="geometry"><rect><x>10</x><y>156</y><width>420</width><height>22</height></rect></property>
+    <property name="text"><string>Z is depth (positive down)</string></property>
+   </widget>
+   <widget class="QCheckBox" name="opt_noqueue">
+    <property name="geometry"><rect><x>10</x><y>180</y><width>420</width><height>22</height></rect></property>
+    <property name="text"><string>Skip the median pre-filter</string></property>
+   </widget>
+   <widget class="QCheckBox" name="opt_extra">
+    <property name="geometry"><rect><x>10</x><y>204</y><width>420</width><height>22</height></rect></property>
+    <property name="text"><string>Also make uncertainty / hypotheses / ratio grids</string></property>
+   </widget>
+   <widget class="QLabel" name="lb_paramfile">
+    <property name="geometry"><rect><x>10</x><y>230</y><width>140</width><height>22</height></rect></property>
+    <property name="text"><string>Parameter file</string></property>
+   </widget>
+   <widget class="QLineEdit" name="opt_paramfile">
+    <property name="geometry"><rect><x>152</x><y>230</y><width>253</width><height>22</height></rect></property>
+   </widget>
+   <widget class="QToolButton" name="btn_paramfile">
+    <property name="geometry"><rect><x>409</x><y>230</y><width>28</width><height>22</height></rect></property>
+    <property name="text"><string>...</string></property>
+   </widget>
+  </widget>
+  <widget class="QLabel" name="lb_out">
+   <property name="geometry"><rect><x>11</x><y>440</y><width>90</width><height>22</height></rect></property>
+   <property name="text"><string>Save result to</string></property>
+  </widget>
+  <widget class="QLineEdit" name="edit_outfile">
+   <property name="geometry"><rect><x>105</x><y>440</y><width>322</width><height>22</height></rect></property>
+   <property name="toolTip"><string>Optional output grid file. Leave empty to keep the result only in this window.</string></property>
+  </widget>
+  <widget class="QToolButton" name="btn_outfile">
+   <property name="geometry"><rect><x>431</x><y>440</y><width>28</width><height>22</height></rect></property>
+   <property name="text"><string>...</string></property>
+  </widget>
+  <widget class="QWidget" name="manualHolder">
+   <property name="geometry"><rect><x>11</x><y>471</y><width>26</width><height>26</height></rect></property>
+   <property name="toolTip"><string>Open full manual page</string></property>
+  </widget>
+  <widget class="QCheckBox" name="chk_verbose">
+   <property name="geometry"><rect><x>45</x><y>472</y><width>80</width><height>24</height></rect></property>
+   <property name="text"><string>Verbose</string></property>
+   <property name="toolTip"><string>Let the module report its progress in the Julia console (-V)</string></property>
+  </widget>
+  <widget class="QPushButton" name="push_compute">
+   <property name="geometry"><rect><x>369</x><y>470</y><width>90</width><height>26</height></rect></property>
+   <property name="text"><string>Compute</string></property>
+   <property name="autoDefault"><bool>false</bool></property>
+  </widget>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

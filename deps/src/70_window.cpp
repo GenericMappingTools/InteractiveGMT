@@ -21798,6 +21798,87 @@ public:
 		return vals.contains(o.key) ? vals.value(o.key) : o.deflt;
 	}
 
+	// ---- An option row's widget, shared by the Options window (which builds it) and any dialog whose
+	// .ui carries the widget itself (the CUBE gridding dialog, `opt_<key>`): one way to fill it, one way
+	// to read it, one way to send it.
+	// Put `val` (and the row's items and tooltip) into its widget.
+	static void optFill(QWidget *w, const Opt &o, const QString &val) {
+		if (!w) return;
+		if (auto *c = qobject_cast<QCheckBox *>(w))
+			c->setChecked(val == "1");
+		else if (auto *c = qobject_cast<QComboBox *>(w)) {
+			QSignalBlocker b(c);
+			c->clear();
+			for (const QString &it : o.items) {
+				const int bar = it.lastIndexOf('|');
+				c->addItem(it.left(bar), it.mid(bar + 1));
+			}
+			const int ix = c->findData(val);
+			c->setCurrentIndex(ix >= 0 ? ix : 0);
+		}
+		else if (auto *e = qobject_cast<QLineEdit *>(w))
+			e->setText(val);
+		if (!o.tip.isEmpty()) w->setToolTip(o.tip);
+	}
+	// A "file" row's "..." picker (and double-click in its box)
+	static void optWireFile(QLineEdit *e, QAbstractButton *b) {
+		if (!e || !b) return;
+		QObject::connect(b, &QAbstractButton::clicked, e, [e]() {
+			QString p = QFileDialog::getOpenFileName(e->window(), "Select file", prefStartDir(), "All files (*)");
+			if (!p.isEmpty()) { e->setText(p); rememberStartDir(p); }
+		});
+		fileBoxDoubleClick(e, b);
+	}
+	// The widgets' values, by option key (a tick is "1"/"0")
+	static QMap<QString, QString> optHarvest(const QVector<Opt> &spec, const QVector<QWidget *> &widgets) {
+		QMap<QString, QString> out;
+		for (int i = 0; i < spec.size() && i < widgets.size(); ++i) {
+			QWidget *w = widgets[i];
+			if (auto *c = qobject_cast<QCheckBox *>(w))      out[spec[i].key] = c->isChecked() ? "1" : "0";
+			else if (auto *c = qobject_cast<QComboBox *>(w)) out[spec[i].key] = c->currentData().toString();
+			else if (auto *e = qobject_cast<QLineEdit *>(w)) out[spec[i].key] = e->text().trimmed();
+		}
+		return out;
+	}
+	// One "opt_<key>=<value>" line per row that carries a value — a blank box means "let the module
+	// default". A ticked box travels as the word "true", never as "1": several options take a NUMBER whose
+	// legitimate value is 1 (greenspline's distance mode, nearneighbor's sectors), and the Julia side
+	// cannot tell a flag from a value once they look alike.
+	static void optKv(QStringList &kv, const QVector<Opt> &spec, const QMap<QString, QString> &vals) {
+		for (const Opt &o : spec) {
+			const QString v = vals.value(o.key);
+			if (v.isEmpty()) continue;
+			if (o.kind == "check") {
+				if (v == "1") kv << "opt_" + o.key + "=true";
+				continue;
+			}
+			kv << "opt_" + o.key + "=" + v;
+		}
+	}
+	// CUBE: an empty TVU/THU means "the IHO order's limits" -- shown as the numbers they are, and re-shown
+	// when the order changes, so the values CUBE runs with are never hidden
+	static void optTieCubeLimits(const QVector<Opt> &spec, const QVector<QWidget *> &widgets, QObject *ctx) {
+		QComboBox *iho = nullptr;
+		QLineEdit *tvu = nullptr, *thu = nullptr;
+		for (int i = 0; i < spec.size() && i < widgets.size(); ++i) {
+			if (spec[i].key == "iho_order") iho = qobject_cast<QComboBox *>(widgets[i]);
+			else if (spec[i].key == "tvu")  tvu = qobject_cast<QLineEdit *>(widgets[i]);
+			else if (spec[i].key == "thu")  thu = qobject_cast<QLineEdit *>(widgets[i]);
+		}
+		if (!iho || !tvu || !thu) return;
+		auto fill = [iho, tvu, thu](bool onlyEmpty) {
+			mb_cube_iho_t o;
+			if (mb_cube_iho_from_name(iho->currentData().toString().toUtf8().constData(), &o) != 0) return;
+			double a = 0.0, b = 0.0;
+			if (mb_cube_iho_limits(o, &a, &b) == 0 && (!onlyEmpty || tvu->text().trimmed().isEmpty()))
+				tvu->setText(QString("%1/%2").arg(a, 0, 'g', 6).arg(b, 0, 'g', 6));
+			if (mb_cube_iho_thu_limits(o, &a, &b) == 0 && (!onlyEmpty || thu->text().trimmed().isEmpty()))
+				thu->setText(QString("%1/%2").arg(a, 0, 'g', 6).arg(b, 0, 'g', 6));
+		};
+		fill(true);
+		QObject::connect(iho, QOverload<int>::of(&QComboBox::currentIndexChanged), ctx, [fill]() { fill(false); });
+	}
+
 	// ONE builder for every method's options window (Mirone's "Surface op..." dialog): a row per entry
 	// of optionSpec(), the GMT flag to its right, and the assembled summary at the bottom. OK stores the
 	// values against the method; Cancel leaves them as they were.
@@ -21818,28 +21899,20 @@ public:
 
 		int row = 0;
 		for (const Opt &o : spec) {
-			const QString val = optValue(m, o);
 			QWidget *w = nullptr;
 			if (o.kind == "check") {
 				auto *c = new QCheckBox(o.label, &od);
-				c->setChecked(val == "1");
 				grid->addWidget(c, row, 0, 1, 2);
 				w = c;
 			}
 			else if (o.kind == "combo") {
 				auto *c = new QComboBox(&od);
-				for (const QString &it : o.items) {
-					const int bar = it.lastIndexOf('|');
-					c->addItem(it.left(bar), it.mid(bar + 1));
-				}
-				const int ix = c->findData(val);
-				c->setCurrentIndex(ix >= 0 ? ix : 0);
 				grid->addWidget(new QLabel(o.label, &od), row, 0);
 				grid->addWidget(c, row, 1);
 				w = c;
 			}
 			else {                                    // "text" and "file" share the box; file adds a "..."
-				auto *e = new QLineEdit(val, &od);
+				auto *e = new QLineEdit(&od);
 				e->setMinimumWidth(o.kind == "file" ? 220 : 90);
 				if (o.kind != "file") e->setMaximumWidth(120);
 				grid->addWidget(new QLabel(o.label, &od), row, 0);
@@ -21847,46 +21920,19 @@ public:
 				if (o.kind == "file") {
 					auto *b = new QToolButton(&od);
 					b->setText("...");
-					QObject::connect(b, &QToolButton::clicked, &od, [e, &od]() {
-						QString p = QFileDialog::getOpenFileName(&od, "Select file", prefStartDir(), "All files (*)");
-						if (!p.isEmpty()) { e->setText(p); rememberStartDir(p); }
-					});
+					optWireFile(e, b);
 					grid->addWidget(b, row, 3);
-					fileBoxDoubleClick(e, b);
 				}
 				w = e;
 			}
-			if (!o.tip.isEmpty()) w->setToolTip(o.tip);
+			optFill(w, o, optValue(m, o));
 			auto *flagLab = new QLabel(o.flag, &od);
 			flagLab->setStyleSheet("font-weight: bold;");
 			grid->addWidget(flagLab, row, 2);
 			widgets.push_back(w);
 			++row;
 		}
-		// CUBE: an empty TVU/THU means "the IHO order's limits" -- shown here as the numbers they are,
-		// and re-shown when the order changes, so the values CUBE runs with are never hidden
-		if (m == "cube") {
-			QComboBox *iho = nullptr;
-			QLineEdit *tvu = nullptr, *thu = nullptr;
-			for (int i = 0; i < spec.size() && i < widgets.size(); ++i) {
-				if (spec[i].key == "iho_order") iho = qobject_cast<QComboBox *>(widgets[i]);
-				else if (spec[i].key == "tvu")  tvu = qobject_cast<QLineEdit *>(widgets[i]);
-				else if (spec[i].key == "thu")  thu = qobject_cast<QLineEdit *>(widgets[i]);
-			}
-			if (iho && tvu && thu) {
-				auto fill = [iho, tvu, thu](bool onlyEmpty) {
-					mb_cube_iho_t o;
-					if (mb_cube_iho_from_name(iho->currentData().toString().toUtf8().constData(), &o) != 0) return;
-					double a = 0.0, b = 0.0;
-					if (mb_cube_iho_limits(o, &a, &b) == 0 && (!onlyEmpty || tvu->text().trimmed().isEmpty()))
-						tvu->setText(QString("%1/%2").arg(a, 0, 'g', 6).arg(b, 0, 'g', 6));
-					if (mb_cube_iho_thu_limits(o, &a, &b) == 0 && (!onlyEmpty || thu->text().trimmed().isEmpty()))
-						thu->setText(QString("%1/%2").arg(a, 0, 'g', 6).arg(b, 0, 'g', 6));
-				};
-				fill(true);
-				QObject::connect(iho, QOverload<int>::of(&QComboBox::currentIndexChanged), &od, [fill]() { fill(false); });
-			}
-		}
+		if (m == "cube") optTieCubeLimits(spec, widgets, &od);
 		outer->addLayout(grid);
 		outer->addWidget(summary);
 
@@ -21902,19 +21948,7 @@ public:
 		addManualButton(&od, btnRow, m);
 
 		// Harvest the widgets into a (key -> value) map — used both for the live summary and for OK.
-		auto harvest = [&spec, &widgets]() {
-			QMap<QString, QString> out;
-			for (int i = 0; i < spec.size() && i < widgets.size(); ++i) {
-				const Opt &o = spec[i];
-				if (o.kind == "check")
-					out[o.key] = static_cast<QCheckBox *>(widgets[i])->isChecked() ? "1" : "0";
-				else if (o.kind == "combo")
-					out[o.key] = static_cast<QComboBox *>(widgets[i])->currentData().toString();
-				else
-					out[o.key] = static_cast<QLineEdit *>(widgets[i])->text().trimmed();
-			}
-			return out;
-		};
+		auto harvest = [&spec, &widgets]() { return optHarvest(spec, widgets); };
 		auto refresh = [this, m, &harvest, summary]() {
 			const QMap<QString, QString> cur = harvest();
 			QStringList parts;
@@ -21985,53 +22019,180 @@ public:
 		// A ticked box travels as the word "true", never as "1": several options take a NUMBER whose
 		// legitimate value is 1 (greenspline's distance mode, nearneighbor's sectors), and the Julia
 		// side cannot tell a flag from a value once they look alike.
-		for (const Opt &o : optionSpec(m)) {
-			const QString v = optValue(m, o);
-			if (v.isEmpty()) continue;
-			if (o.kind == "check") {
-				if (v == "1") kv << "opt_" + o.key + "=true";
-				continue;
-			}
-			kv << "opt_" + o.key + "=" + v;
+		{
+			QMap<QString, QString> vals;
+			for (const Opt &o : optionSpec(m)) vals[o.key] = optValue(m, o);
+			optKv(kv, optionSpec(m), vals);
 		}
 
-		if (cloudInput) kv << "cloud=1";                 // the input is the window's swath point cloud
 		showBusyDialog("Griding…");
 		const int ok = g_juliaInterpolate(scn, kv.join("\n").toUtf8().constData());
 		closeBusyDialog();
 		if (!ok) QMessageBox::warning(d, "Interpolate",
 		                              "Griding failed — see this window's Errors console for details.");
 	}
+};
 
-	// The 3D Soundings pane's CUBE gridding: the input is that window's swath point cloud -- its good
-	// soundings as they stand in the pane, edits included -- named in the input box, which takes no file.
-	bool cloudInput = false;
-	void presetCloud(const QString &name) {
-		presetCube();
-		cloudInput = true;
-		if (inEdit) {
-			inEdit->setText(name + " (point cloud)");
-			inEdit->setReadOnly(true);
+// ============================================================================================
+// CubeDialog — Geophysics > MB-System > CUBE gridding, and the 3D Soundings pane's CUBE gridding
+// button (cube_dialog.ui). CUBE on ONE input fixed at opening: a swath file / datalist, or (input "")
+// the window's swath point cloud, its good soundings as they stand in the pane. It holds only what CUBE
+// takes -- the Griding Line Geometry block (the shared GeoGridGeometry, adopted), registration and
+// coordinates, CUBE's own options (the same optionSpec("cube") rows the Interpolate dialog's Options
+// window shows, filled / read / sent by the same helpers), output and Compute -- and Compute sends the
+// same key block to the same Julia door (_on_interpolate) as GMT > Interpolate > CUBE. Every value CUBE
+// would otherwise choose silently (region, spacing, the IHO limits) is shown in its box.
+// ============================================================================================
+class CubeDialog {
+public:
+	using Opt = InterpolationDialog::Opt;
+	QDialog *dlg = nullptr;
+	Scene *scn = nullptr;
+	QString input, label;                    // the swath file / datalist ("" = the window's cloud), its name
+	GeoGridGeometry *geo = nullptr;
+	QVector<Opt> spec;
+	QVector<QWidget *> optW;
+
+	CubeDialog(QWidget *parent, Scene *scene, const QString &in, const QString &name)
+	    : scn(scene), input(in), label(name) {
+		QUiLoader loader;
+		QFile f(gmtvtkUiDir() + "/cube_dialog.ui");
+		if (!f.open(QFile::ReadOnly)) {
+			qWarning("CubeDialog: cannot open %s", qUtf8Printable(f.fileName()));
+			return;
 		}
-		if (dlg)
-			if (auto *b = dlg->findChild<QToolButton *>("btn_infile")) b->setEnabled(false);
-		fillCubeGeometry(QString());
+		dlg = qobject_cast<QDialog *>(loader.load(&f, parent));
+		f.close();
+		if (!dlg) return;
+		QDialog *d = dlg;
+		d->setAttribute(Qt::WA_DeleteOnClose);
+		d->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint | Qt::WindowMinimizeButtonHint);
+		d->setWindowModality(Qt::NonModal);
+		d->setWindowTitle("CUBE gridding - " + label);
+		parkOnMinimise(d, [this]() { parkNow(); });
+
+		geo = GeoGridGeometry::adopt(d);
+		if (auto *pixel = d->findChild<QCheckBox *>("chk_pixel"))
+			QObject::connect(pixel, &QCheckBox::toggled, d, [this](bool on) { if (geo) geo->setRegistration(on); });
+		if (auto *c = d->findChild<QComboBox *>("cb_coords")) {
+			c->addItem("auto", "auto");
+			c->addItem("geographic", "geog");
+			c->addItem("cartesian", "cart");
+			c->setCurrentIndex(1);                      // swath soundings are longitude/latitude
+		}
+		spec = InterpolationDialog::optionSpec("cube");
+		for (const Opt &o : spec) {
+			QWidget *w = d->findChild<QWidget *>("opt_" + o.key);
+			InterpolationDialog::optFill(w, o, o.deflt);
+			optW.push_back(w);
+		}
+		InterpolationDialog::optWireFile(d->findChild<QLineEdit *>("opt_paramfile"), d->findChild<QToolButton *>("btn_paramfile"));
+		InterpolationDialog::optTieCubeLimits(spec, optW, d);
+		if (auto *oBtn = d->findChild<QToolButton *>("btn_outfile")) {
+			auto *outEdit = d->findChild<QLineEdit *>("edit_outfile");
+			QObject::connect(oBtn, &QToolButton::clicked, d, [d, outEdit]() {
+				QString p = QFileDialog::getSaveFileName(d, "Save gridded result", prefStartDir(), "Grids (*.grd *.nc);;All files (*)");
+				if (!p.isEmpty() && outEdit) { outEdit->setText(p); rememberStartDir(p); }
+			});
+			if (outEdit) fileBoxDoubleClick(outEdit, oBtn);
+		}
+		if (auto *b = d->findChild<QPushButton *>("push_compute"))
+			QObject::connect(b, &QPushButton::clicked, d, [this]() { compute(); });
+		QObject::connect(d, &QObject::destroyed, d, [this, d]() {
+			if (sceneAlive(scn)) unparkTool(scn, d);
+			delete this;
+		});
+		// the green ? disk every module dialog carries (the Interpolate dialog's, on CUBE), in its
+		// .ui placeholder; then the tooltips are reflowed, as every dialog's last construction step
+		if (auto *holder = d->findChild<QWidget *>("manualHolder")) {
+			auto *row = new QHBoxLayout(holder);
+			row->setContentsMargins(0, 0, 0, 0);
+			addManualButton(d, row, QString("cube"));
+		}
+		wrapTooltips(d);
+
+		// the region and spacing CUBE grids the input on when the boxes are empty: shown in them
+		if (geo && g_juliaCubeMeta) {
+			showBusyDialog("Reading the soundings' limits...");
+			const char *m = g_juliaCubeMeta(scn, input.toUtf8().constData());
+			closeBusyDialog();
+			if (m && *m) geo->fillGeometry(QString::fromUtf8(m));
+		}
+	}
+
+	void compute() {
+		if (!g_juliaInterpolate) return;
+		QString R = geo ? geo->region() : QString(), I = geo ? geo->inc() : QString();
+		if (R.isEmpty() || R.contains("//") || R.startsWith('/') || R.endsWith('/'))
+			R.clear();                                   // empty: CUBE's own choice for the soundings (src/cube.jl)
+		auto checked = [this](const char *name) {
+			auto *c = dlg->findChild<QCheckBox *>(name);
+			return c && c->isChecked();
+		};
+		QStringList kv;
+		kv << "method=cube";
+		kv << "infile=" + (input.isEmpty() ? label + " (point cloud)" : input);
+		if (input.isEmpty()) kv << "cloud=1";           // the window's swath point cloud
+		kv << "region=" + R;
+		kv << "inc=" + I;
+		if (checked("chk_pixel")) kv << "pixel=1";
+		if (auto *c = dlg->findChild<QComboBox *>("cb_coords")) kv << "coords=" + c->currentData().toString();
+		if (checked("chk_verbose")) kv << "verbose=1";
+		if (auto *e = dlg->findChild<QLineEdit *>("edit_outfile"))
+			if (!e->text().trimmed().isEmpty()) kv << "outfile=" + e->text().trimmed();
+		InterpolationDialog::optKv(kv, spec, InterpolationDialog::optHarvest(spec, optW));
+		showBusyDialog("CUBE gridding...");
+		const int ok = g_juliaInterpolate(scn, kv.join("\n").toUtf8().constData());
+		closeBusyDialog();
+		if (!ok) QMessageBox::warning(dlg, "CUBE gridding", "Griding failed — see this window's Errors console for details.");
+	}
+
+	// Minimised: hidden, with a handle in Scene Objects. Double-click (or Show) brings it back.
+	void parkNow() {
+		if (!dlg || !sceneAlive(scn)) return;
+		dlg->hide();
+		parkTool(scn, dlg, dlg->windowTitle(), IC_Surface,
+		         "Minimised CUBE gridding dialog — double-click to bring it back, click for Show / Close",
+		         [this]() { unpark(); },
+		         [this](const QPoint &g) {
+			         QMenu m;
+			         QAction *aShow = m.addAction("Show");
+			         m.addSeparator();
+			         QAction *aClose = m.addAction("Close");
+			         QAction *pick = m.exec(g);
+			         if (pick == aShow) unpark();
+			         else if (pick == aClose && dlg) {
+				         unparkTool(scn, dlg);
+				         dlg->close();
+			         }
+		         });
+	}
+	void unpark() {
+		if (!dlg) return;
+		unparkTool(scn, dlg);
+		dlg->setWindowState(dlg->windowState() & ~Qt::WindowMinimized);
+		dlg->showNormal();
+		dlg->raise();
+		dlg->activateWindow();
 	}
 };
 
 #ifdef GMTVTK_MBEDIT
-// MbEditHost::openCubeOnCloud: Geophysics > MB-System > CUBE gridding's dialog on window `scene`'s swath
-// point cloud (the 3D Soundings pane's CUBE gridding button)
-static void mbOpenCubeOnCloud(void *scene, const char *name) {
-	Scene *s = static_cast<Scene *>(scene);
+// CUBE gridding on window `s`'s input: `in` a swath file / datalist, or "" for its swath point cloud
+static void openCubeDialog(Scene *s, const QString &in, const QString &name) {
 	if (!sceneAlive(s) || !s->win)
 		return;
-	auto *w = new InterpolationDialog(s->win, s);
-	if (!w->dlg)
+	auto *w = new CubeDialog(s->win, s, in, name);
+	if (!w->dlg) {
+		delete w;
 		return;
-	w->presetCloud(QString::fromUtf8(name ? name : ""));
+	}
 	w->dlg->show();
 	mbPlaceRight(w->dlg, s->win);
+}
+// MbEditHost::openCubeOnCloud: the 3D Soundings pane's CUBE gridding button
+static void mbOpenCubeOnCloud(void *scene, const char *name) {
+	openCubeDialog(static_cast<Scene *>(scene), QString(), QString::fromUtf8(name ? name : ""));
 }
 #endif
 
@@ -29060,14 +29221,22 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		// "CUBE gridding": MB-System's CUBE (mbgrid -F9's engine, deps/src/cube/) on swath files or a
 		// datalist, read through the editor's MBIO (loaded first, the way every tool here loads it).
 		// It is the Interpolate dialog preset on CUBE -- one dialog, one Julia path (src/cube.jl).
+		// Its input: the window's swath point cloud when it has one, else a swath file / datalist asked
+		// for here (the dialog itself has no input row).
 		mGphy->addAction("CUBE gridding", [win, s, afterPopup]() {
 			afterPopup([win, s]() {
 				if (!mbeditLoadMbio(win, mbeditViewerHost())) return;
-				auto *w = new InterpolationDialog(win, s);
-				if (!w->dlg) return;
-				w->presetCube();
-				w->dlg->show();
-				mbPlaceRight(w->dlg, win);
+#ifdef GMTVTK_MBEDITVIZ
+				if (mb3dsdgCloudGood(s, nullptr, 0) >= 0) {
+					openCubeDialog(s, QString(), mb3dsdgCloudName(s));
+					return;
+				}
+#endif
+				const QString p = QFileDialog::getOpenFileName(win, "Select swath data or datalist", prefStartDir(),
+					"MB-System swath data (*.mb-1 *.mb* *.all *.kmall *.s7k *.gsf);;All files (*)");
+				if (p.isEmpty()) return;
+				rememberStartDir(p);
+				openCubeDialog(s, p, QFileInfo(p).fileName());
 			});
 		});
 		++n;

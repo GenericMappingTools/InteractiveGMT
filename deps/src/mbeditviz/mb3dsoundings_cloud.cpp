@@ -194,6 +194,10 @@ void cloudDismiss() {
 
 } // namespace
 
+QString mb3dsdgCloudName(void *scene) {
+	return (g_cloud && g_cloud->scene == scene) ? g_cloud->name : QString();
+}
+
 int mb3dsdgCloudGood(void *scene, double *xyz, int cap) {
 	if (!g_cloud || g_cloud->scene != scene)
 		return -1;
