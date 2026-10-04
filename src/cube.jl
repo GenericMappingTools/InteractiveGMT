@@ -115,6 +115,29 @@ function _cube_fill_geometry!(kw::Dict{Symbol,Any}, D)
 	return kw
 end
 
+# C callback (CUBE dialog's Region block prefill): the geometry _cube_fill_geometry! would grid CUBE's
+# input on -- of the swath file / datalist `cpath`, or of window `scene`'s swath point cloud when `cpath`
+# is "" -- as "w/e/s/n/dx/dy/nx/ny". "" on failure. Julia-owned buffer, as _on_gridmeta.
+const _CUBEMETA_BUF = Ref{Vector{UInt8}}(UInt8[0])
+function _on_cube_meta(scene::Ptr{Cvoid}, cpath::Cstring)::Cstring
+	s = ""
+	try
+		path = unsafe_string(cpath)
+		D = isempty(path) ? _mb_cloud_dataset(scene) : _mb_good_dataset(path)
+		s = _gridmeta_string(D)
+	catch e
+		_tool_failed(scene, "CUBE region", e)
+	end
+	_CUBEMETA_BUF[] = Vector{UInt8}(codeunits(s * "\0"))
+	return Cstring(pointer(_CUBEMETA_BUF[]))
+end
+
+function _register_cubemeta()
+	fptr = @cfunction((s, c) -> Base.invokelatest(_on_cube_meta, s, c)::Cstring, Cstring, (Ptr{Cvoid}, Cstring))
+	ccall(_fn(:gmtvtk_set_cubemeta_callback), Cvoid, (Ptr{Cvoid},), fptr)
+	return
+end
+
 """
     cubegrid_all(data; region, inc, kwargs...) -> NamedTuple
 

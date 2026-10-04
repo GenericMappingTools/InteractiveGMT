@@ -4439,6 +4439,10 @@ GMTVTK_API void gmtvtk_set_project_callback(JuliaProjectFn fn) {
 GMTVTK_API void gmtvtk_set_interpolate_callback(JuliaInterpolateFn fn) {
 	g_juliaInterpolate = fn;
 }
+// Register the CUBE geometry callback (30_app.cpp's JuliaCubeMetaFn): the Region block's prefill.
+GMTVTK_API void gmtvtk_set_cubemeta_callback(JuliaCubeMetaFn fn) {
+	g_juliaCubeMeta = fn;
+}
 
 // Tell the viewer where the .ui files are (the host's own deps/ui — they ship WITH the Julia
 // package, while this DLL may be loaded from the depot runtime cache instead). Called once at load

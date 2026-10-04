@@ -136,6 +136,7 @@ function _ensure_callbacks()
 	                    ("grdvector",   _register_grdvector),
 	                    ("earthregions", _register_earthregions),
 	                    ("interpolate", _register_interpolate),
+	                    ("cubemeta",    _register_cubemeta),
 	                    ("project",     _register_project),
 	                    ("euler",       _register_euler),
 	                    ("lineops",     _register_lineops),

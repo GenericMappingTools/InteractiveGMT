@@ -256,6 +256,7 @@
 #include <vtkTriangleFilter.h>
 #include <vtkContourTriangulator.h>
 #include "third_party/earcut/earcut.hpp"   // mapbox earcut (ISC): polygon-with-holes triangulation (overlayBuildFill)
+#include "cube/mb_cube.h"                   // CUBE's IHO limits: the CUBE options' TVU/THU prefill (70_window.cpp)
 #ifdef GMTVTK_MBEDIT                        // EXPERIMENTAL swath editor, switched in CMakeLists.txt (IGMT_WITH_MBEDIT)
 #include "mbedit/mbedit_window.h"
 #endif

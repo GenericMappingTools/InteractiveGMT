@@ -3257,6 +3257,14 @@ public:
 		xN->setText(f[6]);   yN->setText(f[7]);
 		// The source extent caps the Min/Max boxes (sampled grid can't exceed the input grid).
 		xMinOr = f[0]; xMaxOr = f[1]; yMinOr = f[2]; yMaxOr = f[3];
+		showStart();
+	}
+
+	// A number longer than its box shows from its FIRST digit (setText leaves the view at the end,
+	// which reads as right-justified)
+	void showStart() {
+		for (QLineEdit *e : {xMin, xMax, xInc, xN, yMin, yMax, yInc, yN})
+			if (e) e->setCursorPosition(0);
 	}
 
 	// Round-trip the boxes through the Julia dim-fun (port of Mirone's dim_funs.m): hand it which box
@@ -3279,6 +3287,7 @@ public:
 		yMin->setText(r[2]); yMax->setText(r[3]);
 		xInc->setText(r[4]); yInc->setText(r[5]);
 		xN->setText(r[6]);   yN->setText(r[7]);
+		showStart();
 	}
 
 	// ADOPT the boxes of a dialog whose .ui carries a COPY of deps/ui/grid_line_geometry.ui (same
@@ -21579,6 +21588,7 @@ public:
 				// Swath data is not a table the metadata reader knows: its limits come from the soundings,
 				// once MBIO has read them (the empty boxes are filled at Compute, src/cube.jl).
 				if (!isSwathPath(p)) fillFromData(p);
+				else fillCubeGeometry(p);
 			});
 			if (inEdit) fileBoxDoubleClick(inEdit, inBtn);
 		}
@@ -21675,6 +21685,15 @@ public:
 	void fillFromData(const QString &path) {
 		if (!geo || !g_juliaGridMeta || path.isEmpty()) return;
 		const char *m = g_juliaGridMeta(path.toUtf8().constData());
+		if (m && *m) geo->fillGeometry(QString::fromUtf8(m));
+	}
+	// CUBE's input (a swath file / datalist, or "" = the window's swath point cloud): the region and
+	// spacing CUBE would grid it on with the boxes empty, shown in them so nothing it uses is hidden
+	void fillCubeGeometry(const QString &path) {
+		if (!geo || !g_juliaCubeMeta) return;
+		showBusyDialog("Reading the soundings' limits...");
+		const char *m = g_juliaCubeMeta(scn, path.toUtf8().constData());
+		closeBusyDialog();
 		if (m && *m) geo->fillGeometry(QString::fromUtf8(m));
 	}
 
@@ -21844,6 +21863,30 @@ public:
 			widgets.push_back(w);
 			++row;
 		}
+		// CUBE: an empty TVU/THU means "the IHO order's limits" -- shown here as the numbers they are,
+		// and re-shown when the order changes, so the values CUBE runs with are never hidden
+		if (m == "cube") {
+			QComboBox *iho = nullptr;
+			QLineEdit *tvu = nullptr, *thu = nullptr;
+			for (int i = 0; i < spec.size() && i < widgets.size(); ++i) {
+				if (spec[i].key == "iho_order") iho = qobject_cast<QComboBox *>(widgets[i]);
+				else if (spec[i].key == "tvu")  tvu = qobject_cast<QLineEdit *>(widgets[i]);
+				else if (spec[i].key == "thu")  thu = qobject_cast<QLineEdit *>(widgets[i]);
+			}
+			if (iho && tvu && thu) {
+				auto fill = [iho, tvu, thu](bool onlyEmpty) {
+					mb_cube_iho_t o;
+					if (mb_cube_iho_from_name(iho->currentData().toString().toUtf8().constData(), &o) != 0) return;
+					double a = 0.0, b = 0.0;
+					if (mb_cube_iho_limits(o, &a, &b) == 0 && (!onlyEmpty || tvu->text().trimmed().isEmpty()))
+						tvu->setText(QString("%1/%2").arg(a, 0, 'g', 6).arg(b, 0, 'g', 6));
+					if (mb_cube_iho_thu_limits(o, &a, &b) == 0 && (!onlyEmpty || thu->text().trimmed().isEmpty()))
+						thu->setText(QString("%1/%2").arg(a, 0, 'g', 6).arg(b, 0, 'g', 6));
+				};
+				fill(true);
+				QObject::connect(iho, QOverload<int>::of(&QComboBox::currentIndexChanged), &od, [fill]() { fill(false); });
+			}
+		}
 		outer->addLayout(grid);
 		outer->addWidget(summary);
 
@@ -21972,6 +22015,7 @@ public:
 		}
 		if (dlg)
 			if (auto *b = dlg->findChild<QToolButton *>("btn_infile")) b->setEnabled(false);
+		fillCubeGeometry(QString());
 	}
 };
 

@@ -981,6 +981,12 @@ static JuliaProjectFn g_juliaProject = nullptr;
 // failure. nullptr to detach.
 typedef int (*JuliaInterpolateFn)(void *scene, const char *params);
 static JuliaInterpolateFn g_juliaInterpolate = nullptr;
+// The geometry CUBE grids its input on when Region/Spacing are left empty (src/cube.jl's own rule):
+// fn(scene, path) -> "w/e/s/n/dx/dy/nx/ny", of the swath file / datalist `path`, or of `scene`'s swath
+// point cloud for "" (the 3D Soundings pane's CUBE gridding). "" on failure. Julia-owned buffer, as
+// JuliaGridMetaFn.
+typedef const char *(*JuliaCubeMetaFn)(void *scene, const char *path);
+static JuliaCubeMetaFn g_juliaCubeMeta = nullptr;
 
 // Euler rotations (Plates menu). Port of Mirone's src_figs/euler_stuff.m, re-based on GMT's own
 // spotter supplement (which did not exist when the Mirone code was written): every rotation and every
