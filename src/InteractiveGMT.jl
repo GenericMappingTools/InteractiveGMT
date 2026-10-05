@@ -278,6 +278,7 @@ function __init__()
 	# error on first use.
 	try
 		_load_library()
+		_mbplugin_push_ready()      # activated above, before the viewer existed (mbplugin.jl)
 		# Global UI assets the viewer bakes into every window's toolbar at build time, so they must be
 		# set BEFORE the first window opens — cheap static path pushes, no GMT inference (unlike the
 		# callbacks, which stay lazy in _ensure_callbacks). Guarded: a DLL missing the export must not

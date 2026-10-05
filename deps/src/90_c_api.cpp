@@ -3228,6 +3228,12 @@ GMTVTK_API int gmtvtk_wcd_close(void) {
 }
 #endif // GMTVTK_WCDVIEWER
 
+// The MB-System GMT plugin is installed and passed its self-test (src/mbplugin.jl): Geophysics >
+// MB-System then shows "MB-System plugin installed" instead of "Install as plugin".
+GMTVTK_API void gmtvtk_set_mbplugin_ready(int ready) {
+	g_mbPluginReady = ready != 0;
+}
+
 // Set the path to the world logo image painted in the basemap picker (data/etopo4_logo.jpg).
 GMTVTK_API void gmtvtk_set_basemap_logo(const char *path) {
 	g_basemapLogo = QString::fromUtf8(path ? path : "");

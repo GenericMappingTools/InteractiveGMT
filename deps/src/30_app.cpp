@@ -199,6 +199,10 @@ static double prefLineWidthPx(Scene *s) {
 typedef int (*JuliaEvalFn)(void *scene, const char *cmd, char *outbuf, int outcap);
 static JuliaEvalFn g_juliaEval = nullptr;
 
+// The MB-System GMT plugin is installed, loaded by GMT and passed its self-test (src/mbplugin.jl,
+// via gmtvtk_set_mbplugin_ready). Geophysics > MB-System > "Install as plugin" is hidden while true.
+static bool g_mbPluginReady = false;
+
 // File drag-and-drop: a window receives a dropped file and hands its local path to Julia
 // (g_juliaDrop), which reads it (gmtread) and views it in a NEW window. Set via
 // gmtvtk_set_drop_callback. nullptr -> drops ignored.

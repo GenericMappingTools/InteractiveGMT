@@ -294,6 +294,7 @@ const _LIB_SYMBOLS = (
 # A symbol graduates from here into `_LIB_SYMBOLS` once its C side is on master — at that point every
 # build really does have it, and a library without it really is stale.
 const _LIB_OPTIONAL = (
+	:gmtvtk_set_mbplugin_ready,  # MB-System plugin installed + tested: hide "Install as plugin" (mbplugin.jl)
 	:gmtvtk_save_png_h,        # movie tool: render ONE window to PNG (gmtvtk_save_png is the app-wide one)
 	:gmtvtk_render_size_h,     # movie tool: force the render size, so every frame comes out identical
 	:gmtvtk_anno_add_h,        # movie tool: create a frame label (-L) / progress indicator (-P)

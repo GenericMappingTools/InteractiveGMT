@@ -41,6 +41,41 @@ end
 _mbplugin_has_module(api::Ptr{Cvoid})::Bool =
 	api != C_NULL && GMT.GMT_Call_Module(api, "mbdefaults", GMT.GMT_MODULE_EXIST, C_NULL) == 0
 
+# True once the plugin is installed, loaded and tested; the viewer hides "Install as plugin" then.
+const _MBPLUGIN_READY = Ref(false)
+
+# Has this process loaded library `name` from the installed plugin's directory? (dllist may report
+# the resolved path, so the directory is matched both as given and resolved.)
+function _mbplugin_loaded(name::String, dir::String = _mbplugin_dir())::Bool
+	real = isdir(dir) ? realpath(dir) : dir
+	return any(l -> (startswith(l, dir) || startswith(l, real)) && occursin(name, basename(l)), Libdl.dllist())
+end
+
+# Silent check (every start): GMT has the modules, and the plugin and its libmbio are the installed ones.
+_mbplugin_loaded_ok()::Bool =
+	_mbplugin_has_module(GMT.G_API[]) && _mbplugin_loaded("mbsystem") && _mbplugin_loaded("libmbio")
+
+# Full self-test (after an install), the same one the CI plugin job runs: the silent check, plus an
+# actual MB-System module run through GMT. mbdefaults needs no data and writes no file, and it goes
+# through MBIO (mb_defaults). Straight through GMT_Call_Module: GMT.jl's gmt() appends its own
+# output options (->@G...), which the MB modules reject.
+function _mbplugin_selftest()::String
+	_mbplugin_has_module(GMT.G_API[]) || return "GMT does not have the MB-System modules."
+	_mbplugin_loaded("mbsystem") || return "The MB-System plugin loaded is not the one in $(_mbplugin_dir())."
+	_mbplugin_loaded("libmbio") || return "MBIO (libmbio) was not loaded from $(_mbplugin_dir())."
+	a = "-V"
+	st = GC.@preserve a GMT.GMT_Call_Module(GMT.G_API[], "mbdefaults", GMT.GMT_MODULE_CMD, pointer(a))
+	st == 0 || return "Running mbdefaults through GMT failed (status $st)."
+	return ""
+end
+
+# Tell the viewer (when it is loaded) whether the plugin is ready.
+function _mbplugin_push_ready()
+	haskey(_LIB_FNS, :gmtvtk_set_mbplugin_ready) || return nothing   # viewer not loaded / not rebuilt yet
+	ccall(_fn(:gmtvtk_set_mbplugin_ready), Cvoid, (Cint,), _MBPLUGIN_READY[] ? 1 : 0)
+	return nothing
+end
+
 # Download `asset` from the release and unpack its mbsystem/ directory to `dest`, replacing what is
 # there. Returns the plugin library's path.
 function _mbplugin_fetch(asset::String, dest::String)::String
@@ -89,6 +124,7 @@ function _mbplugin_activate_installed()
 	isfile(lib) || return nothing
 	_mbplugin_activate(lib) ||
 		@tool_error "InteractiveGMT: the MB-System plugin in $(dirname(dirname(lib))) did not load into GMT."
+	_MBPLUGIN_READY[] = _mbplugin_loaded_ok()     # pushed to the viewer once it is loaded (__init__)
 	return nothing
 end
 
@@ -104,13 +140,19 @@ function install_mbsystem_plugin()
 	isempty(asset) && error("There is no MB-System plugin download for this system ($(Sys.KERNEL) $(Sys.ARCH)).")
 	lib = _mbplugin_fetch(asset, _mbplugin_dir())
 	println("Installed in $(_mbplugin_dir())")
-	ok = _mbplugin_activate(lib)
-	println(ok ? "GMT has loaded the MB-System modules." : "GMT did NOT load the MB-System plugin ($lib).")
-	if ok && isdefined(@__MODULE__, :_mbio_from_gmt)        # mbedit.jl, an optional include
+	_MBPLUGIN_READY[] = false
+	_mbplugin_push_ready()
+	_mbplugin_activate(lib) || error("The MB-System plugin was installed but GMT did not load it ($lib).")
+	println("GMT has loaded the MB-System modules.")
+	if isdefined(@__MODULE__, :_mbio_from_gmt)        # mbedit.jl, an optional include
 		mbio = _mbio_from_gmt()
 		println(isempty(mbio) ? "MBIO was not found in the process." : "MBIO: $mbio")
 		_push_mbio_hint()          # the viewer may have been told "no MBIO" before the plugin existed
 	end
-	ok || error("The MB-System plugin was installed but GMT did not load it.")
+	why = _mbplugin_selftest()
+	isempty(why) || error("The MB-System plugin was installed but failed its test: $why")
+	_MBPLUGIN_READY[] = true
+	_mbplugin_push_ready()
+	println("MB-System plugin installed and tested: GMT loaded it and ran mbdefaults through MBIO.")
 	return nothing
 end
