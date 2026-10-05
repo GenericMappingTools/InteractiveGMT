@@ -1,0 +1,211 @@
+# Builds MB-System's GMT supplement (mbsystem.so / mbsystem.dylib) plus the MB libraries it needs
+# (mbio, mbaux, mbgsf, ...) for Linux and macOS, from the joa-quim/MB-System fork. The archive
+# unpacks to `mbsystem/` under the InteractiveGMT root:
+#     mbsystem/lib/        mbsystem.{so,dylib} + libmb*.{so,dylib}
+#     mbsystem/share/mbsystem/   LevitusAnnual82.dat, Projections.dat
+# At run time iGMT points GMT_CUSTOM_LIBS at mbsystem/lib/mbsystem.{so,dylib}.
+#
+# LINKED AGAINST GMT_jll, NOTHING ELSE. The plugin is loaded into a process where GMT.jl has
+# already loaded GMT_jll's libgmt and its GDAL/PROJ/netCDF/FFTW. The build therefore links against
+# exactly those artifacts (resolved through GMT.jl, so it is the GMT_jll version users get), and
+# ships only MB-System's own libraries. At run time the loader reuses the already-loaded jll
+# libraries by SONAME (Linux) / install name (macOS).
+#
+# LINUX RUNNER IS ubuntu-22.04 ON PURPOSE: glibc 2.35 + gcc 11, the same floor libgmtvtk.so
+# already has (LinuxBinaries.yml) and the gcc GMT_jll is built with. Never ubuntu-latest.
+#
+# NOTHING IS PUBLISHED AUTOMATICALLY. Upload to the `mbsystem-latest` release only on a manual run
+# with publish=true.
+name: MBSystemBinaries
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'joa-quim/MB-System branch, tag or commit'
+        default: 'master'
+      publish:
+        description: 'Upload to the mbsystem-latest release'
+        type: boolean
+        default: false
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    permissions:
+      contents: write        # needed only by the publish step
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {name: linux-x86_64, os: ubuntu-22.04,   julia_arch: x64}
+          - {name: macos-arm64,  os: macos-14,       julia_arch: aarch64}
+          - {name: macos-x86_64, os: macos-15-intel, julia_arch: x64}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          repository: joa-quim/MB-System
+          ref: ${{ inputs.ref }}
+          path: mbsrc
+
+      - name: Host tools
+        run: |
+          if [[ $RUNNER_OS == Linux ]]; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends ninja-build pkg-config libtirpc-dev patchelf
+          else
+            brew install ninja
+          fi
+
+      - uses: julia-actions/setup-julia@v3
+        with:
+          version: '1.10'
+          arch: ${{ matrix.julia_arch }}
+
+      # GMT.jl decides which GMT_jll users get, so it is resolved through GMT.jl. Every library
+      # directory GMT_jll brings (its own + GDAL, PROJ, netCDF, FFTW, ...) becomes a CMake prefix.
+      - name: Locate GMT_jll and its dependencies
+        run: |
+          julia -e '
+            using Pkg
+            Pkg.activate(joinpath(ENV["RUNNER_TEMP"], "jllenv"))
+            Pkg.add(["GMT", "GMT_jll"])
+            using GMT_jll
+            libdirs = unique(filter(isdir, vcat(joinpath(GMT_jll.artifact_dir, "lib"), GMT_jll.LIBPATH_list)))
+            ext = Sys.isapple() ? ".dylib" : ".so"
+            function owner(stem)
+                for d in libdirs
+                    any(f -> startswith(f, stem), readdir(d)) && return dirname(d)
+                end
+                error("no $stem* in the GMT_jll libraries")
+            end
+            open(ENV["GITHUB_ENV"], "a") do io
+                println(io, "JLL_PREFIXES=", join(unique(dirname.(libdirs)), ";"))
+                println(io, "JLL_LIBDIRS=", join(libdirs, ":"))
+                println(io, "GMT_PREFIX=", GMT_jll.artifact_dir)
+                println(io, "FFTW_PREFIX=", owner("libfftw3."))
+            end
+            println("GMT_jll ", pkgversion(GMT_jll), " at ", GMT_jll.artifact_dir)
+            foreach(println, libdirs)
+          '
+
+      # pkg-config would hand netCDF (and anything else it knows) from the SYSTEM, ahead of the
+      # jll prefixes. It is fenced to a directory holding only libtirpc.pc (Linux), or nothing.
+      - name: Configure
+        run: |
+          set -euo pipefail
+          pc="$RUNNER_TEMP/pc"; mkdir -p "$pc"
+          if [[ $RUNNER_OS == Linux ]]; then
+            cp "$(pkg-config --variable=pcfiledir libtirpc)/libtirpc.pc" "$pc/"
+            RPATH='$ORIGIN'
+            EXTRA=(-DCMAKE_SHARED_LINKER_FLAGS="-Wl,-rpath-link,$JLL_LIBDIRS")
+          else
+            RPATH='@loader_path'
+            EXTRA=(-DCMAKE_OSX_DEPLOYMENT_TARGET=11.0)
+          fi
+          export PKG_CONFIG_LIBDIR="$pc" PKG_CONFIG_PATH=
+          cmake -S mbsrc -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DbuildGUIs=OFF -DbuildOpenCV=OFF -DbuildTRN=OFF -DbuildQt=OFF -DbuildPCL=OFF -DbuildTests=OFF \
+            -DCMAKE_PREFIX_PATH="$JLL_PREFIXES" \
+            -DGMT_DIR="$GMT_PREFIX" -DGMT_CONFIG=/usr/bin/true \
+            -DFFTW_ROOT="$FFTW_PREFIX" \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON -DCMAKE_INSTALL_RPATH="$RPATH" \
+            "${EXTRA[@]}"
+
+      # Only the supplement and what it links. The utilities (mbgrid, mblist, ...) are not built.
+      - name: Build
+        run: cmake --build build --target mbsystem
+
+      - name: Stage
+        run: |
+          set -euo pipefail
+          stage="$RUNNER_TEMP/stage/mbsystem"
+          mkdir -p "$stage/lib" "$stage/share/mbsystem"
+          if [[ $RUNNER_OS == Linux ]]; then pat='*.so*'; else pat='*.dylib'; fi
+          find build \( -type f -o -type l \) -name "$pat" -exec cp -a {} "$stage/lib/" \;
+          cp mbsrc/src/share/LevitusAnnual82.dat mbsrc/src/share/Projections.dat "$stage/share/mbsystem/"
+          git -C mbsrc rev-parse HEAD > "$stage/MBSYSTEM_COMMIT"
+          ls -la "$stage/lib"
+          echo "STAGE=$stage" >> "$GITHUB_ENV"
+
+      # Every dependency outside our own lib/ must be a GMT_jll library (already in the process at
+      # run time) or a base system library. A system netCDF/PROJ/GDAL/GMT is a failed build.
+      - name: Check dependencies
+        run: |
+          set -euo pipefail
+          bad=0
+          if [[ $RUNNER_OS == Linux ]]; then
+            own=$(cd "$STAGE/lib" && ls)
+            jll=$(echo "$JLL_LIBDIRS" | tr ':' '\n' | xargs -I{} ls {} 2>/dev/null)
+            for f in "$STAGE"/lib/*.so*; do
+              [[ -L $f ]] && continue
+              echo "== $(basename "$f")"
+              for n in $(readelf -d "$f" | sed -n 's/.*NEEDED.*\[\(.*\)\]/\1/p'); do
+                if grep -qxF "$n" <<< "$own"; then w=own
+                elif grep -qxF "$n" <<< "$jll"; then w=jll
+                elif [[ $n =~ ^(libc|libm|libdl|libpthread|librt|libstdc\+\+|libgcc_s|libtirpc|ld-linux-x86-64)\.so ]]; then w=system
+                else w=BAD; bad=1
+                fi
+                echo "   $w  $n"
+              done
+              echo "   GLIBC max: $(objdump -T "$f" | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)"
+            done
+          else
+            for f in "$STAGE"/lib/*.dylib; do
+              [[ -L $f ]] && continue
+              echo "== $(basename "$f")"
+              otool -L "$f" | tail -n +2 | awk '{print $1}' | while read -r n; do
+                case $n in
+                  @rpath/*|@loader_path/*|/usr/lib/*|/System/*) echo "   ok   $n" ;;
+                  *) echo "   BAD  $n"; echo bad > "$RUNNER_TEMP/bad" ;;
+                esac
+              done
+            done
+            [[ -f $RUNNER_TEMP/bad ]] && bad=1
+          fi
+          exit $bad
+
+      # The real test: load the relocated plugin into GMT.jl the way iGMT will, and run a module.
+      - name: Smoke-test through GMT.jl
+        run: |
+          set -euo pipefail
+          probe="$RUNNER_TEMP/probe"; mkdir -p "$probe"
+          tar -C "$RUNNER_TEMP/stage" -czf "$RUNNER_TEMP/mbsystem-${{ matrix.name }}.tar.gz" mbsystem
+          tar -xzf "$RUNNER_TEMP/mbsystem-${{ matrix.name }}.tar.gz" -C "$probe"
+          PROBE="$probe/mbsystem" julia --project="$RUNNER_TEMP/jllenv" -e '
+            using GMT, Libdl
+            lib = joinpath(ENV["PROBE"], "lib", Sys.isapple() ? "mbsystem.dylib" : "mbsystem.so")
+            isfile(lib) || error("missing $lib")
+            api = GMT.G_API[]
+            api == C_NULL && error("GMT.jl has no session")
+            GMT.gmtlib_setparameter(api, "GMT_CUSTOM_LIBS", lib)
+            ok = GMT.GMT_Call_Module(api, "mbdefaults", GMT.GMT_MODULE_EXIST, C_NULL) == 0
+            println("mbdefaults module found: ", ok)
+            ok || error("GMT did not load the MB-System supplement")
+            gmt("mbdefaults")
+            mbio = filter(l -> occursin("libmbio", l), Libdl.dllist())
+            println("MBIO in process: ", mbio)
+            isempty(mbio) && error("libmbio not loaded")
+          '
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mbsystem-${{ matrix.name }}
+          path: ${{ runner.temp }}/mbsystem-${{ matrix.name }}.tar.gz
+          if-no-files-found: error
+
+      - name: Publish
+        if: inputs.publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          gh release view mbsystem-latest -R "$REPO" >/dev/null 2>&1 || \
+            gh release create mbsystem-latest -R "$REPO" --title "MB-System GMT supplement (rolling)" \
+              --notes "MB-System GMT supplement for Linux and macOS, built against GMT_jll."
+          gh release upload mbsystem-latest "$RUNNER_TEMP/mbsystem-${{ matrix.name }}.tar.gz" -R "$REPO" --clobber
