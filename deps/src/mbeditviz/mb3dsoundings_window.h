@@ -37,6 +37,7 @@ struct Mb3dsdgNotify {
 	void (*save)() = nullptr;   // the pane's Save button: write the edits so far (null: no button)
 	void (*cube)(bool filter) = nullptr;   // the pane's CUBE filter button (true: Flag soundings preset)
 	void (*grid)() = nullptr;              // the pane's Gridding button: grid the pane's good soundings
+	void (*discard)() = nullptr;           // an area pane's Discard button (its Save is then "Accept flags")
 };
 
 // mb3dsoundings_open: show `data` (raise the window, or make it). `host` is mbeditviz's: its uiDir
@@ -48,6 +49,9 @@ bool mb3dsdgOpen(QWidget *parent, const MbEditHost &host, mb3dsoundings_struct *
 // Action its Action menu without Apply Bias and the Optimize entries. Closing the pane dismisses it
 // (notify.dismiss). One editor at a time: an open 3-D soundings window or pane is ended first.
 bool mb3dsdgOpenPane(void *scene, const MbEditHost &host, mb3dsoundings_struct *data, const Mb3dsdgNotify &notify);
+// The open pane as an AREA pane (a line area's "Show point-cloud"): Save becomes "Accept flags", Discard
+// shows, and the CUBE filter / Gridding buttons go (they belong to the full cloud's pane)
+void mb3dsdgSetAreaMode();
 // The pane's Navigation toggle calls `show` (the host's visibility setter for the window's navigation
 // lines, ordinary line elements of the window); its box starts at `on`.
 void mb3dsdgSetNavToggle(std::function<void(bool)> show, bool on);
@@ -64,6 +68,10 @@ void mb3dsdgGetBiasValues(double *rollbias, double *pitchbias, double *headingbi
 bool mb3dsdgCanvasSize(int *w, int *h);
 bool mb3dsdgMouseEdit(int x0, int y0, int x1, int y1);
 bool mb3dsdgKey(int ch);
+// what the view draws: the number of points the soundings actor renders, and the good / flagged counts
+bool mb3dsdgCounts(int *drawn, int *good, int *flagged);
+// View > Show flagged, through the menu entry itself
+bool mb3dsdgSetShowFlagged(bool on);
 // one of the six edit modes (MB3DSDG_MOUSE_TOGGLE .. _INFO)
 bool mb3dsdgSetEditMode(int mode);
 // the window-pixel position (y down) of sounding i as last drawn

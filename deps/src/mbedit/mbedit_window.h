@@ -71,6 +71,10 @@ struct MbEditHost {
 	void (*view3dDetach)(void *view) = nullptr;
 	vtkActor *(*attachCloudActor)(void *view) = nullptr;
 	void (*attachFrame)(void *view) = nullptr;
+	// the window's z range (its axes box, frame and Reset View) while the tool draws into it: that of the
+	// soundings the tool SHOWS, so hidden outliers stop sizing the box the exaggeration stretches.
+	// The window's own range comes back at view3dDetach.
+	void (*attachZRange)(void *view, double zmin, double zmax) = nullptr;
 	QWidget *(*addPane)(void *scene, QWidget *content, const char *title, std::function<void()> paneClosed) = nullptr;
 	// CUBE gridding (Geophysics > MB-System > CUBE gridding's dialog) on that window's swath point cloud,
 	// `name` the cloud's: its input is the pane's soundings, not a file

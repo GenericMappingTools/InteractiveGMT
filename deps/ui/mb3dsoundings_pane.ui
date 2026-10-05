@@ -223,6 +223,25 @@
     <bool>false</bool>
    </property>
   </widget>
+  <widget class="QPushButton" name="discardButton">
+   <property name="geometry">
+    <rect>
+     <x>6</x>
+     <y>276</y>
+     <width>138</width>
+     <height>26</height>
+    </rect>
+   </property>
+   <property name="toolTip">
+    <string>Drop the flags made in this area view, close it and give the full cloud its pane back (an area view only)</string>
+   </property>
+   <property name="text">
+    <string>Discard</string>
+   </property>
+   <property name="autoDefault">
+    <bool>false</bool>
+   </property>
+  </widget>
   <widget class="QPushButton" name="gridButton">
    <property name="geometry">
     <rect>

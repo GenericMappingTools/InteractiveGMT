@@ -387,3 +387,18 @@ end
 		ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), f.h)
 	end
 end
+
+# Interpolate remembers each method's Options: a value accepted in one dialog (saved as Options > OK saves
+# it) is what the NEXT dialog opens with. The iGMT.ini entry it travels through is restored by the hook.
+@testitem "Interpolate: the Options of a method are remembered by the next dialog" tags=[:gui] setup=[GmtvtkTest] begin
+	IG = InteractiveGMT
+	h = ccall(IG._fn(:gmtvtk_open_empty), Ptr{Cvoid}, (Cstring,), "Interpolate options test")
+	try
+		buf = zeros(UInt8, 256)
+		@test ccall(GmtvtkTest._test_fn(:gmtvtk_interp_options_roundtrip_test), Cint,
+		            (Ptr{Cvoid}, Cstring, Cstring, Cstring, Ptr{UInt8}, Cint), h, "mbgrid", "scale", "3", buf, Cint(256)) == 1
+		@test unsafe_string(pointer(buf)) == "3"
+	finally
+		ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), h)
+	end
+end

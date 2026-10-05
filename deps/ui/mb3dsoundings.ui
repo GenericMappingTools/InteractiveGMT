@@ -208,6 +208,7 @@
     <addaction name="actionColorByTopo"/>
     <addaction name="actionColorBySounding"/>
     <addaction name="actionColorByAmp"/>
+    <addaction name="actionColorByFile"/>
    </widget>
    <widget class="QMenu" name="menuAction">
     <property name="title"><string>Action</string></property>
@@ -290,6 +291,11 @@
   <action name="actionColorByAmp">
    <property name="checkable"><bool>true</bool></property>
    <property name="text"><string>Color by Amplitude</string></property>
+  </action>
+  <action name="actionColorByFile">
+   <property name="checkable"><bool>true</bool></property>
+   <property name="text"><string>Color by File</string></property>
+   <property name="toolTip"><string>One colour per swath file, so overlapping lines tell apart (flagged soundings keep their flag colours)</string></property>
   </action>
   <action name="actionApplyBias"><property name="text"><string>Apply Bias Values to Grid</string></property></action>
   <action name="actionFlagSparseA"><property name="text"><string>Filter by sparse voxels (1 X cell, n&lt;10)</string></property></action>

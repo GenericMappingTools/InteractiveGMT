@@ -35,6 +35,22 @@ int mb3dsdgCloudFlag(void *scene, const unsigned char *bad, int n);
 // ping's time ptime[ping] in files[pfile[ping]], saved as FILTER flags. n, or -1 on failure.
 int mb3dsdgEsfFlag(const MbEditHost &host, const QStringList &files, const double *ptime, const int *pfile,
                    int nping, const int *ping, const int *beam, int n);
+// A line area's "Show point-cloud": the soundings of `parentScene`'s swath cloud inside the polygon `ring`
+// (nring x,y pairs, true coords) in a window of their own (`makeWindow`, given the good ones as x,y,z and a
+// title; it returns the new window), with their own 3D Soundings pane. They keep their ping and beam, so
+// the area pane's edits are the parent's soundings': Accept hands them to the parent, Discard drops them
+// (closing the area window, by `closeWin`, is a Discard), and the parent -- whose pane steps aside
+// meanwhile, its soundings and edits kept -- gets its pane back. False when nothing opened.
+bool mb3dsdgOpenAreaCloud(void *parentScene, const double *ring, int nring,
+                          const std::function<void *(const double *xyz, int n, const QString &title)> &makeWindow,
+                          const std::function<void(void *)> &closeWin);
+// The open 3D Soundings view (mb3dsoundings_window.h): points it draws, good / flagged counts; and View >
+// Show flagged through its menu entry
+bool mb3dsdgCounts(int *drawn, int *good, int *flagged);
+bool mb3dsdgSetShowFlagged(bool on);
+// An area pane is the open one (its parent waiting); its Accept (true) or Discard (false), as its buttons
+bool mb3dsdgAreaOpen();
+bool mb3dsdgAreaFinish(bool accept);
 // The name of `scene`'s swath-cloud pane cloud ("" when it has none)
 QString mb3dsdgCloudName(void *scene);
 

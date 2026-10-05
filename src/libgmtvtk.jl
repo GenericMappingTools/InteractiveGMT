@@ -353,6 +353,9 @@ const _LIB_OPTIONAL = (
 	:gmtvtk_mb_cloud_good_h,          # that pane's good soundings, CUBE's input (interpolate.jl)
 	:gmtvtk_mb_cloud_flag_h,          # CUBE flagging into that pane (interpolate.jl)
 	:gmtvtk_mb_esf_flag,              # CUBE flagging straight into swath files' .esf (drop.jl)
+	:gmtvtk_mb_tag_cloud_grid_h,      # a grid made from the pane's cloud: line areas offer "Show point-cloud"
+	:gmtvtk_mb_area_cloud_h, :gmtvtk_mb_area_finish_h,   # that area view from coordinates; its Accept/Discard
+	:gmtvtk_mb_soundings_counts, :gmtvtk_mb_soundings_show_flagged,   # 3D Soundings: drawn/good/flagged; Show flagged
 	# EXPERIMENTAL mbgrdviz (deps/src/mbgrdviz/, IGMT_WITH_MBGRDVIZ)
 	:gmtvtk_mbgrdviz_open, :gmtvtk_mbgrdviz_state, :gmtvtk_mbgrdviz_open_file, :gmtvtk_mbgrdviz_save,
 	:gmtvtk_mbgrdviz_select_route, :gmtvtk_mbgrdviz_set_area, :gmtvtk_mbgrdviz_set_region,

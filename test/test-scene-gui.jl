@@ -882,3 +882,23 @@ end
 		@test isapprox(W( b,  a), [ v,  u]; atol=1e-12)
 	end
 end
+
+# Ctrl+left-drag profiles a SURFACE; a point cloud is none, so its window refuses the track -- the grid
+# window, the same gesture's control, starts one.
+@testitem "Ctrl+left-drag profile: a grid starts one, a point cloud refuses it" tags=[:gui] setup=[GmtvtkTest] begin
+	IG = InteractiveGMT; GMT = IG.GMT
+	G = GMT.mat2grid(Float32[ix + iy for iy in 0:49, ix in 0:49]; x=[0.0, 49.0], y=[0.0, 49.0])
+	f = view_grid(G)
+	xyz = [Float64(i % 50) for i in 0:2499] .|> identity
+	D = GMT.mat2ds(hcat(xyz, [Float64(i ÷ 50) for i in 0:2499], [Float64(i % 7) for i in 0:2499]))
+	c = view_points(D)
+	try
+		for _ in 1:10; IG._pump_once(); sleep(0.05); end
+		begin_at(h) = ccall(GmtvtkTest._test_fn(:gmtvtk_profile_begin_test), Cint, (Ptr{Cvoid},), h)
+		@test begin_at(f.h) == 1
+		@test begin_at(c.h) == 0
+	finally
+		ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), f.h)
+		ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), c.h)
+	end
+end

@@ -617,6 +617,8 @@ struct ExtraObj {
 	vtkSmartPointer<vtkImageData> dnPristine;
 	std::string name;                        // label shown in the Scene Objects panel (file name)
 	bool   isImage = false;                  // dropped IMAGE (flat plane / drapeable) vs grid surface
+	bool   mbCloudGrid = false;              // gridded from this window's swath point cloud (its 3D Soundings
+	                                         // pane): a line area drawn on it offers "Show point-cloud"
 	bool   isMesh  = false;                  // a POLYGON MESH layer (a VTK .vtp/.vtu surface, a GMTfv
 	                                         // solid) added into this window as an extra. Carries no
 	                                         // gridZ and no LUT, so it never resolves as the active
@@ -953,6 +955,11 @@ static void lineGroupRenamePrompt(Scene *s, const std::string &gname);   // ask,
 // handle (55_lineprops.cpp): the tracks of a group, and the submenu itself (nothing added for none).
 static std::vector<std::string> lineGroupMbNavs(Scene *s, const std::string &gname);
 static std::vector<std::pair<std::string, int>> lineGroupMbFiles(Scene *s, const std::string &gname);
+#ifdef GMTVTK_MBEDITVIZ
+// A line area's "Show point-cloud" (90_c_api.cpp): the window's swath soundings inside `ring` in a view of
+// their own, with their own 3D Soundings
+static void mbShowAreaCloud(Scene *s, const std::vector<std::array<double, 3>> &ring);
+#endif
 // A point cloud's Scene Objects menus (50_scene.cpp): its master handle and its "Points" row
 static void cloudObjectMenu(Scene *s, const QPoint &gp);
 static void cloudPointsMenu(Scene *s, const QPoint &gp);

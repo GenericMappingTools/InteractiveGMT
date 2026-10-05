@@ -982,10 +982,11 @@ static JuliaProjectFn g_juliaProject = nullptr;
 typedef int (*JuliaInterpolateFn)(void *scene, const char *params);
 static JuliaInterpolateFn g_juliaInterpolate = nullptr;
 // The geometry CUBE grids its input on when Region/Spacing are left empty (src/cube.jl's own rule):
-// fn(scene, path) -> "w/e/s/n/dx/dy/nx/ny", of the swath file / datalist `path`, or of `scene`'s swath
-// point cloud for "" (the 3D Soundings pane's CUBE gridding). "" on failure. Julia-owned buffer, as
+// fn(scene, path, forGrid) -> "w/e/s/n/dx/dy/nx/ny", of the swath file / datalist `path`, or of `scene`'s
+// swath point cloud for "" (the 3D Soundings pane). forGrid != 0: the geometry to GRID those soundings on
+// (the pane's Gridding: spacing from their density), else CUBE's. "" on failure. Julia-owned buffer, as
 // JuliaGridMetaFn.
-typedef const char *(*JuliaCubeMetaFn)(void *scene, const char *path);
+typedef const char *(*JuliaCubeMetaFn)(void *scene, const char *path, int forGrid);
 static JuliaCubeMetaFn g_juliaCubeMeta = nullptr;
 
 // Euler rotations (Plates menu). Port of Mirone's src_figs/euler_stuff.m, re-based on GMT's own
@@ -1997,6 +1998,7 @@ static void *mbView3dAttach(void *scene, std::function<bool()> armed, std::funct
 static void mbView3dDetach(void *view);
 static vtkActor *mbAttachCloudActor(void *view);
 static void mbAttachFrame(void *view);
+static void mbAttachZRange(void *view, double zmin, double zmax);
 static QWidget *mbAddPane(void *scene, QWidget *content, const char *title, std::function<void()> closed);
 static void mbOpenCubeOnCloud(void *scene, const char *name, bool filter);   // 70_window.cpp
 static void mbOpenGridOnCloud(void *scene, const char *name);                 // 70_window.cpp
@@ -2036,6 +2038,7 @@ static MbEditHost mbeditViewerHost() {
 	h.view3dDetach = mbView3dDetach;
 	h.attachCloudActor = mbAttachCloudActor;
 	h.attachFrame = mbAttachFrame;
+	h.attachZRange = mbAttachZRange;
 	h.addPane = mbAddPane;
 	h.openCubeOnCloud = mbOpenCubeOnCloud;
 	h.openGridOnCloud = mbOpenGridOnCloud;

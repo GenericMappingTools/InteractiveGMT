@@ -360,6 +360,14 @@ static bool profilerBegin(Scene *s, int dx, int dy) {
 	// vector-only / Background-region windows never arm a profile track over nothing.
 	if (!sceneHasGrid(s) && !sceneHasImage(s))
 		return false;
+	// A POINT CLOUD is no surface to profile: its window refuses the track unless it also holds a grid
+	// layer (a grid made from the cloud, a dropped grid), which is then what gets profiled
+	if (s->surfCloud && s->gridZ.empty()) {
+		bool grid = false;
+		for (const auto &ex : s->extras) grid = grid || (!ex.isImage && !ex.isMesh && !ex.gridZ.empty());
+		if (!grid)
+			return false;
+	}
 	double tx, ty;
 	if (!pickSurfaceXY(s, dx, dy, tx, ty))         // no grid/image under the cursor -> nothing to track
 		return false;

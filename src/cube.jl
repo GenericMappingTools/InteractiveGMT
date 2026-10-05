@@ -119,12 +119,12 @@ end
 # input on -- of the swath file / datalist `cpath`, or of window `scene`'s swath point cloud when `cpath`
 # is "" -- as "w/e/s/n/dx/dy/nx/ny". "" on failure. Julia-owned buffer, as _on_gridmeta.
 const _CUBEMETA_BUF = Ref{Vector{UInt8}}(UInt8[0])
-function _on_cube_meta(scene::Ptr{Cvoid}, cpath::Cstring)::Cstring
+function _on_cube_meta(scene::Ptr{Cvoid}, cpath::Cstring, forgrid::Cint)::Cstring
 	s = ""
 	try
 		path = unsafe_string(cpath)
 		D = isempty(path) ? _mb_cloud_dataset(scene) : _mb_good_dataset(path)
-		s = _gridmeta_string(D)
+		s = forgrid != 0 ? _mb_grid_meta(D) : _gridmeta_string(D)
 	catch e
 		_tool_failed(scene, "CUBE region", e)
 	end
@@ -132,8 +132,43 @@ function _on_cube_meta(scene::Ptr{Cvoid}, cpath::Cstring)::Cstring
 	return Cstring(pointer(_CUBEMETA_BUF[]))
 end
 
+# The geometry to GRID swath soundings on (the 3D Soundings pane's Gridding, mbgrid): the spacing from the
+# soundings' own density, not GMT's generic estimate (which suits CUBE, whose nodes need many soundings
+# each). The typical distance between soundings is sqrt(area they cover / their number) -- the area being
+# the cells of a coarse raster (GMT's spacing for the data) that hold any sounding, so the gaps between
+# lines do not count -- and a cell of twice that holds about four soundings. Rounded to the nearest
+# 1, 2, 2.5 or 5 x 10^k; the region snapped outwards onto multiples of it. "w/e/s/n/dx/dy/nx/ny".
+function _mb_grid_meta(D::GMTdataset)::String
+	x = view(D.data, :, 1); y = view(D.data, :, 2)
+	n = length(x)
+	n > 1 || error("too few soundings to grid")
+	w, e, s, nn = GMT.get_limits_np(D)[1:4]
+	d0 = parse(Float64, split(_gridmeta_string(D), '/')[5])
+	occ = Set{Tuple{Int,Int}}()
+	for i in 1:n
+		push!(occ, (floor(Int, (x[i] - w) / d0), floor(Int, (y[i] - s) / d0)))
+	end
+	inc = _nice_number(2 * sqrt(length(occ) * d0^2 / n))
+	w0 = floor(w / inc) * inc; s0 = floor(s / inc) * inc
+	nx = ceil(Int, (e - w0) / inc - 1e-9) + 1
+	ny = ceil(Int, (nn - s0) / inc - 1e-9) + 1
+	return "$w0/$(w0 + (nx - 1) * inc)/$s0/$(s0 + (ny - 1) * inc)/$inc/$inc/$nx/$ny"
+end
+
+# The nearest of 1, 2, 2.5, 5 x 10^k to v (> 0), in log terms
+function _nice_number(v::Float64)::Float64
+	v > 0 || error("a spacing must be positive")
+	k = floor(log10(v))
+	best = 0.0
+	for p in (k - 1, k, k + 1), m in (1.0, 2.0, 2.5, 5.0)
+		c = m * 10.0^p
+		(best == 0 || abs(log(c / v)) < abs(log(best / v))) && (best = c)
+	end
+	return best
+end
+
 function _register_cubemeta()
-	fptr = @cfunction((s, c) -> Base.invokelatest(_on_cube_meta, s, c)::Cstring, Cstring, (Ptr{Cvoid}, Cstring))
+	fptr = @cfunction((s, c, g) -> Base.invokelatest(_on_cube_meta, s, c, g)::Cstring, Cstring, (Ptr{Cvoid}, Cstring, Cint))
 	ccall(_fn(:gmtvtk_set_cubemeta_callback), Cvoid, (Ptr{Cvoid},), fptr)
 	return
 end

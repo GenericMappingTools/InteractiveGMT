@@ -1339,6 +1339,24 @@ static void popupLineObjectMenu(Scene *s, const LineRef &lr, const QString &name
 		m.addSeparator();
 	}
 
+#ifdef GMTVTK_MBEDITVIZ
+	// A line area on a grid made from this window's swath cloud: "Show point-cloud" opens the cloud's
+	// soundings inside it in a view of their own, with their own 3D Soundings, to refine the flags.
+	if (lr.kind == LK_Polygon) {
+		const int pi = polyIndexOfActor(s, a);
+		bool cloudGrid = false;
+		for (const auto &ex : s->extras) cloudGrid = cloudGrid || ex.mbCloudGrid;
+		if (pi >= 0 && s->polys[pi].isLineArea && s->polys[pi].v.size() >= 4 && cloudGrid &&
+		    mb3dsdgCloudGood(s, nullptr, 0) >= 0) {
+			m.addAction("Show point-cloud", [s, a]() {
+				const int k = polyIndexOfActor(s, a);
+				if (k >= 0) mbShowAreaCloud(s, s->polys[k].v);
+			});
+			m.addSeparator();
+		}
+	}
+#endif
+
 	// An MB-System navigation track (or its swath bounds): its first properties are the editors
 	// mbgrdviz's Action menu opens, on THIS track.
 	if (ovp && !ovp->mbNav.empty()) {

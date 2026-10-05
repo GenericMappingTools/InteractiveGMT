@@ -105,6 +105,7 @@ const int MBS_VIEW_COLOR_FLAG = 0;
 const int MBS_VIEW_COLOR_TOPO = 1;
 const int MBS_VIEW_COLOR_AMP = 2;
 const int MBS_VIEW_COLOR_SOUNDING = 3;
+const int MBS_VIEW_COLOR_FILE = 4;     // iGMT: one colour per swath file (sounding->ifile)
 const int MBV_NUM_COLORS = 11;
 
 // ---- mbviewprivate.h colour tables ------------------------------------------------------------
@@ -219,6 +220,7 @@ struct Mb3dsdg {
 	QCursor editCursor;                      // the armed mode's cursor (msUpdateCursor), held on the view by
 	bool editCursorOn = false;               // cursorWatch whoever else sets one
 	QPointer<QObject> cursorWatch;
+	double paneKz = 0.0;                     // the window's z scale at the last frame (msVeCB's camera follow)
 	bool shiftGrab = false;                  // a Shift+left-drag is running Grab; shiftGrabPrev comes back after
 	int shiftGrabPrev = -1;
 	void *scene = nullptr;
@@ -286,13 +288,20 @@ void msScaleZ() {
 	}
 }
 
+// A FLAGGED sounding may be drawn: always when the user flagged it here (it was good when the data came
+// in) -- an edit marks a sounding, it never makes it vanish -- and, for one that came in already flagged,
+// when "Show flagged" is on. The one rule every colour mode, the box and the pick tests use.
+static bool msFlagVisible(const Mb3dsdg *m, const mb3dsoundings_sounding_struct *sounding) {
+	return m->view_flagged || mb_beam_ok(sounding->beamflagorg);
+}
+
 // Is this sounding drawn by msBuildScene in the current view? The SAME tests its point loops make
 // (each colour mode's own), so the box can never hold a
 // sounding the view does not show.
 static bool msSoundingShown(const Mb3dsdg *m, const mb3dsoundings_sounding_struct *sounding) {
 	if (mb_beam_ok(sounding->beamflag))
 		return true;
-	if (!m->view_flagged)
+	if (!msFlagVisible(m, sounding))
 		return false;
 	if (m->view_color == MBS_VIEW_COLOR_FLAG)
 		return mb_beam_check_flag_manual(sounding->beamflag) || mb_beam_check_flag_filter(sounding->beamflag) ||
@@ -334,8 +343,12 @@ void msSetZScale() {
 	soundingdata->zorigin = 0.5 * (zmin + zmax);
 	soundingdata->zmin = -0.5 * (zmax - zmin);
 	soundingdata->zmax = 0.5 * (zmax - zmin);
-	if (g_ms->pane)                          // true z: drawn under the window's own exaggeration
+	if (g_ms->pane) {                        // true z: drawn under the window's own exaggeration -- and the
+		                                     // window's box is sized by these same soundings, not by hidden ones
+		if (nused > 1 && g_ms->host.attachZRange)
+			g_ms->host.attachZRange(g_ms->view, zmin, zmax);
 		return;
+	}
 	for (int i = 0; i < soundingdata->num_soundings; i++) {
 		soundingdata->soundings[i].glz =
 		    (float)(g_ms->exaggeration * soundingdata->zscale * (soundingdata->soundings[i].z - soundingdata->zorigin));
@@ -927,7 +940,7 @@ void msBuildScene() {
 				}
 
 				/* plot flagged sounding if requested */
-				else if (m->view_flagged) {
+				else if (msFlagVisible(m, sounding)) {
 					msAddFlagged(m, pts, verts, rgb, sounding);   // the same flag colours every mode uses
 				}
 			}
@@ -942,7 +955,7 @@ void msBuildScene() {
 				   "beamflag || view_secondary" into the unparenthesised multipick macro, which made EVERY
 				   flagged sounding a secondary pick and hid it in this colour mode (and the two below) */
 				if (mb_beam_ok(sounding->beamflag) ||
-				    (m->view_flagged && !mb_beam_check_flag_null(sounding->beamflag) &&
+				    (msFlagVisible(m, sounding) && !mb_beam_check_flag_null(sounding->beamflag) &&
 				     (m->view_secondary || !mb_beam_check_flag_multipick(sounding->beamflag)))) {
 					if (!msAddFlagged(m, pts, verts, rgb, sounding))
 						msAddPoint(pts, verts, rgb, sounding, sounding->r, sounding->g, sounding->b);
@@ -958,7 +971,7 @@ void msBuildScene() {
 			bool first = true;
 			for (int i = 0; i < soundingdata->num_soundings; i++) {
 				mb3dsoundings_sounding_struct *sounding = &(soundingdata->soundings[i]);
-				if (m->view_flagged || mb_beam_ok(sounding->beamflag)) {
+				if (msFlagVisible(m, sounding) || mb_beam_ok(sounding->beamflag)) {
 					if (first) {
 						first = false;
 						zmin = sounding->z;
@@ -973,7 +986,7 @@ void msBuildScene() {
 			for (int i = 0; i < soundingdata->num_soundings; i++) {
 				mb3dsoundings_sounding_struct *sounding = &(soundingdata->soundings[i]);
 				if (mb_beam_ok(sounding->beamflag) ||
-				    (m->view_flagged && !mb_beam_check_flag_null(sounding->beamflag) &&
+				    (msFlagVisible(m, sounding) && !mb_beam_check_flag_null(sounding->beamflag) &&
 				     (m->view_secondary || !mb_beam_check_flag_multipick(sounding->beamflag)))) {
 					if (msAddFlagged(m, pts, verts, rgb, sounding))
 						continue;
@@ -995,7 +1008,7 @@ void msBuildScene() {
 			for (int i = 0; i < soundingdata->num_soundings; i++) {
 				mb3dsoundings_sounding_struct *sounding = &(soundingdata->soundings[i]);
 				if (mb_beam_ok(sounding->beamflag) ||
-				    (m->view_flagged && !mb_beam_check_flag_null(sounding->beamflag) &&
+				    (msFlagVisible(m, sounding) && !mb_beam_check_flag_null(sounding->beamflag) &&
 				     (m->view_secondary || !mb_beam_check_flag_multipick(sounding->beamflag)))) {
 					if (first) {
 						first = false;
@@ -1011,7 +1024,7 @@ void msBuildScene() {
 			for (int i = 0; i < soundingdata->num_soundings; i++) {
 				mb3dsoundings_sounding_struct *sounding = &(soundingdata->soundings[i]);
 				if (mb_beam_ok(sounding->beamflag) ||
-				    (m->view_flagged && !mb_beam_check_flag_null(sounding->beamflag) &&
+				    (msFlagVisible(m, sounding) && !mb_beam_check_flag_null(sounding->beamflag) &&
 				     (m->view_secondary || !mb_beam_check_flag_multipick(sounding->beamflag)))) {
 					if (msAddFlagged(m, pts, verts, rgb, sounding))
 						continue;
@@ -1019,6 +1032,26 @@ void msBuildScene() {
 					mbviewGetColor(sounding->a, ampmin, ampmax, 0.0f, 0.0f, 1.0f, 1.0f, 0.0f, 0.0f, colortable_redtoblue_red,
 					               colortable_redtoblue_green, colortable_redtoblue_blue, &r, &g, &b);
 					msAddPoint(pts, verts, rgb, sounding, r, g, b);
+				}
+			}
+		}
+
+		/* iGMT: Color by file - one colour per swath file, so overlapping lines tell apart. The palette
+		   avoids the flag colours (red manual, blue filter, green sonar), which flagged soundings keep */
+		else if (m->view_color == MBS_VIEW_COLOR_FILE) {
+			static const float pal[12][3] = {
+				{1.00f, 0.50f, 0.05f}, {0.58f, 0.40f, 0.74f}, {0.55f, 0.34f, 0.29f}, {0.89f, 0.47f, 0.76f},
+				{0.74f, 0.74f, 0.13f}, {0.09f, 0.75f, 0.81f}, {0.50f, 0.50f, 0.50f}, {0.99f, 0.75f, 0.44f},
+				{0.40f, 0.76f, 0.65f}, {0.80f, 0.60f, 0.20f}, {0.65f, 0.81f, 0.89f}, {0.20f, 0.20f, 0.20f}};
+			for (int i = 0; i < soundingdata->num_soundings; i++) {
+				mb3dsoundings_sounding_struct *sounding = &(soundingdata->soundings[i]);
+				if (mb_beam_ok(sounding->beamflag) ||
+				    (msFlagVisible(m, sounding) && !mb_beam_check_flag_null(sounding->beamflag) &&
+				     (m->view_secondary || !mb_beam_check_flag_multipick(sounding->beamflag)))) {
+					if (msAddFlagged(m, pts, verts, rgb, sounding))
+						continue;
+					const float *c = pal[(sounding->ifile >= 0 ? sounding->ifile : 0) % 12];
+					msAddPoint(pts, verts, rgb, sounding, c[0], c[1], c[2]);
 				}
 			}
 		}
@@ -1095,6 +1128,8 @@ void msPlot() {
 	Mb3dsdg *m = g_ms;
 	if (!m || !m->view || !m->soundingdata)
 		return;
+	if (m->pane)                             // an edit may have hidden (or brought back) the extreme soundings:
+		msSetZScale();                       // the window's box follows what is shown
 	msBuildScene();
 	m->ren->ResetCameraClippingRange();
 	m->rw->Render();
@@ -1539,6 +1574,20 @@ void msVeCB(vtkObject *, unsigned long, void *, void *) {
 		for (vtkActor *a : {m->boxSolidActor.Get(), m->boxDotActor.Get(), m->profileActor.Get(), m->infoActor.Get()})
 			if (a)
 				a->SetScale(sc);
+		// The window's exaggeration scales z about 0 (sea level): soundings 3000 m down slide away as it
+		// grows and leave the view. So the camera follows the centre of the SHOWN soundings by exactly the
+		// distance that centre moved -- they stay where the user is looking, and stretch about themselves.
+		if (m->paneKz > 0.0 && sc[2] != m->paneKz && m->ren && m->soundingdata) {
+			const double dz = (sc[2] - m->paneKz) * m->soundingdata->zorigin;
+			vtkCamera *cam = m->ren->GetActiveCamera();
+			double f[3], p[3];
+			cam->GetFocalPoint(f);
+			cam->GetPosition(p);
+			cam->SetFocalPoint(f[0], f[1], f[2] + dz);
+			cam->SetPosition(p[0], p[1], p[2] + dz);
+			m->ren->ResetCameraClippingRange();
+		}
+		m->paneKz = sc[2];
 		return;
 	}
 	if (!m || !m->soundingdata || !m->host.view3dVE)
@@ -1826,6 +1875,14 @@ Mb3dsdg *msBuild(QWidget *parent, const MbEditHost &host, void *paneScene = null
 		msSetZScale();
 		msPlot();
 	});
+	if (auto *actFile = win->findChild<QAction *>("actionColorByFile")) {   // iGMT: one colour per swath file
+		gColor->addAction(actFile);
+		QObject::connect(actFile, &QAction::triggered, win, []() {
+			g_ms->view_color = MBS_VIEW_COLOR_FILE;
+			msSetZScale();
+			msPlot();
+		});
+	}
 
 	// Action menu
 	QObject::connect(actApplyBias, &QAction::triggered, win, []() {
@@ -2094,6 +2151,14 @@ bool mb3dsdgOpenPane(void *scene, const MbEditHost &host, mb3dsoundings_struct *
 					QApplication::restoreOverrideCursor();
 				}
 			});
+		// Discard (an area pane only, mb3dsdgSetAreaMode): its edits are dropped
+		if (auto *db = content->findChild<QPushButton *>("discardButton")) {
+			db->hide();
+			QObject::connect(db, &QPushButton::clicked, content, []() {
+				if (g_ms && g_ms->notify.discard)
+					g_ms->notify.discard();
+			});
+		}
 		// Gridding: the caller opens its gridding on these soundings (the good ones only)
 		if (auto *gb = content->findChild<QPushButton *>("gridButton"))
 			QObject::connect(gb, &QPushButton::clicked, content, []() {
@@ -2150,6 +2215,23 @@ bool mb3dsdgOpenPane(void *scene, const MbEditHost &host, mb3dsoundings_struct *
 	msPlot();
 	msUpdateStatus();
 	return true;
+}
+
+void mb3dsdgSetAreaMode() {
+	Mb3dsdg *m = g_ms;
+	if (!m || !m->pane || !m->paneDock)
+		return;
+	QWidget *d = m->paneDock;
+	if (auto *sb = d->findChild<QPushButton *>("saveButton")) {
+		sb->setText("Accept flags");
+		sb->setToolTip("Hand the flags made here to the full cloud's window (its Save writes them to the .esf), "
+		               "close this view and give the full cloud its pane back");
+	}
+	if (auto *db = d->findChild<QPushButton *>("discardButton"))
+		db->show();
+	for (const char *nm : {"cubeFilterButton", "gridButton"})
+		if (auto *b = d->findChild<QPushButton *>(nm))
+			b->hide();
 }
 
 // The pane's Navigation toggle drives `show` (the host's own visibility setter for the window's
@@ -2223,6 +2305,25 @@ bool mb3dsdgMouseEdit(int x0, int y0, int x1, int y1) {
 	if (x1 != x0 || y1 != y0)
 		send(QEvent::MouseMove, Qt::NoButton, Qt::LeftButton, x1, y1);
 	send(QEvent::MouseButtonRelease, Qt::LeftButton, Qt::NoButton, x1, y1);
+	return true;
+}
+
+bool mb3dsdgCounts(int *drawn, int *good, int *flagged) {
+	if (!mb3dsdgIsOpen())
+		return false;
+	// what the view really renders: the points actor's own input
+	auto *pm = g_ms->pointsActor ? vtkPolyDataMapper::SafeDownCast(g_ms->pointsActor->GetMapper()) : nullptr;
+	vtkPolyData *pd = pm ? vtkPolyData::SafeDownCast(pm->GetInput()) : nullptr;
+	if (drawn) *drawn = pd ? int(pd->GetNumberOfPoints()) : -1;
+	if (good) *good = g_ms->soundingdata->num_soundings_unflagged;
+	if (flagged) *flagged = g_ms->soundingdata->num_soundings_flagged;
+	return true;
+}
+
+bool mb3dsdgSetShowFlagged(bool on) {
+	if (!mb3dsdgIsOpen() || !g_ms->actViewFlagged)
+		return false;
+	g_ms->actViewFlagged->setChecked(on);   // the menu entry itself: its toggled() does the rest
 	return true;
 }
 

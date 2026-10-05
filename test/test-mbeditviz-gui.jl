@@ -132,3 +132,103 @@ end
 		end
 	end
 end
+
+# A grid made from the pane's soundings, and a line area on it: "Show point-cloud" opens the soundings inside
+# the area in a view of their own with their own 3D Soundings (the full cloud's pane steps aside meanwhile).
+# Flags made there reach the full cloud on Accept, and only then; Discard drops them. Either way the full
+# cloud gets its pane back.
+@testitem "3D Soundings area view: Accept hands its flags to the full cloud, Discard drops them" tags=[:gui] begin
+	IG = InteractiveGMT
+	src = get(ENV, "INTERACTIVEGMT_MBEDITVIZ_TESTFILE",
+	          raw"C:\progs_cygw\MB-System_take2\test\utilities\testdata\mb57\TN136HS.309.snipped.mb57")
+	mbio = get(ENV, "INTERACTIVEGMT_MBIO", "")
+	if !haskey(IG._LIB_FNS, :gmtvtk_mb_area_cloud_h)
+		@test_skip "the experimental mbeditviz (and its cloud pane) is not built into this library"
+	elseif isempty(mbio) || !isfile(mbio) || !isfile(src) || !isfile(src * ".inf")
+		@test_skip "MB-System 5.8 MBIO library (INTERACTIVEGMT_MBIO) or the mb57 test file (+ .inf) not available"
+	else
+		pump(n = 20) = for _ in 1:n; sleep(0.05); end
+		mktempdir() do d
+			f = joinpath(d, basename(src))
+			cp(src, f)
+			cp(src * ".inf", f * ".inf")
+			h = ccall(IG._fn(:gmtvtk_open_empty), Ptr{Cvoid}, (Cstring,), "3D Soundings area test")
+			try
+				IG._start_pump()
+				IG._on_drop(h, f)
+				pump()
+				good() = ccall(IG._fn(:gmtvtk_mb_cloud_good_h), Cint, (Ptr{Cvoid}, Ptr{Cdouble}, Cint), h, C_NULL, 0)
+				g0 = good()
+				@test g0 > 0
+				# the area: the middle third of the soundings' extent
+				D = IG._mb_cloud_dataset(h)
+				x0, x1 = extrema(view(D.data, :, 1)); y0, y1 = extrema(view(D.data, :, 2))
+				ax, bx = x0 + (x1 - x0) / 3, x1 - (x1 - x0) / 3
+				ay, by = y0 + (y1 - y0) / 3, y1 - (y1 - y0) / 3
+				poly = Float64[ax, ay, bx, ay, bx, by, ax, by]
+				function area_round(accept::Bool)
+					@test ccall(IG._fn(:gmtvtk_mb_area_cloud_h), Cint, (Ptr{Cvoid}, Ptr{Cdouble}, Cint), h, poly, Cint(4)) == 1
+					pump()
+					@test good() == -1                       # the full cloud's pane stepped aside
+					@test IG._mbeditviz_editor_mode(1)      # Pick, in the area view
+					for i in 0:40
+						IG._mbeditviz_editor_click(i)
+					end
+					pump()
+					@test ccall(IG._fn(:gmtvtk_mb_area_finish_h), Cint, (Cint,), accept ? 1 : 0) == 1
+					pump(40)
+					return good()
+				end
+				@test area_round(false) == g0                # Discard: nothing reached the full cloud
+				@test area_round(true) < g0                  # Accept: the picks are the full cloud's now
+			finally
+				ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), h)
+				pump()
+			end
+		end
+	end
+end
+
+# An edit marks a sounding, it never makes it vanish: with View > Show flagged OFF (which hides the soundings
+# that came in flagged), Erase through the window's view flags soundings and every one of them is still drawn.
+@testitem "3D Soundings: erased soundings stay drawn with Show flagged off" tags=[:gui] begin
+	IG = InteractiveGMT
+	src = get(ENV, "INTERACTIVEGMT_MBEDITVIZ_TESTFILE",
+	          raw"C:\progs_cygw\MB-System_take2\test\utilities\testdata\mb57\TN136HS.309.snipped.mb57")
+	mbio = get(ENV, "INTERACTIVEGMT_MBIO", "")
+	if !haskey(IG._LIB_FNS, :gmtvtk_mb_soundings_counts)
+		@test_skip "the experimental mbeditviz (and its cloud pane) is not built into this library"
+	elseif isempty(mbio) || !isfile(mbio) || !isfile(src) || !isfile(src * ".inf")
+		@test_skip "MB-System 5.8 MBIO library (INTERACTIVEGMT_MBIO) or the mb57 test file (+ .inf) not available"
+	else
+		pump(n = 20) = for _ in 1:n; sleep(0.05); end
+		mktempdir() do d
+			f = joinpath(d, basename(src))
+			cp(src, f)
+			cp(src * ".inf", f * ".inf")
+			h = ccall(IG._fn(:gmtvtk_open_empty), Ptr{Cvoid}, (Cstring,), "3D Soundings erase test")
+			try
+				IG._start_pump()
+				IG._on_drop(h, f)
+				pump()
+				cnt() = (v = zeros(Cint, 3); ccall(IG._fn(:gmtvtk_mb_soundings_counts), Cint, (Ptr{Cint},), v);
+				         (drawn = v[1], good = v[2], flagged = v[3]))
+				@test ccall(IG._fn(:gmtvtk_mb_soundings_show_flagged), Cint, (Cint,), 0) == 1
+				pump()
+				a = cnt()
+				@test a.drawn == a.good                    # flagged-at-load hidden: only the good are drawn
+				@test IG._mbeditviz_editor_mode(2)         # Erase
+				for i in 0:60
+					IG._mbeditviz_editor_click(i)
+				end
+				pump()
+				b = cnt()
+				@test b.flagged > a.flagged                # Erase flagged soundings...
+				@test b.drawn == a.drawn                   # ...and every one of them is still drawn
+			finally
+				ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), h)
+				pump()
+			end
+		end
+	end
+end

@@ -171,6 +171,9 @@ static void configurePointCloud(Scene *s, vtkSmartPointer<vtkPolyData> pd, doubl
 		m->SetInputData(pd);
 	// Ctrl+right-drag rubber-band selection over this cloud.
 	enableRubberBand(s, pd, pickr, pickg, pickb);
+	// Scene Objects was filled by the builder BEFORE the window knew it holds a cloud: rebuilt now, so the
+	// cloud has its own group (icon, Points row, menus) and is never listed as a grid surface
+	rebuildSceneObjects(s);
 }
 
 // Promote an EMPTY launcher window into a full point-cloud viewer IN PLACE (same window), the
@@ -2086,6 +2089,8 @@ struct MbAttach : QObject {
 	std::function<void(QKeyEvent *, bool)> key;
 	bool leftOwned = false;
 	bool inKey = false;
+	bool zSaved = false;                     // the window's own z range, kept while mbAttachZRange sets it
+	double zmin0 = 0.0, zmax0 = 0.0;
 	bool eventFilter(QObject *o, QEvent *e) override {
 		if (!sceneAlive(s) || o != s->widget)
 			return false;
@@ -2148,7 +2153,29 @@ static void mbView3dDetach(void *view) {
 		a->w->removeEventFilter(a);
 		a->w->unsetCursor();
 	}
+	if (a->zSaved && sceneAlive(a->s)) {     // the window's own z range back (mbAttachZRange)
+		a->s->zmin = a->zmin0;
+		a->s->zmax = a->zmax0;
+		applyVE(a->s);
+		if (a->s->widget) a->s->widget->renderWindow()->Render();
+	}
 	delete a;
+}
+// MbEditHost::attachZRange: the cloud window's z range = the tool's shown soundings' (its axes box, frame
+// and Reset View follow it -- applyVE re-boxes), the window's own kept for view3dDetach
+static void mbAttachZRange(void *view, double zmin, double zmax) {
+	auto *a = static_cast<MbAttach *>(view);
+	if (!a || !sceneAlive(a->s) || !a->s->surfCloud || !(zmax > zmin)) return;
+	if (!a->zSaved) {
+		a->zmin0 = a->s->zmin;
+		a->zmax0 = a->s->zmax;
+		a->zSaved = true;
+	}
+	if (a->s->zmin == zmin && a->s->zmax == zmax) return;
+	a->s->zmin = zmin;
+	a->s->zmax = zmax;
+	applyVE(a->s);
+	if (a->s->widget) a->s->widget->renderWindow()->Render();
 }
 // the window's own point-cloud actor (null when the window is not a cloud)
 static vtkActor *mbAttachCloudActor(void *view) {
@@ -2541,6 +2568,71 @@ GMTVTK_API int gmtvtk_mb_cloud_good_h(void *handle, double *xyz, int cap) {
 	if (!sceneAlive(s))
 		return -1;
 	return mb3dsdgCloudGood(s, xyz, cap);
+}
+// Mark the grid `name` of window `handle` as gridded from that window's swath point cloud (the 3D
+// Soundings pane's Gridding / CUBE): a line area drawn on it then offers "Show point-cloud". 1 = marked
+GMTVTK_API int gmtvtk_mb_tag_cloud_grid_h(void *handle, const char *name) {
+	Scene *s = static_cast<Scene *>(handle);
+	if (!sceneAlive(s) || !name)
+		return 0;
+	for (auto &ex : s->extras)
+		if (ex.name == name && !ex.isImage) {
+			ex.mbCloudGrid = true;
+			return 1;
+		}
+	return 0;
+}
+// A line area's "Show point-cloud": the window's swath soundings inside the area, in a NEW point-cloud
+// window (gmtvtk_view_points, the window every point cloud gets) with its own 3D Soundings pane
+// (mb3dsdgOpenAreaCloud). Closing that window is its pane's Discard.
+static void mbShowAreaCloud(Scene *s, const std::vector<std::array<double, 3>> &ring) {
+	if (!sceneAlive(s) || ring.size() < 4)
+		return;
+	std::vector<double> xy;
+	const size_t n = (ring.front() == ring.back()) ? ring.size() - 1 : ring.size();   // the closing duplicate
+	for (size_t i = 0; i < n; i++) {
+		xy.push_back(ring[i][0]);
+		xy.push_back(ring[i][1]);
+	}
+	const int geog = s->baseGeog ? 1 : 0;
+	auto makeWindow = [geog](const double *xyz, int np, const QString &title) -> void * {
+		double x0 = xyz[0], x1 = xyz[0], y0 = xyz[1], y1 = xyz[1];
+		for (int i = 1; i < np; i++) {
+			x0 = std::min(x0, xyz[3 * i]);  x1 = std::max(x1, xyz[3 * i]);
+			y0 = std::min(y0, xyz[3 * i + 1]);  y1 = std::max(y1, xyz[3 * i + 1]);
+		}
+		return gmtvtk_view_points(xyz, np, nullptr, nullptr, 0, x0, x1, y0, y1, geog, 3.0, 1.0, 0.0, 0.0,
+		                          title.toUtf8().constData());
+	};
+	auto closeWin = [](void *w) { if (sceneAlive(static_cast<Scene *>(w))) gmtvtk_close(w); };
+	QApplication::setOverrideCursor(Qt::WaitCursor);
+	mb3dsdgOpenAreaCloud(s, xy.data(), int(xy.size() / 2), makeWindow, closeWin);
+	QApplication::restoreOverrideCursor();
+}
+// The same "Show point-cloud" from coordinates: the soundings of window `handle`'s swath cloud inside the
+// polygon of n x,y vertices (true coords). 1 = the area window and its pane opened
+GMTVTK_API int gmtvtk_mb_area_cloud_h(void *handle, const double *xy, int n) {
+	Scene *s = static_cast<Scene *>(handle);
+	if (!sceneAlive(s) || !xy || n < 3)
+		return 0;
+	std::vector<std::array<double, 3>> ring;
+	for (int i = 0; i < n; i++)
+		ring.push_back({xy[2 * i], xy[2 * i + 1], 0.0});
+	ring.push_back(ring.front());
+	mbShowAreaCloud(s, ring);
+	return mb3dsdgAreaOpen() ? 1 : 0;
+}
+// The open 3D Soundings view: out[0] points it draws, out[1] good, out[2] flagged soundings. 1 = open
+GMTVTK_API int gmtvtk_mb_soundings_counts(int *out) {
+	return (out && mb3dsdgCounts(&out[0], &out[1], &out[2])) ? 1 : 0;
+}
+// View > Show flagged of the open 3D Soundings view, through its menu entry. 1 = done
+GMTVTK_API int gmtvtk_mb_soundings_show_flagged(int on) {
+	return mb3dsdgSetShowFlagged(on != 0) ? 1 : 0;
+}
+// The open area pane's Accept (accept = 1) or Discard (0), as its buttons. 1 = there was one
+GMTVTK_API int gmtvtk_mb_area_finish_h(int accept) {
+	return mb3dsdgAreaFinish(accept != 0) ? 1 : 0;
 }
 // CUBE flagging on window `handle`'s swath-cloud pane: the good soundings (gmtvtk_mb_cloud_good_h's
 // order) where bad[i] != 0 become FILTER flags of the pane, saved by its Save. How many, -1 = no pane.
@@ -7115,6 +7207,52 @@ GMTVTK_API int gmtvtk_pt_picker_shot_test(const char *title, const char *path) {
 // real handler runs, exactly as a user click would), and grab the dialog as a PNG so a test can see
 // the live layout instead of trusting the .ui. Returns 1 when the dialog opened and, if a button was
 // asked for, that button existed. `button`/`path` may be empty/null.
+// Interpolate's Options are remembered: a dialog takes `value` for option `key` of `method` and saves it the
+// way Options > OK does (saveOptions); it closes; a NEW dialog then reads that option back (optValue). The
+// value read -> out (cap bytes). The iGMT.ini entry it went through is put back as it was. 1 = ran
+GMTVTK_API int gmtvtk_interp_options_roundtrip_test(void *handle, const char *method, const char *key,
+                                                    const char *value, char *out, int cap) {
+	Scene *s = static_cast<Scene *>(handle);
+	// the window comes from the production library: its Scene is the same struct, but not in THIS library's
+	// registry, so sceneAlive() would refuse it -- a non-null pointer to a live window is all this needs
+	if (!s || !s->win || !method || !key || !value || !out || cap <= 0) return 0;
+	const QString m = QString::fromUtf8(method), k = QString::fromUtf8(key);
+	const QString iniKey = "Interpolate/" + m + "/" + k;
+	QSettings st0 = igmtSettings();
+	const bool had = st0.contains(iniKey);
+	const QVariant was = st0.value(iniKey);
+	auto *a = new InterpolationDialog(s->win, s);
+	if (!a->dlg) return 0;
+	a->optVals[m][k] = QString::fromUtf8(value);
+	a->saveOptions(m);
+	a->dlg->close();                             // WA_DeleteOnClose: the dialog and its wrapper go
+	QApplication::processEvents();
+	auto *b = new InterpolationDialog(s->win, s);
+	if (!b->dlg) return 0;
+	QString got;
+	for (const auto &o : InterpolationDialog::optionSpec(m))
+		if (o.key == k) got = b->optValue(m, o);
+	b->dlg->close();
+	QApplication::processEvents();
+	QSettings st1 = igmtSettings();             // the user's own entry back
+	if (had) st1.setValue(iniKey, was);
+	else st1.remove(iniKey);
+	snprintf(out, size_t(cap), "%s", got.toUtf8().constData());
+	return 1;
+}
+
+// Ctrl+left-drag's profile start (profilerBegin) at the CENTRE of window `handle`'s view: 1 = a profile
+// track started there (and is ended again at once), 0 = the window refused it. The window may come from
+// the production library (same Scene struct, not in this library's registry).
+GMTVTK_API int gmtvtk_profile_begin_test(void *handle) {
+	Scene *s = static_cast<Scene *>(handle);
+	if (!s || !s->widget || !s->widget->renderWindow()) return 0;
+	const int *sz = s->widget->renderWindow()->GetSize();
+	if (!profilerBegin(s, sz[0] / 2, sz[1] / 2)) return 0;
+	profilerEnd(s);
+	return 1;
+}
+
 GMTVTK_API int gmtvtk_fft_dialog_test(void *handle, const char *button, const char *path) {
 	Scene *s = static_cast<Scene *>(handle);
 	if (!s) return 0;

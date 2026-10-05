@@ -186,6 +186,9 @@ function _on_interpolate(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		ok = _gm3d_deliver(scene, R, "Gridded ($method)", _get(d, "outfile"), false,
 		                   "$method " * join(("$k=$v" for (k, v) in kw), ' ');
 		                   geographic = (coords == "auto" ? nothing : geog))
+		# gridded from the window's swath cloud: a line area drawn on it offers "Show point-cloud"
+		cloud && ok == Cint(1) && haskey(_LIB_FNS, :gmtvtk_mb_tag_cloud_grid_h) &&
+			ccall(_fn(:gmtvtk_mb_tag_cloud_grid_h), Cint, (Ptr{Cvoid}, Cstring), scene, "Gridded ($method)")
 		# The data points go ON TOP of the new grid (vectors always ride above rasters), from the very
 		# dataset that was gridded — not a second read of the file.
 		if ok == Cint(1) && _on(d, "plotpts")

@@ -21588,7 +21588,7 @@ public:
 				// Swath data is not a table the metadata reader knows: its limits come from the soundings,
 				// once MBIO has read them (the empty boxes are filled at Compute, src/cube.jl).
 				if (!isSwathPath(p)) fillFromData(p);
-				else fillCubeGeometry(p);
+				else fillCubeGeometry(p, method() != "cube");
 			});
 			if (inEdit) fileBoxDoubleClick(inEdit, inBtn);
 		}
@@ -21607,6 +21607,7 @@ public:
 		if (methodCb) QObject::connect(methodCb, QOverload<int>::of(&QComboBox::currentIndexChanged), d,
 		                               [this]() { syncMethod(); });
 		syncMethod();
+		loadOptions();                                   // each method's Options as last accepted
 
 		for (QPushButton *b : d->findChildren<QPushButton *>()) { b->setAutoDefault(false); b->setDefault(false); }
 		if (auto *b = d->findChild<QPushButton *>("push_options")) QObject::connect(b, &QPushButton::clicked, d, [this, d]() { showOptions(d); });
@@ -21687,12 +21688,13 @@ public:
 		const char *m = g_juliaGridMeta(path.toUtf8().constData());
 		if (m && *m) geo->fillGeometry(QString::fromUtf8(m));
 	}
-	// CUBE's input (a swath file / datalist, or "" = the window's swath point cloud): the region and
-	// spacing CUBE would grid it on with the boxes empty, shown in them so nothing it uses is hidden
-	void fillCubeGeometry(const QString &path) {
+	// Swath soundings (a swath file / datalist, or "" = the window's swath point cloud): the region and
+	// spacing to grid them on, shown in the boxes -- CUBE's own choice (forGrid false), or one from the
+	// soundings' density for the other gridders (forGrid true, src/cube.jl's _mb_grid_meta)
+	void fillCubeGeometry(const QString &path, bool forGrid) {
 		if (!geo || !g_juliaCubeMeta) return;
 		showBusyDialog("Reading the soundings' limits...");
-		const char *m = g_juliaCubeMeta(scn, path.toUtf8().constData());
+		const char *m = g_juliaCubeMeta(scn, path.toUtf8().constData(), forGrid ? 1 : 0);
 		closeBusyDialog();
 		if (m && *m) geo->fillGeometry(QString::fromUtf8(m));
 	}
@@ -21796,6 +21798,25 @@ public:
 	QString optValue(const QString &m, const Opt &o) const {
 		const QMap<QString, QString> vals = optVals.value(m);
 		return vals.contains(o.key) ? vals.value(o.key) : o.deflt;
+	}
+
+	// A method's Options as last accepted, kept in iGMT.ini (Interpolate/<method>/<key>) so the next
+	// dialog opens with them: loaded for every method when the dialog is built, written at Options > OK
+	void loadOptions() {
+		QSettings st = igmtSettings();
+		for (int i = 0; methodCb && i < methodCb->count(); ++i) {
+			const QString m = methodCb->itemData(i).toString();
+			for (const Opt &o : optionSpec(m)) {
+				const QString k = "Interpolate/" + m + "/" + o.key;
+				if (st.contains(k)) optVals[m][o.key] = st.value(k).toString();
+			}
+		}
+	}
+	void saveOptions(const QString &m) {
+		QSettings st = igmtSettings();
+		const QMap<QString, QString> vals = optVals.value(m);
+		for (auto it = vals.cbegin(); it != vals.cend(); ++it)
+			st.setValue("Interpolate/" + m + "/" + it.key(), it.value());
 	}
 
 	// ---- An option row's widget, shared by the Options window (which builds it) and any dialog whose
@@ -21969,7 +21990,10 @@ public:
 
 		QObject::connect(cancelBtn, &QPushButton::clicked, &od, &QDialog::reject);
 		QObject::connect(okBtn, &QPushButton::clicked, &od, &QDialog::accept);
-		if (od.exec() == QDialog::Accepted) optVals[m] = harvest();
+		if (od.exec() == QDialog::Accepted) {
+			optVals[m] = harvest();
+			saveOptions(m);
+		}
 	}
 
 	void runCompute(QDialog *d) {
@@ -22056,7 +22080,7 @@ public:
 			if (auto *b = dlg->findChild<QToolButton *>("btn_infile")) b->setEnabled(false);
 			dlg->setWindowTitle("Gridding - " + name);
 		}
-		fillCubeGeometry(QString());
+		fillCubeGeometry(QString(), true);
 	}
 };
 
@@ -22153,7 +22177,7 @@ public:
 		// the region and spacing CUBE grids the input on when the boxes are empty: shown in them
 		if (geo && g_juliaCubeMeta) {
 			showBusyDialog("Reading the soundings' limits...");
-			const char *m = g_juliaCubeMeta(scn, input.toUtf8().constData());
+			const char *m = g_juliaCubeMeta(scn, input.toUtf8().constData(), 0);
 			closeBusyDialog();
 			if (m && *m) geo->fillGeometry(QString::fromUtf8(m));
 		}

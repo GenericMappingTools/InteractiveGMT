@@ -10,8 +10,11 @@
 
 #include <QFileInfo>
 #include <QMessageBox>
+#include <QTimer>
 
+#include <algorithm>
 #include <cmath>
+#include <functional>
 #include <cstdio>
 #include <cstring>
 #include <unordered_map>
@@ -39,6 +42,11 @@ struct Cloud {
 	std::vector<CloudEdit> edits;
 	int nedits = 0;
 	double maxDepth = 0.0;
+	// an AREA cloud (a line area's "Show point-cloud"): the soundings of `parent` inside the area, same
+	// pings and beams, in a window of its own. Its edits never reach a file: Accept hands them to the
+	// parent, Discard drops them; either way the parent gets its pane back. closeWin closes its window.
+	struct Cloud *parent = nullptr;
+	std::function<void(void *)> closeWin;
 	double cellsize() const {                 // mbeditviz's grid cell size rule (2% of the depth)
 		return maxDepth > 0.0 ? 0.02 * maxDepth : 1.0;
 	}
@@ -182,8 +190,20 @@ void cloudSaveEdits(Cloud *c) {
 		QMessageBox::warning(nullptr, "3D Soundings", "The edits could not be saved for: " + failed.join(", "));
 }
 
+void areaFinish(bool accept, bool closeWindow);
+
+// Save: an area cloud's Save is its Accept (its edits go to the parent, never to a file)
 void cloudSave() {
-	cloudSaveEdits(g_cloud);
+	if (g_cloud && g_cloud->parent)
+		areaFinish(true, true);
+	else
+		cloudSaveEdits(g_cloud);
+}
+
+// the area pane's Discard
+void cloudDiscard() {
+	if (g_cloud && g_cloud->parent)
+		areaFinish(false, true);
 }
 
 // CUBE gridding: the host's CUBE dialog, its input these soundings (mb3dsdgCloudGood)
@@ -198,12 +218,95 @@ void cloudCube(bool filter) {
 		g_cloud->host.openCubeOnCloud(g_cloud->scene, g_cloud->name.toUtf8().constData(), filter);
 }
 
-// the pane is gone: what is not saved yet is saved, the soundings released
+// the pane is gone: what is not saved yet is saved, the soundings released. An area cloud's pane gone by
+// itself (its window closed) is a Discard.
 void cloudDismiss() {
+	if (g_cloud && g_cloud->parent) {
+		areaFinish(false, false);
+		return;
+	}
 	Cloud *c = g_cloud;
 	g_cloud = nullptr;
 	cloudSaveEdits(c);
 	delete c;
+}
+
+void cloudDiscard();
+
+// The notify functions every cloud pane is opened with
+Mb3dsdgNotify cloudNotify() {
+	Mb3dsdgNotify n;
+	n.dismiss = &cloudDismiss;
+	n.edit = &cloudEdit;
+	n.info = &cloudInfo;
+	n.flagsparsevoxels = &cloudSparse;
+	n.colorsoundings = &cloudColor;
+	n.save = &cloudSave;
+	n.cube = &cloudCube;
+	n.grid = &cloudGrid;
+	n.discard = &cloudDiscard;
+	return n;
+}
+
+// End the area cloud in g_cloud: with `accept` its edits become the parent's (each sounding found by its
+// ping and beam, its flag set, the edit recorded for the parent's Save); then the area pane goes (its edits
+// written nowhere), its window too unless it is already closing, and the parent -- whose soundings and edits
+// waited in memory -- gets its pane back in its own window. If that window is gone, the parent's edits are
+// saved and it is released, as any closed pane's are.
+void areaFinish(bool accept, bool closeWindow) {
+	Cloud *a = g_cloud;
+	if (!a || !a->parent)
+		return;
+	Cloud *p = a->parent;
+	if (accept && !a->edits.empty()) {
+		int nb = 0;
+		for (const auto &s : p->s)
+			nb = std::max(nb, s.ibeam + 1);
+		std::unordered_map<long long, size_t> at;
+		for (size_t i = 0; i < p->s.size(); i++)
+			at[(long long)p->s[i].iping * nb + p->s[i].ibeam] = i;
+		for (const auto &e : a->edits) {
+			auto it = at.find((long long)e.ping * nb + e.beam);
+			if (it == at.end())
+				continue;
+			auto &s = p->s[it->second];
+			const bool was = mb_beam_ok(s.beamflag), now = mb_beam_ok(e.flag);
+			s.beamflag = e.flag;
+			if (was && !now) {
+				p->data.num_soundings_unflagged--;
+				p->data.num_soundings_flagged++;
+			}
+			else if (!was && now) {
+				p->data.num_soundings_unflagged++;
+				p->data.num_soundings_flagged--;
+			}
+			p->edits.push_back(e);
+			p->nedits++;
+		}
+	}
+	void *areaScene = a->scene;
+	auto closeWin = a->closeWin;
+	g_cloud = nullptr;                           // the area pane's teardown then saves nothing
+	if (mb3dsdgIsOpen())
+		mb3dsdgEnd();
+	delete a;
+	// the rest after this event: the pane being torn down may be the one whose button got us here
+	QTimer::singleShot(0, [p, areaScene, closeWin, closeWindow]() {
+		if (closeWindow && closeWin)
+			closeWin(areaScene);
+		if (p->host.sceneWindow && p->host.sceneWindow(p->scene)) {
+			g_cloud = p;
+			if (!mb3dsdgOpenPane(p->scene, p->host, &p->data, cloudNotify())) {
+				g_cloud = nullptr;
+				cloudSaveEdits(p);
+				delete p;
+			}
+		}
+		else {
+			cloudSaveEdits(p);
+			delete p;
+		}
+	});
 }
 
 } // namespace
@@ -243,6 +346,86 @@ int mb3dsdgEsfFlag(const MbEditHost &host, const QStringList &files, const doubl
 	const QStringList failed = saveEsfEdits(files, std::vector<double>(ptime, ptime + nping),
 	                                        std::vector<int>(pfile, pfile + nping), edits);
 	return failed.isEmpty() ? n : -1;
+}
+
+bool mb3dsdgOpenAreaCloud(void *parentScene, const double *ring, int nring,
+                          const std::function<void *(const double *xyz, int n, const QString &title)> &makeWindow,
+                          const std::function<void(void *)> &closeWin) {
+	Cloud *p = g_cloud;
+	if (!p || p->scene != parentScene || !ring || nring < 3 || !makeWindow)
+		return false;
+	auto inside = [ring, nring](double x, double y) {   // even-odd rule over the ring (x,y pairs)
+		bool in = false;
+		for (int i = 0, j = nring - 1; i < nring; j = i++) {
+			const double xi = ring[2 * i], yi = ring[2 * i + 1], xj = ring[2 * j], yj = ring[2 * j + 1];
+			if ((yi > y) != (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi)
+				in = !in;
+		}
+		return in;
+	};
+	// the parent's soundings inside the area, on the parent's own ping x beam frame (so every sounding
+	// keeps its identity), flagged ones carried as mbgetdata carries them (shifted by the flag offset)
+	const int nping = int(p->pingTime.size());
+	int nbeam = 0;
+	for (const auto &s : p->s)
+		nbeam = std::max(nbeam, s.ibeam + 1);
+	if (nping <= 0 || nbeam <= 0)
+		return false;
+	const size_t nn = size_t(nping) * size_t(nbeam);
+	std::vector<double> lon(nn, NAN), lat(nn, NAN), z(nn, NAN), good;
+	for (const auto &s : p->s) {
+		if (!inside(s.x, s.y))
+			continue;
+		const size_t k = size_t(s.ibeam) * size_t(nping) + size_t(s.iping);
+		lon[k] = s.x;
+		lat[k] = s.y;
+		const bool ok = mb_beam_ok(s.beamflag);
+		z[k] = ok ? s.z : s.z - kFlagShift;
+		if (ok) {
+			good.push_back(s.x);
+			good.push_back(s.y);
+			good.push_back(s.z);
+		}
+	}
+	if (good.empty()) {
+		QMessageBox::information(nullptr, "Show point-cloud", "No good sounding of " + p->name + " lies inside this area.");
+		return false;
+	}
+	const QString title = p->name + " (area)";
+	// the parent waits: its soundings and edits stay, only its pane goes (one 3-D sounding editor at a time)
+	g_cloud = nullptr;
+	if (mb3dsdgIsOpen())
+		mb3dsdgEnd();
+	void *areaScene = makeWindow(good.data(), int(good.size() / 3), title);
+	bool ok = areaScene && mb3dsdgOpenCloud(areaScene, p->host, lon.data(), lat.data(), z.data(), nping, nbeam, title,
+	                                        p->pingTime.data(), p->pingFile.data(), p->files);
+	if (ok && g_cloud && g_cloud->scene == areaScene) {
+		g_cloud->parent = p;
+		g_cloud->closeWin = closeWin;
+		mb3dsdgSetAreaMode();
+		return true;
+	}
+	// it did not open: the parent gets its pane back
+	if (areaScene && closeWin)
+		closeWin(areaScene);
+	g_cloud = p;
+	if (!mb3dsdgOpenPane(p->scene, p->host, &p->data, cloudNotify())) {
+		g_cloud = nullptr;
+		cloudSaveEdits(p);
+		delete p;
+	}
+	return false;
+}
+
+bool mb3dsdgAreaOpen() {
+	return g_cloud && g_cloud->parent;
+}
+
+bool mb3dsdgAreaFinish(bool accept) {
+	if (!mb3dsdgAreaOpen())
+		return false;
+	areaFinish(accept, true);
+	return true;
 }
 
 QString mb3dsdgCloudName(void *scene) {
@@ -298,7 +481,7 @@ bool mb3dsdgOpenCloud(void *scene, const MbEditHost &host, const double *lon, co
 			if (flagged)
 				zz -= (zz > 0.0 ? 1.0 : -1.0) * std::fabs(kFlagShift);
 			mb3dsoundings_sounding_struct s{};
-			s.ifile = 0;
+			s.ifile = pfile[p];                  // its file (Color by File, and the file an edit belongs to)
 			s.iping = p;
 			s.ibeam = b;
 			s.beamflag = flagged ? char(MB_FLAG_FLAG + MB_FLAG_MANUAL) : char(MB_FLAG_NONE);
@@ -329,16 +512,7 @@ bool mb3dsdgOpenCloud(void *scene, const MbEditHost &host, const double *lon, co
 	c->data.zscale = 1.0;
 	c->data.displayed = true;
 	g_cloud = c;
-	Mb3dsdgNotify n;
-	n.dismiss = &cloudDismiss;
-	n.edit = &cloudEdit;
-	n.info = &cloudInfo;
-	n.flagsparsevoxels = &cloudSparse;
-	n.colorsoundings = &cloudColor;
-	n.save = &cloudSave;
-	n.cube = &cloudCube;
-	n.grid = &cloudGrid;
-	if (!mb3dsdgOpenPane(scene, host, &c->data, n)) {
+	if (!mb3dsdgOpenPane(scene, host, &c->data, cloudNotify())) {
 		g_cloud = nullptr;
 		delete c;
 		return false;
