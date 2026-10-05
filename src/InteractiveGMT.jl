@@ -157,6 +157,7 @@ include("gmtedit.jl")    # Geophysics > Magnetics > gmtedit: the MGD77 track edi
 # Julia side (`mbedit`, exported from the file itself). The C side is switched by IGMT_WITH_MBEDIT in
 # deps/CMakeLists.txt; its exports are optional (_LIB_OPTIONAL), so either side may be off alone.
 isfile(joinpath(@__DIR__, "mbedit.jl")) && include("mbedit.jl")
+include("mbplugin.jl")   # Geophysics > MB-System > Install as plugin: MB-System's GMT supplement from GitHub
 # EXPERIMENTAL sound velocity tool (MB-System's mbvelocitytool, deps/src/mbvelocitytool/), switched the
 # same way: this line for the Julia side (`mbvelocitytool`), IGMT_WITH_MBVELOCITYTOOL for the C side.
 isfile(joinpath(@__DIR__, "mbvelocitytool.jl")) && include("mbvelocitytool.jl")
@@ -257,6 +258,17 @@ function __init__()
 		GMT.Gdal.CPLSetConfigOption("GDAL_CACHEMAX", "1024")
 	catch e
 		@debug "InteractiveGMT: could not set the GDAL threading options (harmless)" exception=(e,)
+	end
+	# The MB-System GMT plugin, when Geophysics > MB-System > Install as plugin has put it in
+	# <root>/mbsystem: GMT only loads plugins when a session is created, so GMT.jl's session is
+	# re-created with it (mbplugin.jl). Linux and macOS, like the menu item; on Windows the plugin
+	# comes with GMT and nothing here runs. One isfile() when it is not installed.
+	if !Sys.iswindows()
+		try
+			_mbplugin_activate_installed()
+		catch e
+			@tool_error "InteractiveGMT: could not load the MB-System plugin." exception=(e,)
+		end
 	end
 	# ONLY load the DLL here. The dlopen handle + dlsym pointers are runtime values that can't be
 	# baked into a precompiled image, so they must resolve at load. Everything else (the 11 callback

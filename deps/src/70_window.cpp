@@ -29408,6 +29408,35 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		});
 		++n;
 #endif
+		// "Install as plugin": MB-System's GMT supplement from the joa-quim/MB-System `mbsystem-latest`
+		// release into <iGMT>/mbsystem, then loaded into GMT (InteractiveGMT.install_mbsystem_plugin(),
+		// src/mbplugin.jl). Linux and macOS; on Windows the plugin comes with GMT. Compiled everywhere,
+		// shown only where it applies, so every build checks it.
+#if defined(Q_OS_LINUX) || defined(Q_OS_MACOS)
+		const bool mbPluginMenu = true;
+#else
+		const bool mbPluginMenu = false;
+#endif
+		if (mbPluginMenu) {
+			mGphy->addSeparator();
+			mGphy->addAction("Install as plugin", [win, s, afterPopup]() {
+				afterPopup([win, s]() {
+					if (!g_juliaEval) {
+						QMessageBox::warning(win, "Install as plugin", "This needs the Julia/GMT host.");
+						return;
+					}
+					showBusyDialog("Downloading and installing the MB-System plugin...");
+					static std::vector<char> buf(1 << 16);
+					const int r = g_juliaEval(s, "InteractiveGMT.install_mbsystem_plugin()", buf.data(), (int)buf.size());
+					closeBusyDialog();
+					QString txt = QString::fromUtf8(buf.data(), r < 0 ? -r : r).trimmed();
+					if (txt.isEmpty()) txt = "No output.";
+					if (r < 0) QMessageBox::warning(win, "Install as plugin", txt);
+					else       QMessageBox::information(win, "Install as plugin", txt);
+				});
+			});
+			++n;
+		}
 		if (n == 0) mGphy->addAction("(no MB-System tool in this build)")->setEnabled(false);
 		reopen();
 	};

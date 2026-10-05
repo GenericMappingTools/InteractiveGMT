@@ -15,6 +15,9 @@ node_modules
 deps/build/
 *.log
 
+# MB-System GMT plugin (Geophysics > MB-System > Install as plugin, src/mbplugin.jl)
+/mbsystem/
+
 # OpenWolf local context (not shared)
 .wolf/
 
