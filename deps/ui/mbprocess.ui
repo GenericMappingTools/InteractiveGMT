@@ -1,0 +1,1807 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>MbProcessDialog</class>
+ <widget class="QDialog" name="MbProcessDialog">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>560</width>
+    <height>680</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>Process swath data (mbprocess)</string>
+  </property>
+  <widget class="QGroupBox" name="gbInput">
+   <property name="geometry">
+    <rect>
+     <x>11</x>
+     <y>8</y>
+     <width>538</width>
+     <height>92</height>
+    </rect>
+   </property>
+   <property name="title">
+    <string>Swath file or datalist</string>
+   </property>
+   <widget class="QLineEdit" name="editInput">
+    <property name="geometry">
+     <rect>
+      <x>12</x>
+      <y>24</y>
+      <width>470</width>
+      <height>24</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>The raw swath file to process, or a datalist (*.mb-1) of them. Each file gets its own parameter file, file.par, and its processed output (e.g. filep.mb88).</string>
+    </property>
+   </widget>
+   <widget class="QToolButton" name="btnInput">
+    <property name="geometry">
+     <rect>
+      <x>488</x>
+      <y>24</y>
+      <width>38</width>
+      <height>24</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>Browse for a swath file or a datalist.</string>
+    </property>
+    <property name="text">
+     <string>...</string>
+    </property>
+   </widget>
+   <widget class="QLabel" name="lblFormat">
+    <property name="geometry">
+     <rect>
+      <x>12</x>
+      <y>58</y>
+      <width>46</width>
+      <height>24</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Format</string>
+    </property>
+   </widget>
+   <widget class="QLineEdit" name="editFormat">
+    <property name="geometry">
+     <rect>
+      <x>60</x>
+      <y>58</y>
+      <width>56</width>
+      <height>24</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>The MBIO format id (-F). Empty: guessed from the file name (*.mbXX); -1 is a datalist.</string>
+    </property>
+   </widget>
+   <widget class="QCheckBox" name="chkForce">
+    <property name="geometry">
+     <rect>
+      <x>132</x>
+      <y>58</y>
+      <width>190</width>
+      <height>24</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>Process every file, also those whose output is already up to date (-P).</string>
+    </property>
+    <property name="text">
+     <string>Process even if up to date</string>
+    </property>
+   </widget>
+   <widget class="QCheckBox" name="chkStrip">
+    <property name="geometry">
+     <rect>
+      <x>330</x>
+      <y>58</y>
+      <width>116</width>
+      <height>24</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>Leave the comment records out of the processed file (-N).</string>
+    </property>
+    <property name="text">
+     <string>Strip comments</string>
+    </property>
+   </widget>
+   <widget class="QCheckBox" name="chkVerbose">
+    <property name="geometry">
+     <rect>
+      <x>452</x>
+      <y>58</y>
+      <width>76</width>
+      <height>24</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>Ask mbprocess for its verbose report (-V), shown in the log.</string>
+    </property>
+    <property name="text">
+     <string>Verbose</string>
+    </property>
+   </widget>
+  </widget>
+  <widget class="QGroupBox" name="gbFiles">
+   <property name="geometry">
+    <rect>
+     <x>11</x>
+     <y>106</y>
+     <width>538</width>
+     <height>124</height>
+    </rect>
+   </property>
+   <property name="title">
+    <string>Files</string>
+   </property>
+   <widget class="QListWidget" name="listFiles">
+    <property name="geometry">
+     <rect>
+      <x>12</x>
+      <y>22</y>
+      <width>514</width>
+      <height>92</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>The files that will be processed: the input file, or every file of the datalist. Select one to see its parameters below.</string>
+    </property>
+   </widget>
+  </widget>
+  <widget class="QTabWidget" name="tabPar">
+   <property name="geometry">
+    <rect>
+     <x>11</x>
+     <y>238</y>
+     <width>538</width>
+     <height>216</height>
+    </rect>
+   </property>
+   <property name="currentIndex">
+    <number>0</number>
+   </property>
+   <widget class="QWidget" name="tabEdits">
+    <attribute name="title">
+     <string>Edits</string>
+    </attribute>
+    <widget class="QCheckBox" name="chkEdits">
+     <property name="geometry">
+      <rect>
+       <x>12</x>
+       <y>10</y>
+       <width>500</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>Apply the beam flags saved by mbedit / mbeditviz / CUBE (the edit save file) to the processed bathymetry (EDITSAVEMODE). Applies to every file in the list.</string>
+     </property>
+     <property name="text">
+      <string>Apply the bathymetry edits (edit save file)</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblEsf">
+     <property name="geometry">
+      <rect>
+       <x>12</x>
+       <y>42</y>
+       <width>88</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Edit save file</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editEsf">
+     <property name="geometry">
+      <rect>
+       <x>102</x>
+       <y>42</y>
+       <width>376</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>The edit save file of the selected file (EDITSAVEFILE). Editable only when a single file is processed; a datalist's files each keep their own (file.esf).</string>
+     </property>
+    </widget>
+    <widget class="QToolButton" name="btnEsf">
+     <property name="geometry">
+      <rect>
+       <x>484</x>
+       <y>42</y>
+       <width>38</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>Browse for the edit save file.</string>
+     </property>
+     <property name="text">
+      <string>...</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblParState">
+     <property name="geometry">
+      <rect>
+       <x>12</x>
+       <y>72</y>
+       <width>510</width>
+       <height>20</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string></string>
+     </property>
+    </widget>
+   </widget>
+   <widget class="QWidget" name="tabNav">
+    <attribute name="title">
+     <string>Navigation</string>
+    </attribute>
+    <widget class="QCheckBox" name="chkNav">
+     <property name="geometry">
+      <rect>
+       <x>12</x>
+       <y>8</y>
+       <width>270</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>Replace the navigation with the one in the navigation file (NAVMODE). Applies to every file in the list.</string>
+     </property>
+     <property name="text">
+      <string>Merge navigation from a file</string>
+     </property>
+     <property name="parKey" stdset="0">
+      <string>NAVMODE</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblNavInterp">
+     <property name="geometry">
+      <rect>
+       <x>300</x>
+       <y>8</y>
+       <width>80</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Interpolation</string>
+     </property>
+    </widget>
+    <widget class="QComboBox" name="cbNavInterp">
+     <property name="geometry">
+      <rect>
+       <x>384</x>
+       <y>8</y>
+       <width>138</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>How the fixes are interpolated to the ping times (NAVINTERP). Linear is recommended.</string>
+     </property>
+     <property name="parKey" stdset="0">
+      <string>NAVINTERP</string>
+     </property>
+     <item>
+      <property name="text">
+       <string>Linear</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>Spline</string>
+      </property>
+     </item>
+    </widget>
+    <widget class="QLabel" name="lblNavFile">
+     <property name="geometry">
+      <rect>
+       <x>12</x>
+       <y>38</y>
+       <width>80</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Nav file</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editNavFile">
+     <property name="geometry">
+      <rect>
+       <x>96</x>
+       <y>38</y>
+       <width>382</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>The navigation file (NAVFILE). Applies to every file in the list.</string>
+     </property>
+     <property name="parKey" stdset="0">
+      <string>NAVFILE</string>
+     </property>
+    </widget>
+    <widget class="QToolButton" name="btnNavFile">
+     <property name="geometry">
+      <rect>
+       <x>484</x>
+       <y>38</y>
+       <width>38</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>Browse for the file.</string>
+     </property>
+     <property name="text">
+      <string>...</string>
+     </property>
+     <property name="browseFor" stdset="0">
+      <string>editNavFile</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblNavFormat">
+     <property name="geometry">
+      <rect>
+       <x>12</x>
+       <y>68</y>
+       <width>80</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Nav format</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editNavFormat">
+     <property name="geometry">
+      <rect>
+       <x>96</x>
+       <y>68</y>
+       <width>50</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>The navigation file format (NAVFORMAT), see the mbprocess manual: 1-10 ASCII, 11 RVDAS, 12 Kongsberg Navlab [9].</string>
+     </property>
+     <property name="parKey" stdset="0">
+      <string>NAVFORMAT</string>
+     </property>
+     <property name="parDefault" stdset="0">
+      <string>9</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblNavShift">
+     <property name="geometry">
+      <rect>
+       <x>160</x>
+       <y>68</y>
+       <width>96</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Time shift (s)</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editNavShift">
+     <property name="geometry">
+      <rect>
+       <x>260</x>
+       <y>68</y>
+       <width>70</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>Seconds added to the navigation fixes' times before merging (NAVTIMESHIFT).</string>
+     </property>
+     <property name="parKey" stdset="0">
+      <string>NAVTIMESHIFT</string>
+     </property>
+     <property name="parDefault" stdset="0">
+      <string>0</string>
+     </property>
+    </widget>
+    <widget class="QCheckBox" name="chkNavHeading">
+     <property name="geometry">
+      <rect>
+       <x>12</x>
+       <y>98</y>
+       <width>120</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>Also merge the heading from the navigation file (NAVHEADING).</string>
+     </property>
+     <property name="text">
+      <string>Heading</string>
+     </property>
+     <property name="parKey" stdset="0">
+      <string>NAVHEADING</string>
+     </property>
+    </widget>
+    <widget class="QCheckBox" name="chkNavSpeed">
+     <property name="geometry">
+      <rect>
+       <x>136</x>
+       <y>98</y>
+       <width>100</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>Also merge the speed from the navigation file (NAVSPEED).</string>
+     </property>
+     <property name="text">
+      <string>Speed</string>
+     </property>
+     <property name="parKey" stdset="0">
+      <string>NAVSPEED</string>
+     </property>
+    </widget>
+    <widget class="QCheckBox" name="chkNavDraft">
+     <property name="geometry">
+      <rect>
+       <x>240</x>
+       <y>98</y>
+       <width>100</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>Also merge the draft from the navigation file (NAVDRAFT).</string>
+     </property>
+     <property name="text">
+      <string>Draft</string>
+     </property>
+     <property name="parKey" stdset="0">
+      <string>NAVDRAFT</string>
+     </property>
+    </widget>
+    <widget class="QCheckBox" name="chkNavAttitude">
+     <property name="geometry">
+      <rect>
+       <x>344</x>
+       <y>98</y>
+       <width>170</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>Also merge roll, pitch and heave from the navigation file (NAVATTITUDE).</string>
+     </property>
+     <property name="text">
+      <string>Roll, pitch, heave</string>
+     </property>
+     <property name="parKey" stdset="0">
+      <string>NAVATTITUDE</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblNavAdj">
+     <property name="geometry">
+      <rect>
+       <x>12</x>
+       <y>128</y>
+       <width>80</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Adjusted nav</string>
+     </property>
+    </widget>
+    <widget class="QComboBox" name="cbNavAdj">
+     <property name="geometry">
+      <rect>
+       <x>96</x>
+       <y>128</y>
+       <width>240</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>Merge the navigation adjusted by mbnavadjust (NAVADJMODE).</string>
+     </property>
+     <property name="parKey" stdset="0">
+      <string>NAVADJMODE</string>
+     </property>
+     <item>
+      <property name="text">
+       <string>Off</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>Longitude, latitude</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>Longitude, latitude, depth offset</string>
+      </property>
+     </item>
+    </widget>
+    <widget class="QLabel" name="lblNavAdjFile">
+     <property name="geometry">
+      <rect>
+       <x>12</x>
+       <y>158</y>
+       <width>80</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Adj. nav file</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editNavAdjFile">
+     <property name="geometry">
+      <rect>
+       <x>96</x>
+       <y>158</y>
+       <width>382</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>The adjusted navigation file written by mbnavadjust (NAVADJFILE). Applies to every file in the list.</string>
+     </property>
+     <property name="parKey" stdset="0">
+      <string>NAVADJFILE</string>
+     </property>
+    </widget>
+    <widget class="QToolButton" name="btnNavAdjFile">
+     <property name="geometry">
+      <rect>
+       <x>484</x>
+       <y>158</y>
+       <width>38</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>Browse for the file.</string>
+     </property>
+     <property name="text">
+      <string>...</string>
+     </property>
+     <property name="browseFor" stdset="0">
+      <string>editNavAdjFile</string>
+     </property>
+    </widget>
+   </widget>
+   <widget class="QWidget" name="tabSvp">
+    <attribute name="title">
+     <string>Sound velocity</string>
+    </attribute>
+    <widget class="QLabel" name="lblSvpMode">
+     <property name="geometry">
+      <rect>
+       <x>12</x>
+       <y>8</y>
+       <width>80</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Bathymetry</string>
+     </property>
+    </widget>
+    <widget class="QComboBox" name="cbSvpMode">
+     <property name="geometry">
+      <rect>
+       <x>96</x>
+       <y>8</y>
+       <width>300</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>Recalculate the bathymetry by raytracing through the sound velocity profile (SVPMODE).</string>
+     </property>
+     <property name="parKey" stdset="0">
+      <string>SVPMODE</string>
+     </property>
+     <item>
+      <property name="text">
+       <string>Not recalculated</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>Recalculated by raytracing the SVP</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>Translated corrected / uncorrected</string>
+      </property>
+     </item>
+    </widget>
+    <widget class="QLabel" name="lblSvpFile">
+     <property name="geometry">
+      <rect>
+       <x>12</x>
+       <y>38</y>
+       <width>80</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>SVP file</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editSvpFile">
+     <property name="geometry">
+      <rect>
+       <x>96</x>
+       <y>38</y>
+       <width>382</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>The sound velocity profile (SVPFILE). Applies to every file in the list.</string>
+     </property>
+     <property name="parKey" stdset="0">
+      <string>SVPFILE</string>
+     </property>
+    </widget>
+    <widget class="QToolButton" name="btnSvpFile">
+     <property name="geometry">
+      <rect>
+       <x>484</x>
+       <y>38</y>
+       <width>38</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>Browse for the file.</string>
+     </property>
+     <property name="text">
+      <string>...</string>
+     </property>
+     <property name="browseFor" stdset="0">
+      <string>editSvpFile</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblSsvMode">
+     <property name="geometry">
+      <rect>
+       <x>12</x>
+       <y>68</y>
+       <width>80</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Surface SV</string>
+     </property>
+    </widget>
+    <widget class="QComboBox" name="cbSsvMode">
+     <property name="geometry">
+      <rect>
+       <x>96</x>
+       <y>68</y>
+       <width>180</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>The surface sound velocity used at the transducers (SSVMODE).</string>
+     </property>
+     <property name="parKey" stdset="0">
+      <string>SSVMODE</string>
+     </property>
+     <item>
+      <property name="text">
+       <string>From the data</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>Data + offset</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>Constant</string>
+      </property>
+     </item>
+    </widget>
+    <widget class="QLabel" name="lblSsv">
+     <property name="geometry">
+      <rect>
+       <x>290</x>
+       <y>68</y>
+       <width>80</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Value (m/s)</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editSsv">
+     <property name="geometry">
+      <rect>
+       <x>374</x>
+       <y>68</y>
+       <width>80</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>The surface sound velocity, or the offset added to the data's (SSV) [1500].</string>
+     </property>
+     <property name="parKey" stdset="0">
+      <string>SSV</string>
+     </property>
+     <property name="parDefault" stdset="0">
+      <string>1500</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblAngle">
+     <property name="geometry">
+      <rect>
+       <x>12</x>
+       <y>98</y>
+       <width>80</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Beam angles</string>
+     </property>
+    </widget>
+    <widget class="QComboBox" name="cbAngle">
+     <property name="geometry">
+      <rect>
+       <x>96</x>
+       <y>98</y>
+       <width>380</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>How the beam angles are adjusted before raytracing (ANGLEMODE).</string>
+     </property>
+     <property name="parKey" stdset="0">
+      <string>ANGLEMODE</string>
+     </property>
+     <property name="parDefault" stdset="0">
+      <string>1</string>
+     </property>
+     <item>
+      <property name="text">
+       <string>Not changed</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>Snell's law (SSV vs. the SVP at the sonar)</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>Snell's law and the array geometry</string>
+      </property>
+     </item>
+    </widget>
+    <widget class="QLabel" name="lblSsRef">
+     <property name="geometry">
+      <rect>
+       <x>12</x>
+       <y>128</y>
+       <width>80</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Reference</string>
+     </property>
+    </widget>
+    <widget class="QComboBox" name="cbSsRef">
+     <property name="geometry">
+      <rect>
+       <x>96</x>
+       <y>128</y>
+       <width>300</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>The sound speed the bathymetry is referred to (SOUNDSPEEDREF).</string>
+     </property>
+     <property name="parKey" stdset="0">
+      <string>SOUNDSPEEDREF</string>
+     </property>
+     <property name="parDefault" stdset="0">
+      <string>1</string>
+     </property>
+     <item>
+      <property name="text">
+       <string>Uncorrected (uniform 1500 m/s)</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>Corrected (the real water column)</string>
+      </property>
+     </item>
+    </widget>
+    <widget class="QLabel" name="lblTt">
+     <property name="geometry">
+      <rect>
+       <x>12</x>
+       <y>158</y>
+       <width>80</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Travel time x</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editTt">
+     <property name="geometry">
+      <rect>
+       <x>96</x>
+       <y>158</y>
+       <width>80</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>Factor the travel times are multiplied by (TTMULTIPLY) [1].</string>
+     </property>
+     <property name="parKey" stdset="0">
+      <string>TTMULTIPLY</string>
+     </property>
+     <property name="parDefault" stdset="0">
+      <string>1</string>
+     </property>
+    </widget>
+   </widget>
+   <widget class="QWidget" name="tabTide">
+    <attribute name="title">
+     <string>Tide</string>
+    </attribute>
+    <widget class="QCheckBox" name="chkTide">
+     <property name="geometry">
+      <rect>
+       <x>12</x>
+       <y>8</y>
+       <width>300</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>Add the tide to the bathymetry, after every other correction (TIDEMODE). Applies to every file in the list.</string>
+     </property>
+     <property name="text">
+      <string>Apply the tide correction</string>
+     </property>
+     <property name="parKey" stdset="0">
+      <string>TIDEMODE</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblTideFile">
+     <property name="geometry">
+      <rect>
+       <x>12</x>
+       <y>38</y>
+       <width>80</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Tide file</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editTideFile">
+     <property name="geometry">
+      <rect>
+       <x>96</x>
+       <y>38</y>
+       <width>382</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>The tide file (TIDEFILE). Applies to every file in the list.</string>
+     </property>
+     <property name="parKey" stdset="0">
+      <string>TIDEFILE</string>
+     </property>
+    </widget>
+    <widget class="QToolButton" name="btnTideFile">
+     <property name="geometry">
+      <rect>
+       <x>484</x>
+       <y>38</y>
+       <width>38</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>Browse for the file.</string>
+     </property>
+     <property name="text">
+      <string>...</string>
+     </property>
+     <property name="browseFor" stdset="0">
+      <string>editTideFile</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblTideFormat">
+     <property name="geometry">
+      <rect>
+       <x>12</x>
+       <y>68</y>
+       <width>80</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Format</string>
+     </property>
+    </widget>
+    <widget class="QComboBox" name="cbTideFormat">
+     <property name="geometry">
+      <rect>
+       <x>96</x>
+       <y>68</y>
+       <width>380</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>The tide file's columns (TIDEFORMAT). time_d = seconds since 1970-01-01, daymin = minutes of the day.</string>
+     </property>
+     <property name="parKey" stdset="0">
+      <string>TIDEFORMAT</string>
+     </property>
+     <property name="parValues" stdset="0">
+      <string>1,2,3,4</string>
+     </property>
+     <property name="parDefault" stdset="0">
+      <string>1</string>
+     </property>
+     <item>
+      <property name="text">
+       <string>time_d tide</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>yr mon day hour min sec tide</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>yr jday hour min sec tide</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>yr jday daymin sec tide</string>
+      </property>
+     </item>
+    </widget>
+   </widget>
+   <widget class="QWidget" name="tabBias">
+    <attribute name="title">
+     <string>Roll / pitch / heading</string>
+    </attribute>
+    <widget class="QLabel" name="lblRoll">
+     <property name="geometry">
+      <rect>
+       <x>12</x>
+       <y>8</y>
+       <width>80</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Roll</string>
+     </property>
+    </widget>
+    <widget class="QComboBox" name="cbRoll">
+     <property name="geometry">
+      <rect>
+       <x>96</x>
+       <y>8</y>
+       <width>240</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>Roll bias correction (ROLLBIASMODE).</string>
+     </property>
+     <property name="parKey" stdset="0">
+      <string>ROLLBIASMODE</string>
+     </property>
+     <item>
+      <property name="text">
+       <string>No correction</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>One roll bias</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>Port and starboard biases</string>
+      </property>
+     </item>
+    </widget>
+    <widget class="QLabel" name="lblRollBias">
+     <property name="geometry">
+      <rect>
+       <x>12</x>
+       <y>38</y>
+       <width>80</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Bias (deg)</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editRoll">
+     <property name="geometry">
+      <rect>
+       <x>96</x>
+       <y>38</y>
+       <width>70</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>Roll bias, degrees (ROLLBIAS).</string>
+     </property>
+     <property name="parKey" stdset="0">
+      <string>ROLLBIAS</string>
+     </property>
+     <property name="parDefault" stdset="0">
+      <string>0</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblRollPort">
+     <property name="geometry">
+      <rect>
+       <x>180</x>
+       <y>38</y>
+       <width>40</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Port</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editRollPort">
+     <property name="geometry">
+      <rect>
+       <x>224</x>
+       <y>38</y>
+       <width>70</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>Port roll bias, degrees (ROLLBIASPORT).</string>
+     </property>
+     <property name="parKey" stdset="0">
+      <string>ROLLBIASPORT</string>
+     </property>
+     <property name="parDefault" stdset="0">
+      <string>0</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblRollStbd">
+     <property name="geometry">
+      <rect>
+       <x>308</x>
+       <y>38</y>
+       <width>64</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Starboard</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editRollStbd">
+     <property name="geometry">
+      <rect>
+       <x>376</x>
+       <y>38</y>
+       <width>70</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>Starboard roll bias, degrees (ROLLBIASSTBD).</string>
+     </property>
+     <property name="parKey" stdset="0">
+      <string>ROLLBIASSTBD</string>
+     </property>
+     <property name="parDefault" stdset="0">
+      <string>0</string>
+     </property>
+    </widget>
+    <widget class="QCheckBox" name="chkPitch">
+     <property name="geometry">
+      <rect>
+       <x>12</x>
+       <y>68</y>
+       <width>120</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>Correct the pitch by a bias (PITCHBIASMODE).</string>
+     </property>
+     <property name="text">
+      <string>Pitch bias (deg)</string>
+     </property>
+     <property name="parKey" stdset="0">
+      <string>PITCHBIASMODE</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editPitch">
+     <property name="geometry">
+      <rect>
+       <x>136</x>
+       <y>68</y>
+       <width>70</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>Pitch bias, degrees (PITCHBIAS).</string>
+     </property>
+     <property name="parKey" stdset="0">
+      <string>PITCHBIAS</string>
+     </property>
+     <property name="parDefault" stdset="0">
+      <string>0</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblHeading">
+     <property name="geometry">
+      <rect>
+       <x>12</x>
+       <y>98</y>
+       <width>80</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Heading</string>
+     </property>
+    </widget>
+    <widget class="QComboBox" name="cbHeading">
+     <property name="geometry">
+      <rect>
+       <x>96</x>
+       <y>98</y>
+       <width>300</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>Heading correction (HEADINGMODE).</string>
+     </property>
+     <property name="parKey" stdset="0">
+      <string>HEADINGMODE</string>
+     </property>
+     <item>
+      <property name="text">
+       <string>No correction</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>Course made good</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>Offset</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>Course made good and offset</string>
+      </property>
+     </item>
+    </widget>
+    <widget class="QLabel" name="lblHeadingOff">
+     <property name="geometry">
+      <rect>
+       <x>12</x>
+       <y>128</y>
+       <width>80</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Offset (deg)</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editHeading">
+     <property name="geometry">
+      <rect>
+       <x>96</x>
+       <y>128</y>
+       <width>70</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>Degrees added to the heading (HEADINGOFFSET).</string>
+     </property>
+     <property name="parKey" stdset="0">
+      <string>HEADINGOFFSET</string>
+     </property>
+     <property name="parDefault" stdset="0">
+      <string>0</string>
+     </property>
+    </widget>
+   </widget>
+   <widget class="QWidget" name="tabDraft">
+    <attribute name="title">
+     <string>Draft / heave</string>
+    </attribute>
+    <widget class="QLabel" name="lblDraft">
+     <property name="geometry">
+      <rect>
+       <x>12</x>
+       <y>8</y>
+       <width>80</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Draft</string>
+     </property>
+    </widget>
+    <widget class="QComboBox" name="cbDraft">
+     <property name="geometry">
+      <rect>
+       <x>96</x>
+       <y>8</y>
+       <width>300</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>Draft correction (DRAFTMODE).</string>
+     </property>
+     <property name="parKey" stdset="0">
+      <string>DRAFTMODE</string>
+     </property>
+     <item>
+      <property name="text">
+       <string>No correction</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>Offset</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>Multiply</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>Offset and multiply</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>Set to a constant</string>
+      </property>
+     </item>
+    </widget>
+    <widget class="QLabel" name="lblDraftC">
+     <property name="geometry">
+      <rect>
+       <x>12</x>
+       <y>38</y>
+       <width>80</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Constant (m)</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editDraft">
+     <property name="geometry">
+      <rect>
+       <x>96</x>
+       <y>38</y>
+       <width>70</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>The constant draft, metres (DRAFT).</string>
+     </property>
+     <property name="parKey" stdset="0">
+      <string>DRAFT</string>
+     </property>
+     <property name="parDefault" stdset="0">
+      <string>0</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblDraftOff">
+     <property name="geometry">
+      <rect>
+       <x>180</x>
+       <y>38</y>
+       <width>70</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Offset (m)</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editDraftOff">
+     <property name="geometry">
+      <rect>
+       <x>254</x>
+       <y>38</y>
+       <width>70</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>Metres added to the draft (DRAFTOFFSET).</string>
+     </property>
+     <property name="parKey" stdset="0">
+      <string>DRAFTOFFSET</string>
+     </property>
+     <property name="parDefault" stdset="0">
+      <string>0</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblDraftMul">
+     <property name="geometry">
+      <rect>
+       <x>338</x>
+       <y>38</y>
+       <width>56</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Multiply</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editDraftMul">
+     <property name="geometry">
+      <rect>
+       <x>398</x>
+       <y>38</y>
+       <width>70</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>Factor the draft is multiplied by (DRAFTMULTIPLY).</string>
+     </property>
+     <property name="parKey" stdset="0">
+      <string>DRAFTMULTIPLY</string>
+     </property>
+     <property name="parDefault" stdset="0">
+      <string>1</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblHeave">
+     <property name="geometry">
+      <rect>
+       <x>12</x>
+       <y>68</y>
+       <width>80</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Heave</string>
+     </property>
+    </widget>
+    <widget class="QComboBox" name="cbHeave">
+     <property name="geometry">
+      <rect>
+       <x>96</x>
+       <y>68</y>
+       <width>300</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>Heave correction (HEAVEMODE).</string>
+     </property>
+     <property name="parKey" stdset="0">
+      <string>HEAVEMODE</string>
+     </property>
+     <item>
+      <property name="text">
+       <string>No correction</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>Offset</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>Multiply</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>Offset and multiply</string>
+      </property>
+     </item>
+    </widget>
+    <widget class="QLabel" name="lblHeaveOff">
+     <property name="geometry">
+      <rect>
+       <x>12</x>
+       <y>98</y>
+       <width>80</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Offset (m)</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editHeaveOff">
+     <property name="geometry">
+      <rect>
+       <x>96</x>
+       <y>98</y>
+       <width>70</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>Metres added to the heave (HEAVEOFFSET).</string>
+     </property>
+     <property name="parKey" stdset="0">
+      <string>HEAVEOFFSET</string>
+     </property>
+     <property name="parDefault" stdset="0">
+      <string>0</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblHeaveMul">
+     <property name="geometry">
+      <rect>
+       <x>180</x>
+       <y>98</y>
+       <width>70</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Multiply</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editHeaveMul">
+     <property name="geometry">
+      <rect>
+       <x>254</x>
+       <y>98</y>
+       <width>70</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>Factor the heave is multiplied by (HEAVEMULTIPLY).</string>
+     </property>
+     <property name="parKey" stdset="0">
+      <string>HEAVEMULTIPLY</string>
+     </property>
+     <property name="parDefault" stdset="0">
+      <string>1</string>
+     </property>
+    </widget>
+   </widget>
+   <widget class="QWidget" name="tabAmp">
+    <attribute name="title">
+     <string>Amplitude / sidescan</string>
+    </attribute>
+    <widget class="QCheckBox" name="chkAmp">
+     <property name="geometry">
+      <rect>
+       <x>12</x>
+       <y>8</y>
+       <width>400</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>Correct the beam amplitudes with an amplitude vs. grazing angle table, e.g. from mbbackangle (AMPCORRMODE).</string>
+     </property>
+     <property name="text">
+      <string>Correct the amplitude for the grazing angle</string>
+     </property>
+     <property name="parKey" stdset="0">
+      <string>AMPCORRMODE</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblAmpFile">
+     <property name="geometry">
+      <rect>
+       <x>12</x>
+       <y>38</y>
+       <width>80</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Amp. table</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editAmpFile">
+     <property name="geometry">
+      <rect>
+       <x>96</x>
+       <y>38</y>
+       <width>382</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>The amplitude correction table (AMPCORRFILE).</string>
+     </property>
+     <property name="parKey" stdset="0">
+      <string>AMPCORRFILE</string>
+     </property>
+    </widget>
+    <widget class="QToolButton" name="btnAmpFile">
+     <property name="geometry">
+      <rect>
+       <x>484</x>
+       <y>38</y>
+       <width>38</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>Browse for the file.</string>
+     </property>
+     <property name="text">
+      <string>...</string>
+     </property>
+     <property name="browseFor" stdset="0">
+      <string>editAmpFile</string>
+     </property>
+    </widget>
+    <widget class="QCheckBox" name="chkSs">
+     <property name="geometry">
+      <rect>
+       <x>12</x>
+       <y>68</y>
+       <width>400</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>Correct the sidescan with a sidescan vs. grazing angle table, e.g. from mbbackangle (SSCORRMODE).</string>
+     </property>
+     <property name="text">
+      <string>Correct the sidescan for the grazing angle</string>
+     </property>
+     <property name="parKey" stdset="0">
+      <string>SSCORRMODE</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblSsFile">
+     <property name="geometry">
+      <rect>
+       <x>12</x>
+       <y>98</y>
+       <width>80</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>SS table</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editSsFile">
+     <property name="geometry">
+      <rect>
+       <x>96</x>
+       <y>98</y>
+       <width>382</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>The sidescan correction table (SSCORRFILE).</string>
+     </property>
+     <property name="parKey" stdset="0">
+      <string>SSCORRFILE</string>
+     </property>
+    </widget>
+    <widget class="QToolButton" name="btnSsFile">
+     <property name="geometry">
+      <rect>
+       <x>484</x>
+       <y>98</y>
+       <width>38</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>Browse for the file.</string>
+     </property>
+     <property name="text">
+      <string>...</string>
+     </property>
+     <property name="browseFor" stdset="0">
+      <string>editSsFile</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblTopo">
+     <property name="geometry">
+      <rect>
+       <x>12</x>
+       <y>128</y>
+       <width>80</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Topo grid</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editTopo">
+     <property name="geometry">
+      <rect>
+       <x>96</x>
+       <y>128</y>
+       <width>382</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>A topography grid for the grazing angles (AMPSSCORRTOPOFILE).</string>
+     </property>
+     <property name="parKey" stdset="0">
+      <string>AMPSSCORRTOPOFILE</string>
+     </property>
+    </widget>
+    <widget class="QToolButton" name="btnTopo">
+     <property name="geometry">
+      <rect>
+       <x>484</x>
+       <y>128</y>
+       <width>38</width>
+       <height>24</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>Browse for the file.</string>
+     </property>
+     <property name="text">
+      <string>...</string>
+     </property>
+     <property name="browseFor" stdset="0">
+      <string>editTopo</string>
+     </property>
+    </widget>
+   </widget>
+  </widget>
+  <widget class="QLabel" name="lblLog">
+   <property name="geometry">
+    <rect>
+     <x>11</x>
+     <y>460</y>
+     <width>200</width>
+     <height>24</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>Log</string>
+   </property>
+  </widget>
+  <widget class="QPlainTextEdit" name="textLog">
+   <property name="geometry">
+    <rect>
+     <x>11</x>
+     <y>480</y>
+     <width>538</width>
+     <height>150</height>
+    </rect>
+   </property>
+   <property name="toolTip">
+    <string>What mbset and mbprocess reported, file by file.</string>
+   </property>
+   <property name="readOnly">
+    <bool>true</bool>
+   </property>
+  </widget>
+  <widget class="QPushButton" name="btnSavePar">
+   <property name="geometry">
+    <rect>
+     <x>245</x>
+     <y>640</y>
+     <width>96</width>
+     <height>28</height>
+    </rect>
+   </property>
+   <property name="toolTip">
+    <string>Write the parameters changed above into each file's .par (mbset), without processing.</string>
+   </property>
+   <property name="text">
+    <string>Save .par</string>
+   </property>
+  </widget>
+  <widget class="QPushButton" name="btnProcess">
+   <property name="geometry">
+    <rect>
+     <x>349</x>
+     <y>640</y>
+     <width>96</width>
+     <height>28</height>
+    </rect>
+   </property>
+   <property name="toolTip">
+    <string>Write the changed parameters (mbset) and run mbprocess on every file in the list.</string>
+   </property>
+   <property name="text">
+    <string>Process</string>
+   </property>
+  </widget>
+  <widget class="QPushButton" name="btnClose">
+   <property name="geometry">
+    <rect>
+     <x>453</x>
+     <y>640</y>
+     <width>96</width>
+     <height>28</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>Close</string>
+   </property>
+  </widget>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

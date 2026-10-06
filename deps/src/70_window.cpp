@@ -29326,6 +29326,35 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		});
 		++n;
 #endif
+		// "Process swath data (mbprocess)": MB-System's mbset + mbprocess, run by the host through GMT's
+		// MB-System supplement (72_mbprocess.cpp, src/mbprocess.jl). Its Julia side is wired the first time
+		// it is opened, through the warm-up hook (nothing of it at start-up), so the first open waits for it.
+		mGphy->addAction("Process swath data (mbprocess)", [win, s, afterPopup]() {
+			afterPopup([win, s]() {
+				Scene *scn = sceneAlive(s) ? s : nullptr;
+				if (g_juliaMbProcess) {
+					mbprocessOpen(win, scn, QString());
+					return;
+				}
+				warmupTool("mbprocess");
+				QApplication::setOverrideCursor(Qt::WaitCursor);
+				auto tries = std::make_shared<int>(0);
+				auto step = std::make_shared<std::function<void()>>();
+				*step = [win, scn, tries, step]() {
+					if (!g_juliaMbProcess && ++*tries < 200) {   // ~10 s, then say so instead of hanging
+						QTimer::singleShot(50, win, *step);
+						return;
+					}
+					QApplication::restoreOverrideCursor();
+					if (g_juliaMbProcess)
+						mbprocessOpen(win, scn, QString());
+					else
+						QMessageBox::warning(win, "mbprocess", "The mbprocess tool's Julia side did not answer (src/mbprocess.jl).");
+				};
+				QTimer::singleShot(0, win, *step);
+			});
+		});
+		++n;
 #ifdef GMTVTK_MBVELOCITY
 		mGphy->addAction("MBvelocitytool", [win, s, afterPopup]() {
 			afterPopup([win, s]() {
@@ -29410,36 +29439,35 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 #endif
 		// "Install as plugin": MB-System's GMT supplement from the joa-quim/MB-System `mbsystem-latest`
 		// release into <iGMT>/mbsystem, then loaded into GMT (InteractiveGMT.install_mbsystem_plugin(),
-		// src/mbplugin.jl). Linux and macOS; on Windows the plugin comes with GMT. Compiled everywhere,
+		// src/mbplugin.jl). Linux and macOS, and Windows when the host's GMT is GMT_jll's (the host says
+		// so: g_mbPluginOffered); an installed Windows GMT brings the plugin itself. Compiled everywhere,
 		// shown only where it applies, so every build checks it.
-#if defined(Q_OS_LINUX) || defined(Q_OS_MACOS)
-		const bool mbPluginMenu = true;
-#else
-		const bool mbPluginMenu = false;
-#endif
-		if (mbPluginMenu) {
-			// Offered only until the plugin is installed and passes its self-test (g_mbPluginReady). This
-			// group is rebuilt every time it is opened, so the check here also covers a window that was
-			// already open during the install.
+		if (g_mbPluginOffered) {
+			// "Install as plugin" until the plugin is installed and passes its self-test, then nothing to
+			// do -- until the start-up check finds a newer one on the release: "Update the plugin", the
+			// same install. This group is rebuilt every time it is opened, so the state here also covers
+			// a window that was already open during the install or the check.
 			mGphy->addSeparator();
-			if (g_mbPluginReady) {
+			if (g_mbPluginState == 1) {
 				mGphy->addAction("MB-System plugin installed")->setEnabled(false);
 			}
 			else {
-				mGphy->addAction("Install as plugin", [win, s, afterPopup]() {
-					afterPopup([win, s]() {
+				const QString label = g_mbPluginState == 2 ? "Update the plugin" : "Install as plugin";
+				mGphy->addAction(label, [win, s, afterPopup, label]() {
+					afterPopup([win, s, label]() {
 						if (!g_juliaEval) {
-							QMessageBox::warning(win, "Install as plugin", "This needs the Julia/GMT host.");
+							QMessageBox::warning(win, label, "This needs the Julia/GMT host.");
 							return;
 						}
-						showBusyDialog("Downloading and installing the MB-System plugin...");
+						showBusyDialog(label == "Update the plugin" ? "Downloading and installing the new MB-System plugin..."
+						                                            : "Downloading and installing the MB-System plugin...");
 						static std::vector<char> buf(1 << 16);
 						const int r = g_juliaEval(s, "InteractiveGMT.install_mbsystem_plugin()", buf.data(), (int)buf.size());
 						closeBusyDialog();
 						QString txt = QString::fromUtf8(buf.data(), r < 0 ? -r : r).trimmed();
 						if (txt.isEmpty()) txt = "No output.";
-						if (r < 0) QMessageBox::warning(win, "Install as plugin", txt);
-						else       QMessageBox::information(win, "Install as plugin", txt);
+						if (r < 0) QMessageBox::warning(win, label, txt);
+						else       QMessageBox::information(win, label, txt);
 					});
 				});
 			}

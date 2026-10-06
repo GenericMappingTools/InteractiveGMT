@@ -1,4 +1,7 @@
-# mbplugin.jl — Geophysics > MB-System > Install as plugin (Linux and macOS; Windows has it with GMT).
+# mbplugin.jl — Geophysics > MB-System > Install as plugin (Linux and macOS; Windows when GMT.jl runs
+# GMT_jll's GMT -- an installed Windows GMT has it already). Once installed, every start looks for a
+# newer one on the release (INSTALLED_AT vs the asset's updated_at) and the menu then offers
+# "Update the plugin".
 #
 # Fetches MB-System's GMT supplement (mbsystem.so + the MB libraries it links: libmbio, libmbaux, ...)
 # from the joa-quim/MB-System `mbsystem-latest` release and unpacks it to <iGMT root>/mbsystem. The
@@ -20,16 +23,95 @@
 const _MBPLUGIN_REPO = "joa-quim/MB-System"
 const _MBPLUGIN_TAG  = "mbsystem-latest"
 
-# The release asset for this machine, "" where there is none (Windows: the plugin comes with GMT).
+# Does this system get the plugin from here at all? Linux and macOS always. Windows only when GMT.jl
+# runs GMT_jll's GMT (GMT.isJLL): an installed Windows GMT brings its own MB-System supplement.
+_mbplugin_applies()::Bool = !Sys.iswindows() || GMT.isJLL
+
+# The release asset for this machine, "" where there is none.
 function _mbplugin_asset()::String
 	Sys.islinux() && Sys.ARCH === :x86_64 && return "mbsystem-linux-x86_64.tar.gz"
 	Sys.isapple() && return Sys.ARCH === :aarch64 ? "mbsystem-macos-arm64.tar.gz" : "mbsystem-macos-x86_64.tar.gz"
+	Sys.iswindows() && GMT.isJLL && Sys.ARCH === :x86_64 && return "mbsystem-windows-x86_64.tar.gz"
 	return ""
 end
 
 _mbplugin_dir()::String = joinpath(_PKGROOT, "mbsystem")
-_mbplugin_libname()::String = Sys.isapple() ? "mbsystem.dylib" : "mbsystem.so"
+_mbplugin_libname()::String = Sys.isapple() ? "mbsystem.dylib" : Sys.iswindows() ? "mbsystem.dll" : "mbsystem.so"
 _mbplugin_lib(dir::String = _mbplugin_dir())::String = joinpath(dir, "lib", _mbplugin_libname())
+# The library an ARCHIVE carries, by its asset name (it need not be this system's).
+_mbplugin_libname(asset::String)::String =
+	occursin("macos", asset) ? "mbsystem.dylib" : occursin("windows", asset) ? "mbsystem.dll" : "mbsystem.so"
+
+# WINDOWS FINDS A PLUGIN'S OWN DLLS ONLY THROUGH PATH. GMT loads the plugin with a plain LoadLibrary
+# (gmt_sharedlibs.c), and Windows then looks for mbsystem.dll's dependencies (libmbio.dll, ...) in the
+# executable's directory, the system directories and PATH -- never beside mbsystem.dll. So its lib/
+# goes on this process's PATH before GMT is asked to load it. (Linux and macOS: $ORIGIN /
+# @loader_path in the libraries themselves.)
+function _mbplugin_path_dir(dir::String)
+	Sys.iswindows() || return nothing
+	parts = split(get(ENV, "PATH", ""), ';')
+	any(p -> !isempty(p) && normpath(p) == normpath(dir), parts) || (ENV["PATH"] = dir * ";" * get(ENV, "PATH", ""))
+	return nothing
+end
+
+# WHEN WAS THE INSTALLED COPY DOWNLOADED. Written at install time (the download moment, UTC), and
+# compared with the release asset's own updated_at: an asset uploaded after it is a newer plugin.
+# The libraries' own file times cannot serve -- tar restores the times they had on the build machine.
+_mbplugin_stamp(dir::String = _mbplugin_dir())::String = joinpath(dir, "INSTALLED_AT")
+
+function _mbplugin_local_time(dir::String = _mbplugin_dir())::Union{Nothing,GMT.Dates.DateTime}
+	f = _mbplugin_stamp(dir)
+	isfile(f) || return nothing
+	return tryparse(GMT.Dates.DateTime, strip(read(f, String)), GMT.Dates.dateformat"yyyy-mm-ddTHH:MM:SS")
+end
+
+# The release asset's updated_at (UTC), from GitHub's API; nothing when it cannot be had.
+function _mbplugin_remote_time(asset::String)::Union{Nothing,GMT.Dates.DateTime}
+	io = IOBuffer()
+	GMT.Downloads.download("https://api.github.com/repos/$_MBPLUGIN_REPO/releases/tags/$_MBPLUGIN_TAG", io;
+	                       headers = ["Accept" => "application/vnd.github+json"], timeout = 20)
+	return _mbplugin_asset_time(String(take!(io)), asset)
+end
+
+# The updated_at of asset `asset` in a GitHub release JSON: the first one after its "name".
+function _mbplugin_asset_time(json::String, asset::String)::Union{Nothing,GMT.Dates.DateTime}
+	m = findfirst(Regex("\"name\"\\s*:\\s*\"" * replace(asset, "." => "\\.") * "\""), json)
+	m === nothing && return nothing
+	u = match(r"\"updated_at\"\s*:\s*\"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)Z\"", json, last(m))
+	u === nothing && return nothing
+	return GMT.Dates.DateTime(u.captures[1])
+end
+
+# Is a newer plugin than the installed one on the release? Set by the check below, pushed with the
+# ready state.
+const _MBPLUGIN_UPDATE = Ref(false)
+
+function _mbplugin_check_update()
+	asset = _mbplugin_asset()
+	(isempty(asset) || !isfile(_mbplugin_lib())) && return nothing
+	remote = _mbplugin_remote_time(asset)
+	remote === nothing && return nothing
+	loc = _mbplugin_local_time()
+	_MBPLUGIN_UPDATE[] = loc === nothing || remote > loc   # no stamp (an older install): offer it
+	_mbplugin_push_ready()
+	return nothing
+end
+
+# At start, once the first window is up: look for a newer plugin, in the background. Nothing at all
+# when the plugin is not installed. A failure (no network) is silent: the menu then just says installed.
+function _mbplugin_schedule_update_check()
+	(_mbplugin_applies() && isfile(_mbplugin_lib())) || return nothing
+	Timer(1.0; interval = 1.0) do t
+		_PUMP[] === nothing && return                   # no window on screen yet
+		close(t)
+		@async try
+			_mbplugin_check_update()
+		catch e
+			@debug "InteractiveGMT: MB-System plugin update check failed (harmless)" exception = (e,)
+		end
+	end
+	return nothing
+end
 
 # GMT_CUSTOM_LIBS is a comma-separated list: add `lib` to what is there, never drop an entry.
 function _mbplugin_custom_libs(current::String, lib::String)::String
@@ -69,32 +151,59 @@ function _mbplugin_selftest()::String
 	return ""
 end
 
-# Tell the viewer (when it is loaded) whether the plugin is ready.
+# Tell the viewer (when it is loaded) whether the menu offers the plugin here, and its state:
+# 0 = "Install as plugin", 1 = installed and current, 2 = installed, "Update the plugin".
 function _mbplugin_push_ready()
 	haskey(_LIB_FNS, :gmtvtk_set_mbplugin_ready) || return nothing   # viewer not loaded / not rebuilt yet
-	ccall(_fn(:gmtvtk_set_mbplugin_ready), Cvoid, (Cint,), _MBPLUGIN_READY[] ? 1 : 0)
+	haskey(_LIB_FNS, :gmtvtk_set_mbplugin_offered) &&
+		ccall(_fn(:gmtvtk_set_mbplugin_offered), Cvoid, (Cint,), _mbplugin_applies() ? 1 : 0)
+	state = !_MBPLUGIN_READY[] ? 0 : _MBPLUGIN_UPDATE[] ? 2 : 1
+	ccall(_fn(:gmtvtk_set_mbplugin_ready), Cvoid, (Cint,), state)
+	return nothing
+end
+
+# Clear `dest` for a new copy. A library THIS process has loaded (the plugin being updated) cannot be
+# deleted on Windows, but it can be renamed: it is moved aside as name.old-<pid>-<time> and removed
+# by the next update (selfupdate's _displace_locked_dll, same Windows fact). Elsewhere it just goes.
+function _mbplugin_clear(dest::String)
+	isdir(dest) || return nothing
+	for (root, _, files) in walkdir(dest; topdown = false), f in files
+		p = joinpath(root, f)
+		occursin(".old-", f) && (try rm(p; force = true) catch end; continue)   # a previous update's leftovers
+		try
+			rm(p; force = true)
+		catch
+			mv(p, p * ".old-$(getpid())-$(round(Int, time()))")
+		end
+	end
 	return nothing
 end
 
 # Download `asset` from the release and unpack its mbsystem/ directory to `dest`, replacing what is
-# there. Returns the plugin library's path.
+# there, and stamp the install time (INSTALLED_AT, UTC). Returns the plugin library's path.
 function _mbplugin_fetch(asset::String, dest::String)::String
 	url = "https://github.com/$_MBPLUGIN_REPO/releases/download/$_MBPLUGIN_TAG/$asset"
 	tmp = mktempdir()
 	try
 		archive = joinpath(tmp, asset)
 		println("Downloading $url")
+		when = GMT.Dates.now(GMT.Dates.UTC)
 		GMT.Downloads.download(url, archive)
 		run(`tar -xzf $archive -C $tmp`)
-		lib = _mbplugin_lib(joinpath(tmp, "mbsystem"))
-		isfile(lib) || error("the archive has no mbsystem/lib/$(basename(lib))")
-		rm(dest; recursive = true, force = true)
-		mkpath(dirname(dest))
-		mv(joinpath(tmp, "mbsystem"), dest)
+		src = joinpath(tmp, "mbsystem")
+		libname = _mbplugin_libname(asset)
+		isfile(joinpath(src, "lib", libname)) || error("the archive has no mbsystem/lib/$libname")
+		_mbplugin_clear(dest)
+		for (root, _, files) in walkdir(src), f in files
+			to = joinpath(dest, relpath(joinpath(root, f), src))
+			mkpath(dirname(to))
+			cp(joinpath(root, f), to; force = true, follow_symlinks = false)   # libmbio.so -> libmbio.so.0 stays a link
+		end
+		write(_mbplugin_stamp(dest), GMT.Dates.format(when, GMT.Dates.dateformat"yyyy-mm-ddTHH:MM:SS"))
 	finally
 		rm(tmp; recursive = true, force = true)
 	end
-	return _mbplugin_lib(dest)
+	return joinpath(dest, "lib", _mbplugin_libname(asset))
 end
 
 # Make GMT.jl's session load `lib` (see ACTIVATION above). Returns true when GMT has the MB-System
@@ -103,7 +212,9 @@ function _mbplugin_activate(lib::String)::Bool
 	api = GMT.G_API[]
 	api == C_NULL && return false
 	_mbplugin_has_module(api) && return true
-	value = _mbplugin_custom_libs(GMT.gmtlib_getparameter(api, "GMT_CUSTOM_LIBS"), lib)
+	_mbplugin_path_dir(dirname(lib))                   # Windows: its own DLLs, through PATH
+	# Forward slashes on Windows: the value is written into gmt.conf, where a backslash is no path separator.
+	value = _mbplugin_custom_libs(GMT.gmtlib_getparameter(api, "GMT_CUSTOM_LIBS"), replace(lib, '\\' => '/'))
 	tmp = mktempdir()
 	try
 		cd(tmp) do
@@ -137,9 +248,20 @@ Geophysics > MB-System > Install as plugin calls this.
 """
 function install_mbsystem_plugin()
 	asset = _mbplugin_asset()
-	isempty(asset) && error("There is no MB-System plugin download for this system ($(Sys.KERNEL) $(Sys.ARCH)).")
+	isempty(asset) && error("There is no MB-System plugin download for this system ($(Sys.KERNEL) $(Sys.ARCH)" *
+	                        (Sys.iswindows() ? ": on Windows the plugin comes with GMT, unless GMT.jl uses GMT_jll" : "") * ").")
+	# An UPDATE: this process already has the old copy loaded, and keeps it until it ends (GMT loads a
+	# plugin once per session, and Windows will not unload it from under GMT). The new copy is the one
+	# loaded from the next start.
+	updating = _mbplugin_has_module(GMT.G_API[]) && _mbplugin_loaded("mbsystem")
 	lib = _mbplugin_fetch(asset, _mbplugin_dir())
 	println("Installed in $(_mbplugin_dir())")
+	_MBPLUGIN_UPDATE[] = false
+	if updating
+		println("The plugin was updated. This session keeps the version it started with; the new one is loaded the next time iGMT starts.")
+		_mbplugin_push_ready()
+		return nothing
+	end
 	_MBPLUGIN_READY[] = false
 	_mbplugin_push_ready()
 	_mbplugin_activate(lib) || error("The MB-System plugin was installed but GMT did not load it ($lib).")

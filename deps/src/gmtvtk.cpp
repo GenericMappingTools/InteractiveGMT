@@ -20,7 +20,9 @@
 //   67_gmtedit     standalone MGD77 track editor (3 stacked vtkChartXY panels; gmtedit.m)
 //   75_aquamoto    Aquamoto viewer (tsunami dry/wet netCDF viewer, port of Mirone aquamoto.m) --
 //                  included BEFORE 70_window.cpp, whose Geophysics menu constructs it by name
-//   70_window      buildAndShow — the Qt main window
+//   72_mbprocess   MB-System > Process swath data: mbset + mbprocess over the host (src/mbprocess.jl);
+//                  included BEFORE 70_window.cpp for the same reason
+//   70_window     buildAndShow — the Qt main window
 //   69_magfield    Magnetic field lines (3-D): IGRF streamlines traced round a textured globe
 //   80_rubberband  Ctrl+right-drag point-cloud selection
 //   85_polygon     toolbar polygon draw/edit tool (3-D vertices draped on the relief)
@@ -39,6 +41,7 @@
 #include "65_xyplot.cpp"
 #include "67_gmtedit.cpp"
 #include "75_aquamoto.cpp"
+#include "72_mbprocess.cpp"
 static QDialog *faultDemoOpen(QWidget *parent, Scene *scene);
 static QDialog *magFieldOpen(QWidget *parent, Scene *scene);
 #include "70_window.cpp"

@@ -158,6 +158,7 @@ include("gmtedit.jl")    # Geophysics > Magnetics > gmtedit: the MGD77 track edi
 # deps/CMakeLists.txt; its exports are optional (_LIB_OPTIONAL), so either side may be off alone.
 isfile(joinpath(@__DIR__, "mbedit.jl")) && include("mbedit.jl")
 include("mbplugin.jl")   # Geophysics > MB-System > Install as plugin: MB-System's GMT supplement from GitHub
+include("mbprocess.jl")  # Geophysics > MB-System > Process swath data: mbset + mbprocess behind a dialog
 # EXPERIMENTAL sound velocity tool (MB-System's mbvelocitytool, deps/src/mbvelocitytool/), switched the
 # same way: this line for the Julia side (`mbvelocitytool`), IGMT_WITH_MBVELOCITYTOOL for the C side.
 isfile(joinpath(@__DIR__, "mbvelocitytool.jl")) && include("mbvelocitytool.jl")
@@ -261,11 +262,13 @@ function __init__()
 	end
 	# The MB-System GMT plugin, when Geophysics > MB-System > Install as plugin has put it in
 	# <root>/mbsystem: GMT only loads plugins when a session is created, so GMT.jl's session is
-	# re-created with it (mbplugin.jl). Linux and macOS, like the menu item; on Windows the plugin
-	# comes with GMT and nothing here runs. One isfile() when it is not installed.
-	if !Sys.iswindows()
+	# re-created with it (mbplugin.jl). Linux and macOS, like the menu item, and Windows when GMT.jl
+	# runs GMT_jll's GMT (an installed Windows GMT brings its own). One isfile() when it is not
+	# installed. When it is, a newer one on the release is looked for once the first window is up.
+	if _mbplugin_applies()
 		try
 			_mbplugin_activate_installed()
+			_mbplugin_schedule_update_check()
 		catch e
 			@tool_error "InteractiveGMT: could not load the MB-System plugin." exception=(e,)
 		end

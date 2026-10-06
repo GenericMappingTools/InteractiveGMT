@@ -3228,10 +3228,99 @@ GMTVTK_API int gmtvtk_wcd_close(void) {
 }
 #endif // GMTVTK_WCDVIEWER
 
-// The MB-System GMT plugin is installed and passed its self-test (src/mbplugin.jl): Geophysics >
-// MB-System then shows "MB-System plugin installed" instead of "Install as plugin".
+// The MB-System GMT plugin's state (src/mbplugin.jl): 0 = not installed ("Install as plugin"),
+// 1 = installed and passed its self-test ("MB-System plugin installed"), 2 = installed and a newer one
+// is on the release ("Update the plugin").
 GMTVTK_API void gmtvtk_set_mbplugin_ready(int ready) {
-	g_mbPluginReady = ready != 0;
+	g_mbPluginState = (ready >= 0 && ready <= 2) ? ready : 0;
+}
+
+// Is the plugin offered here at all (Windows: only with GMT_jll's GMT)? 1 = yes.
+GMTVTK_API void gmtvtk_set_mbplugin_offered(int on) {
+	g_mbPluginOffered = on != 0;
+}
+
+// Geophysics > MB-System > Process swath data (72_mbprocess.cpp): the host's mbset / mbprocess
+// runner, fn(scene, params, out, cap) with the "key=value" requests documented in src/mbprocess.jl.
+// nullptr to detach.
+GMTVTK_API void gmtvtk_set_mbprocess_callback(JuliaMbProcessFn fn) {
+	g_juliaMbProcess = fn;
+}
+
+// Open (or raise) that dialog, on `file` when one is given ("" = empty input). 1 = open.
+GMTVTK_API int gmtvtk_mbprocess_open(const char *file) {
+	ensureApp();
+	return mbprocessOpen(nullptr, nullptr, QString::fromUtf8(file ? file : "")) ? 1 : 0;
+}
+
+// The same, opened from viewer window `handle` (as its menu entry does): it parks in that window.
+GMTVTK_API int gmtvtk_mbprocess_open_h(void *handle, const char *file) {
+	Scene *s = static_cast<Scene *>(handle);
+	if (!sceneAlive(s)) return 0;
+	return mbprocessOpen(s->win, s, QString::fromUtf8(file ? file : "")) ? 1 : 0;
+}
+
+// Is the dialog parked in window `handle` (hidden, with its row in Scene Objects)? 1 = yes, 0 = no,
+// -1 = no dialog (tests).
+GMTVTK_API int gmtvtk_mbprocess_parked_test(void *handle) {
+	Scene *s = static_cast<Scene *>(handle);
+	if (!g_mbProcess || !g_mbProcess->dlg) return -1;
+	const bool hidden = !g_mbProcess->dlg->isVisible();
+	bool row = false;
+	if (sceneAlive(s))
+		for (auto &pt : s->parkedTools)
+			if (pt.win == g_mbProcess->dlg) row = true;
+	return (hidden && row) ? 1 : 0;
+}
+
+// Set the open dialog's widget for mbset key `key` to `value`, as the user would (tests). 1 = done.
+GMTVTK_API int gmtvtk_mbprocess_set_par(const char *key, const char *value) {
+	MbProcessDialog *m = g_mbProcess;
+	if (!m || !key) return 0;
+	const QString k = QString::fromUtf8(key);
+	for (QWidget *w : m->parWidgets) {
+		if (MbProcessDialog::parKey(w) != k) continue;
+		m->filling = true;
+		MbProcessDialog::parShow(w, QString::fromUtf8(value ? value : ""));
+		m->filling = false;
+		m->changed.insert(k);
+		return 1;
+	}
+	return 0;
+}
+
+// Drive the open dialog (tests): 0 = copy the log into `out`, 1 = press Process, 2 = press Save .par,
+// 3 / 4 = check / uncheck "Apply the bathymetry edits", 5 = destroy, 6 = close (= park). Returns the number of files listed
+// (action 0: the log's byte length), or -1 with no dialog open.
+GMTVTK_API int gmtvtk_mbprocess_test(int action, char *out, int cap) {
+	MbProcessDialog *m = g_mbProcess;
+	if (!m) return -1;
+	switch (action) {
+	case 0: {
+		const QByteArray t = m->log->toPlainText().toUtf8();
+		if (out && cap > 0) {
+			const int n = std::min((int)t.size(), cap - 1);
+			memcpy(out, t.constData(), (size_t)n);
+			out[n] = '\0';
+		}
+		return (int)t.size();
+	}
+	case 1: m->process->click(); break;
+	case 2: m->savePar->click(); break;
+	case 3: m->edits->setChecked(true); break;
+	case 4: m->edits->setChecked(false); break;
+	case 5:                                  // destroy it (the parked row's Delete)
+		m->reallyClose = true;
+		m->dlg->close();
+		QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+		return 0;
+	case 6:                                  // the window's X: parks when it has a window to park in
+		m->dlg->close();
+		QApplication::processEvents();
+		return 0;
+	default: break;
+	}
+	return (int)m->list.size();
 }
 
 // Set the path to the world logo image painted in the basemap picker (data/etopo4_logo.jpg).

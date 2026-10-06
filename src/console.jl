@@ -1,7 +1,7 @@
 # In-window Julia console. The viewer runs IN-PROCESS in this Julia session, so the console
 # dock hands a typed command straight back here to eval in `Main`. `scene` is the window's C
 # handle: we bind `fig` to that window's figure object before eval, so `add!(fig, D)` etc. just
-# work. stdout produced by the command is captured and returned alongside the value's repr.
+# work. stdout and stderr produced by the command are captured and returned alongside the value's repr.
 #
 # The @cfunction pointer and its registration are RUNTIME values, so they are created in the
 # module __init__ via _register_console_eval (NOT at top level — a precompiled @cfunction is
@@ -63,33 +63,37 @@ end
 # `fd(::IOStream)` is an Int on some Julia versions and a RawFD on others; dup wants a RawFD.
 _rawfd(x) = x isa RawFD ? x : RawFD(x)
 
-function _console_capture_file()
+# `target` is the descriptor: 1 (stdout) or 2 (stderr). STDERR TOO: GMT writes its usage text, its
+# warnings and its errors (GMT_Message, GMT_Report) to stderr, so a console that read only fd 1 showed
+# `gmt("mblist")` as a bare "GMT error number = 72" with the help text it had just printed missing.
+function _console_capture_file(target::Int = 1)
+	name = target == 1 ? "stdout" : "stderr"
 	path = tempname()
 	local io
 	try
 		io = open(path, "w")
 	catch e
-		return nothing, "[this process has no stdout to capture: " * sprint(showerror, e) * "]\n"
+		return nothing, "[this process has no $name to capture: " * sprint(showerror, e) * "]\n"
 	end
-	saved = try Base.Libc.dup(RawFD(1)) catch; nothing end     # nothing when fd 1 really is closed
+	saved = try Base.Libc.dup(RawFD(target)) catch; nothing end     # nothing when the fd really is closed
 	try
-		Base.Libc.dup(_rawfd(fd(io)), RawFD(1))
+		Base.Libc.dup(_rawfd(fd(io)), RawFD(target))
 	catch e
 		close(io); rm(path; force = true)
-		return nothing, "[this process has no stdout to capture: " * sprint(showerror, e) * "]\n"
+		return nothing, "[this process has no $name to capture: " * sprint(showerror, e) * "]\n"
 	end
-	old = stdout
-	try redirect_stdout(io) catch end                          # ...and Julia's own prints as well
-	return (path = path, io = io, saved = saved, old = old), ""
+	old = target == 1 ? stdout : stderr
+	try target == 1 ? redirect_stdout(io) : redirect_stderr(io) catch end   # ...and Julia's own prints as well
+	return (path = path, io = io, saved = saved, old = old, target = target), ""
 end
 
 # Undo it and hand back what the command printed.
 function _console_capture_file_end(st)
 	st === nothing && return ""
-	try redirect_stdout(st.old) catch end
+	try st.target == 1 ? redirect_stdout(st.old) : redirect_stderr(st.old) catch end
 	ccall(:fflush, Cint, (Ptr{Cvoid},), C_NULL)                # C stdio buffers, before the file is read
 	if st.saved !== nothing
-		try Base.Libc.dup(st.saved, RawFD(1)) catch end
+		try Base.Libc.dup(st.saved, RawFD(st.target)) catch end
 		try ccall(:close, Cint, (Cint,), Cint(st.saved.fd)) catch end
 	else
 		# There was no fd 1 to put back (the GUI case this exists for). Point it at the null device
@@ -97,7 +101,7 @@ function _console_capture_file_end(st)
 		# clean, valid descriptor instead of writing into a hole.
 		try
 			devnull_io = open(Sys.iswindows() ? "NUL" : "/dev/null", "w")
-			Base.Libc.dup(_rawfd(fd(devnull_io)), RawFD(1))
+			Base.Libc.dup(_rawfd(fd(devnull_io)), RawFD(st.target))
 		catch
 		end
 	end
@@ -136,6 +140,8 @@ function _console_eval_run(scene::Ptr{Cvoid}, cmd::Cstring, buf::Ptr{UInt8}, cap
 	if reader === nothing
 		fst, note = _console_capture_file()
 	end
+	# stderr always through the file route: GMT's usage text, warnings and errors are written there.
+	est, enote = _console_capture_file(2)
 	val = nothing;  err = nothing
 	try
 		val = Core.eval(Main, Meta.parseall(code))
@@ -147,8 +153,14 @@ function _console_eval_run(scene::Ptr{Cvoid}, cmd::Cstring, buf::Ptr{UInt8}, cap
 			close(wr)
 		end
 	end
+	etxt = est !== nothing ? _console_capture_file_end(est) : enote
 	txt = reader !== nothing ? fetch(reader) : (fst !== nothing ? _console_capture_file_end(fst) : note)
 	rd === nothing || close(rd)
+	# What went to stderr comes first: a module's messages (and its usage text) precede its result.
+	if !isempty(etxt)
+		(!endswith(etxt, "\n") && !isempty(txt)) && (etxt *= "\n")
+		txt = etxt * txt
+	end
 	if err !== nothing
 		(!isempty(txt) && !endswith(txt, "\n")) && (txt *= "\n")
 		txt *= sprint(showerror, err)
