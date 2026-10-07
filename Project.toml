@@ -12,6 +12,7 @@ Pkg = "44cfe95a-1eb2-52ea-b672-e2afdf69b78f"
 PrecompileTools = "aea7be01-6a6a-4083-8856-8a6e6704d82a"
 
 [compat]
+Distributed = "1.10"
 Downloads = "1"
 GMT = "1.40"
 PrecompileTools = "1.0"
