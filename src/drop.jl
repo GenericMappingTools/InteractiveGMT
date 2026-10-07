@@ -465,11 +465,14 @@ function _add_shapenc_bounded(scene::Ptr{Cvoid}, path::String, name::AbstractStr
 			_add_dataset_to_scene(scene, e.ds, "ensemble $(e.kk)"; groupName=gname)
 			continue
 		end
-		outds = GMT.mat2ds(e.outp; proj4=e.ds.proj4, geom=GMT.wkbPolygon)
+		# Boundary and swarm in the file's own system -> the window's, by THE crossing (crs.jl).
+		outds = _dataset_to_window(scene, GMT.mat2ds(e.outp; proj4=e.ds.proj4, geom=GMT.wkbPolygon); kind = :lines)
+		outds === nothing && continue                  # this ensemble lies off the window
 		xyzOut, segoffOut, nsegOut, nOut = _pack_dataset_flat(outds)
 		cr, cg, cb = _ovl_color(nothing, :lines)
 
-		swarm = e.ds.data
+		sw = _dataset_to_window(scene, e.ds; kind = :points)
+		swarm = sw === nothing ? zeros(0, 3) : sw isa GMTdataset ? sw.data : reduce(vcat, [s.data for s in sw])
 		nInterior = size(swarm, 1)
 		xyzInterior = Vector{Float64}(undef, 3 * nInterior)
 		@inbounds for k in 1:nInterior
@@ -488,7 +491,8 @@ function _add_shapenc_bounded(scene::Ptr{Cvoid}, path::String, name::AbstractStr
 		# IN holes: same bounded API, no interior payload of their own -- also tagged
 		# isShapencBoundary so their own context menu drops Length/Azimuth/Convert-to-points too.
 		for (j, m) in enumerate(e.ins)
-			inds = GMT.mat2ds(m; proj4=e.ds.proj4, geom=GMT.wkbPolygon)
+			inds = _dataset_to_window(scene, GMT.mat2ds(m; proj4=e.ds.proj4, geom=GMT.wkbPolygon); kind = :lines)
+			inds === nothing && continue
 			xyzIn, segoffIn, nsegIn, nIn = _pack_dataset_flat(inds)
 			ccall(_fn(:gmtvtk_add_overlay_bounded_h), Cint,
 			      (Ptr{Cvoid}, Ptr{Cdouble}, Cint, Ptr{Cint}, Cint, Cint, Cdouble, Cdouble, Cdouble, Cdouble, Cdouble,
@@ -1367,7 +1371,14 @@ _drop_into(scene::Ptr{Cvoid}, x, name; promote=false, source="") = @warn "drop: 
 # silently skipping GMT's periodic-longitude clip (`f=:g`) for any table crossing the 180°/0°
 # meridian. `f=:g` is the SAME convention `_geo_points` (geography.jl) already uses. Returns
 # `nothing` (caller adds nothing, same as any other empty-result drop) when nothing survives the clip.
-function _clip_to_display(scene::Ptr{Cvoid}, D)
+#
+# A table in another referencing system than the window's (a lon/lat file dropped on a PT-TM06 LIDAR
+# mosaic, a UTM table on a geographic grid) is brought into the window's system FIRST, by THE crossing
+# `_dataset_to_window` (crs.jl): clipping lon/lat rows against a frame in metres kept nothing at all.
+# `kind` = how the caller will draw the rows (:points/:lines); default, the overlay classifier.
+function _clip_to_display(scene::Ptr{Cvoid}, D; kind::Union{Nothing,Symbol}=nothing)
+	D = _dataset_to_window(scene, D; kind = kind)
+	D === nothing && return nothing
 	b = Vector{Cdouble}(undef, 4)
 	geog = Ref{Cint}(0)
 	ok = ccall(_fn(:gmtvtk_get_display_bounds_h), Cint, (Ptr{Cvoid}, Ptr{Cdouble}, Ptr{Cint}), scene, b, geog)
@@ -1928,6 +1939,11 @@ function _add_dataset_to_scene(scene::Ptr{Cvoid}, D, name; groupName::AbstractSt
                                 forceMode::Union{Nothing,Symbol}=nothing)
 	mode = forceMode === nothing ? _drop_overlay_kind(D) : forceMode
 	mode in (:points, :lines) || error("invalid overlay mode: $mode")
+	# EVERY table drawn on a window is in the window's system by the time it is packed: THE crossing
+	# (crs.jl), from the table's own system. A no-op when they already agree — including a table that
+	# came through `_clip_to_display`, which stamps it with the window's system.
+	D = _dataset_to_window(scene, D; kind = mode)
+	D === nothing && return false
 	xyz, segoff, nseg, npts = _pack_dataset_flat(D)
 	modei = mode === :lines ? Cint(1) : Cint(0)
 	cr, cg, cb = _ovl_color(color, mode)

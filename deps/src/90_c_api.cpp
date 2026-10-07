@@ -3584,6 +3584,12 @@ GMTVTK_API void gmtvtk_set_geography_callback(JuliaGeoFn fn) {
 	g_juliaGeo = fn;
 }
 
+// Register the window-region -> lon/lat converter (JuliaLonLatBoxFn, 30_app.cpp) that sceneToLonLat
+// asks before any geographic request leaves a projected window. nullptr to detach.
+GMTVTK_API void gmtvtk_set_lonlat_box_callback(JuliaLonLatBoxFn fn) {
+	g_juliaLonLatBox = fn;
+}
+
 // Register the 3-D Bodies toolbar callback. `fn` (Julia @cfunction, signature JuliaSolidFn) is
 // called with a GMT solid name ("cube"/"sphere"/"torus"/…) when the user clicks a body in the
 // flyout; Julia builds the named GMTfv via SOLIDS and opens it with view_fv. nullptr to detach.

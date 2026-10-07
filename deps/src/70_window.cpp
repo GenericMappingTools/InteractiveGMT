@@ -27360,7 +27360,14 @@ public:
 		if (!txt(outEdit).isEmpty()) kv << "outfile=" + txt(outEdit);
 		// The map's own western edge: a terminator is a small circle in absolute longitude and this
 		// window may be drawn in any 360-wide frame, so Julia needs to know which one to land it in.
-		kv << QString("mapw=%1").arg((scn && scn->x1 > scn->x0) ? scn->x0 : -180.0, 0, 'f', 6);
+		// In LONGITUDE: a projected window's x0 is metres, so it goes through sceneToLonLat first.
+		double mW = -180.0;
+		if (scn && scn->x1 > scn->x0) {
+			double mE = scn->x1, mS = scn->y0, mN = scn->y1;
+			mW = scn->x0;
+			sceneToLonLat(scn, mW, mE, mS, mN);
+		}
+		kv << QString("mapw=%1").arg(mW, 0, 'f', 6);
 
 		g_solarReport.clear();                            // clear the answer channel before asking
 		showBusyDialog("Computing the terminator…");
@@ -28582,8 +28589,14 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// screen at the current zoom. sceneVisibleRegion (10_geometry.cpp) is the ONE implementation —
 	// also read by the Link tool's cross-window camera sync (57_swipe.cpp); this local wrapper just
 	// keeps every existing capture-list/call-site below (`[…, visibleRegion, …]`) unchanged.
+	// EVERY caller of this wrapper sends the region to a GEOGRAPHIC source (GSHHG, the quake and focal
+	// catalogs, Earth Tides), so it hands out LON/LAT: sceneToLonLat converts a projected window's own
+	// units here, once, for all of them. The Link tool reads sceneVisibleRegion directly and keeps the
+	// window's units, which is what a camera needs.
 	auto visibleRegion = [s](double &W, double &E, double &S, double &N) -> bool {
-		return sceneVisibleRegion(s, W, E, S, N);
+		if (!sceneVisibleRegion(s, W, E, S, N)) return false;
+		sceneToLonLat(s, W, E, S, N);
+		return true;
 	};
 	// The window-wide guarantee, now a real function (sceneEnsureBase, above) so the File > Open
 	// xy(z) imports reach the SAME one instead of a second empty-launcher check. This wrapper keeps
@@ -28601,7 +28614,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		if (s->win) s->win->statusBar()->showMessage("Seismicity: fetching catalog…  (first run this session also compiles; please wait)");
 		QApplication::processEvents();
 		double W = s->x0, E = s->x1, So = s->y0, No = s->y1;
-		visibleRegion(W, E, So, No);
+		if (!visibleRegion(W, E, So, No)) sceneToLonLat(s, W, E, So, No);   // the frame, in lon/lat too
 		const QString p = params + QString("\nregion=%1/%2/%3/%4")
 			.arg(W, 0, 'f', 6).arg(E, 0, 'f', 6).arg(So, 0, 'f', 6).arg(No, 0, 'f', 6);
 		showBusyDialog("Seismicity");             // indeterminate busy bar for the blocking fetch
@@ -28656,7 +28669,10 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 			// for the wider view, whose lines ran out past the box. Point layers keep the view region.
 			const bool lineKind = kind == "coast" || kind.startsWith("borders:") || kind.startsWith("rivers:");
 			if (lineKind && !s->globe)
-				if (AxesSet *A = axesForActive(s)) { W = A->x0; E = A->x1; S = A->y0; N = A->y1; }
+				if (AxesSet *A = axesForActive(s)) {
+					W = A->x0; E = A->x1; S = A->y0; N = A->y1;
+					sceneToLonLat(s, W, E, S, N);           // the axes are in the window's own units
+				}
 			// Trailing field = Preferences "Coastlines color" (Black|White) for the line features
 			// (coast/borders/rivers); point datasets ignore it and keep their own symbol colours.
 			const QString req = QString("%1/%2/%3/%4/%5/%6/%7").arg(kind).arg(res)

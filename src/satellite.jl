@@ -548,7 +548,13 @@ function _plot_track!(scene::Ptr{Cvoid}, D::Vector{GMT.GMTdataset}, nm::String; 
 	# `_plot_sat_now!`, together with the body that carries the same name). The panel then reads
 	# Satellites > <name> (track) > <name> (body) — two sibling rows per satellite, each with its own
 	# checkbox, which is exactly the point: the track and the spacecraft are switched separately.
-	ok = _add_dataset_to_scene(scene, D, nm;
+	# The track is lon/lat; the window may not be. It is brought into the window's system ONCE, here,
+	# by THE crossing (crs.jl), so the line that is drawn and the table that describes it are the same
+	# vertices. `D` itself stays lon/lat: the swath is computed from it, on the Earth.
+	Dw = _dataset_to_window(scene, D; kind = :lines)
+	Dw === nothing && (@warn "plot_groundtrack!: the track does not cross this window"; return false)
+	Dw isa GMT.GMTdataset && (Dw = [Dw])
+	ok = _add_dataset_to_scene(scene, Dw, nm;
 	                           color = color, forceMode = :lines, noConvertToPoints = true)
 
 	# An orbit is drawn as a TUBE, the same way the magnetic field lines are (69_magfield.cpp): real
@@ -567,7 +573,7 @@ function _plot_track!(scene::Ptr{Cvoid}, D::Vector{GMT.GMTdataset}, nm::String; 
 		# fork SACRED_LAW.md forbids. The key carries the window, so two windows showing the same
 		# satellite over different spans cannot read each other's track.
 		_SAT_TRACKS[(UInt(scene), nm)] = D
-		live || _track_table!(scene, nm, D)
+		live || _track_table!(scene, nm, Dw; geog = Dw === D)
 		lift = 0.0
 		for d in D
 			m = maximum(view(d.data, :, 3))
@@ -614,7 +620,9 @@ end
 # in as a UTC stamp rather than a raw Julian Day for the same reason.
 # Rows are written in the SAME order the points were packed (segments in order, vertices in order),
 # which is what the viewer aligns them by.
-function _track_table!(scene::Ptr{Cvoid}, nm::String, D::Vector{GMT.GMTdataset})::Bool
+# `geog = false`: the track was brought into a projected window's system, so its first two columns
+# are that system's x/y and are labelled so.
+function _track_table!(scene::Ptr{Cvoid}, nm::String, D::Vector{GMT.GMTdataset}; geog::Bool = true)::Bool
 	rows = String[]
 	for d in D
 		m = d.data
@@ -626,7 +634,7 @@ function _track_table!(scene::Ptr{Cvoid}, nm::String, D::Vector{GMT.GMTdataset})
 		end
 	end
 	isempty(rows) && return false
-	hdr = join(("lon", "lat", "alt_km", "time (UTC)"), '\x1f')
+	hdr = join((geog ? "lon" : "x", geog ? "lat" : "y", "alt_km", "time (UTC)"), '\x1f')
 	return ccall(_fn(:gmtvtk_overlay_set_table_h), Cint, (Ptr{Cvoid}, Cstring, Cstring, Cstring),
 	             scene, nm, hdr, join(rows, '\x1e')) != 0
 end
@@ -694,7 +702,11 @@ function _plot_sat_now!(scene::Ptr{Cvoid}, D::Vector{GMT.GMTdataset}, nm::String
 	p = _track_end_point(D)
 	p === nothing && return false
 	lon, lat, z, altkm, tj = p
-	xyz = Float64[lon, lat, z]
+	# The body stands where the satellite is, in the WINDOW'S system (THE point crossing, crs.jl); the
+	# hover block keeps the real lon/lat. Off this window's footprint: no body on it.
+	xw, yw, keep = _to_window(scene, _LONLAT, [lon], [lat])
+	keep === nothing || isempty(keep) && return false
+	xyz = Float64[xw[1], yw[1], z]
 	# `datetime` is this file's own JD -> DateTime (through the same C calendar `jd` uses), never a
 	# second conversion written here.
 	# The ORBIT's own identity belongs on the body, not only on the track: inclination is the number
@@ -1273,17 +1285,26 @@ of its own (SACRED_LAW.md, vector-import law).
 # and the same group as the one the toggle leaves behind.
 # ONE RING ONTO THE MAP. Every band polygon this file draws — the menu's toggle, and every frame of
 # the animation — is added HERE, so they are the same colour, the same opacity and the same group.
+# `R` is a lon/lat ring; on a window in another system it crosses through `_polys_to_window` (crs.jl)
+# — reprojected and cut to the window's footprint as an AREA — and may come back as several pieces
+# (or none, when the swath passes elsewhere).
 function _add_swath_ring!(scene::Ptr{Cvoid}, grp::String, R::Matrix{Float64}, idx::Int)::Bool
 	size(R, 1) < 3 && return false
-	xyz = vec(permutedims(hcat(R, zeros(size(R, 1)))))
-	ccall(_fn(:gmtvtk_add_poly_full), Cint,
-	      (Ptr{Cvoid}, Ptr{Cdouble}, Cint, Cint, Cint, Cdouble, Cdouble, Cdouble,
-	       Cdouble, Cint, Cdouble, Cdouble, Cdouble, Cdouble, Cstring, Cstring),
-	      scene, xyz, Cint(size(R, 1)), Cint(1), Cint(0),
-	      _SWATH_RGB[1], _SWATH_RGB[2], _SWATH_RGB[3], 0.0, Cint(0),
-	      _SWATH_RGB[1], _SWATH_RGB[2], _SWATH_RGB[3], _SWATH_OPACITY,
-	      string(grp, " (", idx, ")"), grp)
-	return true
+	parts = _polys_to_window(scene, _LONLAT, [R])
+	added = false
+	for (k, P) in enumerate(parts)
+		size(P, 1) < 3 && continue
+		xyz = vec(permutedims(hcat(P, zeros(size(P, 1)))))
+		nm = length(parts) == 1 ? string(grp, " (", idx, ")") : string(grp, " (", idx, ".", k, ")")
+		ccall(_fn(:gmtvtk_add_poly_full), Cint,
+		      (Ptr{Cvoid}, Ptr{Cdouble}, Cint, Cint, Cint, Cdouble, Cdouble, Cdouble,
+		       Cdouble, Cint, Cdouble, Cdouble, Cdouble, Cdouble, Cstring, Cstring),
+		      scene, xyz, Cint(size(P, 1)), Cint(1), Cint(0),
+		      _SWATH_RGB[1], _SWATH_RGB[2], _SWATH_RGB[3], 0.0, Cint(0),
+		      _SWATH_RGB[1], _SWATH_RGB[2], _SWATH_RGB[3], _SWATH_OPACITY, nm, grp)
+		added = true
+	end
+	return added
 end
 
 # The band's group belongs to the SATELLITE, and the panel is opened on it once it exists.

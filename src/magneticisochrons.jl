@@ -26,18 +26,26 @@ function _load_magnetic_isochrons_gplates(scene::Ptr{Cvoid})::Bool
 	D = GMT.gmtread(path)
 	segs = D isa AbstractVector ? D : (D,)
 	isempty(segs) && return false
-	xyz = Float64[]; segoff = Cint[0]; infos = String[]; off = 0
+	mats = Matrix{Float64}[]; seginfo = String[]
 	for seg in segs
 		m = seg.data
 		(m === nothing || isempty(m)) && continue
+		size(m, 1) < 2 && continue                     # a lone point is not a line
+		push!(mats, Matrix{Float64}(m[:, 1:2]))
+		push!(seginfo, get(seg.attrib, "name", _ISOC_GPLATES_NAME))
+	end
+	# Lon/lat isochrons into the window's system and onto its footprint — THE line crossing (crs.jl).
+	pieces, owner, _ = _lines_to_window(scene, _LONLAT, mats)
+	xyz = Float64[]; segoff = Cint[0]; infos = String[]; off = 0
+	for (k, m) in enumerate(pieces)
 		n = size(m, 1)
-		n < 2 && continue                              # a lone point is not a line
-		for k in 1:n
-			push!(xyz, Float64(m[k, 1]), Float64(m[k, 2]), 0.0)
+		n < 2 && continue
+		for r in 1:n
+			push!(xyz, m[r, 1], m[r, 2], 0.0)
 		end
 		off += n
 		push!(segoff, Cint(off))
-		push!(infos, get(seg.attrib, "name", _ISOC_GPLATES_NAME))
+		push!(infos, seginfo[owner[k]])
 	end
 	off == 0 && return false
 	r, g, b = _ovl_color(:red, :lines)

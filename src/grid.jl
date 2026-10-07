@@ -140,6 +140,12 @@ function view_grid(G::GMTgrid; cmap=:auto, drape=nothing, outside::Symbol=:shade
 		  img, Cint(iw), Cint(ih), Cint(ibands), Cint(edges), Cint(triangulate), Cint(0), title, zlay)
 	fig = _register_fig!(QtFigure(h, G))
 	_remember_object!(h, :grid, "", G)                # File>Save / Scene Objects "Save…" can write it
+	# A GRID HAS A NAME, whichever door it came in by. Every other door (drop, File > Open, promote)
+	# names the base after its source; this one opened it unnamed, and every name-driven tool then
+	# refused a grid that was plainly on screen — Illumination's "this window is not showing one" on a
+	# LIDAR2011 mosaic. Same grid, different behaviour per door: the SACRED_LAW violation. The name
+	# is the one the window was opened under; a caller that relabels it afterwards still can.
+	_base_name!(h, title, "Surface")
 	# Save Session: no source path here -> serialize the grid. The colormap NAME rides along in the
 	# params: it is the only record of which CPT this layer wears (the C side keeps resolved LUT nodes
 	# only), and both Save Session's replay and the GMT.jl script export need it.
@@ -202,16 +208,33 @@ function view_image(I::GMTimage; title::String="i'GMT",
 	h == C_NULL && error("view_image: the viewer could not open the window")
 	fig = _register_fig!(QtImage(h, I))
 	_remember_object!(h, :image, "", I)               # File>Save / Scene Objects "Save…" can write it
+	_base_name!(h, title, "Image")                    # named like every other door's image (see view_grid)
 	_session_record!(h, :image, :generated)           # Save Session: no source path here -> serialize the image
 	_apply_crs!(fig, crs_from(I; geographic=geog))    # store the CRS + reveal the Geography menu if referenced
 	_start_pump()
 	return fig
 end
 
+# The base surface's name, set where `view_grid`/`view_image` create it: the title the window was
+# opened under, or `dflt` (the label Scene Objects already shows for an unnamed base) when that is
+# only the generic "i'GMT". The registry key stays "" — `_find_base_named` resolves the base by this
+# live name, and the transplant path relies on the "" key.
+function _base_name!(h::Ptr{Cvoid}, title::AbstractString, dflt::String)
+	nm = (isempty(strip(title)) || title == "i'GMT") ? dflt : String(title)
+	ccall(_fn(:gmtvtk_set_surface_name_h), Cvoid, (Ptr{Cvoid}, Cstring), h, nm)
+	return nm
+end
+
 # Pack `data` and push it onto figure `fig` as a line/point overlay (the C side renders
 # immediately). Shared by view_grid's `data=` kwarg and add!.
 function _add_overlay!(fig::QtFigure, data, mode::Symbol, data_color, data_size)
 	mode in (:lines, :points) || error("`mode` must be :lines or :points (got :$mode)")
+	# A table carrying its own referencing system (or plainly lon/lat) is brought into the figure's
+	# system first — THE crossing (crs.jl). A bare matrix names no system: it is in the figure's units.
+	if data isa GMTdataset || data isa AbstractVector{<:GMTdataset}
+		data = _dataset_to_window(fig.h, data; kind = mode)
+		data === nothing && (@warn "add!: nothing of the data falls on this figure"; return fig)
+	end
 	xyz, segoff, nseg, npts = _pack_dataset(data, fig.G)
 	modei = mode === :lines ? Cint(1) : Cint(0)
 	cr, cg, cb = _ovl_color(data_color, mode)

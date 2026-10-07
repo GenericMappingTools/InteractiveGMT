@@ -253,6 +253,9 @@ function _solar_paint!(scene::Ptr{Cvoid}, polys::Vector{Matrix{Float64}}, name::
                        group::String = _SOLAR_FILL_GROUP)::Int
 	n = 0
 	op = clamp(1.0 - tr / 100.0, 0.0, 1.0)
+	# The night side is lon/lat; THE area crossing (crs.jl) brings it into the window's system and cuts
+	# it to the window's footprint when that is another one.
+	polys = _polys_to_window(scene, _LONLAT, polys)
 	for (k, R) in enumerate(polys)
 		size(R, 1) >= 4 || continue
 		xyz = vec(permutedims(hcat(R, zeros(size(R, 1)))))
@@ -313,9 +316,13 @@ function _on_solar(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 			end
 			pieces = _solar_split_seam(D, W)
 			isempty(pieces) && error("the $name has no points inside this map")
-			_add_geo_overlay(scene, pieces; color = linergb, linewidth = lw, name = name,
-			                 noConvertToPoints = true, group = _SOLAR_GROUP) ||
-				error("$name: window closed, nothing added")
+			# On a projected window the line is cut to the window's footprint (crs.jl), so "nothing added"
+			# can simply mean the terminator passes elsewhere on the Earth — said so, not called a failure.
+			if !_add_geo_overlay(scene, pieces; color = linergb, linewidth = lw, name = name,
+			                     noConvertToPoints = true, group = _SOLAR_GROUP)
+				_xform_ctx(scene, _LONLAT) === nothing && error("$name: window closed, nothing added")
+				_viewer_log_info(scene, "solar: the $name does not cross this map")
+			end
 			append!(dumped, D isa GMTdataset ? [D] : collect(D))
 		end
 
@@ -330,7 +337,7 @@ function _on_solar(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 				lon = mod(v[1] - W, 360.0) + W             # the map's own longitude frame
 				ccall(_fn(:gmtvtk_remove_symbols_h), Cint, (Ptr{Cvoid}, Cstring), scene, _SOLAR_SUN_LAYER)
 				add_symbols!(scene, [lon], [v[2]]; symbol = :star, size = 16, sizeunit = :pt,
-				             fill = :yellow, edge = :black, edgewidth = 1.0, name = _SOLAR_SUN_LAYER,
+				             fill = :yellow, edge = :black, edgewidth = 1.0, name = _SOLAR_SUN_LAYER, srs = _LONLAT,
 				             info = ["Sub-solar point\nlon $(_solar_fmt(lon))\nlat $(_solar_fmt(v[2]))"])
 			end
 		end

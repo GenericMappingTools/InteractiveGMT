@@ -1522,7 +1522,7 @@ function _on_gmtedit(edit::Ptr{Cvoid}, caction::Cstring, carg::Cstring)::Cvoid
 			# gmtedit.m plots a black filled circle, MarkerSize 6, tagged 'LinkedSymb'. `add_symbols!`
 			# (symbols.jl) is this project's ONE "stamp a symbol layer on a scene" primitive.
 			add_symbols!(scene, [tr.lon[idx]], [tr.lat[idx]]; symbol=:circle, size=9,
-			             fill=:black, edge=:white, edgewidth=1.0,
+			             fill=:black, edge=:white, edgewidth=1.0, srs=_LONLAT,
 			             name="$(splitext(basename(tr.path))[1])  rec $idx")
 			ccall(_fn(:gmtvtk_raise), Cvoid, (Ptr{Cvoid},), scene)
 			_ge_log(edit, "Link: record $idx  ->  lon $(round(tr.lon[idx], digits=5)), " *

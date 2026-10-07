@@ -88,8 +88,9 @@ function _on_grdfill(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 			if polygons && _on(d, "draw")
 				ccall(_fn(:gmtvtk_remove_overlay_group_h), Cint, (Ptr{Cvoid}, Cstring),
 				      scene, _GFILL_HOLES_LAYER)
+				# srs = "": the outlines are in the grid's own units, i.e. the window's — nothing to cross.
 				_add_geo_overlay(scene, D; color = (0.9, 0.1, 0.1), linewidth = 1.5,
-				                 name = _GFILL_HOLES_LAYER) ||
+				                 name = _GFILL_HOLES_LAYER, srs = "") ||
 					error("could not draw the hole outlines in this window")
 			end
 			return Cint(1)

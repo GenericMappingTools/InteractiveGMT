@@ -163,7 +163,16 @@ end
 # SAME mechanism as Focal mechanisms, not a fork. One batch `gmtvtk_add_texts_h` call (one
 # Scene-Objects rebuild + render). Offset large enough that the label clears the star glyph
 # (10px-ish on-screen at typical zoom) instead of overlapping it.
+# `xs`/`ys` are lon/lat: they cross into the window's system through `_to_window` (crs.jl), the SAME
+# crossing `add_symbols!` gives the stars, so label k still sits by star k (event index = position in
+# the surviving set, in both). The offset is a fraction of the window's own extent, in its own units.
 function _add_city_labels!(scene::Ptr{Cvoid}, xs, ys, names, W, E, S, N, groupName::AbstractString)
+	xs, ys, keep = _to_window(scene, _LONLAT, xs, ys)
+	if keep !== nothing
+		names = names[keep]
+		f = _seis_display_frame(scene)
+		f === nothing || ((W, E, S, N) = f)
+	end
 	n = length(xs)
 	n == 0 && return
 	dx = (E - W) * 0.0022
@@ -254,10 +263,18 @@ end
 # frame) is not a boundary and says its own width.
 const _GEO_LINE_PT = 0.75
 
+# `srs` = the referencing system the lines are IN: lon/lat for every geographic source (the default);
+# "" for lines already in the window's own units (grdfill's hole outlines). Lines in any other system
+# than the window's are brought across by `_lines_to_window` (crs.jl) — cut to the window's footprint
+# and reprojected — before they are drawn; per-segment `info` follows each piece.
 function _add_geo_overlay(scene::Ptr{Cvoid}, D; color=(0.0, 0.0, 0.0), linewidth=_GEO_LINE_PT,
                           name::AbstractString="", noConvertToPoints::Bool=false,
-                          group::AbstractString="", info::Vector{String}=String[])
-	segs = D isa GMTdataset ? (D,) : collect(D)
+                          group::AbstractString="", info::Vector{String}=String[],
+                          srs::AbstractString=_LONLAT)
+	segs0 = D isa GMTdataset ? [D] : collect(D)
+	mats = [seg isa GMTdataset ? seg.data : seg for seg in segs0]
+	segs, owner, _ = _lines_to_window(scene, srs, mats)
+	length(info) == length(segs0) && (info = info[owner])
 	# CLAMPED TO THE GROUND — but NOT here. A boundary line laid at z = 0 is right on a flat map and
 	# wrong the moment the view is 3-D: it hangs at sea level while the relief rises through it. So it
 	# gets draped — through `gmtvtk_line_clamp_h` after the add, which is the SAME one clamp the
@@ -325,7 +342,7 @@ function _on_geography(scene::Ptr{Cvoid}, req::String)::Cvoid
 			xs, ys, infos = _volcano_data(W, E, S, N)
 			isempty(xs) && return
 			add_symbols!(scene, xs, ys; symbol=:triangle, size=12, fill=:yellow, edge=:black, edgewidth=1.0,
-			             name="Volcanoes", info=infos)
+			             name="Volcanoes", info=infos, srs=_LONLAT)
 		elseif kind == "city_major" || kind == "city"
 			# World cities (Mirone wcity_major.dat/wcity.dat): 7pt filled stars, constant on-screen
 			# size, PLUS a 9pt name label next to each star — SAME billboard text kind as Focal
@@ -336,7 +353,7 @@ function _on_geography(scene::Ptr{Cvoid}, req::String)::Cvoid
 			isempty(xs) && return
 			nm = kind == "city_major" ? "Major Cities" : "Cities"
 			add_symbols!(scene, xs, ys; symbol=:star, size=7, sizeunit=:pt, fill=:blue, edge=:black,
-			             edgewidth=1.0, name=nm, info=names)
+			             edgewidth=1.0, name=nm, info=names, srs=_LONLAT)
 			_add_city_labels!(scene, xs, ys, names, W, E, S, N, nm)
 		elseif kind == "meteorite"
 			# Mirone style: red filled diamonds with a thin black edge, constant on-screen size.
@@ -344,14 +361,14 @@ function _on_geography(scene::Ptr{Cvoid}, req::String)::Cvoid
 			xs, ys, infos = _meteorite_data(W, E, S, N)
 			isempty(xs) && return
 			add_symbols!(scene, xs, ys; symbol=:diamond, size=11, fill=:red, edge=:black, edgewidth=1.0,
-			             name="Meteorite Impacts", info=infos)
+			             name="Meteorite Impacts", info=infos, srs=_LONLAT)
 		elseif kind == "tidestations"
 			# Tide-prediction stations (xtide.mat harmonic database): yellow filled triangles, thin
 			# black edge, constant on-screen size. Hover shows the station name.
 			xs, ys, names = _tidestations_data(W, E, S, N)
 			isempty(xs) && return
 			add_symbols!(scene, xs, ys; symbol=:triangle, size=8, sizeunit=:pt, fill=:yellow, edge=:black,
-			             edgewidth=1.0, name=_geo_layer_name(kind), info=names)
+			             edgewidth=1.0, name=_geo_layer_name(kind), info=names, srs=_LONLAT)
 		elseif kind == "tides"
 			# Mirone's tide-gauge stations: red stars with a thin black edge, constant on-screen size.
 			# Each carries its Name/Code/Country as a hover tooltip. Right-click a star for the
@@ -359,14 +376,14 @@ function _on_geography(scene::Ptr{Cvoid}, req::String)::Cvoid
 			xs, ys, infos = _tides_data(W, E, S, N)
 			isempty(xs) && return
 			add_symbols!(scene, xs, ys; symbol=:star, size=8, sizeunit=:pt, fill=:red, edge=:black, edgewidth=1.0,
-			             name="Tide Stations", info=infos)
+			             name="Tide Stations", info=infos, srs=_LONLAT)
 		elseif kind == "hydro"
 			# NOAA PMEL hydrothermal vents: orange filled circles with a thin black edge, screen-constant.
 			# Each carries its 5-field metadata (name/site activity/tectonic/spreading rate/depth) as a tooltip.
 			xs, ys, infos = _hydro_data(W, E, S, N)
 			isempty(xs) && return
 			add_symbols!(scene, xs, ys; symbol=:circle, size=9, fill=:orange, edge=:black, edgewidth=1.0,
-			             name="Hydrothermal Vents", info=infos)
+			             name="Hydrothermal Vents", info=infos, srs=_LONLAT)
 		elseif kind == "noaa_tsunami"
 			# NOAA/NCEI historical tsunami events (Geophysics > Tsunamis). A point dataset over the view
 			# like every branch above, so it comes through this same door; its own columns, tooltip and

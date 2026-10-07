@@ -43,19 +43,43 @@ viewer `handle` (a `QtFigure` or a raw `Scene*` `Ptr`). `symbol` is a friendly n
 3-D, lit volumes (visible from any angle, e.g. edge-on in perspective) — every other shape is a
 flat, unlit XY glyph. `size` is on screen, in `:px` or `:pt`. `fill` and `edge` accept any colour
 `_ovl_color` understands (name Symbol/String, 0-1 or 0-255 tuple). Symbols stay the same pixel
-size at any zoom. Returns `true` if the layer was added.
+size at any zoom. `srs` names the referencing system `x, y` are in (e.g. lon/lat for a catalog);
+when it differs from the window's the points are reprojected and cut to its footprint first.
+Returns `true` if the layer was added.
 """
 function add_symbols!(handle, x, y;
                       z=0.0, symbol=:c, size=8, sizeunit::Symbol=:px,
                       fill=:yellow, edge=:black, edgewidth=1.0, filled::Bool=true,
                       name::AbstractString="", info=nothing,
                       datanames::Vector{String}=String[],
-                      datarows::Vector{Vector{String}}=Vector{Vector{String}}())
+                      datarows::Vector{Vector{String}}=Vector{Vector{String}}(),
+                      srs::AbstractString="")
 	p = _sym_ptr(handle)
 	xv = collect(Float64, x); yv = collect(Float64, y)
 	n = length(xv)
 	n == length(yv) || error("add_symbols!: x ($(length(xv))) and y ($(length(yv))) length mismatch")
 	n == 0 && return false
+	# `srs` = the referencing system the points are IN (a catalog's lon/lat). When it is not the
+	# window's, they cross through `_to_window` (crs.jl): reprojected, and only those on the window's
+	# footprint kept — so everything carried per point follows the survivors. "" = already in the
+	# window's units, nothing to do.
+	if !isempty(srs)
+		xw, yw, keep = _to_window(p, srs, xv, yv)
+		if keep !== nothing
+			xv = collect(Float64, xw);  yv = collect(Float64, yw)
+			z isa AbstractVector && (z = collect(z)[keep])
+			size isa AbstractVector && (size = collect(size)[keep])
+			if fill isa AbstractMatrix && Base.size(fill, 1) == n
+				fill = fill[keep, :]
+			elseif fill isa AbstractVector && length(fill) == n && n != 3
+				fill = fill[keep]
+			end
+			info === nothing || (info = collect(info)[keep])
+			length(datarows) == n && (datarows = datarows[keep])
+			n = length(xv)
+			n == 0 && return false
+		end
+	end
 	zv = z isa AbstractVector ? collect(Float64, z) : [Float64(z) for _ in 1:n]
 	length(zv) == n || error("add_symbols!: z length must be 1 or match x/y")
 	xyz = Vector{Float64}(undef, 3n)

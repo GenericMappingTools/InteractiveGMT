@@ -28,21 +28,30 @@ function _pb_load_one(scene::Ptr{Cvoid}, file::AbstractString, typename::Abstrac
 	D = GMT.gmtread(path)
 	segs = D isa AbstractVector ? D : (D,)
 	isempty(segs) && return false
-	xyz = Float64[]; segoff = Cint[0]; infos = String[]; off = 0
+	mats = Matrix{Float64}[]; seginfo = String[]
 	for seg in segs
 		m = seg.data
 		(m === nothing || isempty(m)) && continue
-		n = size(m, 1)
-		n < 2 && continue                              # a lone point is not a line
-		for k in 1:n
-			push!(xyz, Float64(m[k, 1]), Float64(m[k, 2]), 0.0)
-		end
-		off += n
-		push!(segoff, Cint(off))
+		size(m, 1) < 2 && continue                     # a lone point is not a line
+		push!(mats, Matrix{Float64}(m[:, 1:2]))
 		vel  = get(seg.attrib, "vel", "")
 		azim = get(seg.attrib, "azim_vel", "")
 		pair = get(seg.attrib, "plate_pair", "")
-		push!(infos, string(typename, "\nVelocity: ", vel, " mm/yr\nAzimuth: ", azim, "°\nPlate pair: ", pair))
+		push!(seginfo, string(typename, "\nVelocity: ", vel, " mm/yr\nAzimuth: ", azim, "°\nPlate pair: ", pair))
+	end
+	# The boundaries are lon/lat; THE line crossing (crs.jl) brings them into the window's system and
+	# onto its footprint when that is another one. Each piece keeps its segment's hover text.
+	pieces, owner, _ = _lines_to_window(scene, _LONLAT, mats)
+	xyz = Float64[]; segoff = Cint[0]; infos = String[]; off = 0
+	for (k, m) in enumerate(pieces)
+		n = size(m, 1)
+		n < 2 && continue
+		for r in 1:n
+			push!(xyz, m[r, 1], m[r, 2], 0.0)
+		end
+		off += n
+		push!(segoff, Cint(off))
+		push!(infos, seginfo[owner[k]])
 	end
 	off == 0 && return false
 	r, g, b = _ovl_color(color, :lines)

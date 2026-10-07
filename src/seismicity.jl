@@ -489,7 +489,7 @@ function _seis_layer(scene::Ptr{Cvoid}, name, sel, lon, lat, dep, mag, t,
 	# is a property of the picture, not of the earthquake, and has no business in a data table.
 	add_symbols!(scene, view(lon, sel), view(lat, sel); z=zv, symbol=:sphere,
 	             size=sizepx, fill=color, edge=:black, edgewidth=1.0, name=name, info=infos,
-	             datanames=_SEIS_TABLE_COLS,
+	             srs=_LONLAT, datanames=_SEIS_TABLE_COLS,
 	             datarows=[_seis_row(lon[i], lat[i], dep[i], mag[i], t[i]) for i in sel])
 end
 
@@ -523,7 +523,9 @@ function _on_seismicity(scene::Ptr{Cvoid}, cparams::Cstring)::Cvoid
 		# The raster's footprint FIRST: it is both the in-map crop and the fallback box when the region
 		# that arrived is unusable (see _seis_usable_region — a collapsed camera region asked the service
 		# for a zero-area box and cropped every answer away, with nothing on screen to explain it).
-		frame = _seis_display_frame(scene)
+		# …in LON/LAT, the catalog's own system: on a projected window the footprint is metres, and
+		# cropping degrees against it kept nothing. `_frame_in` (crs.jl) is that footprint brought across.
+		frame = _frame_in(scene, _LONLAT)
 		W, E, S, N = _seis_usable_region(_seis_region(d)..., frame)
 		fmt  = something(tryparse(Int, _get(d, "format", "1")), 1)
 		file = _get(d, "file")

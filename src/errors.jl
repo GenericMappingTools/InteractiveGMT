@@ -121,7 +121,13 @@ function _tool_failed(scene::Ptr{Cvoid}, what::AbstractString, e)
 	_record_tool_error(msg)
 	_TEST_MODE[] ? (@debug msg exception = (e, catch_backtrace())) :
 	               (@error msg exception = (e, catch_backtrace()))
-	_viewer_log_info(scene, msg)
+	# gmtvtk_log_error — the twin that RAISES the status corner's red flag. A failure written through
+	# the info twin (what this was) landed in the log as a mere notice: "Geography FAILED … GMT error
+	# number = 74" with no flag. Not via _viewer_log_error: that one records too, and this already did.
+	try
+		ccall(_fn(:gmtvtk_log_error), Cvoid, (Ptr{Cvoid}, Cstring), scene, String(msg))
+	catch
+	end
 	return
 end
 

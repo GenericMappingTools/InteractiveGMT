@@ -538,6 +538,27 @@ function _focal_plot(scene::Ptr{Cvoid}, d, lon, lat, dep, mag, str1, dip1, rake1
 	# screen-round symbol placement, see the comment at the vertex loop below.
 	xfac = ccall(_fn(:gmtvtk_get_xfac), Cdouble, (Ptr{Cvoid},), scene)
 	(isfinite(xfac) && xfac > 0) || (xfac = 1.0)
+	# WHERE each ball stands, in the WINDOW'S system. The catalog is lon/lat; on a window in another
+	# system (a PT-TM06 LIDAR mosaic) the plotted positions and the epicentres cross through THE point
+	# crossing (crs.jl), and an event off the window's footprint is not drawn. `kmu` = window units per
+	# km of ground: 1/111.32 (degrees) on a lon/lat window, the system's own unit on a projected one.
+	idxv = collect(idx)
+	wx = Vector{Float64}(plon);  wy = Vector{Float64}(plat)
+	ex = Vector{Float64}(lon);   ey = Vector{Float64}(lat)
+	kmu = 1 / 111.32
+	px, py, pk = _to_window(scene, _LONLAT, plon[idxv], plat[idxv])
+	if pk !== nothing
+		wx = fill(NaN, length(plon));  wy = fill(NaN, length(plat))
+		for (j, k) in enumerate(pk)
+			wx[idxv[k]] = px[j];  wy[idxv[k]] = py[j]
+		end
+		qx, qy, qk = _to_window(scene, _LONLAT, lon[idxv], lat[idxv])
+		ex = fill(NaN, length(lon));  ey = fill(NaN, length(lat))
+		for (j, k) in enumerate(qk)
+			ex[idxv[k]] = qx[j];  ey[idxv[k]] = qy[j]
+		end
+		kmu = _srs_units_per_km(_window_srs(scene))
+	end
 	depcolors = _on(d, "depcolors")
 	plotdate = _on(d, "plotdate")
 	# Date-label styling — overridable from the group's properties dialog (mecaGroupPropsDialog,
@@ -592,6 +613,7 @@ function _focal_plot(scene::Ptr{Cvoid}, d, lon, lat, dep, mag, str1, dip1, rake1
 		isnan(mag[i]) && continue
 		dim = mag5 / 5 * max(mag[i], 0.0)      # radius in KM for this event's magnitude
 		dim <= 0 && continue
+		isnan(wx[i]) && continue                 # off this window's footprint (crossing above)
 		comp, dilat, nodal1, nodal2 = _focal_patch_meca(str1[i], dip1[i], rake1[i], str2[i], dip2[i], rake2[i])
 		compcol = depcolors ? _ovl_color(compnames[_seis_bucket(_SEIS_DEP_EDGES, dep[i])], :fill) : compcolor0
 		# Fills = the disk's (≤4) sectors cut along the two nodal curves — every one a SIMPLE
@@ -628,22 +650,22 @@ function _focal_plot(scene::Ptr{Cvoid}, d, lon, lat, dep, mag, str1, dip1, rake1
 		# also one geod batch per event dominated plot time on real catalogs). The window scales
 		# actor X by xfac (= cos(midlat)); pre-dividing the X offset by xfac makes screen X/Y
 		# offsets equal — exactly round — on any window. mag5size (km) maps via 1° lat = 111.32 km.
-		rdeg = dim / 111.32
+		rdeg = dim * kmu                       # the radius in window units (degrees on a lon/lat window)
 		for (loop, col, role) in zip(loops, cols, roles)
 			np = size(loop, 1)
 			for r in 1:np
-				push!(xy, plon[i] + rdeg * loop[r,1] / xfac, plat[i] + rdeg * loop[r,2])
+				push!(xy, wx[i] + rdeg * loop[r,1] / xfac, wy[i] + rdeg * loop[r,2])
 			end
 			push!(vcounts, Cint(role == 2 ? -np : np))   # negative = open polyline to stroke
 			push!(rgb, col[1], col[2], col[3])
 			push!(evid, Cint(ei * 3 + role))   # event-dominant rank — see the OPAQUE comment above
 		end
-		if lon[i] != plon[i] || lat[i] != plat[i]           # anchor line, epicenter -> plotted position
+		if (lon[i] != plon[i] || lat[i] != plat[i]) && !isnan(ex[i])   # anchor, epicenter -> plotted position
 			push!(asegoff, Cint(length(axyz) ÷ 3))
-			push!(axyz, lon[i], lat[i], 0.0, plon[i], plat[i], 0.0)
+			push!(axyz, ex[i], ey[i], 0.0, wx[i], wy[i], 0.0)
 		end
 		if plotdate && !isempty(date[i])
-			push!(txy, plon[i], plat[i] + rdeg * 1.4)      # clear of the rim (centred justification means
+			push!(txy, wx[i], wy[i] + rdeg * 1.4)          # clear of the rim (centred justification means
 			                                                # half the glyph height sits BELOW the anchor)
 			push!(txts, date[i])
 			push!(tevid, Cint(ei))

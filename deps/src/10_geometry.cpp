@@ -4775,7 +4775,6 @@ static bool sceneVisibleRegion(Scene *s, double &W, double &E, double &S, double
 	// fine and needs no framing decision (SACRED_LAW.md vector-import law: overlays never reframe).
 	// The only clamp left is to what a GEOGRAPHIC region can legally be: a viewport can extend past
 	// the poles or wrap several turns of longitude, and no query box may.
-	S = std::max(S, -90.0);  N = std::min(N, 90.0);
 	// A LONGITUDE SPAN IS AT MOST ONE TURN. Zoomed out, the viewport corners map to lon far outside
 	// the world (the map is a small rectangle in the middle of it), and clamping each end separately
 	// to ±360 still hands out a box up to 720 degrees wide. Every consumer of this feeds it to GMT as
@@ -4784,6 +4783,12 @@ static bool sceneVisibleRegion(Scene *s, double &W, double &E, double &S, double
 	// i.e. no coastline at all, purely because the view was zoomed out. More than a turn on screen
 	// means the whole world is on screen, so that is what is asked for; a legal span is only slid
 	// back so its centre is a real longitude.
+	// …ALL OF WHICH IS ABOUT DEGREES. A projected window (a LIDAR2011 mosaic in PT-TM06 metres, a UTM
+	// grid) or a cartesian one hands out its own units here, and clamping those to ±90 / one turn of
+	// 360 crushed the region to a sliver at the origin. The lon/lat a geographic query needs is made
+	// from this answer by sceneToLonLat (30_app.cpp), never by pretending metres are degrees.
+	if (!activeGridGeog(s)) return (E > W && N > S);
+	S = std::max(S, -90.0);  N = std::min(N, 90.0);
 	if (E - W >= 360.0) { W = -180.0;  E = 180.0; }
 	else {
 		while (0.5 * (W + E) >=  180.0) { W -= 360.0;  E -= 360.0; }

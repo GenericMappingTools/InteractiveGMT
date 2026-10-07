@@ -164,7 +164,7 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_oc_progress_begin, :gmtvtk_oc_progress_set, :gmtvtk_oc_progress_end, :gmtvtk_oc_queue_place,
 	:gmtvtk_set_bgregion_callback, :gmtvtk_set_newwindow_callback, :gmtvtk_set_save_callback,
 	:gmtvtk_set_save_geotiff_callback, :gmtvtk_set_move_callback, :gmtvtk_set_img_stretch_callback,
-	:gmtvtk_set_geography_callback, :gmtvtk_set_tides_callback, :gmtvtk_set_tidemodel_callback, :gmtvtk_set_earthtide_callback,
+	:gmtvtk_set_geography_callback, :gmtvtk_set_lonlat_box_callback, :gmtvtk_set_tides_callback, :gmtvtk_set_tidemodel_callback, :gmtvtk_set_earthtide_callback,
 	:gmtvtk_set_solar_callback, :gmtvtk_solar_report,
 	:gmtvtk_set_solid_callback, :gmtvtk_set_grdsample_callback, :gmtvtk_set_gridmeta_callback,
 	:gmtvtk_set_dimfun_callback, :gmtvtk_set_nswing_callback,

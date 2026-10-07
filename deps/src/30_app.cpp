@@ -299,6 +299,24 @@ static JuliaNewWindowFn g_juliaNewWindow = nullptr;
 typedef void (*JuliaGeoFn)(void *scene, const char *req);
 static JuliaGeoFn g_juliaGeo = nullptr;
 
+// A region in THIS WINDOW'S OWN UNITS -> the lon/lat box that covers it. `box` = W,E,S,N in, the
+// lon/lat box out; returns 1 when the window is PROJECTED and the box was converted, 0 otherwise (a
+// geographic or unreferenced window: the box is already what a query wants, left untouched). The
+// viewer has no PROJ of its own, so the host does it (_on_lonlat_box, crs.jl). Set via
+// gmtvtk_set_lonlat_box_callback.
+typedef int (*JuliaLonLatBoxFn)(void *scene, double *box);
+static JuliaLonLatBoxFn g_juliaLonLatBox = nullptr;
+
+// THE crossing from "a region of this window" to "a region of the Earth". Every request that leaves
+// the window for a GEOGRAPHIC source (GSHHG, a quake catalog, a tide model, the sun) goes through it:
+// a LIDAR2011 mosaic hands out PT-TM06 metres, and those numbers given to GMT as -R were "Geography
+// FAILED … GMT error number = 74". A geographic window passes through unchanged.
+static void sceneToLonLat(Scene *s, double &W, double &E, double &S, double &N) {
+	if (!s || !g_juliaLonLatBox || !s->hasCRS()) return;
+	double b[4] = { W, E, S, N };
+	if (g_juliaLonLatBox(s, b)) { W = b[0];  E = b[1];  S = b[2];  N = b[3]; }
+}
+
 // 3-D Bodies toolbar flyout. Each entry hands a GMT solid NAME ("cube"/"sphere"/"torus"/"cylinder"/
 // "tetrahedron"/… — the SOLIDS catalogue keys in fv.jl) to Julia (g_juliaSolid), which builds the
 // named GMTfv and opens it with view_fv. Set via gmtvtk_set_solid_callback; nullptr -> the buttons

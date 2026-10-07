@@ -114,7 +114,8 @@ end
 # vector. Never ask gmtselect to read the file and never duplicate its result-shape assumptions.
 function _import_xy_read(scene::Ptr{Cvoid}, path::String, empty::Bool)
 	D = GMT.gmtread(path; table=true)
-	return empty ? D : _clip_to_display(scene, D)
+	# Every Open xy(z) mode draws ROWS (a point, a scaled symbol, an arrow, a label): crossed as points.
+	return empty ? D : _clip_to_display(scene, D; kind = :points)
 end
 
 # `empty` is the C++ side's own sceneNeedsBase answer, carried in the request envelope — never a
