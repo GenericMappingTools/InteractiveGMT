@@ -8,6 +8,7 @@
 #include "mb3dsoundings_window.h"
 #include "mbeditviz.h"
 
+#include <QDir>
 #include <QFileInfo>
 #include <QMessageBox>
 #include <QTimer>
@@ -348,23 +349,19 @@ int mb3dsdgEsfFlag(const MbEditHost &host, const QStringList &files, const doubl
 	return failed.isEmpty() ? n : -1;
 }
 
-bool mb3dsdgOpenAreaCloud(void *parentScene, const double *ring, int nring,
-                          const std::function<void *(const double *xyz, int n, const QString &title)> &makeWindow,
-                          const std::function<void(void *)> &closeWin) {
+// THE sub-cloud view, whatever picks its soundings: a line area's "Show point-cloud" (the soundings
+// inside it) and a navigation track's (the soundings of its file). `keep` says which of the parent's
+// soundings go; everything else -- the window, the pane, Accept / Discard, the parent stepping aside --
+// is this one function, so the two views cannot drift apart. `none` is said when nothing is kept.
+static bool openSubCloud(void *parentScene, const std::function<bool(const mb3dsoundings_sounding_struct &)> &keep,
+                         const QString &suffix, const QString &none,
+                         const std::function<void *(const double *xyz, int n, const QString &title)> &makeWindow,
+                         const std::function<void(void *)> &closeWin) {
 	Cloud *p = g_cloud;
-	if (!p || p->scene != parentScene || !ring || nring < 3 || !makeWindow)
+	if (!p || p->scene != parentScene || !keep || !makeWindow)
 		return false;
-	auto inside = [ring, nring](double x, double y) {   // even-odd rule over the ring (x,y pairs)
-		bool in = false;
-		for (int i = 0, j = nring - 1; i < nring; j = i++) {
-			const double xi = ring[2 * i], yi = ring[2 * i + 1], xj = ring[2 * j], yj = ring[2 * j + 1];
-			if ((yi > y) != (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi)
-				in = !in;
-		}
-		return in;
-	};
-	// the parent's soundings inside the area, on the parent's own ping x beam frame (so every sounding
-	// keeps its identity), flagged ones carried as mbgetdata carries them (shifted by the flag offset)
+	// the parent's soundings kept, on the parent's own ping x beam frame (so every sounding keeps its
+	// identity), flagged ones carried as mbgetdata carries them (shifted by the flag offset)
 	const int nping = int(p->pingTime.size());
 	int nbeam = 0;
 	for (const auto &s : p->s)
@@ -374,7 +371,7 @@ bool mb3dsdgOpenAreaCloud(void *parentScene, const double *ring, int nring,
 	const size_t nn = size_t(nping) * size_t(nbeam);
 	std::vector<double> lon(nn, NAN), lat(nn, NAN), z(nn, NAN), good;
 	for (const auto &s : p->s) {
-		if (!inside(s.x, s.y))
+		if (!keep(s))
 			continue;
 		const size_t k = size_t(s.ibeam) * size_t(nping) + size_t(s.iping);
 		lon[k] = s.x;
@@ -388,10 +385,10 @@ bool mb3dsdgOpenAreaCloud(void *parentScene, const double *ring, int nring,
 		}
 	}
 	if (good.empty()) {
-		QMessageBox::information(nullptr, "Show point-cloud", "No good sounding of " + p->name + " lies inside this area.");
+		QMessageBox::information(nullptr, "Show point-cloud", QString(none).arg(p->name));
 		return false;
 	}
-	const QString title = p->name + " (area)";
+	const QString title = p->name + " (" + suffix + ")";
 	// the parent waits: its soundings and edits stay, only its pane goes (one 3-D sounding editor at a time)
 	g_cloud = nullptr;
 	if (mb3dsdgIsOpen())
@@ -415,6 +412,76 @@ bool mb3dsdgOpenAreaCloud(void *parentScene, const double *ring, int nring,
 		delete p;
 	}
 	return false;
+}
+
+bool mb3dsdgOpenAreaCloud(void *parentScene, const double *ring, int nring,
+                          const std::function<void *(const double *xyz, int n, const QString &title)> &makeWindow,
+                          const std::function<void(void *)> &closeWin) {
+	if (!ring || nring < 3)
+		return false;
+	auto inside = [ring, nring](const mb3dsoundings_sounding_struct &s) {   // even-odd rule over the ring
+		bool in = false;
+		for (int i = 0, j = nring - 1; i < nring; j = i++) {
+			const double xi = ring[2 * i], yi = ring[2 * i + 1], xj = ring[2 * j], yj = ring[2 * j + 1];
+			if ((yi > s.y) != (yj > s.y) && s.x < (xj - xi) * (s.y - yi) / (yj - yi) + xi)
+				in = !in;
+		}
+		return in;
+	};
+	return openSubCloud(parentScene, inside, "area", "No good sounding of %1 lies inside this area.",
+	                    makeWindow, closeWin);
+}
+
+// Is `path` one of the swath files of `parentScene`'s cloud? Paths compared as the OS does: separators
+// normalised, and case-blind on Windows.
+static int cloudFileIndex(const Cloud *p, const QString &path) {
+	const QString want = QDir::cleanPath(QDir::fromNativeSeparators(path));
+	for (int i = 0; i < p->files.size(); i++) {
+		const QString have = QDir::cleanPath(QDir::fromNativeSeparators(p->files[i]));
+#ifdef _WIN32
+		if (have.compare(want, Qt::CaseInsensitive) == 0) return i;
+#else
+		if (have == want) return i;
+#endif
+	}
+	return -1;
+}
+
+bool mb3dsdgHasCloudFiles(void *parentScene, const QStringList &files) {
+	const Cloud *p = g_cloud;
+	if (!p || p->scene != parentScene)
+		return false;
+	for (const QString &f : files)
+		if (cloudFileIndex(p, f) >= 0)
+			return true;
+	return false;
+}
+
+bool mb3dsdgOpenFileCloud(void *parentScene, const QStringList &files,
+                          const std::function<void *(const double *xyz, int n, const QString &title)> &makeWindow,
+                          const std::function<void(void *)> &closeWin) {
+	const Cloud *p = g_cloud;
+	if (!p || p->scene != parentScene)
+		return false;
+	std::vector<char> take(size_t(p->files.size()), 0);
+	QStringList names;
+	for (const QString &f : files) {
+		const int i = cloudFileIndex(p, f);
+		if (i < 0 || take[size_t(i)])
+			continue;
+		take[size_t(i)] = 1;
+		names << QFileInfo(f).completeBaseName();
+	}
+	if (names.isEmpty())
+		return false;
+	const std::vector<int> &pf = p->pingFile;
+	auto ofTrack = [&take, &pf](const mb3dsoundings_sounding_struct &s) {
+		return s.iping >= 0 && s.iping < int(pf.size()) && pf[size_t(s.iping)] >= 0 &&
+		       pf[size_t(s.iping)] < int(take.size()) && take[size_t(pf[size_t(s.iping)])];
+	};
+	const QString suffix = names.size() == 1 ? names.front() : QString("%1 tracks").arg(names.size());
+	return openSubCloud(parentScene, ofTrack, suffix, "No good sounding of %1 belongs to this track.",
+	                    makeWindow, closeWin);
 }
 
 bool mb3dsdgAreaOpen() {

@@ -49,8 +49,8 @@ bool mb3dsdgOpen(QWidget *parent, const MbEditHost &host, mb3dsoundings_struct *
 // Action its Action menu without Apply Bias and the Optimize entries. Closing the pane dismisses it
 // (notify.dismiss). One editor at a time: an open 3-D soundings window or pane is ended first.
 bool mb3dsdgOpenPane(void *scene, const MbEditHost &host, mb3dsoundings_struct *data, const Mb3dsdgNotify &notify);
-// The open pane as an AREA pane (a line area's "Show point-cloud"): Save becomes "Accept flags", Discard
-// shows, and the CUBE filter / Gridding buttons go (they belong to the full cloud's pane)
+// The open pane as an AREA pane (a line area's or a track's "Show point-cloud"): Save becomes "Accept
+// flags" and Discard shows. CUBE filter / Gridding stay, acting on this pane's own soundings.
 void mb3dsdgSetAreaMode();
 // The pane's Navigation toggle calls `show` (the host's visibility setter for the window's navigation
 // lines, ordinary line elements of the window); its box starts at `on`.
@@ -72,6 +72,8 @@ bool mb3dsdgKey(int ch);
 bool mb3dsdgCounts(int *drawn, int *good, int *flagged);
 // View > Show flagged, through the menu entry itself
 bool mb3dsdgSetShowFlagged(bool on);
+// The open pane's buttons that are shown: bit 0 CUBE filter, bit 1 Gridding, bit 2 Discard; -1 = no pane
+int mb3dsdgPaneButtons();
 // one of the six edit modes (MB3DSDG_MOUSE_TOGGLE .. _INFO)
 bool mb3dsdgSetEditMode(int mode);
 // the window-pixel position (y down) of sounding i as last drawn

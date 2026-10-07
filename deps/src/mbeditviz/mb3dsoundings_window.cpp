@@ -2229,9 +2229,9 @@ void mb3dsdgSetAreaMode() {
 	}
 	if (auto *db = d->findChild<QPushButton *>("discardButton"))
 		db->show();
-	for (const char *nm : {"cubeFilterButton", "gridButton"})
-		if (auto *b = d->findChild<QPushButton *>(nm))
-			b->hide();
+	// CUBE filter and Gridding STAY: a sub-cloud view (an area's, a track's) is a full 3D Soundings pane.
+	// Both act on THIS window's pane -- Gridding grids its good soundings into its own window, CUBE's
+	// flags become this pane's edits, which Accept hands to the full cloud like any other.
 }
 
 // The pane's Navigation toggle drives `show` (the host's own visibility setter for the window's
@@ -2318,6 +2318,20 @@ bool mb3dsdgCounts(int *drawn, int *good, int *flagged) {
 	if (good) *good = g_ms->soundingdata->num_soundings_unflagged;
 	if (flagged) *flagged = g_ms->soundingdata->num_soundings_flagged;
 	return true;
+}
+
+int mb3dsdgPaneButtons() {
+	Mb3dsdg *m = g_ms;
+	if (!m || !m->pane || !m->paneDock)
+		return -1;
+	int bits = 0, k = 0;
+	for (const char *nm : {"cubeFilterButton", "gridButton", "discardButton"}) {
+		auto *b = m->paneDock->findChild<QPushButton *>(nm);
+		if (b && !b->isHidden())
+			bits |= 1 << k;
+		k++;
+	}
+	return bits;
 }
 
 bool mb3dsdgSetShowFlagged(bool on) {

@@ -189,6 +189,56 @@ end
 	end
 end
 
+# A navigation track of the cloud offers the same "Show point-cloud" in its "MB-System" submenu (and so
+# does its group's handle): the soundings of ITS file, in the same view an area gets, with the same
+# Discard. Here the cloud is one file, so the track's view holds every good sounding of it.
+@testitem "Navigation track: MB-System > Show point-cloud opens its file's soundings" tags=[:gui] begin
+	IG = InteractiveGMT
+	src = get(ENV, "INTERACTIVEGMT_MBEDITVIZ_TESTFILE",
+	          raw"C:\progs_cygw\MB-System_take2\test\utilities\testdata\mb57\TN136HS.309.snipped.mb57")
+	mbio = get(ENV, "INTERACTIVEGMT_MBIO", "")
+	if !haskey(IG._LIB_FNS, :gmtvtk_mb_file_cloud_h)
+		@test_skip "the experimental mbeditviz (and its cloud pane) is not built into this library"
+	elseif isempty(mbio) || !isfile(mbio) || !isfile(src) || !isfile(src * ".inf")
+		@test_skip "MB-System 5.8 MBIO library (INTERACTIVEGMT_MBIO) or the mb57 test file (+ .inf) not available"
+	else
+		pump(n = 20) = for _ in 1:n; sleep(0.05); end
+		mktempdir() do d
+			f = joinpath(d, basename(src))
+			cp(src, f)
+			cp(src * ".inf", f * ".inf")
+			h = ccall(IG._fn(:gmtvtk_open_empty), Ptr{Cvoid}, (Cstring,), "3D Soundings track test")
+			try
+				IG._start_pump()
+				IG._on_drop(h, f)
+				pump()
+				good() = ccall(IG._fn(:gmtvtk_mb_cloud_good_h), Cint, (Ptr{Cvoid}, Ptr{Cdouble}, Cint), h, C_NULL, 0)
+				g0 = good()
+				@test g0 > 0
+				function items(element, group)
+					buf = zeros(UInt8, 2048)
+					ccall(IG._fn(:gmtvtk_mbgrdviz_track_menu_test), Cint,
+					      (Ptr{Cvoid}, Cstring, Cint, Ptr{UInt8}, Cint), h, element, Cint(group), buf, Cint(length(buf)))
+					return unsafe_string(pointer(buf))
+				end
+				@test occursin("Show point-cloud", items(basename(f), 0))                       # the track
+				@test occursin("Show point-cloud", items("Navigation - " * basename(f), 1))     # its group
+				@test ccall(IG._fn(:gmtvtk_mb_file_cloud_h), Cint, (Ptr{Cvoid}, Cstring), h, f) == 1
+				pump()
+				@test good() == -1                               # the full cloud's pane stepped aside
+				# a FULL 3D Soundings pane: CUBE filter, Gridding -- and Discard, being a sub-cloud view
+				@test ccall(IG._fn(:gmtvtk_mb_pane_buttons), Cint, ()) == 7
+				@test ccall(IG._fn(:gmtvtk_mb_area_finish_h), Cint, (Cint,), 0) == 1   # Discard
+				pump(40)
+				@test good() == g0                               # nothing reached the full cloud
+			finally
+				ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), h)
+				pump()
+			end
+		end
+	end
+end
+
 # An edit marks a sounding, it never makes it vanish: with View > Show flagged OFF (which hides the soundings
 # that came in flagged), Erase through the window's view flags soundings and every one of them is still drawn.
 @testitem "3D Soundings: erased soundings stay drawn with Show flagged off" tags=[:gui] begin

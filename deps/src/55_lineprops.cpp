@@ -1261,8 +1261,13 @@ static std::vector<std::string> lineGroupMbNavs(Scene *s, const std::string &gna
 #ifdef GMTVTK_MBGRDVIZ
 static MbGrdVizHost mbgrdvizViewerHost();   // 90_c_api.cpp
 #endif
+//
+// "Show point-cloud" goes in the same submenu, for tracks whose swath file is part of window `s`'s point
+// cloud (a dropped swath file's navigation): the soundings of THAT file in the view a line area's
+// "Show point-cloud" opens. Built here, the one place the submenu is made, so a single track and its
+// group's handle both get it.
 static void addMbSystemMenu(QMenu &m, const std::vector<std::string> &navs, QWidget *parent,
-                            const std::vector<std::pair<std::string, int>> &own) {
+                            const std::vector<std::pair<std::string, int>> &own, Scene *s) {
 #ifdef GMTVTK_MBGRDVIZ
 	std::vector<std::string> known;
 	for (const std::string &n : navs)
@@ -1285,9 +1290,17 @@ static void addMbSystemMenu(QMenu &m, const std::vector<std::string> &navs, QWid
 				mbRunNavEditor(mbgrdvizViewerHost(), parent, which, files, formats);
 			});
 	}
+#ifdef GMTVTK_MBEDITVIZ
+	QStringList ownFiles;
+	for (const auto &f : own) ownFiles << QString::fromStdString(f.first);
+	if (s && !ownFiles.isEmpty() && mb3dsdgHasCloudFiles(s, ownFiles)) {
+		mb->addSeparator();
+		mb->addAction("Show point-cloud", [s, ownFiles]() { mbShowFilesCloud(s, ownFiles); });
+	}
+#endif
 	m.addSeparator();
 #else
-	(void)m; (void)navs; (void)parent; (void)own;
+	(void)m; (void)navs; (void)parent; (void)own; (void)s;
 #endif
 }
 
@@ -1363,7 +1376,7 @@ static void popupLineObjectMenu(Scene *s, const LineRef &lr, const QString &name
 		std::vector<std::pair<std::string, int>> own;
 		if (!ovp->mbFile.empty())
 			own.push_back({ovp->mbFile, ovp->mbFormat});
-		addMbSystemMenu(m, { ovp->mbNav }, s->win, own);
+		addMbSystemMenu(m, { ovp->mbNav }, s->win, own, s);
 	}
 
 	// EVERY nested rectangle carries the nesting actions at the TOP of the menu, so the chain can

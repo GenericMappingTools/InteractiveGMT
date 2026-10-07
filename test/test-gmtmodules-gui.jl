@@ -131,6 +131,9 @@ end
 	finally
 		ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), f.h)
 	end
+	# closed: the test dll must have given the borrowed window back (see test-dgt-gui.jl)
+	for _ in 1:10; IG._pump_once(); sleep(0.02); end
+	@test ccall(_test_fn(:gmtvtk_scene_borrowed_test), Cint, (Ptr{Cvoid},), f.h) == 0
 end
 
 @testitem "grdfilter: every filter family the dialog can build" tags=[:gui] setup=[GmtModules] begin

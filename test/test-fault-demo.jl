@@ -276,6 +276,9 @@ end
 	Gbad = GMT.mat2grid(zeros(Float32, 40, 60); x = collect(range(-3.0, 3.0, length = 60)),
 	                    y = collect(range(35.0, 37.0, length = 40)))
 	Gbad.layout = "TRB";  Gbad.registration = 1     # centres kept, pixel header (mat2grid wants edges)
-	@test GMT.getsize(Gbad) != IG._grid_dims(Gbad)      # the disagreement this guards against
+	# the disagreement this guards against: its header (GMT.getsize) and its buffer do not describe the
+	# same grid, so the one grid-dimension door refuses it outright rather than guessing either way
+	@test GMT.getsize(Gbad) != reverse(size(Gbad.z))
+	@test_throws Exception IG._grid_dims(Gbad)
 	@test_throws Exception okd(Gbad)
 end

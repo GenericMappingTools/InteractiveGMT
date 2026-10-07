@@ -30,4 +30,8 @@
 	finally
 		ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), f.h)
 	end
+	# The test dll borrowed this window; once it is closed it must not count it as alive any more, or
+	# the next test that walks the window list reads freed memory (a crash on Linux / macOS).
+	for _ in 1:10; IG._pump_once(); sleep(0.02); end
+	@test ccall(_test_fn(:gmtvtk_scene_borrowed_test), Cint, (Ptr{Cvoid},), f.h) == 0
 end

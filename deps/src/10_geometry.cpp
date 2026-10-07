@@ -959,12 +959,14 @@ static std::vector<std::pair<std::string, int>> lineGroupMbFiles(Scene *s, const
 // A line area's "Show point-cloud" (90_c_api.cpp): the window's swath soundings inside `ring` in a view of
 // their own, with their own 3D Soundings
 static void mbShowAreaCloud(Scene *s, const std::vector<std::array<double, 3>> &ring);
+// ...and a navigation track's (or a group of tracks'): the soundings of those swath files, the same view
+static void mbShowFilesCloud(Scene *s, const QStringList &files);
 #endif
 // A point cloud's Scene Objects menus (50_scene.cpp): its master handle and its "Points" row
 static void cloudObjectMenu(Scene *s, const QPoint &gp);
 static void cloudPointsMenu(Scene *s, const QPoint &gp);
 static void addMbSystemMenu(QMenu &m, const std::vector<std::string> &navs, QWidget *parent = nullptr,
-                            const std::vector<std::pair<std::string, int>> &own = {});
+                            const std::vector<std::pair<std::string, int>> &own = {}, Scene *s = nullptr);
 static void overlayBuildFill(Overlay &ov);                                 // filled overlay's triangles (50_scene.cpp)
 static bool overlayActorFilled(Scene *s, vtkActor *a);                     // ...is this actor one? (50_scene.cpp)
 static void vwSaveProduct(Scene *s, const std::string &key);               // Vector Wizard product -> SVG/EPS/PDF (50_scene.cpp)

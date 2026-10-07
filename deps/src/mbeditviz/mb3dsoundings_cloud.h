@@ -44,9 +44,18 @@ int mb3dsdgEsfFlag(const MbEditHost &host, const QStringList &files, const doubl
 bool mb3dsdgOpenAreaCloud(void *parentScene, const double *ring, int nring,
                           const std::function<void *(const double *xyz, int n, const QString &title)> &makeWindow,
                           const std::function<void(void *)> &closeWin);
+// A navigation track's "Show point-cloud": the same view (the same function underneath), its soundings
+// being those of `parentScene`'s cloud that came from the swath file(s) `files` -- a track, or a group of
+// them. False when nothing opened.
+bool mb3dsdgOpenFileCloud(void *parentScene, const QStringList &files,
+                          const std::function<void *(const double *xyz, int n, const QString &title)> &makeWindow,
+                          const std::function<void(void *)> &closeWin);
+// Does `parentScene`'s swath cloud hold any of `files`? (what offers a track's "Show point-cloud")
+bool mb3dsdgHasCloudFiles(void *parentScene, const QStringList &files);
 // The open 3D Soundings view (mb3dsoundings_window.h): points it draws, good / flagged counts; and View >
 // Show flagged through its menu entry
 bool mb3dsdgCounts(int *drawn, int *good, int *flagged);
+int mb3dsdgPaneButtons();          // shown buttons: bit 0 CUBE filter, bit 1 Gridding, bit 2 Discard; -1 none
 bool mb3dsdgSetShowFlagged(bool on);
 // An area pane is the open one (its parent waiting); its Accept (true) or Discard (false), as its buttons
 bool mb3dsdgAreaOpen();

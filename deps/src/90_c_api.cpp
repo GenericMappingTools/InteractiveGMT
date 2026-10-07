@@ -2585,6 +2585,22 @@ GMTVTK_API int gmtvtk_mb_tag_cloud_grid_h(void *handle, const char *name) {
 // A line area's "Show point-cloud": the window's swath soundings inside the area, in a NEW point-cloud
 // window (gmtvtk_view_points, the window every point cloud gets) with its own 3D Soundings pane
 // (mb3dsdgOpenAreaCloud). Closing that window is its pane's Discard.
+// The window a sub-cloud view (an area's, a track's) opens in: gmtvtk_view_points, the window every
+// point cloud gets, framed on the soundings it is given. ONE maker and ONE closer for both views.
+static std::function<void *(const double *, int, const QString &)> mbSubCloudWindowMaker(Scene *s) {
+	const int geog = s->baseGeog ? 1 : 0;
+	return [geog](const double *xyz, int np, const QString &title) -> void * {
+		double x0 = xyz[0], x1 = xyz[0], y0 = xyz[1], y1 = xyz[1];
+		for (int i = 1; i < np; i++) {
+			x0 = std::min(x0, xyz[3 * i]);  x1 = std::max(x1, xyz[3 * i]);
+			y0 = std::min(y0, xyz[3 * i + 1]);  y1 = std::max(y1, xyz[3 * i + 1]);
+		}
+		return gmtvtk_view_points(xyz, np, nullptr, nullptr, 0, x0, x1, y0, y1, geog, 3.0, 1.0, 0.0, 0.0,
+		                          title.toUtf8().constData());
+	};
+}
+static void mbSubCloudWindowClose(void *w) { if (sceneAlive(static_cast<Scene *>(w))) gmtvtk_close(w); }
+
 static void mbShowAreaCloud(Scene *s, const std::vector<std::array<double, 3>> &ring) {
 	if (!sceneAlive(s) || ring.size() < 4)
 		return;
@@ -2594,20 +2610,27 @@ static void mbShowAreaCloud(Scene *s, const std::vector<std::array<double, 3>> &
 		xy.push_back(ring[i][0]);
 		xy.push_back(ring[i][1]);
 	}
-	const int geog = s->baseGeog ? 1 : 0;
-	auto makeWindow = [geog](const double *xyz, int np, const QString &title) -> void * {
-		double x0 = xyz[0], x1 = xyz[0], y0 = xyz[1], y1 = xyz[1];
-		for (int i = 1; i < np; i++) {
-			x0 = std::min(x0, xyz[3 * i]);  x1 = std::max(x1, xyz[3 * i]);
-			y0 = std::min(y0, xyz[3 * i + 1]);  y1 = std::max(y1, xyz[3 * i + 1]);
-		}
-		return gmtvtk_view_points(xyz, np, nullptr, nullptr, 0, x0, x1, y0, y1, geog, 3.0, 1.0, 0.0, 0.0,
-		                          title.toUtf8().constData());
-	};
-	auto closeWin = [](void *w) { if (sceneAlive(static_cast<Scene *>(w))) gmtvtk_close(w); };
 	QApplication::setOverrideCursor(Qt::WaitCursor);
-	mb3dsdgOpenAreaCloud(s, xy.data(), int(xy.size() / 2), makeWindow, closeWin);
+	mb3dsdgOpenAreaCloud(s, xy.data(), int(xy.size() / 2), mbSubCloudWindowMaker(s), mbSubCloudWindowClose);
 	QApplication::restoreOverrideCursor();
+}
+
+// A navigation track's "Show point-cloud" (its "MB-System" submenu, addMbSystemMenu): the soundings of
+// its swath file(s), in the same view an area gets. Accept / Discard / the parent's pane: the same.
+static void mbShowFilesCloud(Scene *s, const QStringList &files) {
+	if (!sceneAlive(s) || files.isEmpty())
+		return;
+	QApplication::setOverrideCursor(Qt::WaitCursor);
+	mb3dsdgOpenFileCloud(s, files, mbSubCloudWindowMaker(s), mbSubCloudWindowClose);
+	QApplication::restoreOverrideCursor();
+}
+// The same from the host: window `handle`'s cloud, the soundings of the swath file `file`. 1 = opened
+GMTVTK_API int gmtvtk_mb_file_cloud_h(void *handle, const char *file) {
+	Scene *s = static_cast<Scene *>(handle);
+	if (!sceneAlive(s) || !file || !*file)
+		return 0;
+	mbShowFilesCloud(s, QStringList{ QString::fromUtf8(file) });
+	return mb3dsdgAreaOpen() ? 1 : 0;
 }
 // The same "Show point-cloud" from coordinates: the soundings of window `handle`'s swath cloud inside the
 // polygon of n x,y vertices (true coords). 1 = the area window and its pane opened
@@ -2625,6 +2648,11 @@ GMTVTK_API int gmtvtk_mb_area_cloud_h(void *handle, const double *xy, int n) {
 // The open 3D Soundings view: out[0] points it draws, out[1] good, out[2] flagged soundings. 1 = open
 GMTVTK_API int gmtvtk_mb_soundings_counts(int *out) {
 	return (out && mb3dsdgCounts(&out[0], &out[1], &out[2])) ? 1 : 0;
+}
+// The open 3D Soundings pane's buttons that are shown: bit 0 CUBE filter, bit 1 Gridding, bit 2 Discard
+// (an area / track view). -1 = no pane
+GMTVTK_API int gmtvtk_mb_pane_buttons() {
+	return mb3dsdgPaneButtons();
 }
 // View > Show flagged of the open 3D Soundings view, through its menu entry. 1 = done
 GMTVTK_API int gmtvtk_mb_soundings_show_flagged(int on) {
@@ -3092,7 +3120,7 @@ GMTVTK_API int gmtvtk_mbgrdviz_track_menu_test(void *handle, const char *element
 				break;
 			}
 	QMenu m;
-	addMbSystemMenu(m, navs, s->win, own);
+	addMbSystemMenu(m, navs, s->win, own, s);
 	std::string items;
 	int n = 0;
 	for (QAction *a : m.actions())
@@ -7402,10 +7430,16 @@ GMTVTK_API int gmtvtk_ecmwf_dialog_test(void *handle, const char *path) {
 // out here for a scene that is perfectly alive. The Scene struct is byte-identical between the two
 // dlls (same source, same compiler), so adopting the pointer is the same mirroring the callback
 // registrations already do.
+static void testBorrowScene(Scene *s);   // below: borrow, given back when the window goes
+// Does THIS dll still count `scene` as a live window? Pointer comparison only -- safe to ask about a
+// window that is already gone, which is the point: after its window closes the answer must be 0.
+GMTVTK_API int gmtvtk_scene_borrowed_test(void *scene) {
+	return g_scenes.count(static_cast<Scene *>(scene)) ? 1 : 0;
+}
 GMTVTK_API int gmtvtk_scene_adopt_test(void *scene) {
 	Scene *s = static_cast<Scene *>(scene);
 	if (!s) return 0;
-	g_scenes.insert(s);
+	testBorrowScene(s);
 	return 1;
 }
 
@@ -8040,6 +8074,20 @@ GMTVTK_API void *gmtvtk_open_empty(const char *title);   // defined below; forwa
 //
 // ONE function does the borrowing, for every hook, so no site can forget the giving-back half. A
 // repeat open on the same dialog just connects again — the handler is idempotent.
+// The borrowing for a hook that has no dialog slot to tie it to (a scene adopted as it is, or a dialog
+// kept in a per-window registry rather than a g_*TestDlg pointer): the borrowed Scene is given back when
+// its WINDOW is destroyed. Without this a closed window stays "alive" here for ever, and the next thing
+// in this dll that walks g_scenes -- rebuildSceneObjects -> swipeRefreshAvailability ->
+// linkPartnerWindows -- reads the freed Scene: std::bad_alloc / SIGSEGV on Linux and macOS (2026-10-07,
+// the grdlandmask parking test right after the DGT one), silently "fine" on Windows.
+static void testBorrowScene(Scene *s) {
+	if (!s) return;
+	g_scenes.insert(s);
+	static std::unordered_set<Scene *> wired;      // one give-back per window, however often borrowed
+	if (s->win && wired.insert(s).second)
+		QObject::connect(s->win, &QObject::destroyed, [s]() { g_scenes.erase(s); wired.erase(s); });
+}
+
 template <class T>
 static void testBorrowWindow(Scene *s, T **slot) {
 	if (!s) return;
@@ -8672,7 +8720,7 @@ GMTVTK_API int gmtvtk_movie_open_dialog_test(void *handle) {
 	ensureApp();
 	Scene *s = static_cast<Scene *>(handle);
 	if (!s || !s->win) return 0;
-	g_scenes.insert(s);
+	testBorrowScene(s);
 	return gmtvtk_open_movie_dialog_h(s);
 }
 // The X, driven the way a user drives it.
@@ -8712,7 +8760,7 @@ GMTVTK_API int gmtvtk_dgt_open_dialog_test(void *handle) {
 	ensureApp();
 	Scene *s = static_cast<Scene *>(handle);
 	if (!s || !s->win) return 0;
-	g_scenes.insert(s);
+	testBorrowScene(s);
 	DgtLidarDialog *w = dgtTestDlg(handle);
 	if (w) w->unpark();
 	else {
@@ -8783,7 +8831,7 @@ GMTVTK_API int gmtvtk_landmask_open_dialog_test(void *handle) {
 	ensureApp();
 	Scene *s = static_cast<Scene *>(handle);
 	if (!s || !s->win) return 0;
-	g_scenes.insert(s);
+	testBorrowScene(s);
 	const int ok = openGrdLandmaskDialog(s->win, s);
 	QApplication::processEvents();
 	return ok;
