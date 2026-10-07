@@ -60,6 +60,7 @@
 			for dir in (+1, -1)
 				r = hold(f.h, st, dir, 2.0)
 				@info "hold dir=$dir" r
+				isdefined(Main, :_log) && Main._log("    hold dir=", dir, ": ", r)
 				# Moves in the asked direction, several DRAWN slices (a healthy 2 s hold draws 10+).
 				@test dir * (r.vrel - r.v0) > 3
 				@test r.ndrawn > 3
@@ -123,6 +124,11 @@ end
 			end
 			vend = slider(f.h)
 			@info "sat hold" gapat gcms = round((Base.gc_time_ns() - g0) / 1e6) v0 vrel ndrawn = length(unique(drawn)) nr gap vend cur = st.cur + 1
+			# The same numbers into the run log (test/runtests.jl), so a failed hold says WHEN the worst gap
+			# came and how much of the hold was GC, without anyone having kept the terminal.
+			isdefined(Main, :_log) && Main._log("    sat hold: gap=", round(gap, digits = 3), "s at ", round(gapat, digits = 2),
+				"s, gc=", round((Base.gc_time_ns() - g0) / 1e6), "ms, drawn=", length(unique(drawn)), ", renders=", nr,
+				", slider ", v0, "->", vrel, "->", vend, ", cur=", st.cur + 1)
 			@test vrel - v0 > 3
 			@test length(unique(drawn)) > 3
 			@test nr >= length(unique(drawn))

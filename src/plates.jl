@@ -165,7 +165,7 @@ function _euler_rotate(scene::Ptr{Cvoid}, d::Dict{String,String})::Cint
 		pf = _get(d, "polesfile")
 		isempty(pf) && error("no rotation poles file given")
 		isfile(pf) || error("rotation poles file not found: $pf")
-		eopt  = "-E$pf"
+		eopt  = "-E" * _gmt_quote_path(pf)
 		model = basename(pf)
 	end
 
@@ -329,7 +329,7 @@ function _euler_interp(d::Dict{String,String})::Cint
 		open(tmp, "w") do io
 			for r in eachrow(P);  println(io, join(r, '\t'));  end
 		end
-		R = GMT.gmt("rotconverter $tmp -Fs")
+		R = GMT.gmt("rotconverter " * _gmt_quote_path(tmp) * " -Fs")
 		isa(R, Vector) ? R[1].data : R.data
 	finally
 		isfile(tmp) && rm(tmp, force = true)
@@ -466,7 +466,7 @@ function _euler_stages(d::Dict{String,String})::Cint
 		open(tmp, "w") do io
 			for r in eachrow(P);  println(io, join(r, '\t'));  end
 		end
-		R = GMT.gmt("rotconverter $tmp $opt")
+		R = GMT.gmt("rotconverter " * _gmt_quote_path(tmp) * " $opt")
 		isa(R, Vector) ? R[1].data : R.data
 	finally
 		isfile(tmp) && rm(tmp, force = true)

@@ -599,7 +599,7 @@ _ge_ini_optv()::String = _ini_get("gmtedit", "V")
 # nothing usable, so the caller can fall back to the netCDF variables.
 function _ge_mgd77list(path::String, cols::Vector{String})
 	isempty(cols) && return nothing
-	D = GMT.gmt("mgd77list " * path * " -F" * join(cols, ',') * " -Ndk -Nsn")
+	D = GMT.gmt("mgd77list " * _gmt_quote_path(path) * " -F" * join(cols, ',') * " -Ndk -Nsn")
 	d1 = D isa AbstractVector ? (isempty(D) ? nothing : first(D)) : D
 	d1 === nothing && return nothing
 	m = d1.data

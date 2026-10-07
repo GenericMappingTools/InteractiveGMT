@@ -18,7 +18,8 @@
 # A file path that travels inside a GMT command STRING is double-quoted. GMT_Create_Options masks
 # spaces inside quotes before splitting on space and strips the quotes afterwards, which is what
 # lets a path like C:/My Documents/body2d.txt survive the trip. Shared by every dialog that puts a
-# path in a command string rather than reading the file itself: talwani2d, talwani3d, gravprisms.
+# path in a command string rather than reading the file itself. A path handed over as its own argv
+# word (a Cmd, an external `gmt` run) is never split and must NOT be quoted: there the quotes stay.
 _gmt_quote_path(path::AbstractString) = '"' * String(path) * '"'
 
 # The three geopotential fields the two talwani modules share (-F), with the unit each is reported in.

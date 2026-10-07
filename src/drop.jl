@@ -175,7 +175,7 @@ function _mb_soundings(path::String)
 	isfile(path) || error("swath file not found: $path")
 	(cp, ct, cd) = _MB_SOUNDINGS_CACHE[]
 	(cp == path && ct == mtime(path) && cd !== nothing) && return cd
-	S = GMT.gmt("mbgetdata -I" * replace(path, '/' => '\\') * " -A-1000000")
+	S = GMT.gmt("mbgetdata -I" * _gmt_quote_path(replace(path, '/' => '\\')) * " -A-1000000")
 	(S isa AbstractVector && length(S) >= 3 && !isempty(S[1].data)) ||
 		error("mbgetdata gave no soundings for $(basename(path))")
 	r = (Float64.(S[1].data), Float64.(S[2].data), Float64.(S[3].data))
@@ -187,7 +187,7 @@ end
 # GMT record per ping: the time, the sensor navigation lon/lat, the file name as its text).
 # -> (times, file index per ping (0-based), files, navlon, navlat)
 function _mb_pings(path::String)
-	P = GMT.gmt("mblist -I" * replace(path, '/' => '\\') * " -OM_X_Y.F")
+	P = GMT.gmt("mblist -I" * _gmt_quote_path(replace(path, '/' => '\\')) * " -OM_X_Y.F")
 	(P isa GMTdataset && !isempty(P.data)) || error("mblist gave no pings for $(basename(path))")
 	times = Float64.(P.data[:, 1])
 	files = String[]

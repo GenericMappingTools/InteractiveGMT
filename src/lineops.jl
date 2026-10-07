@@ -308,7 +308,7 @@ function _lop_nearest_idx(ring::Matrix{Float64}, pts::Matrix{Float64})
 		open(tmp, "w") do io
 			for i in 1:size(ring, 1);  println(io, ring[i, 1], "\t", ring[i, 2]);  end
 		end
-		R = GMT.gmt("mapproject -L$tmp+p", pts)
+		R = GMT.gmt("mapproject -L" * _gmt_quote_path(tmp) * "+p", pts)
 		D = isa(R, Vector) ? R[1].data : R.data
 		size(D, 1) < 2 && return (0, 0, false)
 		i1 = floor(Int, D[1, end]) + 1
@@ -1343,7 +1343,7 @@ function _lop_nearest_on(ridge::Matrix{Float64}, x::Float64, y::Float64)
 				println(io, ridge[i, 1], "\t", ridge[i, 2])
 			end
 		end
-		R = GMT.gmt("mapproject -L$tmp", [x y])
+		R = GMT.gmt("mapproject -L" * _gmt_quote_path(tmp), [x y])
 		D = isa(R, Vector) ? R[1].data : R.data
 		size(D, 1) == 0 && return nothing
 		size(D, 2) < 5 && return nothing

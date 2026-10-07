@@ -38,14 +38,14 @@ function _on_grdredpol(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 			y = _get(d, "year");  isempty(y) || push!(opts, "-T$y")
 		end
 		# Ei/Ed are independent of the mode above: whatever is not given as a grid comes from IGRF.
-		ig = _get(d, "incgrid");  isempty(ig) || push!(opts, "-Ei$ig")
-		dg = _get(d, "decgrid");  isempty(dg) || push!(opts, "-Ed$dg")
+		ig = _get(d, "incgrid");  isempty(ig) || push!(opts, "-Ei" * _gmt_quote_path(ig))
+		dg = _get(d, "decgrid");  isempty(dg) || push!(opts, "-Ed" * _gmt_quote_path(dg))
 		flt = _get(d, "filter");  isempty(flt) || push!(opts, "-F$flt")
 		win = _get(d, "window");  isempty(win) || push!(opts, "-W$win")
 		bnd = _get(d, "boundary"); isempty(bnd) || push!(opts, "-M$bnd")
 		_on(d, "notaylor") && push!(opts, "-N")
 		reg = _get(d, "region");  isempty(reg) || push!(opts, "-R$reg")
-		zf  = _get(d, "filterfile");  isempty(zf) || push!(opts, "-Z$zf")
+		zf  = _get(d, "filterfile");  isempty(zf) || push!(opts, "-Z" * _gmt_quote_path(zf))
 
 		cmd = "grdredpol " * join(opts, ' ')
 		R = gmt(cmd, G)

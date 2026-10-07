@@ -56,7 +56,7 @@ function _mgd77_track(path::AbstractString)
 		L.n < 2 && return nothing
 		return GMT.mat2ds(hcat(L.lon, L.lat); proj4=_MGD77_PROJ4, geom=GMT.wkbLineString)
 	end
-	D = GMT.gmt("mgd77list " * path * " -Flon,lat")
+	D = GMT.gmt("mgd77list " * _gmt_quote_path(path) * " -Flon,lat")
 	d1 = D isa AbstractVector ? (isempty(D) ? nothing : first(D)) : D
 	d1 === nothing && return nothing
 	m = d1.data

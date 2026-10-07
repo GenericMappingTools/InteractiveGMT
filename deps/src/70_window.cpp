@@ -23787,6 +23787,8 @@ public:
 	std::map<int, QString> nestNames;     // level -> in-scene "layerN" name (populateFromScene)
 	QRadioButton *rGrids, *rAnuga, *rMost;
 	QRadioButton *rSurf, *rTotal;
+	QRadioButton *rEnergy, *rPower;       // -Em,5 / -Epm,5: at most one, both may be off
+	QLineEdit *tideEdit;                  // -Q<tide> when != 0
 	QCheckBox *cMax, *cVel, *cMom, *cMareg, *cGeog, *cCoriolis;
 	QCheckBox *cAutoLoad;                 // bottom row: open the finished cube in Aquamoto ("autoload")
 	Scene *scene_ = nullptr;              // owning window's scene (grid inventory + RUN callback target)
@@ -23967,6 +23969,30 @@ public:
 		cCoriolis = new QCheckBox("Coriolis", gFld); cCoriolis->setToolTip("Add the Coriolis effect.");
 		fg->addWidget(rSurf, 0, 0); fg->addWidget(rTotal, 0, 1); fg->addWidget(cCoriolis, 0, 2);
 		fg->addWidget(cVel,  1, 0); fg->addWidget(cMom, 1, 1); fg->addWidget(cMax, 1, 2);
+		// Energy / Power (max, decimated by 5). Radio buttons, but a second click on the checked one
+		// clears it: the group is non-exclusive and each toggle-on unchecks the other by hand, so "none"
+		// stays a valid state.
+		rEnergy = new QRadioButton("Energy", gFld);
+		rEnergy->setToolTip("Write a grid with the max total energy, decimated by 5 (nswing -Em,5)");
+		rPower  = new QRadioButton("Power",  gFld);
+		rPower->setToolTip("Write a grid with the max power, decimated by 5 (nswing -Epm,5)");
+		rEnergy->setAutoExclusive(false); rPower->setAutoExclusive(false);
+		QObject::connect(rEnergy, &QRadioButton::toggled, this, [this](bool on) { if (on) rPower->setChecked(false); });
+		QObject::connect(rPower,  &QRadioButton::toggled, this, [this](bool on) { if (on) rEnergy->setChecked(false); });
+		// The Tide row must fit the width this column ALREADY had ("Max water"/"Coriolis") — it never
+		// widens the column, and so never the dialog. The edit gets whatever is left after the label.
+		auto *trow = new QHBoxLayout();
+		trow->setSpacing(3);
+		auto *tideLab = new QLabel("Tide", gFld);
+		trow->addWidget(tideLab);
+		tideEdit = new QLineEdit("0", gFld);
+		tideEdit->setValidator(new QDoubleValidator(tideEdit));
+		const int colW = std::max(cMax->sizeHint().width(), cCoriolis->sizeHint().width());
+		tideEdit->setFixedWidth(std::max(colW - tideLab->sizeHint().width() - trow->spacing(), 24));
+		tideEdit->setToolTip("Tide: vertical offset of the sea level, in metres (nswing -Q<tide>; 0 = none)");
+		trow->addWidget(tideEdit);
+		trow->addStretch();
+		fg->addWidget(rEnergy, 2, 0); fg->addWidget(rPower, 2, 1); fg->addLayout(trow, 2, 2);
 		// Manning friction (-X) — the entry missing from the original window.
 		auto *mrow = new QHBoxLayout();
 		mrow->addWidget(new QLabel("Manning friction", gFld));
@@ -23974,7 +24000,7 @@ public:
 		manningEdit->setPlaceholderText("e.g. 0.025  (or comma-separated per level)");
 		manningEdit->setToolTip("Manning friction coefficient(s) (nswing -X<manning0[,manning1,…]>)");
 		mrow->addWidget(manningEdit);
-		fg->addLayout(mrow, 2, 0, 1, 3);
+		fg->addLayout(mrow, 3, 0, 1, 3);
 		v->addWidget(gFld);
 
 		// --- Maregraphs -------------------------------------------------------------------------
@@ -24280,6 +24306,9 @@ public:
 		kv("max",      cMax->isChecked()   ? "1" : "0");
 		kv("velocity", cVel->isChecked()   ? "1" : "0");
 		kv("momentum", cMom->isChecked()   ? "1" : "0");
+		kv("energy",   rEnergy->isChecked() ? "1" : "0");
+		kv("power",    rPower->isChecked()  ? "1" : "0");
+		kv("tide",     tideEdit->text().trimmed());
 		kv("coriolis", cCoriolis->isChecked() ? "1" : "0");
 		kv("manning",  manningEdit->text().trimmed());
 		kv("maregs",   cMareg->isChecked() ? "1" : "0");
@@ -24337,6 +24366,10 @@ public:
 		cMax->setChecked(get("max") == "1");
 		cVel->setChecked(get("velocity") == "1");
 		cMom->setChecked(get("momentum") == "1");
+		rEnergy->setChecked(get("energy") == "1");
+		rPower->setChecked(get("power") == "1");
+		// Absent key (a block saved before this option existed) keeps the default, 0.
+		{ const QString td = get("tide"); tideEdit->setText(td.isEmpty() ? "0" : td); }
 		cCoriolis->setChecked(get("coriolis") == "1");
 		cMareg->setChecked(get("maregs") == "1");
 		cGeog->setChecked(get("geog") == "1");
@@ -24345,17 +24378,38 @@ public:
 	}
 
 	// Seed the Input-grids widgets from the window's live grids (Scene Objects). Source <- the first grid
-	// named "Okada z…"; the nesting chain <- every "layerN" (in N order), each shown in the listbox
+	// named "Okada z…", else the first grid on the base grid's exact nodes with |z| <= 20 m; the nesting chain <- every "layerN" (in N order), each shown in the listbox
 	// as "name · W/E/S/N · nx×ny". Nest edit gets the first nested grid's name. Grids are in-memory scene
 	// objects (names, not file paths) — this is a convenience default; the user can still browse to files.
 	void populateFromScene() {
 		if (!scene_) return;
 		// Source: base surface + any extra grid whose name starts with "Okada z".
 		auto isOkada = [](const std::string &n) { return QString::fromStdString(n).startsWith("Okada z", Qt::CaseInsensitive); };
-		if (isOkada(scene_->surfName)) srcEdit->setText(QString::fromStdString(scene_->surfName));
+		bool haveSrc = false;
+		if (isOkada(scene_->surfName)) { srcEdit->setText(QString::fromStdString(scene_->surfName)); haveSrc = true; }
 		else {
 			for (auto &ex : scene_->extras) {
-				if (!ex.isImage && isOkada(ex.name)) { srcEdit->setText(QString::fromStdString(ex.name)); break; }
+				if (!ex.isImage && isOkada(ex.name)) { srcEdit->setText(QString::fromStdString(ex.name)); haveSrc = true; break; }
+			}
+		}
+		// No "Okada z…": take an opened grid that sits EXACTLY on the base grid's nodes (same limits and
+		// same node counts, hence same increments) and whose z stays within ±20 m — a sea-floor
+		// deformation, not a bathymetry. The z range is measured off the grid's own values (NaN skipped),
+		// and an all-zero grid (a still-blank "layerN" placeholder) is no source.
+		if (!haveSrc && !scene_->gridZ.empty()) {
+			for (auto &ex : scene_->extras) {
+				if (ex.isImage || ex.gridZ.empty()) continue;
+				if (ex.gnx != scene_->gnx || ex.gny != scene_->gny || ex.gx0 != scene_->gx0 ||
+				    ex.gx1 != scene_->gx1 || ex.gy0 != scene_->gy0 || ex.gy1 != scene_->gy1) continue;
+				bool ok = true, nonzero = false;
+				for (float v : ex.gridZ) {
+					if (std::isnan(v)) continue;
+					if (std::fabs(v) > 20.0f) { ok = false; break; }
+					if (v != 0.0f) nonzero = true;
+				}
+				if (!ok || !nonzero) continue;
+				srcEdit->setText(QString::fromStdString(ex.name));
+				break;
 			}
 		}
 		// Nesting chain: "layerN" grids, ordered by N. Collect (N, &ex) then sort so 1,2,3… line up.

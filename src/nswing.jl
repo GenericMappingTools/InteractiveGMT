@@ -72,6 +72,8 @@ function _nswing_opts(d::Dict{String,String}; max_nest_level::Int=0)
 		max_nest_level >= 2 && append!(args, ("-M-", "-M+"))  # min / max-positive water level grids
 		_on(d, "velocity") && push!(args, "-S")          # velocity grids (_U/_V)
 		_on(d, "momentum") && push!(args, "-H")          # momentum grids
+		_on(d, "energy")   && push!(args, "-Em,5")       # max energy grid, decimated by 5
+		_on(d, "power")    && push!(args, "-Epm,5")      # max power grid, decimated by 5
 	elseif (mode == "anuga")
 		isempty(name) && error("NSWING: ANUGA output needs a file Name")
 		push!(args, "-A$(name)")
@@ -82,6 +84,8 @@ function _nswing_opts(d::Dict{String,String}; max_nest_level::Int=0)
 	manning = _get(d, "manning")
 	isempty(manning) || push!(args, "-X$(manning)")      # Manning friction coefficient(s)
 	_on(d, "coriolis") && push!(args, "-C")              # Coriolis effect (Coriolis checkbox)
+	tide = tryparse(Float64, _get(d, "tide", "0"))
+	(tide !== nothing && tide != 0) && push!(args, "-Q$(_get(d, "tide"))")   # tide: sea-level offset
 
 	if _on(d, "maregs")
 		mi = _get(d, "maregin"); mo = _get(d, "maregout"); ci = _get(d, "cumint", "1")
@@ -352,7 +356,7 @@ end
 # GMT call (banned: it corrupts GMT's own downloads).
 function _nswing_run_inproc(scene::Ptr{Cvoid}, cmdstr::String, grids::Vector{GMTgrid}; on_done=nothing)
 	progf = _nswing_progress_file()                  # -W<file>: nswing rewrites it in place each tick
-	cmd   = cmdstr * " -W$(progf)"
+	cmd   = cmdstr * " -W" * _gmt_quote_path(progf)
 	err   = Ref("")
 	task  = Threads.@spawn begin
 		try
@@ -978,7 +982,9 @@ function _on_nswing(scene::Ptr{Cvoid}, cparams::Cstring)::Cvoid
 			for (n, _) in nests                                                 # bare nesting flags: layerN -> -N
 				cmd *= " -$(n)"
 			end
-			isempty(opts) || (cmd *= " " * join(opts, " "))
+			# -G<stem>, -A<name> and -T<in>+o<out> carry paths; the external run hands them over as argv
+			# words, but here they travel in ONE string, so a token with a blank is quoted whole.
+			isempty(opts) || (cmd *= " " * join((occursin(' ', o) ? _gmt_quote_path(o) : o for o in opts), " "))
 			cmd *= " -v"
 			append!(grids, GMTgrid[(G isa GMTgrid ? G : _gmtread_trb(String(G))) for (_, G) in nests])
 			_viewer_log_info(scene, "NSWING command: $cmd   [+ $(length(grids)) grid objects]")
