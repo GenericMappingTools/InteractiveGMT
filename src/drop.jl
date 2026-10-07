@@ -1622,17 +1622,16 @@ function _z_as(G::GMTgrid, ref::GMTgrid)
 	return reshape(d, ny, nx)
 end
 
-# (nx, ny) for a grid, from the coordinate vectors, falling back to `size(z)` when they disagree
-# (see `_grid_zbuf`). Shared by `_grid_zbuf` and `_zmat` so the two can never disagree.
+# (nx, ny) for a grid: GMT.jl's own `getsize`, which reads the width and height off the coordinate
+# vectors minus the registration, whatever the memory layout. Shared by `_grid_zbuf` and `_zmat` so
+# the two can never disagree. This used to count `length(x) × length(y)` itself, which forgot that a
+# pixel-registered grid carries nx+1 cell edges, then fell back to `size(z)` read as (ny, nx) — but a
+# row-major grid from gd2gmt (a DGT LIDAR mosaic) is (nx, ny) there, so nx and ny came out SWAPPED
+# and every row was drawn at the wrong length: the whole grid sheared into diagonal streaks.
 function _grid_dims(G::GMTgrid)
-	n = length(G.z)
-	if (_grid_layout_code(G) & 1) != 0                   # row-major: `size(z)` describes the memory
-		nx, ny = length(G.x), length(G.y)                # only by accident, so ask x/y first
-		nx * ny == n && return (nx, ny)
-	end
-	ny, nx = size(G.z)
-	nx * ny == n ||
-		error("grid dims $(nx)x$(ny) do not match its z buffer ($n elements, layout $(G.layout))")
+	nx, ny = GMT.getsize(G)
+	nx * ny == length(G.z) ||
+		error("grid dims $(nx)x$(ny) do not match its z buffer ($(length(G.z)) elements, layout $(G.layout))")
 	return (nx, ny)
 end
 

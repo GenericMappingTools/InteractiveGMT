@@ -97,6 +97,10 @@ const _TEST_SYMBOLS = (
 	# this dll's live-scene set first -- see the file-static note above.
 	:gmtvtk_movie_open_dialog_test, :gmtvtk_movie_close_dialog_test,
 	:gmtvtk_movie_parked_test, :gmtvtk_movie_delete_dialog_test,
+	:gmtvtk_landmask_open_dialog_test, :gmtvtk_landmask_leave_dialog_test,
+	:gmtvtk_landmask_parked_test, :gmtvtk_landmask_delete_dialog_test,
+	:gmtvtk_dgt_open_dialog_test, :gmtvtk_dgt_leave_dialog_test, :gmtvtk_dgt_parked_test,
+	:gmtvtk_dgt_use_region_test, :gmtvtk_dgt_delete_dialog_test,
 	:gmtvtk_platecalc_read_test, :gmtvtk_platecalc_map_click_test, :gmtvtk_platecalc_map_test,
 	:gmtvtk_set_faultgeom_callback,   # NOT test-only -- dlsym'd here too so we can mirror the
 	                                  # callback registration into this dll's own global.

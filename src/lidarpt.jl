@@ -105,6 +105,52 @@ function _read_laz_tile(fname::AbstractString)::Matrix{Float32}
 	return reverse(m; dims = 1)                                             # flipud -> row 1 = south
 end
 
+# THE LIDAR no-data rule (readLidarTile: `z(z == -999) = NaN`), ONE function for every LIDAR grid
+# this app builds — a LIDAR2011 tile and a DGT LIDAR mosaic alike. Element-wise, so it runs on the
+# buffer where it lies, whatever its layout. Returns how many nodes it blanked.
+#
+# TWO markers. The survey writes -999 on most tiles, but some DGT tiles declare the float minimum
+# (-3.4028235e38) as their no-data instead, and a mosaic of mixed tiles (gdalbuildvrt) fills EVERY
+# hole with the first tile's value — so a mosaic can come back holding either. `dgt_mosaic`'s
+# `-a_nodata NaN` only relabels that value; the pixels keep it, and one of them in the grid is a pit
+# 10^38 deep that the palette and the Z axis then try to reach. Anything at or below -1e30 is that fill.
+const _LIDAR_FILL = -1.0e30
+function _lidar_nodata_to_nan!(z::AbstractArray{<:AbstractFloat})::Int
+	nd = eltype(z)(_LIDAR_NODATA)
+	fl = eltype(z)(_LIDAR_FILL)
+	n = 0
+	@inbounds for k in eachindex(z)
+		v = z[k]
+		if v == nd || v <= fl
+			z[k] = NaN;  n += 1
+		end
+	end
+	return n
+end
+
+# …and for a whole GRID, returning the grid to use: the header follows the buffer — a -999 left in
+# `range` would stretch the palette and the Z axis down to a depth that no longer exists. An integer
+# grid cannot hold NaN, so it comes back as a NEW Float32 grid with its real values (scale/offset
+# applied) and the same header; a float grid is blanked in place and returned as it is.
+function _lidar_grid_nodata(G::GMTgrid)::GMTgrid
+	if !(eltype(G.z) <: AbstractFloat)
+		z = Float32.(G.z .* G.scale .+ G.offset)
+		G = GMTgrid(G.proj4, G.wkt, G.epsg, G.geog, copy(G.range), G.inc, G.registration, NaN,
+		            G.title, G.remark, G.command, G.cpt, G.names, G.x, G.y, G.v, z,
+		            G.x_unit, G.y_unit, G.v_unit, G.z_unit, G.layout, 1.0f0, 0.0f0, G.pad, G.hasnans)
+	end
+	_lidar_nodata_to_nan!(G.z) == 0 && return G
+	G.hasnans = 2
+	G.nodata  = NaN
+	lo, hi = Inf, -Inf
+	@inbounds for v in G.z
+		isnan(v) && continue
+		v < lo && (lo = v);  v > hi && (hi = v)
+	end
+	isfinite(lo) && (G.range[5] = lo;  G.range[6] = hi)
+	return G
+end
+
 # readLidarTile: read one 1600 x 1000 m tile, blank its no-data nodes and decimate it. `factor` is
 # Mirone's decimation factor (1 keeps the native 2 m nodes, 5 -> 10 m, 10 -> 20 m, 25 -> 50 m).
 # The raster (.xyz/.asc) branch needs NO flip: Mirone flips because MATLAB's gdalread hands it a
@@ -119,9 +165,7 @@ function _read_lidar_tile(fname::AbstractString, factor::Int)::Matrix{Float32}
 		zz = G isa GMTgrid ? G.z : G
 		z  = zz isa Matrix{Float32} ? copy(zz) : Float32.(zz)
 	end
-	@inbounds for k in eachindex(z)
-		z[k] == Float32(_LIDAR_NODATA) && (z[k] = NaN32)
-	end
+	_lidar_nodata_to_nan!(z)
 	factor == 1 && return z
 	return z[1:factor:end, 1:factor:end]
 end

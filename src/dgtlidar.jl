@@ -114,6 +114,10 @@ function _dgt_deliver(scene::Ptr{Cvoid}, dlg::Ptr{Cvoid}, R, dest::AbstractStrin
 		return Cint(1)
 	end
 	isa(G, GMTgrid) || error("got a $(typeof(G)), not a grid or an image")
+	# The survey's -999 no-data nodes become NaN — THE LIDAR rule (`_lidar_grid_nodata`, lidarpt.jl),
+	# the same one every LIDAR2011 tile goes through. Left in, they were drawn as a pit 999 m deep and
+	# dragged the palette and the Z axis down with them.
+	G = _lidar_grid_nodata(G)
 	recipe = "dgt_mosaic $(bbox[1])/$(bbox[2])/$(bbox[3])/$(bbox[4]) collection=$coll" *
 	         (inc != 0 ? " inc=$inc" : "") * (isempty(proj) ? "" : " proj=$proj")
 	ok = _gm3d_deliver(scene, G, title, "", false, recipe; geographic = geog)

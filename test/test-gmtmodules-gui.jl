@@ -104,6 +104,35 @@ end
 	end
 end
 
+@testitem "grdlandmask dialog: X, minimise and Esc park it, Delete ends it" tags=[:gui] setup=[GmtModules, GmtvtkTest] begin
+	IG = InteractiveGMT
+	_test_fn = GmtvtkTest._test_fn
+	f = view_grid(GmtModules.grid())
+	parked() = ccall(_test_fn(:gmtvtk_landmask_parked_test), Cint, (Ptr{Cvoid},), f.h)
+	opened() = ccall(_test_fn(:gmtvtk_landmask_open_dialog_test), Cint, (Ptr{Cvoid},), f.h)
+	leave(how) = ccall(_test_fn(:gmtvtk_landmask_leave_dialog_test), Cvoid, (Ptr{Cvoid}, Cint), f.h, how)
+	rows() = unsafe_string(ccall(_test_fn(:gmtvtk_objrows_test), Cstring, (Ptr{Cvoid},), f.h))
+	try
+		# Opening twice yields ONE dialog: the second call brings back the first.
+		@test opened() == 1 && parked() == 0
+		@test opened() == 1 && parked() == 0
+		# Every way out parks it, with a row in this window's Scene Objects; the menu brings it back.
+		for how in (0, 1, 2)                     # the X, minimise, Esc
+			leave(how)
+			@test parked() == 1
+			@test occursin("grdlandmask", rows())
+			@test opened() == 1 && parked() == 0
+		end
+		# Only the parked row's own "Delete" ends it, and the row goes with it.
+		leave(0)
+		@test ccall(_test_fn(:gmtvtk_landmask_delete_dialog_test), Cint, (Ptr{Cvoid},), f.h) == 1
+		@test parked() == -1
+		@test !occursin("grdlandmask", rows())
+	finally
+		ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), f.h)
+	end
+end
+
 @testitem "grdfilter: every filter family the dialog can build" tags=[:gui] setup=[GmtModules] begin
 	IG = InteractiveGMT
 	f = view_grid(GmtModules.grid())

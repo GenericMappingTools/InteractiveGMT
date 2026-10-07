@@ -8702,6 +8702,118 @@ GMTVTK_API int gmtvtk_movie_delete_dialog_test(void *handle) {
 	return movieTestDlg(handle) == nullptr ? 1 : 0;
 }
 
+// PT Tools > DGT LIDAR: the dialog's park contract, and its map picker's "Use this region". Opened
+// WITHOUT begin() — that checks the portal account over the network; parking is not about that.
+static DgtLidarDialog *dgtTestDlg(void *handle) {
+	auto it = g_dgtDlgs.find({ static_cast<Scene *>(handle), false });
+	return (it == g_dgtDlgs.end()) ? nullptr : it->second;
+}
+GMTVTK_API int gmtvtk_dgt_open_dialog_test(void *handle) {
+	ensureApp();
+	Scene *s = static_cast<Scene *>(handle);
+	if (!s || !s->win) return 0;
+	g_scenes.insert(s);
+	DgtLidarDialog *w = dgtTestDlg(handle);
+	if (w) w->unpark();
+	else {
+		w = new DgtLidarDialog(s->win, s, false);
+		if (!w->dlg) { delete w; return 0; }
+		w->dlg->show();
+	}
+	QApplication::processEvents();
+	return 1;
+}
+// 0 = the X, 1 = minimise, 2 = Esc.
+GMTVTK_API void gmtvtk_dgt_leave_dialog_test(void *handle, int how) {
+	DgtLidarDialog *w = dgtTestDlg(handle);
+	if (!w || !w->dlg) return;
+	if (how == 1)      w->dlg->setWindowState(w->dlg->windowState() | Qt::WindowMinimized);
+	else if (how == 2) w->dlg->reject();
+	else               w->dlg->close();
+	QApplication::processEvents();
+}
+// 1 = parked (hidden + a Scene Objects row), 0 = on screen, -1 = no dialog.
+GMTVTK_API int gmtvtk_dgt_parked_test(void *handle) {
+	Scene *s = static_cast<Scene *>(handle);
+	DgtLidarDialog *w = dgtTestDlg(handle);
+	if (!w || !w->dlg) return -1;
+	const bool hidden = !w->dlg->isVisible();
+	bool row = false;
+	if (s) for (auto &pt : s->parkedTools) if (pt.win == w->dlg) row = true;
+	return (hidden && row) ? 1 : 0;
+}
+// Open the map, give it a region, press "Use this region". 1 = the map is PARKED (alive, hidden, a
+// row), the region reached the dialog's boxes and the dialog is back on screen; 0 otherwise.
+GMTVTK_API int gmtvtk_dgt_use_region_test(void *handle) {
+	Scene *s = static_cast<Scene *>(handle);
+	DgtLidarDialog *w = dgtTestDlg(handle);
+	if (!w || !w->dlg || !s) return 0;
+	w->openPicker(s->win);
+	QApplication::processEvents();
+	QPointer<MapRegionPicker> p = w->picker;
+	if (p.isNull() || !p->map || !p->btnUse) return 0;
+	p->map->hasRegion = true;
+	p->map->rW = -9.2;  p->map->rE = -9.1;  p->map->rS = 38.7;  p->map->rN = 38.8;
+	p->btnUse->click();
+	QApplication::processEvents();
+	if (p.isNull() || p->isVisible()) return 0;
+	bool row = false;
+	for (auto &pt : s->parkedTools) if (pt.win == p.data()) row = true;
+	const bool boxes = w->xmin && w->xmin->text().toDouble() == -9.2;
+	return (row && boxes && w->dlg->isVisible()) ? 1 : 0;
+}
+// The dialog's parked-row "Delete": 1 = the dialog AND its map are gone.
+GMTVTK_API int gmtvtk_dgt_delete_dialog_test(void *handle) {
+	DgtLidarDialog *w = dgtTestDlg(handle);
+	if (!w) return 0;
+	QPointer<MapRegionPicker> p = w->picker;
+	testDeleteParkedDialog(&w);
+	if (!p.isNull()) QApplication::sendPostedEvents(p.data(), QEvent::DeferredDelete);
+	QApplication::processEvents();
+	return (dgtTestDlg(handle) == nullptr && p.isNull()) ? 1 : 0;
+}
+
+// grdlandmask (GMT menu): the same park contract, driven the way a user drives it. `how` for the
+// way out: 0 = the X, 1 = minimise, 2 = Esc.
+static GrdLandmaskDialog *landmaskTestDlg(void *handle) {
+	auto it = g_landmaskDlgs.find(static_cast<Scene *>(handle));
+	return (it == g_landmaskDlgs.end()) ? nullptr : it->second;
+}
+GMTVTK_API int gmtvtk_landmask_open_dialog_test(void *handle) {
+	ensureApp();
+	Scene *s = static_cast<Scene *>(handle);
+	if (!s || !s->win) return 0;
+	g_scenes.insert(s);
+	const int ok = openGrdLandmaskDialog(s->win, s);
+	QApplication::processEvents();
+	return ok;
+}
+GMTVTK_API void gmtvtk_landmask_leave_dialog_test(void *handle, int how) {
+	GrdLandmaskDialog *g = landmaskTestDlg(handle);
+	if (!g || !g->dlg) return;
+	if (how == 1)      g->dlg->setWindowState(g->dlg->windowState() | Qt::WindowMinimized);
+	else if (how == 2) g->dlg->reject();
+	else               g->dlg->close();
+	QApplication::processEvents();
+}
+// 1 = parked (hidden + a Scene Objects row), 0 = on screen, -1 = no dialog.
+GMTVTK_API int gmtvtk_landmask_parked_test(void *handle) {
+	Scene *s = static_cast<Scene *>(handle);
+	GrdLandmaskDialog *g = landmaskTestDlg(handle);
+	if (!g || !g->dlg) return -1;
+	const bool hidden = !g->dlg->isVisible();
+	bool row = false;
+	if (s) for (auto &pt : s->parkedTools) if (pt.win == g->dlg) row = true;
+	return (hidden && row) ? 1 : 0;
+}
+// The parked row's own "Delete". 1 = it is gone.
+GMTVTK_API int gmtvtk_landmask_delete_dialog_test(void *handle) {
+	GrdLandmaskDialog *g = landmaskTestDlg(handle);
+	if (!g) return 0;
+	testDeleteParkedDialog(&g);
+	return landmaskTestDlg(handle) == nullptr ? 1 : 0;
+}
+
 // The X: PARKS it (kept alive), same contract as the Euler dialog's.
 GMTVTK_API void gmtvtk_platecalc_close_dialog_test() {
 	if (g_plateTestDlg && g_plateTestDlg->dlg) g_plateTestDlg->dlg->close();

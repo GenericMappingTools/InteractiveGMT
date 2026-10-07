@@ -1077,9 +1077,16 @@ public:
 		setWindowState(windowState() & ~Qt::WindowMinimized);   // undo the WM's minimise
 		hide();
 		parkTool(scene, this, "Pick region", IC_Rect,
-		         "Minimised region picker — double-click to bring it back, click for Show / Delete",
+		         "Parked region picker — double-click to bring it back, click for Show / Delete",
 		         [this]() { unpark(); }, parkedMenu());
 		unfoldSceneObjects(scene);    // a handle nobody can see is no handle at all
+	}
+
+	// The X parks it too, like every tool window. Only the parked row's "Delete" (reallyClose) lets a
+	// close through to WA_DeleteOnClose; with its owning window gone there is nowhere to park.
+	void closeEvent(QCloseEvent *e) override {
+		if (!reallyClose && sceneAlive(scene)) { e->ignore(); parkNow(); return; }
+		QMainWindow::closeEvent(e);
 	}
 
 	QString bgProvider() const override { return cboProvider->currentText(); }
@@ -1342,8 +1349,11 @@ public:
 			if (tgtXmax) tgtXmax->setText(QString::number(map->rE, 'f', 6));
 			if (tgtYmin) tgtYmin->setText(QString::number(map->rS, 'f', 6));
 			if (tgtYmax) tgtYmax->setText(QString::number(map->rN, 'f', 6));
-			auto used = onRegionUsed;                    // copy: `close()` can destroy this object
-			close();
+			// The map is PARKED, never destroyed: the view, the tiles fetched for it and the picked
+			// rectangle come back with it, and the next "pick on map" re-uses it (DgtLidarDialog keeps
+			// it). It used to `close()` here, and WA_DeleteOnClose killed the whole map.
+			auto used = onRegionUsed;
+			parkNow();
 			if (used) used();
 		});
 		resize(860, 600);                                // replaced by shapeTo() once the home box is known
@@ -18359,6 +18369,10 @@ public:
 // Downloads take minutes, so the two buttons put up the shared modal busy dialog and the progress
 // Julia sends back (gmtvtk_dgt_log) lands in the log pane at the bottom.
 // ============================================================================================
+class DgtLidarDialog;
+// One per window AND mode (LIDAR / ORTOFOTOS): the menu brings a parked one back, never a second copy.
+static std::map<std::pair<Scene *, bool>, DgtLidarDialog *> g_dgtDlgs;
+
 class DgtLidarDialog {
 public:
 	QDialog *dlg = nullptr;
@@ -18494,9 +18508,9 @@ public:
 		dlg = qobject_cast<QDialog *>(loader.load(&f, parent));
 		f.close();
 		if (!dlg) { qWarning("DgtLidarDialog: QUiLoader failed to load the .ui"); return; }
-		dlg->setAttribute(Qt::WA_DeleteOnClose);
-		// The minimise button is what PARKS the dialog in Scene Objects — a download worth waiting
-		// for is worth getting out of the way, and the settings come back with it.
+		// No WA_DeleteOnClose: a parked dialog has to survive its close. The minimise button, the X and
+		// Esc all PARK it in Scene Objects — a download worth waiting for is worth getting out of the
+		// way, and the settings come back with it.
 		dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint | Qt::WindowMinimizeButtonHint);
 		dlg->setWindowModality(Qt::NonModal);
 		dlg->setWindowTitle(ortos ? "DGT ORTOFOTOS (Portugal)" : "DGT LIDAR (Portugal)");
@@ -18518,6 +18532,21 @@ public:
 			}
 		};
 		d->installEventFilter(new MinimiseParks(d, this));
+		struct CloseParks : QObject {
+			DgtLidarDialog *dg;
+			CloseParks(QObject *parent, DgtLidarDialog *g) : QObject(parent), dg(g) {}
+			bool eventFilter(QObject *o, QEvent *e) override {
+				if (e->type() == QEvent::Close && dg && !dg->reallyClose && sceneAlive(dg->scn)) {
+					e->ignore();
+					dg->parkNow();
+					return true;
+				}
+				return QObject::eventFilter(o, e);
+			}
+		};
+		d->installEventFilter(new CloseParks(d, this));
+		QObject::connect(d, &QDialog::rejected, d, [this]() { parkNow(); });   // Esc
+		g_dgtDlgs[{scn, ortos}] = this;
 
 		collCb = d->findChild<QComboBox *>("cb_collection");
 		compCb = d->findChild<QComboBox *>("cb_compress");
@@ -18705,8 +18734,10 @@ public:
 		if (btnMosaic) btnMosaic->setEnabled(!mosaicBox || mosaicBox->isChecked());
 	}
 
-	// MINIMISE parks the dialog as a Scene Objects handle — the shared parkTool/unparkTool pair every
-	// other tool uses, so a parked DGT LIDAR is the same kind of row with the same ways back.
+	// The X, minimise and Esc PARK the dialog as a Scene Objects handle — the shared parkTool/unparkTool
+	// pair every other tool uses, so a parked DGT LIDAR is the same kind of row with the same ways back.
+	// Only the row's own "Delete" ends it (reallyClose).
+	bool reallyClose = false;
 	void unpark() {
 		if (!dlg) return;
 		unparkTool(scn, dlg);
@@ -18723,8 +18754,25 @@ public:
 			QAction *aDel  = m.addAction("Delete");
 			QAction *pick  = m.exec(g);
 			if (pick == aShow) unpark();
-			else if (pick == aDel) { unparkTool(scn, dlg); dlg->close(); }
+			else if (pick == aDel) {
+				reallyClose = true;
+				unparkTool(scn, dlg);
+				forget();
+				dlg->deleteLater();          // destroyed -> this wrapper (and its map) go with it
+			}
 		};
+	}
+	void forget();
+	// The map picker answers back into THIS dialog (onRegionUsed), so it cannot outlive it: when the
+	// dialog is deleted, its parked map goes too — never a row left pointing at a dead dialog.
+	~DgtLidarDialog() {
+		forget();
+		if (!picker.isNull()) {
+			picker->onRegionUsed = nullptr;
+			picker->reallyClose = true;
+			unparkTool(scn, picker.data());
+			picker->deleteLater();
+		}
 	}
 	void parkNow() {
 		if (!dlg || !sceneAlive(scn)) return;
@@ -18847,6 +18895,25 @@ public:
 	}
 };
 
+// Drop the registry entry by VALUE: the Scene may already be gone when the window is torn down.
+void DgtLidarDialog::forget() {
+	for (auto it = g_dgtDlgs.begin(); it != g_dgtDlgs.end(); )
+		it = (it->second == this) ? g_dgtDlgs.erase(it) : std::next(it);
+}
+
+// PT Tools > DGT LIDAR / ORTOFOTOS: the window's OWN dialog. A parked one starts again from where it
+// was — begin() re-shows its map (the SAME picker, unparked) — never a second dialog and a second map.
+static DgtLidarDialog *openDgtDialog(QWidget *win, Scene *s, bool ortos) {
+	auto it = g_dgtDlgs.find({s, ortos});
+	DgtLidarDialog *w = (it != g_dgtDlgs.end()) ? it->second : nullptr;
+	if (!w) {
+		w = new DgtLidarDialog(win, s, ortos);
+		if (!w->dlg) { delete w; return nullptr; }
+	}
+	w->begin(win);
+	return w;
+}
+
 // ============================================================================================
 // grdlandmask (GMT menu) — build a wet/dry mask grid from the shoreline database. Layout is Mirone's
 // grdlandmask window: the shared "Griding Line Geometry" block, coastline resolution, Min area (-A),
@@ -18860,10 +18927,62 @@ public:
 // grid"). Mirone's "Force float" is not carried over: GMT.jl hands back a Float32 grid either way,
 // so the checkbox would toggle nothing.
 // ============================================================================================
+class GrdLandmaskDialog;
+static std::map<Scene *, GrdLandmaskDialog *> g_landmaskDlgs;   // one per window, alive while parked
+
 class GrdLandmaskDialog {
 public:
 	QDialog *dlg = nullptr;
 	Scene *scn = nullptr;
+	bool parked = false;
+	bool reallyClose = false;          // set by the parked row's "Delete": lets the next close through
+
+	// The X, minimise and Esc PARK the dialog as a Scene Objects row — the shared parkTool/unparkTool
+	// pair every other tool uses (RemoteSDialog is the model). Only the row's "Delete" ends it.
+	void unpark() {
+		if (!dlg) return;
+		parked = false;
+		unparkTool(scn, dlg);
+		dlg->setWindowState(dlg->windowState() & ~Qt::WindowMinimized);
+		dlg->showNormal();
+		dlg->raise();
+		dlg->activateWindow();
+	}
+	std::function<void(const QPoint &)> parkedMenu() {
+		return [this](const QPoint &g) {
+			QMenu m;
+			QAction *aShow = m.addAction("Show");
+			m.addSeparator();
+			QAction *aDel  = m.addAction("Delete");
+			QAction *pick  = m.exec(g);
+			if (pick == aShow) unpark();
+			else if (pick == aDel) {
+				reallyClose = true;
+				unparkTool(scn, dlg);
+				forget();
+				dlg->deleteLater();          // destroyed -> this wrapper goes with it
+			}
+		};
+	}
+	// Every way out lands here; idempotent, so parking twice leaves one row.
+	bool parkNow() {
+		if (reallyClose || !dlg || !sceneAlive(scn)) return false;
+		if (parked) { dlg->hide(); return true; }
+		parked = true;
+		dlg->setWindowState(dlg->windowState() & ~Qt::WindowMinimized);
+		dlg->hide();
+		parkTool(scn, dlg, "grdlandmask", IC_Rect,
+		         "Closed grdlandmask — double-click to bring it back, click for Show / Delete",
+		         [this]() { unpark(); }, parkedMenu());
+		unfoldSceneObjects(scn);
+		return true;
+	}
+	// Drop the registry entry by VALUE: the Scene may already be gone when the window is torn down.
+	void forget() {
+		for (auto it = g_landmaskDlgs.begin(); it != g_landmaskDlgs.end(); )
+			it = (it->second == this) ? g_landmaskDlgs.erase(it) : std::next(it);
+	}
+	~GrdLandmaskDialog() { forget(); }
 	GeoGridGeometry *geo = nullptr;        // the adopted .ui block (region + spacing + Ref grid)
 	QComboBox *resCb = nullptr, *lvMinCb = nullptr, *lvMaxCb = nullptr;
 	QLineEdit *areaEdit = nullptr, *borderEdit = nullptr, *outEdit = nullptr;
@@ -18880,11 +18999,27 @@ public:
 		dlg = qobject_cast<QDialog *>(loader.load(&f, parent));
 		f.close();
 		if (!dlg) { qWarning("GrdLandmaskDialog: QUiLoader failed to load the .ui"); return; }
-		dlg->setAttribute(Qt::WA_DeleteOnClose);
-		dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint);
+		// No WA_DeleteOnClose: a parked dialog has to survive its close. The MINIMISE button is what
+		// parks it as a Scene Objects handle.
+		dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint | Qt::WindowMinimizeButtonHint);
 		dlg->setWindowModality(Qt::NonModal);
 		dlg->setWindowTitle("grdlandmask");
 		QDialog *d = dlg;
+		g_landmaskDlgs[scn] = this;
+		struct CloseParks : QObject {
+			GrdLandmaskDialog *gd;
+			CloseParks(QObject *p, GrdLandmaskDialog *g) : QObject(p), gd(g) {}
+			bool eventFilter(QObject *o, QEvent *e) override {
+				if (gd && e->type() == QEvent::Close && gd->parkNow()) {
+					e->ignore();
+					return true;
+				}
+				return QObject::eventFilter(o, e);
+			}
+		};
+		d->installEventFilter(new CloseParks(d, this));
+		parkOnMinimise(d, [this]() { parkNow(); });               // the shared handler (50_scene.cpp)
+		QObject::connect(d, &QDialog::rejected, d, [this]() { parkNow(); });   // Esc
 
 		geo = GeoGridGeometry::adopt(d);       // the SAME block grdsample uses, wiring and all
 		resCb   = d->findChild<QComboBox *>("cb_res");
@@ -18995,6 +19130,17 @@ public:
 		                              "grdlandmask failed — see this window's Errors console for details.");
 	}
 };
+
+// GMT > grdlandmask: the window's OWN dialog — a parked one comes back with its settings intact,
+// never a second copy. 1 = on screen.
+static int openGrdLandmaskDialog(QWidget *win, Scene *s) {
+	auto it = g_landmaskDlgs.find(s);
+	if (it != g_landmaskDlgs.end() && it->second && it->second->dlg) { it->second->unpark(); return 1; }
+	auto *w = new GrdLandmaskDialog(win, s);
+	if (!w->dlg) { delete w; return 0; }
+	w->dlg->show();
+	return 1;
+}
 
 // Ends an armed vector pick (85_polygon.cpp — that is where the pick itself is served, so the
 // disarm lives with it; declared here because this fragment is #included first).
@@ -29657,18 +29803,12 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// the one a user of "PT Tools" wants.
 	// Opens INTO THE MAP: begin() checks the account once, then shows the region picker and parks this
 	// dialog. Only a failed account check leaves the dialog on screen, on its "DGT account" tab.
-	mPT->addAction("DGT LIDAR", [win, s]() {
-		auto *w = new DgtLidarDialog(win, s);
-		if (w->dlg) w->begin(win);
-	});
+	mPT->addAction("DGT LIDAR", [win, s]() { openDgtDialog(win, s, false); });
 	// DGT ORTOFOTOS: the SAME dialog, the same account and the same `dgt_lidar` call, aimed at the
 	// portal's ORTOS-<year> collections instead of the LIDAR ones. The map under the region shows the
 	// 1:25000 sheet quadrants, which is how the orthophoto tiles are named (ORTOS-2025-cog-25cm-431-3
 	// = carta 431, quadrant 3 = its bottom-left quarter).
-	mPT->addAction("ORTOFOTOS", [win, s]() {
-		auto *w = new DgtLidarDialog(win, s, /*ortosMode=*/true);
-		if (w->dlg) w->begin(win);
-	});
+	mPT->addAction("ORTOFOTOS", [win, s]() { openDgtDialog(win, s, /*ortosMode=*/true); });
 	// LIDAR2011: a picker over the survey's 1600x1000 m tile matrix; select cells, "Do Mosaic" ->
 	// Julia reads the tiles and opens the mosaic grid. The tile table is fetched from Julia (op "init")
 	// right after construction, so the mesh is painted from data/lidarPT.dat.
@@ -29720,10 +29860,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		if (w->dlg) w->dlg->show();
 	});
 	// grdlandmask needs no grid at all (it builds a mask from a region), so it is offered always.
-	mGMT->addAction("grdlandmask", [win, s]() {
-		auto *w = new GrdLandmaskDialog(win, s);
-		if (w->dlg) w->dlg->show();
-	});
+	mGMT->addAction("grdlandmask", [win, s]() { openGrdLandmaskDialog(win, s); });
 	// Interpolation needs no grid either — it MAKES one from an x,y,z table.
 	mGMT->addAction("Interpolate", [win, s]() {
 		auto *w = new InterpolationDialog(win, s);
