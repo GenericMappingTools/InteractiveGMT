@@ -1,0 +1,109 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  mbnavedit_modeling.ui - Controls > Nav Modeling of the navigation editor (mbnavedit's
+  bulletinBoard_modeling): the navigation model shown under the longitude and latitude plots
+  (Gaussian mean, dead reckoning, smooth inversion) and its parameters. Loaded at runtime by
+  src/mbnavedit/mbnavedit_window.cpp. Absolute geometry, no layouts.
+-->
+<ui version="4.0">
+ <class>MbNavEditModelingDialog</class>
+ <widget class="QDialog" name="MbNavEditModelingDialog">
+  <property name="geometry">
+   <rect><x>0</x><y>0</y><width>420</width><height>312</height></rect>
+  </property>
+  <property name="windowTitle">
+   <string>MBnavedit - Navigation Modeling</string>
+  </property>
+  <widget class="QLabel" name="label_modeling_mode">
+   <property name="geometry"><rect><x>11</x><y>8</y><width>200</width><height>18</height></rect></property>
+   <property name="text"><string>Navigation Modeling Mode:</string></property>
+  </widget>
+  <widget class="QRadioButton" name="toggleButton_modeling_off">
+   <property name="geometry"><rect><x>11</x><y>28</y><width>50</width><height>20</height></rect></property>
+   <property name="text"><string>Off</string></property>
+   <property name="checked"><bool>true</bool></property>
+  </widget>
+  <widget class="QRadioButton" name="toggleButton_modeling_meanfilter">
+   <property name="geometry"><rect><x>64</x><y>28</y><width>110</width><height>20</height></rect></property>
+   <property name="toolTip"><string>A Gaussian weighted running mean of the positions, over the time window below</string></property>
+   <property name="text"><string>Gaussian Mean</string></property>
+  </widget>
+  <widget class="QRadioButton" name="toggleButton_modeling_dr">
+   <property name="geometry"><rect><x>178</x><y>28</y><width>120</width><height>20</height></rect></property>
+   <property name="toolTip"><string>Dead reckoning from speed and heading, plus the drifts below</string></property>
+   <property name="text"><string>Dead Reckoning</string></property>
+  </widget>
+  <widget class="QRadioButton" name="toggleButton_modeling_inversion">
+   <property name="geometry"><rect><x>302</x><y>28</y><width>100</width><height>20</height></rect></property>
+   <property name="toolTip"><string>A smooth navigation inverted from the unflagged fixes, penalising speed and acceleration</string></property>
+   <property name="text"><string>Inversion</string></property>
+  </widget>
+  <widget class="QLabel" name="label_meantimewindow">
+   <property name="geometry"><rect><x>11</x><y>56</y><width>320</width><height>18</height></rect></property>
+   <property name="text"><string>Gaussian Mean Time Window (seconds)</string></property>
+  </widget>
+  <widget class="QSlider" name="scale_meantimewindow">
+   <property name="geometry"><rect><x>11</x><y>74</y><width>320</width><height>20</height></rect></property>
+   <property name="orientation"><enum>Qt::Horizontal</enum></property>
+  </widget>
+  <widget class="QLabel" name="scale_meantimewindowValue">
+   <property name="geometry"><rect><x>336</x><y>74</y><width>74</width><height>20</height></rect></property>
+   <property name="text"><string>10.0</string></property>
+  </widget>
+  <widget class="QLabel" name="label_driftlon">
+   <property name="geometry"><rect><x>11</x><y>100</y><width>320</width><height>18</height></rect></property>
+   <property name="text"><string>Dead Reckoning Longitude Drift (deg/hr)</string></property>
+  </widget>
+  <widget class="QSlider" name="scale_driftlon">
+   <property name="geometry"><rect><x>11</x><y>118</y><width>320</width><height>20</height></rect></property>
+   <property name="orientation"><enum>Qt::Horizontal</enum></property>
+  </widget>
+  <widget class="QLabel" name="scale_driftlonValue">
+   <property name="geometry"><rect><x>336</x><y>118</y><width>74</width><height>20</height></rect></property>
+   <property name="text"><string>0.00000</string></property>
+  </widget>
+  <widget class="QLabel" name="label_driftlat">
+   <property name="geometry"><rect><x>11</x><y>144</y><width>320</width><height>18</height></rect></property>
+   <property name="text"><string>Dead Reckoning Latitude Drift (deg/hr)</string></property>
+  </widget>
+  <widget class="QSlider" name="scale_driftlat">
+   <property name="geometry"><rect><x>11</x><y>162</y><width>320</width><height>20</height></rect></property>
+   <property name="orientation"><enum>Qt::Horizontal</enum></property>
+  </widget>
+  <widget class="QLabel" name="scale_driftlatValue">
+   <property name="geometry"><rect><x>336</x><y>162</y><width>74</width><height>20</height></rect></property>
+   <property name="text"><string>0.00000</string></property>
+  </widget>
+  <widget class="QLabel" name="label_modeling_inversion">
+   <property name="geometry"><rect><x>11</x><y>192</y><width>220</width><height>18</height></rect></property>
+   <property name="text"><string>Inversion Penalty Weighting:</string></property>
+  </widget>
+  <widget class="QLabel" name="label_modeling_speed">
+   <property name="geometry"><rect><x>11</x><y>214</y><width>110</width><height>22</height></rect></property>
+   <property name="text"><string>Speed Deviation:</string></property>
+  </widget>
+  <widget class="QLineEdit" name="textField_modeling_speed">
+   <property name="geometry"><rect><x>124</x><y>214</y><width>90</width><height>22</height></rect></property>
+  </widget>
+  <widget class="QLabel" name="label_modeling_acceleration">
+   <property name="geometry"><rect><x>11</x><y>240</y><width>110</width><height>22</height></rect></property>
+   <property name="text"><string>Acceleration:</string></property>
+  </widget>
+  <widget class="QLineEdit" name="textField_modeling_acceleration">
+   <property name="geometry"><rect><x>124</x><y>240</y><width>90</width><height>22</height></rect></property>
+  </widget>
+  <widget class="QPushButton" name="pushButton_modeling_apply">
+   <property name="geometry"><rect><x>224</x><y>239</y><width>76</width><height>24</height></rect></property>
+   <property name="toolTip"><string>Use these weights and compute the model again</string></property>
+   <property name="text"><string>Apply</string></property>
+   <property name="autoDefault"><bool>false</bool></property>
+  </widget>
+  <widget class="QPushButton" name="pushButton_modeling_dismiss">
+   <property name="geometry"><rect><x>334</x><y>280</y><width>76</width><height>24</height></rect></property>
+   <property name="text"><string>Dismiss</string></property>
+   <property name="autoDefault"><bool>false</bool></property>
+  </widget>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  mbnavedit_filelist.ui - File > File Selection List of the navigation editor (mbnavedit's
+  form_filelist): every file opened so far, which one to edit next. Loaded at runtime by
+  src/mbnavedit/mbnavedit_window.cpp. Absolute geometry, no layouts.
+-->
+<ui version="4.0">
+ <class>MbNavEditFileListDialog</class>
+ <widget class="QDialog" name="MbNavEditFileListDialog">
+  <property name="geometry">
+   <rect><x>0</x><y>0</y><width>520</width><height>300</height></rect>
+  </property>
+  <property name="windowTitle">
+   <string>MBnavedit - Files Available for Editing</string>
+  </property>
+  <widget class="QListWidget" name="list_filelist">
+   <property name="geometry"><rect><x>11</x><y>8</y><width>498</width><height>220</height></rect></property>
+   <property name="toolTip"><string>Double-click a file to edit it</string></property>
+  </widget>
+  <widget class="QLabel" name="setting_output_label_filelist">
+   <property name="geometry"><rect><x>11</x><y>236</y><width>90</width><height>20</height></rect></property>
+   <property name="text"><string>Output Mode:</string></property>
+  </widget>
+  <widget class="QRadioButton" name="toggleButton_output_on_filelist">
+   <property name="geometry"><rect><x>104</x><y>236</y><width>110</width><height>20</height></rect></property>
+   <property name="text"><string>Output Edits</string></property>
+   <property name="checked"><bool>true</bool></property>
+  </widget>
+  <widget class="QRadioButton" name="toggleButton_output_off_filelist">
+   <property name="geometry"><rect><x>216</x><y>236</y><width>110</width><height>20</height></rect></property>
+   <property name="text"><string>Browse Only</string></property>
+  </widget>
+  <widget class="QPushButton" name="pushButton_filelist_edit">
+   <property name="geometry"><rect><x>11</x><y>266</y><width>130</width><height>24</height></rect></property>
+   <property name="toolTip"><string>Finish with the file being edited (its edits are written) and load the selected one</string></property>
+   <property name="text"><string>Edit Selected File</string></property>
+   <property name="autoDefault"><bool>false</bool></property>
+  </widget>
+  <widget class="QPushButton" name="pushButton_filelist_remove">
+   <property name="geometry"><rect><x>145</x><y>266</y><width>140</width><height>24</height></rect></property>
+   <property name="toolTip"><string>Take the selected file off the list (not the one being edited)</string></property>
+   <property name="text"><string>Remove Selected File</string></property>
+   <property name="autoDefault"><bool>false</bool></property>
+  </widget>
+  <widget class="QPushButton" name="pushButton_filelist_dismiss">
+   <property name="geometry"><rect><x>433</x><y>266</y><width>76</width><height>24</height></rect></property>
+   <property name="text"><string>Dismiss</string></property>
+   <property name="autoDefault"><bool>false</bool></property>
+  </widget>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

@@ -15,8 +15,8 @@
 //      centre line) plus a width, the region a rectangle, the selected route and navigation are
 //      chosen in this window;
 //    - "Open Selected Nav in ..." opens the ported editors in this process, one file after the
-//      other, where mbgrdviz started them as programs; mbnavedit is not ported, so it is started as
-//      the program, as mbgrdviz does.
+//      other, where mbgrdviz started them as programs (mbnavedit too, when it is built in; without it
+//      the mbnavedit program is started, as mbgrdviz does).
 // ============================================================================
 
 #include "mbgrdviz_window.h"
@@ -1593,7 +1593,11 @@ void mbRunNavEditor(const MbGrdVizHost &host, QWidget *parent, int which, const 
                     const std::vector<int> &formats) {
 	if (files.isEmpty() || int(formats.size()) != files.size())
 		return;
-	if (which == 2) {   // mbnavedit: not ported, started as the program, as mbgrdviz does
+	if (which == 2 && host.openMbnavedit) {   // mbnavedit, ported: every selected file joins its file list
+		host.openMbnavedit(parent, files, formats);
+		return;
+	}
+	if (which == 2) {   // mbnavedit not built in: started as the program, as mbgrdviz does
 		QStringList args;
 		for (int i = 0; i < files.size(); i++)
 			args << QString("-F%1").arg(formats[i]) << "-I" + files[i];

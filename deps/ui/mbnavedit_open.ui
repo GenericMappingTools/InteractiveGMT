@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  mbnavedit_open.ui - File > Open of the navigation editor (mbnavedit's bulletinBoard_fileselection:
+  the file, its MBIO format id and the output mode). Loaded at runtime by
+  src/mbnavedit/mbnavedit_window.cpp. Absolute geometry, no layouts.
+-->
+<ui version="4.0">
+ <class>MbNavEditOpenDialog</class>
+ <widget class="QDialog" name="MbNavEditOpenDialog">
+  <property name="geometry">
+   <rect><x>0</x><y>0</y><width>460</width><height>150</height></rect>
+  </property>
+  <property name="windowTitle">
+   <string>MBnavedit - Open Swath Data</string>
+  </property>
+  <widget class="QLabel" name="fileLabel">
+   <property name="geometry"><rect><x>11</x><y>8</y><width>300</width><height>18</height></rect></property>
+   <property name="text"><string>Swath file or datalist:</string></property>
+  </widget>
+  <widget class="QLineEdit" name="fileEdit">
+   <property name="geometry"><rect><x>11</x><y>28</y><width>352</width><height>24</height></rect></property>
+  </widget>
+  <widget class="QPushButton" name="browseButton">
+   <property name="geometry"><rect><x>369</x><y>28</y><width>80</width><height>24</height></rect></property>
+   <property name="text"><string>Browse...</string></property>
+   <property name="autoDefault"><bool>false</bool></property>
+  </widget>
+  <widget class="QLabel" name="label_format">
+   <property name="geometry"><rect><x>11</x><y>60</y><width>100</width><height>22</height></rect></property>
+   <property name="text"><string>MBIO Format ID:</string></property>
+  </widget>
+  <widget class="QSpinBox" name="textField_format">
+   <property name="geometry"><rect><x>114</x><y>60</y><width>70</width><height>22</height></rect></property>
+   <property name="toolTip"><string>The file's MB-System format id (guessed from its name); -1 for a datalist</string></property>
+   <property name="minimum"><number>-1</number></property>
+   <property name="maximum"><number>1000</number></property>
+  </widget>
+  <widget class="QLabel" name="label_output_mode">
+   <property name="geometry"><rect><x>11</x><y>88</y><width>90</width><height>20</height></rect></property>
+   <property name="text"><string>Output Mode:</string></property>
+  </widget>
+  <widget class="QRadioButton" name="toggleButton_output_on">
+   <property name="geometry"><rect><x>104</x><y>88</y><width>140</width><height>20</height></rect></property>
+   <property name="toolTip"><string>Write the edited navigation to &lt;file&gt;.nve and set it in the file's mbprocess parameters</string></property>
+   <property name="text"><string>Output Edited Data</string></property>
+   <property name="checked"><bool>true</bool></property>
+  </widget>
+  <widget class="QRadioButton" name="toggleButton_output_off">
+   <property name="geometry"><rect><x>250</x><y>88</y><width>110</width><height>20</height></rect></property>
+   <property name="toolTip"><string>Look only: nothing is written</string></property>
+   <property name="text"><string>Browse Only</string></property>
+  </widget>
+  <widget class="QCheckBox" name="mbprocessCheck">
+   <property name="geometry"><rect><x>11</x><y>118</y><width>220</width><height>20</height></rect></property>
+   <property name="toolTip"><string>Run mbprocess on the file when its navigation edits are written (mbnavedit -X)</string></property>
+   <property name="text"><string>Run mbprocess when done</string></property>
+  </widget>
+  <widget class="QPushButton" name="okButton">
+   <property name="geometry"><rect><x>291</x><y>116</y><width>76</width><height>24</height></rect></property>
+   <property name="text"><string>OK</string></property>
+   <property name="autoDefault"><bool>false</bool></property>
+  </widget>
+  <widget class="QPushButton" name="cancelButton">
+   <property name="geometry"><rect><x>373</x><y>116</y><width>76</width><height>24</height></rect></property>
+   <property name="text"><string>Cancel</string></property>
+   <property name="autoDefault"><bool>false</bool></property>
+  </widget>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

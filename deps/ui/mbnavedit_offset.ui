@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  mbnavedit_offset.ui - Controls > Position Offset of the navigation editor (mbnavedit's
+  form_offset): a constant shift added to every position read. Loaded at runtime by
+  src/mbnavedit/mbnavedit_window.cpp. Absolute geometry, no layouts.
+-->
+<ui version="4.0">
+ <class>MbNavEditOffsetDialog</class>
+ <widget class="QDialog" name="MbNavEditOffsetDialog">
+  <property name="geometry">
+   <rect><x>0</x><y>0</y><width>306</width><height>98</height></rect>
+  </property>
+  <property name="windowTitle">
+   <string>MBnavedit - Position Offset</string>
+  </property>
+  <widget class="QLabel" name="label_offset_lon">
+   <property name="geometry"><rect><x>11</x><y>8</y><width>170</width><height>22</height></rect></property>
+   <property name="text"><string>Longitude Offset (degrees):</string></property>
+  </widget>
+  <widget class="QLineEdit" name="textField_lon_offset">
+   <property name="geometry"><rect><x>185</x><y>8</y><width>110</width><height>22</height></rect></property>
+  </widget>
+  <widget class="QLabel" name="label_offset_lat">
+   <property name="geometry"><rect><x>11</x><y>34</y><width>170</width><height>22</height></rect></property>
+   <property name="text"><string>Latitude Offset (degrees):</string></property>
+  </widget>
+  <widget class="QLineEdit" name="textField_lat_offset">
+   <property name="geometry"><rect><x>185</x><y>34</y><width>110</width><height>22</height></rect></property>
+  </widget>
+  <widget class="QPushButton" name="pushButton_offset_apply">
+   <property name="geometry"><rect><x>137</x><y>66</y><width>76</width><height>24</height></rect></property>
+   <property name="text"><string>Apply</string></property>
+   <property name="autoDefault"><bool>false</bool></property>
+  </widget>
+  <widget class="QPushButton" name="pushButton_offset_dismiss">
+   <property name="geometry"><rect><x>219</x><y>66</y><width>76</width><height>24</height></rect></property>
+   <property name="text"><string>Dismiss</string></property>
+   <property name="autoDefault"><bool>false</bool></property>
+  </widget>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

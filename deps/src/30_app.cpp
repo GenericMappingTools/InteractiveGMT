@@ -2093,6 +2093,23 @@ static MbEditHost mbvelocityViewerHost() {
 }
 #endif // GMTVTK_MBVELOCITY
 
+#ifdef GMTVTK_MBNAVEDIT
+// EXPERIMENTAL (IGMT_WITH_MBNAVEDIT). The navigation editor (deps/src/mbnavedit/) is handed the swath
+// editor's host, verbatim: only the busy notice it raises carries its own name.
+static MbEditHost mbnaveditViewerHost() {
+	MbEditHost h = mbeditViewerHost();
+	h.busyText = [](const char *text) {
+		if (!g_progress)
+			showBusyDialog("MBnavedit");
+		if (g_progress) {
+			g_progress->setLabelText(QString::fromUtf8(text));
+			QApplication::processEvents();
+		}
+	};
+	return h;
+}
+#endif // GMTVTK_MBNAVEDIT
+
 #ifdef GMTVTK_MBEDITVIZ
 // EXPERIMENTAL (IGMT_WITH_MBEDITVIZ). What mbeditviz (deps/src/mbeditviz/) needs from the viewer: the
 // swath editor's host plus the survey map, an ordinary window of this viewer driven through the C

@@ -29489,7 +29489,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		reopen();
 	};
 
-	// MB-System discipline — the five MB-System ports, each its own window (or, for mbgrdviz, onto
+	// MB-System discipline — the MB-System ports, each its own window (or, for mbgrdviz, onto
 	// this one). Each entry is built only with its IGMT_WITH_* switch in CMakeLists.txt. This page is
 	// shown with mGphy->popup() (reopen), and a window shown while that popup still holds its grab
 	// does not come up (see "Compute Euler pole…" above) — so each open waits for the grab to go.
@@ -29577,6 +29577,18 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 				MbEditHost h = mbvelocityViewerHost();
 				h.parkScene = sceneAlive(s) ? s : nullptr;
 				mbvelocityOpenWindow(win, h);
+			});
+		});
+		++n;
+#endif
+#ifdef GMTVTK_MBNAVEDIT
+		// EXPERIMENTAL "MBnavedit": MB-System's mbnavedit, ported (deps/src/mbnavedit/).
+		// Built only with IGMT_WITH_MBNAVEDIT.
+		mGphy->addAction("MBnavedit", [win, s, afterPopup]() {
+			afterPopup([win, s]() {
+				MbEditHost h = mbnaveditViewerHost();
+				h.parkScene = sceneAlive(s) ? s : nullptr;
+				mbnaveditOpenWindow(win, h);
 			});
 		});
 		++n;
@@ -29829,7 +29841,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// "Vector Wizard": trace the picture on display (an image, or the picture a grid is drawn as)
 	// into filled vector layers with potrace — into this window, or to SVG / EPS / GMT.
 	mTools->addAction("Vector Wizard", [win, s]() { vectorWizardOpen(win, s); });
-	// The five MB-System ports (mbedit, mbvelocitytool, mbeditviz, mbgrdviz, pointCloudEditor) live in
+	// The MB-System ports (mbedit, mbvelocitytool, mbnavedit, mbeditviz, mbgrdviz, ...) live in
 	// Geophysics > MB-System (*fMBSys above).
 	// "Project" (port of Mirone's Projections > GDAL project): reproject the window's raster with
 	// gdalwarp. Needs something to warp, so it is offered only with a raster on screen.

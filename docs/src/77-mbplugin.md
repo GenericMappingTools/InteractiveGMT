@@ -2,7 +2,7 @@
 
 MB-System's programs are GMT modules (`mbinfo`, `mbgrid`, `mblist`, `mbswath`, …) living in one
 GMT supplement, `mbsystem`. The MB-System tools of this viewer (MBedit, MBeditviz, MBgrdviz,
-MBvelocitytool, the water column viewer, CUBE) read swath files through the MBIO library that
+MBnavedit, MBvelocitytool, the water column viewer, CUBE) read swath files through the MBIO library that
 supplement brings into the process.
 
 On Windows the supplement comes with GMT. On Linux and macOS, **Geophysics ▸ MB-System ▸ Install

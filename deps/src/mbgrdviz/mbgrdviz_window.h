@@ -100,6 +100,9 @@ struct MbGrdVizHost {
 	bool (*openMbedit)(QWidget *parent, const QString &file, int format) = nullptr;
 	bool (*openMbeditviz)(QWidget *parent, const QString &file, int format, bool replace) = nullptr;
 	bool (*openMbvelocity)(QWidget *parent, const QString &file, int format) = nullptr;
+	// the ported navigation editor, on ALL the selected files at once (mbgrdviz's mbnavedit -I ... -I ...);
+	// null when it is not built in: the mbnavedit program is started instead
+	bool (*openMbnavedit)(QWidget *parent, const QStringList &files, const std::vector<int> &formats) = nullptr;
 	// arm the window's "point at a line" pick: each click on a line answers with the navigation track's
 	// name as addLines gave it ("" = the line clicked is not a track); a null `cb` disarms
 	bool (*pickNav)(void *win, std::function<void(const std::string &)> cb) = nullptr;

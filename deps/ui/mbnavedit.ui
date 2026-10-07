@@ -1,0 +1,270 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  mbnavedit.ui - the interactive navigation editor window (port of MB-System's mbnavedit,
+  mbnavedit.uil / mbnavedit_creation.c). Loaded at RUNTIME by deps/src/mbnavedit/mbnavedit_window.cpp
+  (QUiLoader). The objectNames are the Motif widget names; every one is looked up by name there, so
+  rename one and the tool refuses to open, naming the missing widget.
+  Absolute geometry, no layouts: only the plot area (scrollArea) follows the window's size, from
+  code, as mbnavedit's do_resize made the scrolled window follow the bulletin board.
+-->
+<ui version="4.0">
+ <class>MbNavEditWindow</class>
+ <widget class="QMainWindow" name="MbNavEditWindow">
+  <property name="geometry">
+   <rect><x>0</x><y>0</y><width>1000</width><height>680</height></rect>
+  </property>
+  <property name="windowTitle">
+   <string>MBnavedit - Interactive Navigation Editor</string>
+  </property>
+  <widget class="QWidget" name="centralwidget">
+   <widget class="QPushButton" name="pushButton_start">
+    <property name="geometry"><rect><x>6</x><y>4</y><width>56</width><height>24</height></rect></property>
+    <property name="toolTip"><string>Show the start of the data in the buffer</string></property>
+    <property name="text"><string>Start</string></property>
+   </widget>
+   <widget class="QPushButton" name="pushButton_reverse">
+    <property name="geometry"><rect><x>64</x><y>4</y><width>64</width><height>24</height></rect></property>
+    <property name="toolTip"><string>Step back by the time step (Controls &gt; Time Stepping)</string></property>
+    <property name="text"><string>Reverse</string></property>
+   </widget>
+   <widget class="QPushButton" name="pushButton_forward">
+    <property name="geometry"><rect><x>130</x><y>4</y><width>64</width><height>24</height></rect></property>
+    <property name="toolTip"><string>Step forward by the time step (Controls &gt; Time Stepping)</string></property>
+    <property name="text"><string>Forward</string></property>
+   </widget>
+   <widget class="QPushButton" name="pushButton_end">
+    <property name="geometry"><rect><x>196</x><y>4</y><width>56</width><height>24</height></rect></property>
+    <property name="toolTip"><string>Show the end of the data in the buffer</string></property>
+    <property name="text"><string>End</string></property>
+   </widget>
+   <widget class="QPushButton" name="pushButton_nextbuffer">
+    <property name="geometry"><rect><x>262</x><y>4</y><width>84</width><height>24</height></rect></property>
+    <property name="toolTip"><string>Write out the buffer and read the next one</string></property>
+    <property name="text"><string>Next Buffer</string></property>
+   </widget>
+   <widget class="QPushButton" name="pushButton_showall">
+    <property name="geometry"><rect><x>348</x><y>4</y><width>72</width><height>24</height></rect></property>
+    <property name="toolTip"><string>Show all the data in the buffer</string></property>
+    <property name="text"><string>Show All</string></property>
+   </widget>
+   <widget class="QPushButton" name="pushButton_set_interval">
+    <property name="geometry"><rect><x>422</x><y>4</y><width>76</width><height>24</height></rect></property>
+    <property name="toolTip"><string>Zoom in time: left button sets one bound, middle button the other, right button applies</string></property>
+    <property name="text"><string>Pick Zoom</string></property>
+   </widget>
+   <widget class="QPushButton" name="pushButton_done">
+    <property name="geometry"><rect><x>508</x><y>4</y><width>72</width><height>24</height></rect></property>
+    <property name="toolTip"><string>Finish with this file: write the edited navigation (.nve) and open the next file of the list</string></property>
+    <property name="text"><string>Done</string></property>
+   </widget>
+   <widget class="QPushButton" name="pushButton_quit">
+    <property name="geometry"><rect><x>582</x><y>4</y><width>56</width><height>24</height></rect></property>
+    <property name="toolTip"><string>Finish with this file (its edits are written) and close the editor</string></property>
+    <property name="text"><string>Quit</string></property>
+   </widget>
+   <widget class="QPushButton" name="pushButton_about">
+    <property name="geometry"><rect><x>640</x><y>4</y><width>56</width><height>24</height></rect></property>
+    <property name="text"><string>About</string></property>
+   </widget>
+   <widget class="QPushButton" name="pushButton_interpolate">
+    <property name="geometry"><rect><x>6</x><y>32</y><width>80</width><height>24</height></rect></property>
+    <property name="toolTip"><string>Replace the selected values by values interpolated from their unselected neighbours</string></property>
+    <property name="text"><string>Interpolate</string></property>
+   </widget>
+   <widget class="QPushButton" name="pushButton_interpolaterepeats">
+    <property name="geometry"><rect><x>88</x><y>32</y><width>124</width><height>24</height></rect></property>
+    <property name="toolTip"><string>Interpolate only the selected values that repeat the value before them</string></property>
+    <property name="text"><string>Interpolate Repeats</string></property>
+   </widget>
+   <widget class="QPushButton" name="pushButton_revert">
+    <property name="geometry"><rect><x>214</x><y>32</y><width>60</width><height>24</height></rect></property>
+    <property name="toolTip"><string>Put the original values back for the selected data</string></property>
+    <property name="text"><string>Revert</string></property>
+   </widget>
+   <widget class="QPushButton" name="pushButton_solution">
+    <property name="geometry"><rect><x>276</x><y>32</y><width>86</width><height>24</height></rect></property>
+    <property name="toolTip"><string>Replace the selected positions by the navigation model (Controls &gt; Nav Modeling)</string></property>
+    <property name="text"><string>Use Solution</string></property>
+   </widget>
+   <widget class="QPushButton" name="pushButton_flag">
+    <property name="geometry"><rect><x>364</x><y>32</y><width>50</width><height>24</height></rect></property>
+    <property name="toolTip"><string>Flag the selected positions: the model ignores them</string></property>
+    <property name="text"><string>Flag</string></property>
+   </widget>
+   <widget class="QPushButton" name="pushButton_unflag">
+    <property name="geometry"><rect><x>416</x><y>32</y><width>56</width><height>24</height></rect></property>
+    <property name="toolTip"><string>Unflag the selected positions</string></property>
+    <property name="text"><string>Unflag</string></property>
+   </widget>
+   <widget class="QRadioButton" name="toggleButton_pick">
+    <property name="geometry"><rect><x>484</x><y>34</y><width>48</width><height>20</height></rect></property>
+    <property name="toolTip"><string>Left button toggles the selection of the nearest value (key Y, Q)</string></property>
+    <property name="text"><string>Pick</string></property>
+    <property name="checked"><bool>true</bool></property>
+   </widget>
+   <widget class="QRadioButton" name="toggleButton_select">
+    <property name="geometry"><rect><x>534</x><y>34</y><width>58</width><height>20</height></rect></property>
+    <property name="toolTip"><string>Left button drag selects the values under the pointer (key U, W)</string></property>
+    <property name="text"><string>Select</string></property>
+   </widget>
+   <widget class="QRadioButton" name="toggleButton_deselect">
+    <property name="geometry"><rect><x>594</x><y>34</y><width>70</width><height>20</height></rect></property>
+    <property name="toolTip"><string>Left button drag deselects the values under the pointer (key I, E)</string></property>
+    <property name="text"><string>Deselect</string></property>
+   </widget>
+   <widget class="QRadioButton" name="toggleButton_selectall">
+    <property name="geometry"><rect><x>666</x><y>34</y><width>76</width><height>20</height></rect></property>
+    <property name="toolTip"><string>Left button selects every value shown in the plot clicked (key O, R)</string></property>
+    <property name="text"><string>Select All</string></property>
+   </widget>
+   <widget class="QRadioButton" name="toggleButton_deselectall">
+    <property name="geometry"><rect><x>744</x><y>34</y><width>90</width><height>20</height></rect></property>
+    <property name="toolTip"><string>Left button deselects every value shown (key P, T)</string></property>
+    <property name="text"><string>Deselect All</string></property>
+   </widget>
+   <widget class="QCheckBox" name="toggleButton_time">
+    <property name="geometry"><rect><x>6</x><y>62</y><width>200</width><height>20</height></rect></property>
+    <property name="text"><string>Time Interval Plot</string></property>
+   </widget>
+   <widget class="QCheckBox" name="toggleButton_org_time">
+    <property name="geometry"><rect><x>22</x><y>82</y><width>184</width><height>20</height></rect></property>
+    <property name="text"><string>Show Original Data</string></property>
+   </widget>
+   <widget class="QCheckBox" name="toggleButton_lon">
+    <property name="geometry"><rect><x>6</x><y>106</y><width>200</width><height>20</height></rect></property>
+    <property name="text"><string>Longitude Plot</string></property>
+   </widget>
+   <widget class="QCheckBox" name="toggleButton_org_lon">
+    <property name="geometry"><rect><x>22</x><y>126</y><width>184</width><height>20</height></rect></property>
+    <property name="text"><string>Show Original Data</string></property>
+   </widget>
+   <widget class="QCheckBox" name="toggleButton_dr_lon">
+    <property name="geometry"><rect><x>22</x><y>146</y><width>184</width><height>20</height></rect></property>
+    <property name="text"><string>Show Dead Reckoning</string></property>
+   </widget>
+   <widget class="QCheckBox" name="toggleButton_lat">
+    <property name="geometry"><rect><x>6</x><y>170</y><width>200</width><height>20</height></rect></property>
+    <property name="text"><string>Latitude Plot</string></property>
+   </widget>
+   <widget class="QCheckBox" name="toggleButton_org_lat">
+    <property name="geometry"><rect><x>22</x><y>190</y><width>184</width><height>20</height></rect></property>
+    <property name="text"><string>Show Original Data</string></property>
+   </widget>
+   <widget class="QCheckBox" name="toggleButton_dr_lat">
+    <property name="geometry"><rect><x>22</x><y>210</y><width>184</width><height>20</height></rect></property>
+    <property name="text"><string>Show Dead Reckoning</string></property>
+   </widget>
+   <widget class="QCheckBox" name="toggleButton_speed">
+    <property name="geometry"><rect><x>6</x><y>234</y><width>200</width><height>20</height></rect></property>
+    <property name="text"><string>Speed Plot</string></property>
+   </widget>
+   <widget class="QCheckBox" name="toggleButton_org_speed">
+    <property name="geometry"><rect><x>22</x><y>254</y><width>184</width><height>20</height></rect></property>
+    <property name="text"><string>Show Original Data</string></property>
+   </widget>
+   <widget class="QCheckBox" name="toggleButton_show_smg">
+    <property name="geometry"><rect><x>22</x><y>274</y><width>184</width><height>20</height></rect></property>
+    <property name="text"><string>Show Speed-Made-Good</string></property>
+   </widget>
+   <widget class="QPushButton" name="pushButton_speed_smg">
+    <property name="geometry"><rect><x>22</x><y>296</y><width>160</width><height>22</height></rect></property>
+    <property name="toolTip"><string>Replace the selected speeds by the speed made good between the fixes</string></property>
+    <property name="text"><string>Use Speed-Made-Good</string></property>
+   </widget>
+   <widget class="QCheckBox" name="toggleButton_heading">
+    <property name="geometry"><rect><x>6</x><y>324</y><width>200</width><height>20</height></rect></property>
+    <property name="text"><string>Heading Plot</string></property>
+   </widget>
+   <widget class="QCheckBox" name="toggleButton_org_heading">
+    <property name="geometry"><rect><x>22</x><y>344</y><width>184</width><height>20</height></rect></property>
+    <property name="text"><string>Show Original Data</string></property>
+   </widget>
+   <widget class="QCheckBox" name="toggleButton_show_cmg">
+    <property name="geometry"><rect><x>22</x><y>364</y><width>184</width><height>20</height></rect></property>
+    <property name="text"><string>Show Course-Made-Good</string></property>
+   </widget>
+   <widget class="QPushButton" name="pushButton_heading_cmg">
+    <property name="geometry"><rect><x>22</x><y>386</y><width>160</width><height>22</height></rect></property>
+    <property name="toolTip"><string>Replace the selected headings by the course made good between the fixes</string></property>
+    <property name="text"><string>Use Course-Made-Good</string></property>
+   </widget>
+   <widget class="QCheckBox" name="toggleButton_sensordepth">
+    <property name="geometry"><rect><x>6</x><y>414</y><width>200</width><height>20</height></rect></property>
+    <property name="text"><string>Sonar Depth Plot</string></property>
+   </widget>
+   <widget class="QCheckBox" name="toggleButton_org_sensordepth">
+    <property name="geometry"><rect><x>22</x><y>434</y><width>184</width><height>20</height></rect></property>
+    <property name="text"><string>Show Original Data</string></property>
+   </widget>
+   <widget class="QCheckBox" name="toggleButton_vru">
+    <property name="geometry"><rect><x>6</x><y>458</y><width>200</width><height>20</height></rect></property>
+    <property name="text"><string>Roll, Pitch, and Heave Plots</string></property>
+   </widget>
+   <widget class="QScrollArea" name="scrollArea">
+    <property name="geometry"><rect><x>210</x><y>62</y><width>784</width><height>592</height></rect></property>
+    <property name="toolTip"><string/></property>
+    <property name="widgetResizable"><bool>false</bool></property>
+   </widget>
+  </widget>
+  <widget class="QMenuBar" name="menubar">
+   <widget class="QMenu" name="menuFile">
+    <property name="title"><string>File</string></property>
+    <addaction name="pushButton_file"/>
+    <addaction name="pushButton_filelist"/>
+    <addaction name="separator"/>
+    <addaction name="actionQuit"/>
+   </widget>
+   <widget class="QMenu" name="menuControls">
+    <property name="title"><string>Controls</string></property>
+    <addaction name="pushButton_controls_timespan"/>
+    <addaction name="pushButton_controls_modeling"/>
+    <addaction name="pushButton_controls_timeinterpolation"/>
+    <addaction name="pushButton_controls_deletebadtimetag"/>
+    <addaction name="pushButton_controls_offset"/>
+   </widget>
+   <widget class="QMenu" name="menuHelp">
+    <property name="title"><string>Help</string></property>
+    <addaction name="actionHelp"/>
+    <addaction name="actionAbout"/>
+   </widget>
+   <addaction name="menuFile"/>
+   <addaction name="menuControls"/>
+   <addaction name="menuHelp"/>
+  </widget>
+  <action name="pushButton_file">
+   <property name="text"><string>Open...</string></property>
+   <property name="toolTip"><string>Open a swath file or a datalist of them</string></property>
+  </action>
+  <action name="pushButton_filelist">
+   <property name="text"><string>File Selection List...</string></property>
+   <property name="toolTip"><string>The files opened so far: edit or remove one</string></property>
+  </action>
+  <action name="actionQuit">
+   <property name="text"><string>Quit</string></property>
+  </action>
+  <action name="pushButton_controls_timespan">
+   <property name="text"><string>Time Stepping...</string></property>
+  </action>
+  <action name="pushButton_controls_modeling">
+   <property name="text"><string>Nav Modeling...</string></property>
+  </action>
+  <action name="pushButton_controls_timeinterpolation">
+   <property name="text"><string>Time Interpolation...</string></property>
+  </action>
+  <action name="pushButton_controls_deletebadtimetag">
+   <property name="text"><string>Delete Bad Times...</string></property>
+  </action>
+  <action name="pushButton_controls_offset">
+   <property name="text"><string>Position Offset...</string></property>
+  </action>
+  <action name="actionHelp">
+   <property name="text"><string>How to use MBnavedit</string></property>
+   <property name="shortcut"><string>F1</string></property>
+  </action>
+  <action name="actionAbout">
+   <property name="text"><string>About MBnavedit</string></property>
+  </action>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

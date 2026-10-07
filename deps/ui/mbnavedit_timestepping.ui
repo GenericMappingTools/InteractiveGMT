@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  mbnavedit_timestepping.ui - Controls > Time Stepping of the navigation editor (mbnavedit's
+  bulletinBoard_timestepping): the time span shown and the step of Forward / Reverse. Each slider's
+  maximum doubles when it is dragged to its end and halves at 1, as in mbnavedit. Loaded at runtime
+  by src/mbnavedit/mbnavedit_window.cpp. Absolute geometry, no layouts.
+-->
+<ui version="4.0">
+ <class>MbNavEditTimeSteppingDialog</class>
+ <widget class="QDialog" name="MbNavEditTimeSteppingDialog">
+  <property name="geometry">
+   <rect><x>0</x><y>0</y><width>420</width><height>112</height></rect>
+  </property>
+  <property name="windowTitle">
+   <string>MBnavedit - Time Stepping</string>
+  </property>
+  <widget class="QLabel" name="label_timespan_1">
+   <property name="geometry"><rect><x>11</x><y>8</y><width>150</width><height>20</height></rect></property>
+   <property name="text"><string>Time Span Shown (sec):  1</string></property>
+  </widget>
+  <widget class="QSlider" name="scale_timespan">
+   <property name="geometry"><rect><x>164</x><y>8</y><width>186</width><height>20</height></rect></property>
+   <property name="orientation"><enum>Qt::Horizontal</enum></property>
+  </widget>
+  <widget class="QLabel" name="label_timespan_2">
+   <property name="geometry"><rect><x>354</x><y>8</y><width>56</width><height>20</height></rect></property>
+   <property name="text"><string>500</string></property>
+  </widget>
+  <widget class="QLabel" name="scale_timespanValue">
+   <property name="geometry"><rect><x>164</x><y>28</y><width>186</width><height>14</height></rect></property>
+   <property name="text"><string>1</string></property>
+   <property name="alignment"><set>Qt::AlignCenter</set></property>
+  </widget>
+  <widget class="QLabel" name="label_timestep_1">
+   <property name="geometry"><rect><x>11</x><y>48</y><width>150</width><height>20</height></rect></property>
+   <property name="text"><string>Time Step (sec):  1</string></property>
+  </widget>
+  <widget class="QSlider" name="scale_timestep">
+   <property name="geometry"><rect><x>164</x><y>48</y><width>186</width><height>20</height></rect></property>
+   <property name="orientation"><enum>Qt::Horizontal</enum></property>
+  </widget>
+  <widget class="QLabel" name="label_timestep_2">
+   <property name="geometry"><rect><x>354</x><y>48</y><width>56</width><height>20</height></rect></property>
+   <property name="text"><string>500</string></property>
+  </widget>
+  <widget class="QLabel" name="scale_timestepValue">
+   <property name="geometry"><rect><x>164</x><y>68</y><width>186</width><height>14</height></rect></property>
+   <property name="text"><string>1</string></property>
+   <property name="alignment"><set>Qt::AlignCenter</set></property>
+  </widget>
+  <widget class="QPushButton" name="pushButton_timestepping_dismiss">
+   <property name="geometry"><rect><x>334</x><y>82</y><width>76</width><height>24</height></rect></property>
+   <property name="text"><string>Dismiss</string></property>
+   <property name="autoDefault"><bool>false</bool></property>
+  </widget>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

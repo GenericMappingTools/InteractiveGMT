@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  mbnavedit_timeinterpolation.ui - Controls > Time Interpolation of the navigation editor
+  (mbnavedit's bulletinBoard_timeinterpolation). Loaded at runtime by
+  src/mbnavedit/mbnavedit_window.cpp. Absolute geometry, no layouts.
+-->
+<ui version="4.0">
+ <class>MbNavEditTimeInterpolationDialog</class>
+ <widget class="QDialog" name="MbNavEditTimeInterpolationDialog">
+  <property name="geometry">
+   <rect><x>0</x><y>0</y><width>320</width><height>96</height></rect>
+  </property>
+  <property name="windowTitle">
+   <string>MBnavedit - Time Interpolation</string>
+  </property>
+  <widget class="QLabel" name="label_timeinterpolation">
+   <property name="geometry"><rect><x>11</x><y>8</y><width>298</width><height>48</height></rect></property>
+   <property name="text"><string>Click "Apply" to interpolate duplicate time stamps. Non-duplicate time stamps will not be affected.</string></property>
+   <property name="wordWrap"><bool>true</bool></property>
+  </widget>
+  <widget class="QPushButton" name="pushButton_timeinterpolation_apply">
+   <property name="geometry"><rect><x>151</x><y>64</y><width>76</width><height>24</height></rect></property>
+   <property name="text"><string>Apply</string></property>
+   <property name="autoDefault"><bool>false</bool></property>
+  </widget>
+  <widget class="QPushButton" name="pushButton_timeinterpolation_dismiss">
+   <property name="geometry"><rect><x>233</x><y>64</y><width>76</width><height>24</height></rect></property>
+   <property name="text"><string>Dismiss</string></property>
+   <property name="autoDefault"><bool>false</bool></property>
+  </widget>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

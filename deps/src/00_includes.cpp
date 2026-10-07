@@ -263,6 +263,9 @@
 #ifdef GMTVTK_MBVELOCITY                    // EXPERIMENTAL sound velocity tool (IGMT_WITH_MBVELOCITYTOOL)
 #include "mbvelocitytool/mbvelocity_window.h"
 #endif
+#ifdef GMTVTK_MBNAVEDIT                     // EXPERIMENTAL navigation editor (IGMT_WITH_MBNAVEDIT)
+#include "mbnavedit/mbnavedit_window.h"
+#endif
 #ifdef GMTVTK_MBEDITVIZ                     // EXPERIMENTAL mbeditviz (IGMT_WITH_MBEDITVIZ)
 #include "mbeditviz/mbeditviz_window.h"
 #include "mbeditviz/mb3dsoundings_cloud.h"

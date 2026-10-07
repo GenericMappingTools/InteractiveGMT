@@ -220,6 +220,23 @@ if(IGMT_WITH_MBVELOCITYTOOL AND MBEDIT_SRC AND EXISTS "${CMAKE_CURRENT_SOURCE_DI
   message(STATUS "gmtvtk: building the EXPERIMENTAL sound velocity tool (src/mbvelocitytool/)")
 endif()
 
+# EXPERIMENTAL -- the interactive navigation editor (MB-System's mbnavedit, ported), in src/mbnavedit/.
+# ON/OFF with this ONE line, like the swath editor above (Geophysics > MB-System entry and
+# gmtvtk_mbnavedit_* exports sit behind #ifdef GMTVTK_MBNAVEDIT). It reads swath files through the
+# swath editor's run-time MBIO loader, so it is built only when the editor is.
+set(IGMT_WITH_MBNAVEDIT ON)
+
+set(MBNAVEDIT_SRC)
+if(IGMT_WITH_MBNAVEDIT AND MBEDIT_SRC AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/mbnavedit/mbnavedit.c")
+  set(MBNAVEDIT_SRC src/mbnavedit/mbnavedit.c src/mbnavedit/mbnavedit_window.cpp)
+  add_compile_definitions(GMTVTK_MBNAVEDIT)
+  if(MSVC)
+    # the engine keeps mbnavedit_prog.c's own sprintf/strcpy, line for line
+    set_source_files_properties(src/mbnavedit/mbnavedit.c PROPERTIES COMPILE_DEFINITIONS "_CRT_SECURE_NO_WARNINGS;_CRT_NONSTDC_NO_WARNINGS")
+  endif()
+  message(STATUS "gmtvtk: building the EXPERIMENTAL navigation editor (src/mbnavedit/)")
+endif()
+
 # EXPERIMENTAL -- the geographic bathymetry editor and patch test tool (MB-System's mbeditviz, ported),
 # in src/mbeditviz/. ON/OFF with this ONE line (Tools menu entry and gmtvtk_mbeditviz_* exports sit
 # behind #ifdef GMTVTK_MBEDITVIZ). Like the sound velocity tool it reads swath files through the swath
@@ -287,7 +304,7 @@ endif()
 set(CUBE_SRC src/cube/mb_cube.c)
 set_source_files_properties(${CUBE_SRC} PROPERTIES COMPILE_DEFINITIONS MB_CUBE_BUILD_DLL)
 
-set(GMTVTK_SRC src/gmtvtk.cpp src/mbgrid.c ${CUBE_SRC} src/satellite.cpp ${SAT_CODE_SRC} ${MBEDIT_SRC} ${MBVELOCITY_SRC} ${MBEDITVIZ_SRC} ${MBGRDVIZ_SRC} ${PCE_SRC} ${WCDVIEWER_SRC})
+set(GMTVTK_SRC src/gmtvtk.cpp src/mbgrid.c ${CUBE_SRC} src/satellite.cpp ${SAT_CODE_SRC} ${MBEDIT_SRC} ${MBVELOCITY_SRC} ${MBNAVEDIT_SRC} ${MBEDITVIZ_SRC} ${MBGRDVIZ_SRC} ${PCE_SRC} ${WCDVIEWER_SRC})
 
 # deps/ui/*.ui are loaded at RUNTIME (QUiLoader, see FocalMechanismsDialog in 70_window.cpp) for
 # dialogs where the .ui must stay the single source of truth — no hand-ported C++ to fall out of

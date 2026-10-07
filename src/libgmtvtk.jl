@@ -347,6 +347,10 @@ const _LIB_OPTIONAL = (
 	:gmtvtk_mbvelocity_open, :gmtvtk_mbvelocity_state, :gmtvtk_mbvelocity_mouse, :gmtvtk_mbvelocity_edit_node,
 	:gmtvtk_mbvelocity_reprocess, :gmtvtk_mbvelocity_save_swath_svp, :gmtvtk_mbvelocity_save_residuals,
 	:gmtvtk_mbvelocity_save_png, :gmtvtk_mbvelocity_close,
+	# EXPERIMENTAL navigation editor (deps/src/mbnavedit/, IGMT_WITH_MBNAVEDIT)
+	:gmtvtk_mbnavedit_open, :gmtvtk_mbnavedit_state, :gmtvtk_mbnavedit_record, :gmtvtk_mbnavedit_plot_box,
+	:gmtvtk_mbnavedit_record_xy, :gmtvtk_mbnavedit_mouse, :gmtvtk_mbnavedit_key, :gmtvtk_mbnavedit_press,
+	:gmtvtk_mbnavedit_save_png, :gmtvtk_mbnavedit_close,
 	# EXPERIMENTAL mbeditviz (deps/src/mbeditviz/, IGMT_WITH_MBEDITVIZ)
 	:gmtvtk_mbeditviz_open, :gmtvtk_mbeditviz_state, :gmtvtk_mbeditviz_view_all, :gmtvtk_mbeditviz_select,
 	:gmtvtk_mbeditviz_select_box, :gmtvtk_mbeditviz_editor_key, :gmtvtk_mbeditviz_editor_mode,

@@ -2284,6 +2284,59 @@ GMTVTK_API int gmtvtk_mbvelocity_close(void) {
 }
 #endif // GMTVTK_MBVELOCITY
 
+#ifdef GMTVTK_MBNAVEDIT
+// EXPERIMENTAL (IGMT_WITH_MBNAVEDIT in CMakeLists.txt; Julia lists these in _LIB_OPTIONAL).
+// The interactive navigation editor (MB-System's mbnavedit, ported: deps/src/mbnavedit/). Open it, as
+// `mbnavedit -I file -F format [-D] [-X] [-P] [-N]`: `files` is newline-separated (each a swath file or a
+// datalist), `formats` holds `nfiles` format ids (null: guess each). The switches are -1 to leave one as it
+// is; `useprevious` answers the "use the previously edited navigation" question (-1 ask). 1 = a file loaded,
+// or the editor open when no file was given.
+GMTVTK_API int gmtvtk_mbnavedit_open(const char *files, const int *formats, int nfiles, int browse, int runmbprocess,
+                                     int usepingdata, int stripcomments, int useprevious) {
+	ensureApp();
+	QStringList list;
+	if (files && files[0])
+		list = QString::fromUtf8(files).split('\n', Qt::SkipEmptyParts);
+	std::vector<int> forms;
+	for (int i = 0; i < list.size(); i++)
+		forms.push_back((formats && i < nfiles) ? formats[i] : 0);
+	return mbnaveditOpenWindow(nullptr, mbnaveditViewerHost(), list, forms, browse, runmbprocess, usepingdata, stripcomments,
+	                           useprevious) ? 1 : 0;
+}
+// [open, file_open, numfiles, currentfile, nbuff, current_id, nplot, nload_total, ndump_total,
+//  number_plots, model_mode, mode_pick, canvas_width, canvas_height]
+GMTVTK_API int gmtvtk_mbnavedit_state(int *out, int n) {
+	return mbnaveditState(out, n);
+}
+// record i: out = [time_d, lon, lat, speed, heading, sensor depth]; *selected = plot selection bits
+GMTVTK_API int gmtvtk_mbnavedit_record(int i, double *out, int *selected) {
+	return (out && selected && mbnaveditRecord(i, out, selected)) ? 1 : 0;
+}
+// plot iplot's box: out = [ixmin, ixmax, iymin, iymax, type]
+GMTVTK_API int gmtvtk_mbnavedit_plot_box(int iplot, int *out) {
+	return (out && mbnaveditPlotBox(iplot, out)) ? 1 : 0;
+}
+GMTVTK_API int gmtvtk_mbnavedit_record_xy(int iplot, int i, int *xy) {
+	return (xy && mbnaveditRecordXY(iplot, i, &xy[0], &xy[1])) ? 1 : 0;
+}
+GMTVTK_API int gmtvtk_mbnavedit_mouse(int button, int x0, int y0, int x1, int y1) {
+	return mbnaveditMouse(button, x0, y0, x1, y1) ? 1 : 0;
+}
+GMTVTK_API int gmtvtk_mbnavedit_key(int ch) {
+	return mbnaveditKey(ch) ? 1 : 0;
+}
+// click the button / toggle / menu entry of that object name (mbnavedit.ui and its dialogs)
+GMTVTK_API int gmtvtk_mbnavedit_press(const char *name) {
+	return (name && mbnaveditPress(QString::fromUtf8(name))) ? 1 : 0;
+}
+GMTVTK_API int gmtvtk_mbnavedit_save_png(const char *path) {
+	return (path && mbnaveditSavePng(QString::fromUtf8(path))) ? 1 : 0;
+}
+GMTVTK_API int gmtvtk_mbnavedit_close(void) {
+	return mbnaveditClose() ? 1 : 0;
+}
+#endif // GMTVTK_MBNAVEDIT
+
 #ifdef GMTVTK_MBEDITVIZ
 // EXPERIMENTAL (IGMT_WITH_MBEDITVIZ in CMakeLists.txt; Julia lists these in _LIB_OPTIONAL).
 // mbeditviz's survey map: the grid it makes is a NEW ELEMENT of the window mbeditviz was opened from
@@ -2997,6 +3050,11 @@ static MbGrdVizHost mbgrdvizViewerHost() {
 	h.openMbvelocity = [](QWidget *parent, const QString &file, int format) {
 		return mbvelocityOpenWindow(parent, mbvelocityViewerHost(), file, format);
 	};
+#ifdef GMTVTK_MBNAVEDIT
+	h.openMbnavedit = [](QWidget *parent, const QStringList &files, const std::vector<int> &formats) {
+		return mbnaveditOpenWindow(parent, mbnaveditViewerHost(), files, formats);
+	};
+#endif
 	// The tool's "Pick in view": the viewer's shared click pick (Scene::vectorPickMode 1, resolved by
 	// vectorPickFire) armed on `win`. Each click answers with the clicked track's mbgrdviz name
 	// (Overlay::mbNav), "" for a line that is not a track. A null `cb` disarms.
