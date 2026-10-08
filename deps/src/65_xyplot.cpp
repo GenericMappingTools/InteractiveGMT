@@ -67,6 +67,14 @@ struct XYPage {
 	double                      sgUnit = 1000.0;  // wavenumber->metres factor (1/km default)
 	vtkPlot                    *sgFit = nullptr;  // the live fit line (not in series)
 	vtkSmartPointer<vtkTable>   sgFitTable;
+	// Curve marker — the same gestures as the Profile panel's: a click ON a curve drops a circle there,
+	// dragging slides it ALONG that curve with an "x,  y" label beside it, a double-click on it removes
+	// it. Position = fractional row index into series[markSel] (row i + t towards row i+1), so it works
+	// for any curve, not only one whose x ascends. Drawn by the chart itself (xyMarkPaint).
+	int                         markSel = -1;
+	double                      markU = 0.0;
+	bool                        markDrag = false, markNew = false, markMoved = false;
+	QPointF                     markPress;
 };
 
 // Reveal + unfold a viewer's Scene Objects dock (defined in 70_window.cpp, later in this same
@@ -113,6 +121,11 @@ struct XYPlot {
 	int                                 curPageIdx = 0;
 	QTabBar                            *tabs = nullptr;
 	bool                                tabBusy = false;       // guard QTabBar::currentChanged storms
+	// Opened from a Profile panel: its copy of the curve (series markLinkSel on page markLinkPage)
+	// shares the panel's marker, both ways. The panel owns the position; null = not linked.
+	QPointer<ProfilePanel>              markPanel;
+	int                                 markLinkPage = -1, markLinkSel = -1;
+	bool                                markSyncing = false;   // applying the panel's change: don't echo it
 };
 
 // Live X,Y windows, keyed by the XYPlot *handed back to the host. A handle is
@@ -541,6 +554,8 @@ static void xyClear(XYPlot *s) {
 	XYPage &pg = xyCur(s);
 	pg.chart->ClearPlots();
 	pg.series.clear();
+	pg.markSel = -1;                       // its curve is gone
+	if (s->curPageIdx == s->markLinkPage) s->markLinkSel = -1;
 	xyRebuildObjMgr(s);
 	if (s->widget && s->widget->renderWindow())
 		s->widget->renderWindow()->Render();
@@ -552,12 +567,26 @@ static void xyDeleteSeries(XYPlot *s, int idx) {
 	if (idx < 0 || idx >= (int)series.size())
 		return;
 	series.erase(series.begin() + idx);
+	int &ms = xyCur(s).markSel;            // the marker stays on ITS curve, or goes with it
+	if (ms == idx) ms = -1;
+	else if (ms > idx) --ms;
+	if (s->curPageIdx == s->markLinkPage) {        // …and so does the Profile link
+		if (s->markLinkSel == idx)     s->markLinkSel = -1;
+		else if (s->markLinkSel > idx) --s->markLinkSel;
+	}
 	xyRebuildPlots(s);
 	xyRebuildObjMgr(s);
 }
 
 // (defined below) — needed here for the time-mode status-bar readout.
 static QString xyFmtTimeHover(double t, int fmt);
+
+// "x,  y" as this window prints a data point — ONE formatter for the status readout, the hover
+// tooltip and the curve marker's label. `fmt` is the page's X time mode (0 = plain number).
+static QString xyCoordText(int fmt, double x, double y) {
+	const QString xs = fmt ? xyFmtTimeHover(x, fmt) : QString("%1").arg(x, 0, 'g', 8);
+	return QString("%1,  %2").arg(xs).arg(y, 0, 'g', 6);
+}
 
 // Live coordinate readout: map the cursor (interactor event px, bottom-up) into
 // data coords via the current page chart's bottom/left axes, and show "x, y".
@@ -585,9 +614,7 @@ static void xyMouseMove(vtkObject *caller, unsigned long, void *clientData, void
 	}
 	const double dx = ax->GetMinimum() + fx * (ax->GetMaximum() - ax->GetMinimum());
 	const double dy = ay->GetMinimum() + fy * (ay->GetMaximum() - ay->GetMinimum());
-	const QString xs = pg.xTimeFmt ? xyFmtTimeHover(dx, pg.xTimeFmt)
-	                               : QString("%1").arg(dx, 0, 'g', 8);
-	s->win->statusBar()->showMessage(QString("%1,  %2").arg(xs).arg(dy, 0, 'g', 6));
+	s->win->statusBar()->showMessage(xyCoordText(pg.xTimeFmt, dx, dy));
 }
 
 // Live per-series line-properties dialog: colour / width / line style / marker / marker size. Each
@@ -1283,11 +1310,162 @@ static void xySetXTime(XYPlot *s, int fmt) {
 // date/time when the current page is in a time mode. VTK's built-in tooltip prints the raw X (epoch
 // seconds, ~1e9) via the plot's "%x" format with no date support, so we override the one virtual
 // that fills the tooltip and build "date,  y" ourselves. Linear mode falls back to the base.
+// ---- curve marker (click a curve, drag along it, double-click it away) -----
+
+// A data value -> scene px along one axis, through the axis' OWN scaling (log10 when active, which is
+// how the axis stores its Minimum/Maximum), so the marker sits exactly where the plot draws the curve.
+static double xyAxisToScene(vtkAxis *a, double v, int k) {
+	if (a->GetLogScaleActive()) v = std::log10(std::fabs(v));
+	const double lo = a->GetMinimum(), hi = a->GetMaximum();
+	const float *p1 = a->GetPoint1(), *p2 = a->GetPoint2();
+	if (hi == lo) return p1[k];
+	return p1[k] + (v - lo) / (hi - lo) * (p2[k] - p1[k]);
+}
+static bool xyDataToScene(XYPage &pg, double x, double y, double &sx, double &sy) {
+	vtkAxis *ax = pg.chart->GetAxis(vtkAxis::BOTTOM), *ay = pg.chart->GetAxis(vtkAxis::LEFT);
+	if (!ax || !ay || !std::isfinite(x) || !std::isfinite(y)) return false;
+	sx = xyAxisToScene(ax, x, 0);  sy = xyAxisToScene(ay, y, 1);
+	return std::isfinite(sx) && std::isfinite(sy);
+}
+// Qt widget point (logical px, top-down) -> scene px (device px, bottom-up).
+static void xyQtToScene(XYPlot *s, const QPointF &p, double &sx, double &sy) {
+	const double dpr = s->widget->devicePixelRatioF();
+	const int *sz = s->widget->renderWindow()->GetSize();
+	sx = p.x() * dpr;  sy = sz[1] - p.y() * dpr;
+}
+// A series the marker can ride: a visible line (not a bar, not the screen-constant "now" cross).
+static bool xyMarkable(const XYSeries &se) {
+	return se.visible && se.plot && se.kind == 0 && !se.nowCross && se.table && se.table->GetNumberOfRows() >= 2;
+}
+static void xyRowXY(vtkTable *t, vtkIdType r, double &x, double &y) {
+	x = t->GetValue(r, 0).ToDouble();  y = t->GetValue(r, 1).ToDouble();
+}
+// The marker's data point (row floor(u) towards the next by the fraction), false when it has none.
+static bool xyMarkPoint(XYPage &pg, double &x, double &y) {
+	if (pg.markSel < 0 || pg.markSel >= (int)pg.series.size() || !xyMarkable(pg.series[pg.markSel]))
+		return false;
+	vtkTable *t = pg.series[pg.markSel].table;
+	const vtkIdType n = t->GetNumberOfRows();
+	vtkIdType i = std::clamp<vtkIdType>((vtkIdType)std::floor(pg.markU), 0, n - 2);
+	const double f = std::clamp(pg.markU - (double)i, 0.0, 1.0);
+	double x0, y0, x1, y1;
+	xyRowXY(t, i, x0, y0);  xyRowXY(t, i + 1, x1, y1);
+	x = x0 + f * (x1 - x0);  y = y0 + f * (y1 - y0);
+	return std::isfinite(x) && std::isfinite(y);
+}
+// Nearest point ON a curve to scene px (sx,sy), within tol px. `only` >= 0 restricts the search to
+// that series (a drag stays on its own curve); -1 searches every markable one.
+static bool xyCurveNearest(XYPage &pg, int only, double sx, double sy, double tol, int &sel, double &u) {
+	double best = tol * tol;
+	bool hit = false;
+	for (int k = 0; k < (int)pg.series.size(); ++k) {
+		if ((only >= 0 && k != only) || !xyMarkable(pg.series[k])) continue;
+		vtkTable *t = pg.series[k].table;
+		const vtkIdType n = t->GetNumberOfRows();
+		double ax = 0, ay = 0;
+		bool aok = false;
+		for (vtkIdType r = 0; r < n; ++r) {
+			double x, y, bx, by;
+			xyRowXY(t, r, x, y);
+			const bool bok = xyDataToScene(pg, x, y, bx, by);
+			if (aok && bok) {
+				const double a[2] = { ax, ay }, b[2] = { bx, by };
+				const double d2 = segDist2(sx, sy, a, b);
+				if (d2 <= best) {
+					const double vx = bx - ax, vy = by - ay, L2 = vx*vx + vy*vy;
+					const double tt = L2 > 0.0 ? std::clamp(((sx - ax) * vx + (sy - ay) * vy) / L2, 0.0, 1.0) : 0.0;
+					best = d2;  hit = true;  sel = k;  u = (double)(r - 1) + tt;
+				}
+			}
+			ax = bx;  ay = by;  aok = bok;
+		}
+	}
+	return hit;
+}
+// The panel's marker (an x — distance along the profile) onto the linked curve: the fractional row
+// where that x falls (the profile's x ascends). NaN removes it.
+static void xyMarkFromPanel(XYPlot *s, double x) {
+	if (s->markLinkPage < 0 || s->markLinkPage >= (int)s->pages.size()) return;
+	XYPage &pg = s->pages[s->markLinkPage];
+	if (s->markLinkSel < 0 || s->markLinkSel >= (int)pg.series.size()) return;
+	vtkTable *t = pg.series[s->markLinkSel].table;
+	const vtkIdType n = t ? t->GetNumberOfRows() : 0;
+	if (std::isnan(x) || n < 2) {
+		if (pg.markSel == s->markLinkSel) pg.markSel = -1;
+	}
+	else {
+		vtkIdType lo = 0, hi = n - 1;                    // x(lo) <= x <= x(hi)
+		while (hi - lo > 1) {
+			const vtkIdType mid = (lo + hi) / 2;
+			if (t->GetValue(mid, 0).ToDouble() <= x) lo = mid; else hi = mid;
+		}
+		const double x0 = t->GetValue(lo, 0).ToDouble(), x1 = t->GetValue(hi, 0).ToDouble();
+		pg.markSel = s->markLinkSel;
+		pg.markU = (double)lo + (x1 > x0 ? std::clamp((x - x0) / (x1 - x0), 0.0, 1.0) : 0.0);
+	}
+	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+}
+// …and back: a marker moved / placed / removed HERE on a linked page tells the panel, which tells the
+// 3-D track and every other window linked to it.
+static void xyMarkToPanel(XYPlot *s) {
+	if (!s->markPanel || s->markSyncing || s->markLinkSel < 0 || s->curPageIdx != s->markLinkPage) return;
+	XYPage &pg = xyCur(s);
+	double x = std::numeric_limits<double>::quiet_NaN(), y;
+	if (pg.markSel == s->markLinkSel && !xyMarkPoint(pg, x, y)) x = std::numeric_limits<double>::quiet_NaN();
+	s->markSyncing = true;
+	s->markPanel->setMarker(x);
+	s->markSyncing = false;
+}
+static bool xyMarkHit(XYPlot *s, const QPointF &qp) {
+	XYPage &pg = xyCur(s);
+	double x, y, mx, my, sx, sy;
+	if (!xyMarkPoint(pg, x, y) || !xyDataToScene(pg, x, y, mx, my)) return false;
+	xyQtToScene(s, qp, sx, sy);
+	const double tol = 9.0 * s->widget->devicePixelRatioF();
+	return (sx - mx) * (sx - mx) + (sy - my) * (sy - my) <= tol * tol;
+}
+// Drawn by the chart at the END of its own paint (XYChart::Paint), so the axes it maps through are
+// the ones just laid out — the marker follows zoom, pan and resize with no observer of its own.
+static void xyMarkPaint(XYPlot *s, vtkChartXY *chart, vtkContext2D *p) {
+	if (!s || s->pages.empty()) return;
+	XYPage *pg = nullptr;
+	for (auto &q : s->pages) if (q.chart.Get() == chart) { pg = &q; break; }
+	double x, y, mx, my;
+	if (!pg || !xyMarkPoint(*pg, x, y) || !xyDataToScene(*pg, x, y, mx, my)) return;
+	const float dpr = s->widget ? (float)s->widget->devicePixelRatioF() : 1.0f;
+	p->GetPen()->SetColor(30, 30, 30, 255);
+	p->GetPen()->SetWidth(1.5f * dpr);
+	p->GetBrush()->SetColor(255, 255, 255, 200);
+	p->DrawEllipse((float)mx, (float)my, 5.5f * dpr, 5.5f * dpr);
+	const std::string lab = xyCoordText(pg->xTimeFmt, x, y).toStdString();
+	p->GetTextProp()->SetColor(0.0, 0.0, 0.0);
+	p->GetTextProp()->SetFontSize(11);
+	p->GetTextProp()->SetJustificationToLeft();
+	p->GetTextProp()->SetVerticalJustificationToBottom();
+	float b[4];
+	p->ComputeStringBounds(lab, b);
+	const float pad = 4.0f * dpr, w = b[2] + 2 * pad, h = b[3] + 2 * pad;
+	float bx = (float)mx + 9 * dpr, by = (float)my + 7 * dpr;   // up-right of the circle (scene y is up)
+	const float *xr = chart->GetAxis(vtkAxis::BOTTOM)->GetPoint2(), *yt = chart->GetAxis(vtkAxis::LEFT)->GetPoint2();
+	if (bx + w > xr[0]) bx = (float)mx - 9 * dpr - w;            // kept inside the plot frame
+	if (by + h > yt[1]) by = (float)my - 7 * dpr - h;
+	p->GetPen()->SetColor(120, 120, 120, 255);
+	p->GetPen()->SetWidth(1.0f);
+	p->GetBrush()->SetColor(255, 255, 225, 255);
+	p->DrawRect(bx, by, w, h);
+	p->DrawString(bx + pad, by + pad, lab);
+}
+
 class XYChart : public vtkChartXY {
 public:
 	static XYChart *New();
 	vtkTypeMacro(XYChart, vtkChartXY);
 	XYPlot *owner = nullptr;                            // set right after New(); never reparented
+	bool Paint(vtkContext2D *painter) override {
+		const bool r = vtkChartXY::Paint(painter);
+		if (owner && xyAlive(owner)) xyMarkPaint(owner, this, painter);   // the curve marker, on top
+		return r;
+	}
 protected:
 	void SetTooltipInfo(const vtkContextMouseEvent &mouse, const vtkVector2d &plotPos,
 	                    vtkIdType seriesIndex, vtkPlot *plot, vtkIdType segmentIndex) override {
@@ -1296,13 +1474,88 @@ protected:
 			vtkChartXY::SetTooltipInfo(mouse, plotPos, seriesIndex, plot, segmentIndex);
 			return;
 		}
-		const QString lab = xyFmtTimeHover(plotPos.GetX(), fmt)
-		                  + ",  " + QString::number(plotPos.GetY(), 'g', 6);
+		const QString lab = xyCoordText(fmt, plotPos.GetX(), plotPos.GetY());
 		this->GetTooltip()->SetText(lab.toUtf8().constData());
 		this->GetTooltip()->SetPosition(mouse.GetScenePos()[0] + 2, mouse.GetScenePos()[1] + 2);
 	}
 };
 vtkStandardNewMacro(XYChart);
+
+// Mouse for the curve marker, on the chart widget. Consumes only what is the marker's (a press on a
+// curve or on the marker, its drag, its double-click), so the chart's own pan/zoom keeps everything
+// else. Stands aside while the Spector-Grant band tool owns the left button.
+class XYMarkFilter : public QObject {
+public:
+	XYPlot *s = nullptr;
+	explicit XYMarkFilter(XYPlot *sc, QObject *parent) : QObject(parent), s(sc) {}
+protected:
+	void render() { if (s->widget->renderWindow()) s->widget->renderWindow()->Render(); }
+	bool eventFilter(QObject *obj, QEvent *ev) override {
+		if (!s || !xyAlive(s) || s->pages.empty() || xyCur(s).sgActive)
+			return QObject::eventFilter(obj, ev);
+		XYPage &pg = xyCur(s);
+		const QEvent::Type t = ev->type();
+		if (t != QEvent::MouseButtonPress && t != QEvent::MouseButtonDblClick &&
+		    t != QEvent::MouseMove && t != QEvent::MouseButtonRelease)
+			return QObject::eventFilter(obj, ev);
+		QMouseEvent *me = static_cast<QMouseEvent *>(ev);
+		const QPointF qp = me->position();
+		double sx, sy;
+		xyQtToScene(s, qp, sx, sy);
+		const double tol = 6.0 * s->widget->devicePixelRatioF();
+		int sel = -1;
+		double u = 0.0;
+		if (t == QEvent::MouseButtonPress && me->button() == Qt::LeftButton) {
+			pg.markPress = qp;  pg.markMoved = false;
+			if (xyMarkHit(s, qp)) { pg.markDrag = true; pg.markNew = false; return true; }
+			if (xyCurveNearest(pg, -1, sx, sy, tol, sel, u)) {   // click ON a curve: drop it there, grabbed
+				pg.markSel = sel;  pg.markU = u;  pg.markDrag = true;  pg.markNew = true;
+				xyMarkToPanel(s);
+				render();
+				return true;
+			}
+		}
+		else if (t == QEvent::MouseButtonDblClick && me->button() == Qt::LeftButton) {
+			// The double-click's first press already ran above: if it PLACED the marker, this
+			// double-click is the placing one and keeps it; on an older marker it removes it.
+			pg.markDrag = false;
+			if (xyMarkHit(s, qp)) {
+				if (!pg.markNew) pg.markSel = -1;
+				xyMarkToPanel(s);
+				pg.markNew = false;
+				render();
+				return true;
+			}
+			if (xyCurveNearest(pg, -1, sx, sy, tol, sel, u)) {
+				pg.markSel = sel;  pg.markU = u;  pg.markNew = false;
+				xyMarkToPanel(s);
+				render();
+				return true;
+			}
+		}
+		else if (t == QEvent::MouseMove) {
+			if (pg.markDrag) {
+				if (!pg.markMoved && (qp - pg.markPress).manhattanLength() > 3) pg.markMoved = true;
+				// slide along ITS curve: the nearest point of that series, however far the cursor strays
+				if (pg.markMoved && xyCurveNearest(pg, pg.markSel, sx, sy, 1e9, sel, u)) {
+					pg.markU = u;
+					xyMarkToPanel(s);
+					render();
+				}
+				return true;
+			}
+			const bool over = xyMarkHit(s, qp);       // the same four-arrow cursor as every draggable
+			const bool isAll = s->widget->cursor().shape() == Qt::SizeAllCursor;
+			if (over && !isAll)       s->widget->setCursor(Qt::SizeAllCursor);
+			else if (!over && isAll)  s->widget->unsetCursor();
+		}
+		else if (t == QEvent::MouseButtonRelease && me->button() == Qt::LeftButton && pg.markDrag) {
+			pg.markDrag = false;
+			return true;
+		}
+		return QObject::eventFilter(obj, ev);
+	}
+};
 
 // ---- pages (Excel-like tabs) -----------------------------------------------
 
@@ -1413,6 +1666,8 @@ static void xyDeletePage(XYPlot *s, int idx) {
 	if (idx == s->curPageIdx)
 		s->view->GetScene()->RemoveItem(s->pages[idx].chart);
 	s->pages.erase(s->pages.begin() + idx);
+	if (s->markLinkPage == idx)     s->markLinkPage = -1;   // the Profile-linked curve went with it
+	else if (s->markLinkPage > idx) --s->markLinkPage;
 	if (s->tabs) {
 		s->tabBusy = true;
 		s->tabs->removeTab(idx);
@@ -2010,6 +2265,8 @@ static XYPlot *buildXYPlot(const char *title) {
 
 	// --- interactive Spector-Grant drag-band tool (left-drag while the tool is active) ---
 	s->widget->installEventFilter(new XYSGFilter(s, s->win));
+	// --- curve marker: click a curve, drag along it, double-click it away ---
+	s->widget->installEventFilter(new XYMarkFilter(s, s->win));
 
 	// --- the X PARKS the window, it does not destroy it -------------------------------------------
 	// Same contract as the Aquamoto control window: closing hides, and the plot lives on as a handle
@@ -2104,7 +2361,8 @@ static XYPlot *xyOpenBlankFromHost() {
 // Profile panel ("Open in X,Y plot tool") so a Ctrl-drag elevation profile — or a downloaded tide
 // series — lands in the full plotter. Returns the new window (null on <2 points / mismatch).
 static XYPlot *openSeriesInXYTool(const std::vector<double> &x, const std::vector<double> &y,
-                                  const char *title, const char *xlabel, const char *ylabel) {
+                                  const char *title, const char *xlabel, const char *ylabel,
+                                  ProfilePanel *markFrom) {
 	if (x.size() < 2 || y.size() != x.size())
 		return nullptr;
 	XYPlot *p = buildXYPlot(title);
@@ -2116,5 +2374,15 @@ static XYPlot *openSeriesInXYTool(const std::vector<double> &x, const std::vecto
 		g_juliaXYSeed(p, x.data(), y.data(), (int)x.size(), "Profile");
 	else                                               // no host (demo exe) -> add directly
 		xyAddSeries(p, x.data(), y.data(), (int)x.size(), "Profile", -1.0, 0.0, 0.0, 0.0, -1, -1, -1.0);
+	// The curve just added is the panel's: share its marker (it may already have one).
+	if (markFrom && xyAlive(p) && !xyCur(p).series.empty()) {
+		p->markPanel = markFrom;
+		p->markLinkPage = p->curPageIdx;
+		p->markLinkSel = (int)xyCur(p).series.size() - 1;
+		markFrom->addMarkerListener(p, [p](double mx) { if (!p->markSyncing) xyMarkFromPanel(p, mx); });
+		QPointer<ProfilePanel> pan(markFrom);
+		QObject::connect(p->win, &QObject::destroyed, [pan, p]() { if (pan) pan->removeMarkerListener(p); });
+		xyMarkFromPanel(p, markFrom->markerX());
+	}
 	return p;
 }

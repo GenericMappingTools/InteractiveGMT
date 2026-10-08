@@ -1076,7 +1076,7 @@ GMTVTK_API void *gmtvtk_open_profile_in_xyplot(void *handle) {
 	const QByteArray xl = s->prof->seriesXLabel().toUtf8();
 	const QByteArray yl = s->prof->seriesYLabel().toUtf8();
 	XYPlot *p = openSeriesInXYTool(X, Y, t.isEmpty() ? "i'GMT  —  Profile" : t.constData(),
-	                               xl.constData(), yl.constData());
+	                               xl.constData(), yl.constData(), s->prof);
 	// This plot came OUT of `s`, so `s` is where it parks when its window is closed with the X.
 	if (p) p->owner = s;
 	return p;
@@ -7360,6 +7360,63 @@ GMTVTK_API int gmtvtk_console_history_test(void *handle, const char *cmd, int up
 // xyAlive's g_xyplots lookup: that registry is a file-static in gmtvtk.dll, invisible from this
 // test dll's own copy (same reason _register_faultgeom_test mirrors callbacks, see
 // test/libgmtvtk_test.jl) -- the handle is still a valid address, so a plain null-check suffices.
+// test hook: drive the X,Y curve marker with REAL Qt mouse events at data point (x,y) on the current
+// page — gesture 0 = click, 1 = double-click, 2 = drag from the marker to (x,y), -1 = none (report only). out[0..1] = the
+// marker's data point after it (NaN = none), out[2] = 1 when the rendered frame shows the label's
+// yellow box (the marker is really DRAWN, not only stored). Returns the marker's series index.
+GMTVTK_API int gmtvtk_xyplot_mark_test(void *handle, double x, double y, int gesture, double *out) {
+	XYPlot *p = static_cast<XYPlot*>(handle);
+	if (!p || !p->win || !p->widget || p->pages.empty() || !out) return -2;   // NOT xyAlive: g_xyplots is per-DLL
+	out[0] = out[1] = std::numeric_limits<double>::quiet_NaN();  out[2] = 0;
+	p->widget->renderWindow()->Render();                    // lay the axes out before mapping through them
+	XYPage &pg = xyCur(p);
+	const double dpr = p->widget->devicePixelRatioF();
+	const int H = p->widget->renderWindow()->GetSize()[1];
+	auto toQt = [&](double sx, double sy) { return QPointF(sx / dpr, (H - sy) / dpr); };
+	double sx, sy;
+	if (!xyDataToScene(pg, x, y, sx, sy)) return -3;
+	const QPointF at = toQt(sx, sy);
+	auto send = [&](QEvent::Type t, const QPointF &q, Qt::MouseButtons bs) {
+		QMouseEvent ev(t, q, p->widget->mapToGlobal(q), t == QEvent::MouseMove ? Qt::NoButton : Qt::LeftButton,
+		               bs, Qt::NoModifier);
+		QCoreApplication::sendEvent(p->widget, &ev);
+	};
+	if (gesture == 2) {
+		double mx, my, msx, msy;
+		if (!xyMarkPoint(pg, mx, my) || !xyDataToScene(pg, mx, my, msx, msy)) return -4;
+		const QPointF from = toQt(msx, msy);
+		send(QEvent::MouseButtonPress, from, Qt::LeftButton);
+		send(QEvent::MouseMove, (from + at) / 2, Qt::LeftButton);
+		send(QEvent::MouseMove, at, Qt::LeftButton);
+		send(QEvent::MouseButtonRelease, at, Qt::NoButton);
+	}
+	else if (gesture >= 0) {                                 // -1 = no gesture: only report
+		send(QEvent::MouseButtonPress, at, Qt::LeftButton);
+		send(QEvent::MouseButtonRelease, at, Qt::NoButton);
+		if (gesture == 1) {
+			send(QEvent::MouseButtonDblClick, at, Qt::LeftButton);
+			send(QEvent::MouseButtonRelease, at, Qt::NoButton);
+		}
+	}
+	double mx, my;
+	if (xyMarkPoint(pg, mx, my)) { out[0] = mx; out[1] = my; }
+	p->widget->renderWindow()->Render();
+	const QImage img = p->widget->grabFramebuffer();
+	for (int j = 0; j < img.height() && !out[2]; ++j)
+		for (int i = 0; i < img.width(); ++i)
+			if (img.pixel(i, j) == qRgb(255, 255, 225)) { out[2] = 1; break; }
+	return pg.markSel;
+}
+
+// test hook: the Profile panel's curve marker of window `handle` — set it to `setX` unless that is
+// NaN (through the panel's own setMarker, so every linked view follows), and return where it is.
+GMTVTK_API double gmtvtk_profile_marker_test(void *handle, double setX) {
+	Scene *s = static_cast<Scene *>(handle);
+	if (!s || !s->prof) return std::numeric_limits<double>::quiet_NaN();
+	if (!std::isnan(setX)) s->prof->setMarker(setX);
+	return s->prof->markerX();
+}
+
 GMTVTK_API int gmtvtk_xyplot_screenshot_test(void *handle, const char *path) {
 	XYPlot *p = static_cast<XYPlot*>(handle);
 	if (!p || !p->win || !path) return 0;

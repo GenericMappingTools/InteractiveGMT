@@ -10,8 +10,10 @@
 // Forward decl: the standalone X,Y plot tool (65_xyplot.cpp, #included later). The Profile panel's
 // right-click "Open in X,Y plot tool" hands its current (x,y) series to this to spawn a full plotter.
 struct XYPlot;
+class ProfilePanel;
 static XYPlot *openSeriesInXYTool(const std::vector<double> &x, const std::vector<double> &y,
-                                  const char *title, const char *xlabel, const char *ylabel);
+                                  const char *title, const char *xlabel, const char *ylabel,
+                                  ProfilePanel *markFrom = nullptr);
 
 // 2D profile plot. Pure QPainter (VTK has no working context-2D GL backend in this
 // build); a plain QWidget paints axes + the (s,z) polyline.
@@ -65,6 +67,13 @@ public:
 	double markerX() const { return m_mark; }
 	void   setMarker(double x) { setMark(x); }
 	std::function<void(double)> onMarker;
+	// …and every X,Y window opened from this panel ("Open in X,Y plot tool") shows the same marker
+	// on its copy of the curve, keyed by that window so it can leave when it closes.
+	void addMarkerListener(const void *key, std::function<void(double)> fn) { m_markListeners.push_back({ key, std::move(fn) }); }
+	void removeMarkerListener(const void *key) {
+		m_markListeners.erase(std::remove_if(m_markListeners.begin(), m_markListeners.end(),
+		                      [key](const auto &l) { return l.first == key; }), m_markListeners.end());
+	}
 	QString seriesTitle()  const { return m_title; }
 	QString seriesXLabel() const { return m_xlabel; }
 	QString seriesYLabel() const { return m_ylabel; }
@@ -85,13 +94,18 @@ protected:
 	bool    m_markNew = false;           // the last press PLACED it (so its double-click keeps it)
 	bool    m_markMoved = false;         // this press has started sliding it (past a 3 px dead zone)
 	QPointF m_markPress;
+	std::vector<std::pair<const void *, std::function<void(double)>>> m_markListeners;
 
-	// Every marker change goes through here, so the 3-D marker can never miss one.
+	// Every marker change goes through here, so neither the 3-D marker nor a linked X,Y window can
+	// ever miss one.
 	void setMark(double x) {
 		const bool same = (std::isnan(x) && std::isnan(m_mark)) || x == m_mark;
 		m_mark = x;
 		update();
-		if (!same && onMarker) onMarker(x);
+		if (same) return;
+		if (onMarker) onMarker(x);
+		const auto ls = m_markListeners;          // a listener may remove itself
+		for (const auto &l : ls) l.second(x);
 	}
 
 	// The plot frame and the data ranges drawn inside it. The painter and the hover readout MUST
@@ -389,7 +403,7 @@ protected:
 		else if (got == a && m_s.size() >= 2)
 			openSeriesInXYTool(m_s, m_z,
 				m_title.isEmpty() ? "Profile" : m_title.toUtf8().constData(),
-				m_xlabel.toUtf8().constData(), m_ylabel.toUtf8().constData());
+				m_xlabel.toUtf8().constData(), m_ylabel.toUtf8().constData(), this);
 	}
 };
 

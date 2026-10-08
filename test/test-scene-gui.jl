@@ -621,6 +621,66 @@ end
 	end
 end
 
+@testitem "X,Y curve marker: click places it, drag slides it, double-click removes it" tags=[:gui, :xyplot] setup=[GmtvtkTest] begin
+	IG = InteractiveGMT
+	t = collect(range(0, 2π; length=200))
+	IG._XY_CURRENT[] = C_NULL   # the previous item's window close is async and unpumped -- don't reuse it
+	p = xyplot(t, sin.(t); name="sin")
+	mark(x, y, g) = (o = fill(NaN, 3); r = ccall(GmtvtkTest._test_fn(:gmtvtk_xyplot_mark_test), Cint,
+	                 (Ptr{Cvoid}, Cdouble, Cdouble, Cint, Ptr{Cdouble}), p.h, x, y, g, o); (r, o))
+	try
+		IG._pump_once()
+		r, o = mark(1.0, sin(1.0), 0)                       # click ON the curve
+		@test r == 0
+		@test isapprox(o[1], 1.0; atol=0.05) && isapprox(o[2], sin(o[1]); atol=0.01)
+		@test o[3] == 1                                     # and it is DRAWN (label box on screen)
+		r, o = mark(4.0, sin(4.0), 2)                       # drag it along the curve
+		@test r == 0
+		@test isapprox(o[1], 4.0; atol=0.05) && isapprox(o[2], sin(o[1]); atol=0.01)
+		r, o = mark(o[1], o[2], 1)                          # double-click ON the marker
+		@test r == -1 && isnan(o[1]) && o[3] == 0
+		r, o = mark(2.0, sin(2.0), 1)                       # double-click on the curve places it
+		@test r == 0 && isapprox(o[1], 2.0; atol=0.05)
+		r, o = mark(2.0, 3.0, 0)                            # a click OFF any curve leaves it alone
+		@test r == 0 && isapprox(o[1], 2.0; atol=0.05)
+	finally
+		ccall(IG._fn(:gmtvtk_xyplot_close), Cvoid, (Ptr{Cvoid},), p.h)
+	end
+end
+
+@testitem "X,Y curve marker: a profile opened in the X,Y tool shares the panel's marker" tags=[:gui, :xyplot] setup=[GmtvtkTest] begin
+	IG = InteractiveGMT; GMT = IG.GMT
+	G = GMT.mat2grid(Float32[ix + iy for iy in 0:9, ix in 0:9]; x=[0.0, 9.0], y=[0.0, 9.0])
+	f = view_grid(G)
+	q = nothing
+	pmark(x) = ccall(GmtvtkTest._test_fn(:gmtvtk_profile_marker_test), Cdouble, (Ptr{Cvoid}, Cdouble), f.h, x)
+	xmark(x, y, g) = (o = fill(NaN, 3); r = ccall(GmtvtkTest._test_fn(:gmtvtk_xyplot_mark_test), Cint,
+	                  (Ptr{Cvoid}, Cdouble, Cdouble, Cint, Ptr{Cdouble}), q.h, x, y, g, o); (r, o))
+	try
+		x = collect(0.0:0.5:10.0); y = sin.(x)
+		ccall(IG._fn(:gmtvtk_show_profile_xy), Cint,
+			(Ptr{Cvoid}, Ptr{Float64}, Ptr{Float64}, Cint, Cstring, Cstring, Cstring, Cint),
+			f.h, x, y, length(x), "", "Distance", "Elevation", 0)
+		IG._pump_once()
+		@test pmark(3.0) == 3.0                             # a marker on the panel BEFORE the window opens
+		global q = profile_to_xyplot(f)
+		IG._pump_once()
+		r, o = xmark(0.0, 0.0, -1)                          # …is already in the new window, at the same x
+		@test r == 0 && isapprox(o[1], 3.0; atol=1e-6) && o[3] == 1
+		pmark(5.0)                                          # the panel moves it -> the window follows
+		r, o = xmark(0.0, 0.0, -1)
+		@test isapprox(o[1], 5.0; atol=1e-6)
+		r, o = xmark(7.0, sin(7.0), 2)                      # dragged in the window -> the panel follows
+		@test isapprox(o[1], 7.0; atol=0.1)
+		@test isapprox(pmark(NaN), o[1]; atol=1e-9)
+		r, o = xmark(o[1], o[2], 1)                         # double-click it away in the window
+		@test r == -1 && isnan(pmark(NaN))                  # -> gone from the panel too
+	finally
+		q === nothing || ccall(IG._fn(:gmtvtk_xyplot_close), Cvoid, (Ptr{Cvoid},), q.h)
+		ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), f.h)
+	end
+end
+
 @testitem "iview routes a 2-col table to the X,Y tool; 3-col stays a cloud" tags=[:gui, :xyplot] begin
 	IG = InteractiveGMT; GMT = IG.GMT
 	# "X,Y tool: one window, new page" (xyplot.jl _XY_CURRENT) is deliberate: a live X,Y window means

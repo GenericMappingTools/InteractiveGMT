@@ -307,6 +307,7 @@
 #include <vtkAxis.h>
 #include <vtkTable.h>
 #include <vtkPen.h>
+#include <vtkBrush.h>
 #include <vtkStringArray.h>
 #include <vtkTooltipItem.h>
 #include <vtkContextMouseEvent.h>
