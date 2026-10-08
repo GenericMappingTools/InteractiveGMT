@@ -235,8 +235,21 @@ function _lidar_mosaic(dlg::Ptr{Cvoid}, rMin::Int, rMax::Int, cMin::Int, cMax::I
 	return G, name, got, missed
 end
 
-# C callback. `params` = "op;..." — "init" (hand the tile table to the picker) or
-# "go;rMin/rMax/cMin/cMax;res;dir" (build the mosaic). `dlg` is the live LidarPicker*, `scene` the
+# "Mosaic in geogs": the mosaic warped to lon/lat. NOT a second reprojection — it goes through THE
+# Project tool's own gdalwarp option builder (project.jl `_project_opts`), fed exactly what that
+# dialog sends for its "Geog" entry over a LIDAR window: source = the mosaic's own PT-TM06 WKT,
+# target EPSG:4326 (the code that entry carries), bilinear (the dialog's default radio).
+function _lidar_to_geog(G::GMTgrid)::GMTgrid
+	d = Dict{String,String}("t_srs" => "EPSG:4326", "s_srs" => _LIDAR_WKT, "resample" => "bilinear")
+	R = GMT.gdalwarp(G, _project_opts(d, false))
+	R isa GMTgrid || error("gdalwarp returned a $(typeof(R)), not a grid")
+	R.command = G.command * ", reprojected to geographic (EPSG:4326)"
+	return R
+end
+
+# C callback. `params` = "op;..." — "init" (hand the tile table to the picker),
+# "go;rMin/rMax/cMin/cMax;res;dir" (build the mosaic) or "gogeo;…" (the same, then reprojected to
+# geographic coordinates by `_lidar_to_geog`). `dlg` is the live LidarPicker*, `scene` the
 # viewer the tool was opened from (used for its Errors tab).
 function _on_lidar(scene::Ptr{Cvoid}, dlg::Ptr{Cvoid}, cparams::Cstring)::Cvoid
 	try
@@ -251,13 +264,18 @@ function _on_lidar(scene::Ptr{Cvoid}, dlg::Ptr{Cvoid}, cparams::Cstring)::Cvoid
 			ccall(_fn(:gmtvtk_lidar_set_tiles), Cvoid,
 			      (Ptr{Cvoid}, Ptr{Cdouble}, Cstring, Cint),
 			      dlg, t.rects, join(t.names, '\n'), Cint(size(t.rects, 2)))
-		elseif op == "go"
+		elseif op == "go" || op == "gogeo"
 			rMin, rMax, cMin, cMax = parse.(Int, split(parts[2], '/'))
 			res = parse(Float64, parts[3])
 			dir = String(parts[4])
 			G, name, got, missed = _lidar_mosaic(dlg, rMin, rMax, cMin, cMax, res, dir)
 			isempty(missed) || _viewer_log_error(scene,
 				"LIDAR2011: $(length(missed)) tile(s) skipped — " * join(first(missed, 12), ", "))
+			if op == "gogeo"
+				_lidar_status(dlg, "$got quadrado(s) lido(s) — a projectar para geográficas…")
+				G = _lidar_to_geog(G)
+				name *= " (geog)"
+			end
 			_lidar_status(dlg, "$got quadrado(s) lido(s) — a abrir $(size(G.z, 2))x$(size(G.z, 1))…")
 			fig = iview(G; title = name)
 			# We are nested inside the picker's button handler, so the fresh window can open behind it.

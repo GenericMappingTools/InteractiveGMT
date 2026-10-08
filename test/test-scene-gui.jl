@@ -902,3 +902,29 @@ end
 		ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), c.h)
 	end
 end
+
+# 2026-10-08: unchecking the profile track's row deleted the ROW with the line — its row (and its place in
+# the vector pile) was gated on the line being VISIBLE, unlike every other vector element. Unchecked, the
+# row must stay, unchecked; checked again, the track is back.
+@testitem "Ctrl+left-drag profile: unchecking its row hides the track, the row stays" tags=[:gui, :law] setup=[GmtvtkTest] begin
+	IG = InteractiveGMT; GMT = IG.GMT
+	G = GMT.mat2grid(Float32[ix + iy for iy in 0:49, ix in 0:49]; x=[0.0, 49.0], y=[0.0, 49.0])
+	f = view_grid(G)
+	try
+		for _ in 1:10; IG._pump_once(); sleep(0.05); end
+		np = ccall(GmtvtkTest._test_fn(:gmtvtk_profile_drag_test), Cint,
+		           (Ptr{Cvoid}, Cdouble, Cdouble, Cdouble, Cdouble), f.h, 0.4, 0.4, 0.6, 0.6)
+		@test np >= 2
+		tree() = unsafe_string(ccall(GmtvtkTest._test_fn(:gmtvtk_objtree_checks_test), Cstring, (Ptr{Cvoid},), f.h))
+		click(p) = ccall(GmtvtkTest._test_fn(:gmtvtk_objrow_click_test), Cint, (Ptr{Cvoid}, Cstring), f.h, p)
+		@test occursin("[x] Profile", tree())
+		@test click("Profile") == 0                      # unchecked …
+		ccall(GmtvtkTest._test_fn(:gmtvtk_objects_rebuild_test), Cint, (Ptr{Cvoid},), f.h)  # … any later rebuild …
+		for _ in 1:5; IG._pump_once(); sleep(0.05); end
+		@test occursin("[ ] Profile", tree())            # … and the row is STILL there
+		@test click("Profile") == 1                      # checked again: the track is back
+		@test occursin("[x] Profile", tree())
+	finally
+		ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), f.h)
+	end
+end

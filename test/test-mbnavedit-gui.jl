@@ -26,6 +26,13 @@
 		@test_skip "MB-System MBIO library or the mb57 test file not available"
 	else
 		pump() = for _ in 1:10; sleep(0.05); end
+		# How many records the file really holds: MB-System's own mbinfo summary beside it says so (the
+		# mb57 test file is "snipped" to 2). The navigation read must load every one of them — never a
+		# hard-coded count written for some other, bigger file.
+		inf  = src * ".inf"
+		m    = isfile(inf) ? match(r"Number of Records:\s+(\d+)", read(inf, String)) : nothing
+		nrec = m === nothing ? 0 : parse(Int, m[1])
+		allread(n) = n >= 1 && (nrec == 0 || n == nrec)
 		mktempdir() do d
 			f = joinpath(d, basename(src))
 			cp(src, f)
@@ -35,7 +42,7 @@
 				pump()
 				s = IG._mbnavedit_state()
 				@test s.open && s.file_open && s.numfiles == 1 && s.currentfile == 0
-				@test s.nbuff > 10 && s.nplot > 0
+				@test allread(s.nbuff) && s.nplot > 0
 				@test s.number_plots == 6
 				png = joinpath(d, "view.png")
 				@test IG._mbnavedit_save_png(png) && filesize(png) > 2000
@@ -81,7 +88,7 @@
 				@test mbnavedit(f; use_previous=1)
 				pump()
 				s = IG._mbnavedit_state()
-				@test s.open && s.file_open && s.nbuff > 10
+				@test s.open && s.file_open && allread(s.nbuff)
 			finally
 				IG._mbnavedit_close()
 				pump()

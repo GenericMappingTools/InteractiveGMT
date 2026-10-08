@@ -48,6 +48,16 @@
 	report("Derived-variable display law (a deleted per-kind show/hide helper is called)", h)
 	@test isempty(h)
 
+	# --- Derived-variable display law: a computed result is a NEW handle, never written over its source.
+	#     `_apply_host_grid!` replaces a window grid's data IN PLACE; it is legitimate only where the SAME
+	#     element takes new data of its own (a cube's layer slider, a movie frame, a nested level being
+	#     filled, an undo). Any other caller is a derive tool overwriting its source — 2026-10-08, Transplant
+	#     2nd grid did exactly that and no check caught it.
+	ok_inplace = r"^function (_cube_write_surface!|replace_grid!|_on_nested_transplant|_on_transplant_undo|_apply_host_grid!)\("
+	h = filter(x -> !occursin(ok_inplace, x[3]), hits(jl, r"_apply_host_grid!\("; strip = code_jl))
+	report("Derived-variable display law (a result written over its source grid with _apply_host_grid!)", h)
+	@test isempty(h)
+
 	# --- No fallback to someone else's axes: an axes resolver never ends in an UNCONDITIONAL
 	#     `return &s->baseAxes;` (a conditioned one, naming the base by its own name, is fine).
 	h = filter(x -> !occursin(r"\bif\b", x[2]), hits(cpp, r"return\s*&\s*s->baseAxes\s*;"))

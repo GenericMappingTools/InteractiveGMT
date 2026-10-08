@@ -7460,6 +7460,29 @@ GMTVTK_API int gmtvtk_profile_begin_test(void *handle) {
 	return 1;
 }
 
+// A whole Ctrl+left-drag profile: begin at view fraction (fx0,fy0), drag to (fx1,fy1), release — the
+// same profilerBegin/Drag/End the gesture runs. Returns the track's point count (0 = no track).
+GMTVTK_API int gmtvtk_profile_drag_test(void *handle, double fx0, double fy0, double fx1, double fy1) {
+	Scene *s = static_cast<Scene *>(handle);
+	if (!s || !s->widget || !s->widget->renderWindow()) return 0;
+	const int *sz = s->widget->renderWindow()->GetSize();
+	if (!profilerBegin(s, int(fx0 * sz[0]), int(fy0 * sz[1]))) return 0;
+	profilerDrag(s, int(fx1 * sz[0]), int(fy1 * sz[1]));
+	profilerEnd(s);
+	QApplication::processEvents();
+	return (s->profPD && s->profPD->GetPoints()) ? int(s->profPD->GetNumberOfPoints()) : 0;
+}
+
+// Rebuild window `handle`'s Scene Objects panel now — what any later action in the window does. A row
+// whose existence wrongly hangs on a passing state (a checkbox) only shows that on the NEXT rebuild.
+GMTVTK_API int gmtvtk_objects_rebuild_test(void *handle) {
+	Scene *s = static_cast<Scene *>(handle);
+	if (!s) return 0;
+	rebuildSceneObjects(s);
+	QApplication::processEvents();
+	return 1;
+}
+
 GMTVTK_API int gmtvtk_fft_dialog_test(void *handle, const char *button, const char *path) {
 	Scene *s = static_cast<Scene *>(handle);
 	if (!s) return 0;

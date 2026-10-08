@@ -1206,7 +1206,9 @@ static std::vector<StackItem> gatherStackItems(Scene *s) {
 	// The Ctrl+drag profile track is a VECTOR element like any other line: it joins the SAME pile so the
 	// shared "vectors above every raster" rule (applyStacking below) lifts it over grid2 as well — never
 	// a private setActorTopLayer call of its own.
-	if (s->profLine && s->profLine->GetVisibility())
+	// On EXISTENCE, like every other line below (`if (o.actor)`) — never on visibility: a hidden track is
+	// still an element of the pile, and showing it again must find it where it was.
+	if (s->profLine && s->profPD && s->profPD->GetNumberOfPoints() >= 2)
 		v.push_back({ { s->profLine.Get() }, &s->profStack, true, false });
 	for (auto &o  : s->overlays) if (o.actor) v.push_back({ { o.actor.Get()  }, &o.stack,  true, false, o.realZ });
 	for (auto &sl : s->symbols)  if (sl.actor) v.push_back({ { sl.actor.Get() }, &sl.stack, true, sl.solid3D });
@@ -3714,7 +3716,9 @@ static void rebuildSceneObjects(Scene *s) {
 		}
 		endGroup();
 	}
-	if (s->profLine && s->profLine->GetVisibility()) {  // the profile track (when one exists)
+	// The profile track's row lives as long as the TRACK does (profileClear drops profPD), not as long as
+	// it is visible: gating on visibility made unchecking the row delete the row, leaving no way back.
+	if (s->profLine && s->profPD && s->profPD->GetNumberOfPoints() >= 2) {
 		LineRef lr{ LK_Profile, s->profLine };
 		addRow("Profile", s->profLine, IC_Profile, &lr);
 	}

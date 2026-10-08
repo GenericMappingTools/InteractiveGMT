@@ -2167,20 +2167,31 @@ public:
 		QButtonGroup *gWhere = new QButtonGroup(this);
 		gWhere->addButton(rInLoco); gWhere->addButton(rWeb);
 
+		// LIDAR mode carries a second action button ("Mosaic in geogs") at the strip's right end, so
+		// resolution + "Do Mosaic" slide left by its width there; Cartas keeps Mirone's geometry.
+		const int dxGeo = mode == PT_Lidar ? 125 : 0;
 		QLabel *txtRes = new QLabel("Resolution ", this);          // Mirone: "Resolução"
-		txtRes->setGeometry(W - 260, H - 42, 80, 16);             // [FigWidth-260 26 80 16]
+		txtRes->setGeometry(std::max(40, W - 260 - dxGeo), H - 42, 80, 16);   // [FigWidth-260 26 80 16]
 		txtRes->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
 		txtRes->setVisible(mode == PT_Lidar);                     // a map sheet has no resolution to pick
 		cboRes = new QComboBox(this);
-		cboRes->setGeometry(W - 180, H - 47, 62, 21);             // [FigWidth-180 27 40 19], widened:
+		cboRes->setGeometry(W - 180 - dxGeo, H - 47, 62, 21);     // [FigWidth-180 27 40 19], widened:
 		cboRes->addItems({"2", "10", "20", "50"});                // 40 px left no room for the number
 		cboRes->setToolTip("Select resolution of final DTM (in meters)");
 		cboRes->setVisible(mode == PT_Lidar);
 		// Mirone: "Faz Mosaico". For the sheets the same button loads them -- one sheet, or the mosaic
 		// of every sheet picked, over their bounding box.
 		QPushButton *btnGo = new QPushButton(mode == PT_Cartas ? "Load sheets" : "Do Mosaic", this);
-		btnGo->setGeometry(W - 110, H - 47, 100, 21);             // [FigWidth-110 26 100 21]
+		btnGo->setGeometry(W - 110 - dxGeo, H - 47, 100, 21);     // [FigWidth-110 26 100 21]
 		{ QFont f = btnGo->font(); f.setPointSize(10); f.setBold(true); btnGo->setFont(f); }
+		// The same mosaic, then warped to lon/lat (WGS84) by the Project tool's own gdalwarp options --
+		// what Tools > Project > "Geog" would do to the PT-TM06 mosaic, in one click.
+		QPushButton *btnGeo = new QPushButton("Mosaic in geogs", this);
+		btnGeo->setGeometry(W - 130, H - 47, 120, 21);
+		{ QFont f = btnGeo->font(); f.setPointSize(10); f.setBold(true); btnGeo->setFont(f); }
+		btnGeo->setToolTip("Build the mosaic as \"Do Mosaic\" does and reproject it to geographic\n"
+		                   "coordinates (WGS84 lon/lat), as Tools > Project with \"Geog\" would");
+		btnGeo->setVisible(mode == PT_Lidar);
 
 		// "?" — addHelpLegend's text, on demand. Sits at the left end of the strip, where the two
 		// hidden radios used to be (the right half of that band holds resolution + "Do Mosaic").
@@ -2216,7 +2227,8 @@ public:
 				prefPushDir(d);
 			}
 		});
-		QObject::connect(btnGo, &QPushButton::clicked, this, [this]() { doMosaic(); });
+		QObject::connect(btnGo, &QPushButton::clicked, this, [this]() { doMosaic(false); });
+		QObject::connect(btnGeo, &QPushButton::clicked, this, [this]() { doMosaic(true); });
 		if (mode == PT_Cartas)                        // the one box serves whichever radio is on
 			QObject::connect(rWeb, &QRadioButton::toggled, this, [this](bool) { fillSourceBox(); });
 		QObject::connect(btnHelp, &QToolButton::clicked, this, [this]() {
@@ -2300,8 +2312,9 @@ private:
 	// push_lidarMosaico_CB: the bounding box of every selected cell (inner unselected cells included),
 	// the decimation resolution and the data directory go to Julia, which reads the tiles and builds
 	// the mosaic grid. Row/col are Mirone's 1-based data-matrix addresses, so Julia can re-derive each
-	// cell's name from the same table it pushed in.
-	void doMosaic() {
+	// cell's name from the same table it pushed in. `geog` ("Mosaic in geogs") sends op "gogeo"
+	// instead of "go": the same mosaic, reprojected to lon/lat before it opens.
+	void doMosaic(bool geog) {
 		if (map->sel.empty() && map->selEx.empty()) {
 			QMessageBox::warning(this, toolName(), mode == PT_Cartas
 				? QString::fromUtf8("Pick at least one sheet first (right-click a square).")
@@ -2322,7 +2335,8 @@ private:
 			return;
 		}
 		igmtSettings().setValue("lidar/dir", dir);
-		QString params = QString("go;%1/%2/%3/%4;%5;%6").arg(rMin).arg(rMax).arg(cMin).arg(cMax)
+		QString params = QString("%1;%2/%3/%4/%5;%6;%7").arg(geog ? "gogeo" : "go")
+		                        .arg(rMin).arg(rMax).arg(cMin).arg(cMax)
 		                        .arg(cboRes->currentText()).arg(dir);
 		setStatus(QString::fromUtf8("A ler os fiches…  (a primeira vez também compila)"));
 		QApplication::processEvents();                 // paint the status before the blocking call
@@ -30864,8 +30878,10 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 			"Grids (*.grd *.nc *.tif *.tiff *.img);;All files (*)");
 		if (fn.isEmpty()) return;
 		rememberStartDir(fn);
-		const QString cmd = QString("InteractiveGMT._on_transplant(Ptr{Cvoid}(UInt(%1)),raw\"%2\",%3,\"\")")
-								.arg((qulonglong)reinterpret_cast<uintptr_t>(s)).arg(fn).arg(res);
+		// The host is the grid the window is SHOWING (activeGridName), as every grid tool takes it.
+		const QString cmd = QString("InteractiveGMT._on_transplant(Ptr{Cvoid}(UInt(%1)),raw\"%2\",%3,\"\",raw\"%4\")")
+								.arg((qulonglong)reinterpret_cast<uintptr_t>(s)).arg(fn).arg(res)
+								.arg(QString::fromStdString(activeGridName(s)));
 		static std::vector<char> buf(1 << 12);
 		int n = g_juliaEval(s, cmd.toStdString().c_str(), buf.data(), (int)buf.size());
 		if (n < 0) sceneLogError(s, QString::fromUtf8(buf.data(), -n));   // Julia threw -> Errors tab

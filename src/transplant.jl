@@ -1,24 +1,35 @@
-# transplant.jl — Grid Tools > "Transplant 2nd grid" (port of Mirone's utils/transplants.m,
-# IMPLANTGRID mode). Insert an external ("implant") grid into the window's host grid. The two
-# resolutions need not match: over the seam we reinterpolate so host and implant join smoothly.
+# transplant.jl — Grid Tools > "Transplant 2nd grid": a PORT of Mirone's utils/transplants.m,
+# IMPLANTGRID mode. Insert an external ("implant") grid into the window's host grid; the two
+# resolutions need not match. Mirone's own dispatch and its three jobs are reproduced as they are:
 #
-# Mirone leaves a 1-cell padding ring between the datasets and regrids a skirt of host nodes
-# together with the implant nodes through gmtmbgrid (-T0.25). GMT.jl has no gmtmbgrid, so we use
-# `GMT.surface` with the SAME tension (0.25) as the minimum-curvature substitute — it takes the
-# scattered (skirt host + implant) points and rebuilds the seam tile.
+#   res == false         -> the host is first resampled to the implant's increment (c_grdsample)
+#   no NaNs anywhere     -> job_no_nans          : host skirt (pad 6, inner ring 1) + implant, regridded
+#   NaNs in host only    -> job_NanHost_noNanImp : the implant is sampled (grdtrack) at the host's NaN
+#                                                  nodes, joined with the host's non-NaN nodes, and the
+#                                                  WHOLE host is regridded
+#   NaNs in implant only -> job_noNanHost_NanImp : as job_no_nans, but the implant's holes let the host
+#                                                  survive there, and gmtmbgrid's -C clip is applied
+#   NaNs in both         -> Mirone warns "not yet implemented" and runs job_NanHost_noNanImp
+#
+# The regridder is Mirone's gmtmbgrid_m, i.e. MB-System's MBGRID as adapted by J. Luis — the SAME
+# code `mbgrid` (mbgrid.jl / deps/src/mbgrid.c, ported from gmtmbgrid.c) runs, with the same
+# defaults (-W1, clip ALL, no -E) and the options each job passes (-T, -Mz = :zgrid, -C).
 #
 # Wired from two places (both via g_juliaEval, like Extract profile):
 #   • Grid Tools menu  -> whole host grid, no rectangle needed.
 #   • a rectangle's context menu -> the rectangle W/E/S/N clips the implant first (the "connection
 #     to rectangle handles"); a drawn rectangle is NOT required for the menu path.
+#
+# Every z is read through `_zmat` — (ny,nx), row 1 = south — whatever layout the grid arrived in
+# (SACRED_LAW.md, grid memory-layout law).
 
-# Node coordinate vectors GUARANTEED to match `size(G.z)` (ny,nx). GMT.jl usually keeps `G.x`/`G.y`
+# Node coordinate vectors GUARANTEED to match the grid's node counts. GMT.jl usually keeps `G.x`/`G.y`
 # consistent with `z`, but some file formats/headers come back with an axis length that disagrees
 # with the z array (which is authoritative for the data) — indexing a meshgrid built from the stored
 # axes by a z-derived mask then throws BoundsError. So rebuild from range+inc when lengths disagree,
 # honouring pixel registration (centres offset half a cell).
 function _grid_xy(G::GMTgrid)
-	ny, nx = size(G.z)
+	nx, ny = _grid_dims(G)        # from the coordinates, never size(G.z) (grid memory-layout law)
 	reg    = G.registration       # 0 = gridline, 1 = pixel
 	xv = (length(G.x) == nx) ? collect(Float64, G.x) :
 	     collect(G.range[1] + (reg == 1 ? G.inc[1] / 2 : 0.0) .+ (0:nx-1) .* G.inc[1])
@@ -27,79 +38,201 @@ function _grid_xy(G::GMTgrid)
 	return xv, yv, ny, nx
 end
 
-# Do the actual implant. `keepres` true keeps the host resolution, false adopts the implant's.
-# `pad` (host cells) is the seam width regridded for a smooth transition (Mirone's pad = 6).
-function _transplant_grid(H::GMTgrid, I::GMTgrid; keepres::Bool=true, pad::Int=6)
+# img_fun('bwmorph', M, 'dilate'): grow a node mask by `k` nodes in every direction (square window).
+# Separable running max through prefix sums, so it costs O(n) whatever `k` is.
+function _mask_dilate(M::AbstractMatrix{Bool}, k::Int)::BitMatrix
+	ny, nx = size(M)
+	k <= 0 && return BitMatrix(M)
+	A  = falses(ny, nx)
+	cs = zeros(Int, nx + 1)
+	@inbounds for r in 1:ny
+		for c in 1:nx;  cs[c+1] = cs[c] + M[r, c];  end
+		for c in 1:nx;  A[r, c] = cs[min(nx, c + k) + 1] - cs[max(1, c - k)] > 0;  end
+	end
+	B  = falses(ny, nx)
+	cr = zeros(Int, ny + 1)
+	@inbounds for c in 1:nx
+		for r in 1:ny;  cr[r+1] = cr[r] + A[r, c];  end
+		for r in 1:ny;  B[r, c] = cr[min(ny, r + k) + 1] - cr[max(1, r - k)] > 0;  end
+	end
+	return B
+end
+
+# cropimg(..., rect, 'out_grid'): the host node block (r_c, 1-based, row 1 = south) inside w/e/s/n.
+function _tp_crop_rc(xv::Vector{Float64}, yv::Vector{Float64}, dx, dy, w, e, s, n)
+	tx = 1e-6 * dx;  ty = 1e-6 * dy
+	c0 = findfirst(x -> x >= w - tx, xv);  c1 = findlast(x -> x <= e + tx, xv)
+	r0 = findfirst(y -> y >= s - ty, yv);  r1 = findlast(y -> y <= n + ty, yv)
+	(c0 === nothing || c1 === nothing || r0 === nothing || r1 === nothing || c0 > c1 || r0 > r1) &&
+		error("The implant region holds no host node.")
+	return r0, r1, c0, c1
+end
+
+# Progress reporting. The core takes `progress(step, text)`; the pure/test path passes nothing.
+# Steps (of _TP_NSTEPS): 1 read, 2 resample (adopt-res only), 3 collect/sample, 4 regrid, 5 add.
+const _TP_NSTEPS = 5
+_tp_noprog(::Int, ::AbstractString) = nothing
+# The window's progress dialog (SACRED_LAW.md no-dead-time law): the app's own gmtvtk_progress_*
+# pair, the same one the cube scan uses. Best-effort — a missing dialog never fails the transplant.
+_tp_dialog(k::Int, s::AbstractString) = (try
+	ccall(_fn(:gmtvtk_progress_status), Cvoid, (Cint, Cstring), Cint(k), String(s))
+catch; end; nothing)
+
+# gmtmbgrid_m(XX,YY,ZZ, opt_R, opt_I, '-T…', '-Mz', opt_C): the SAME MBGRID engine, zgrid solver.
+# The result must land node for node on the block it replaces, so its size is checked.
+function _tp_mbgrid(XX, YY, ZZ, region, inc, tension, reg, nx, ny; clipmode = :all, clip = 0,
+                    progress = _tp_noprog)
+	(length(ZZ) < 4) && error("Not enough valid nodes to regrid.")
+	progress(4, "Regridding $(length(ZZ)) points onto $(nx) x $(ny) nodes (gmtmbgrid)…")
+	G = mbgrid(XX, YY, ZZ; region = region, inc = inc, tension = tension, solver = :zgrid,
+	           clipmode = clipmode, clip = clip, registration = (reg == 0 ? :gridline : :pixel))
+	_grid_dims(G) == (nx, ny) || error("regridded block is $(_grid_dims(G)) nodes, expected $((nx, ny))")
+	return _zmat(G)
+end
+
+# Host nodes of block (r0, c0)+mask selected by `mask` (same shape as the block), NaNs dropped.
+function _tp_host_pts!(XX, YY, ZZ, Zh, hxv, hyv, r0, c0, mask)
+	@inbounds for ij in findall(mask)
+		r, c = ij[1] + r0 - 1, ij[2] + c0 - 1
+		z = Zh[r, c];  isnan(z) && continue
+		push!(XX, hxv[c]);  push!(YY, hyv[r]);  push!(ZZ, z)
+	end
+end
+
+# job_no_nans. Host block = implant BB + `pad` host cells; skirt = block nodes OUTSIDE the implant BB
+# + 1 host cell; skirt + every implant node regridded. Mirone passes '-T0.25' then '-T100' — the
+# second one is what gmtmbgrid_m keeps, so tension 100.
+function _tp_job_no_nans(Zh, hxv, hyv, hdx, hdy, reg, I, ix, iy, pad; progress = _tp_noprog)
+	progress(3, "Collecting the host skirt and the implant nodes…")
+	x_min = max(ix[1] - pad * hdx, hxv[1]);  x_max = min(ix[2] + pad * hdx, hxv[end])
+	y_min = max(iy[1] - pad * hdy, hyv[1]);  y_max = min(iy[2] + pad * hdy, hyv[end])
+	r0, r1, c0, c1 = _tp_crop_rc(hxv, hyv, hdx, hdy, x_min, x_max, y_min, y_max)
+	x1 = max(ix[1] - hdx, hxv[1]);  x2 = min(ix[2] + hdx, hxv[end])
+	y1 = max(iy[1] - hdy, hyv[1]);  y2 = min(iy[2] + hdy, hyv[end])
+	skirt = BitMatrix([!(x1 <= hxv[c] <= x2 && y1 <= hyv[r] <= y2) for r in r0:r1, c in c0:c1])
+	XX = Float64[];  YY = Float64[];  ZZ = Float64[]
+	_tp_host_pts!(XX, YY, ZZ, Zh, hxv, hyv, r0, c0, skirt)
+	ixv, iyv, nyi, nxi = _grid_xy(I);  Zi = _zmat(I)
+	@inbounds for ci in 1:nxi, ri in 1:nyi
+		push!(XX, ixv[ci]);  push!(YY, iyv[ri]);  push!(ZZ, Zi[ri, ci])
+	end
+	Zr = _tp_mbgrid(XX, YY, ZZ, (hxv[c0], hxv[c1], hyv[r0], hyv[r1]), (hdx, hdy), 100.0, 0,
+	                c1 - c0 + 1, r1 - r0 + 1; progress = progress)
+	return Zr, (r0, r1, c0, c1)
+end
+
+# job_NanHost_noNanImp. The host's NaN nodes (grd2xyz -s+r) get the implant sampled there (grdtrack;
+# rows that come back NaN are dropped, as grdtrack_m's -S does), joined with the host's non-NaN nodes
+# (grd2xyz -s), and the WHOLE host region is regridded at the host increment, -T0.25 -Mz.
+function _tp_job_nanhost(Zh, hxv, hyv, hdx, hdy, reg, range4, I; progress = _tp_noprog)
+	hny, hnx = length(hyv), length(hxv)
+	nanidx = findall(isnan, Zh)
+	P = Matrix{Float64}(undef, length(nanidx), 2)
+	@inbounds for (k, ij) in enumerate(nanidx)
+		P[k, 1] = hxv[ij[2]];  P[k, 2] = hyv[ij[1]]
+	end
+	ilay = I.layout
+	progress(3, "Sampling the implant at $(length(nanidx)) empty host nodes…")
+	T = GMT.grdtrack(I, P)
+	I.layout = ilay                # GMT.jl may re-label a module's input grid; put the truth back
+	TD = T isa GMTdataset ? T.data : (T isa AbstractVector ? T[1].data : T)
+	XX = Float64[];  YY = Float64[];  ZZ = Float64[]
+	@inbounds for k in 1:size(TD, 1)
+		isnan(TD[k, 3]) && continue
+		push!(XX, TD[k, 1]);  push!(YY, TD[k, 2]);  push!(ZZ, TD[k, 3])
+	end
+	_tp_host_pts!(XX, YY, ZZ, Zh, hxv, hyv, 1, 1, trues(hny, hnx))
+	Zr = _tp_mbgrid(XX, YY, ZZ, range4, (hdx, hdy), 0.25, reg, hnx, hny; progress = progress)
+	return Zr, (1, hny, 1, hnx)
+end
+
+# job_noNanHost_NanImp. Block = implant BB + `pad` host cells. Skirt = block nodes outside the polygon
+# around the implant's non-NaN nodes dilated by one cell (helper2: bwmorph dilate + bwboundaries), and
+# inside that polygon's holes, so the host survives under the implant's holes. Skirt + the implant's
+# non-NaN nodes regridded, -T0.25 -Mz, -C5 — or -C<2*round(imp_inc/host_inc)> when the host is the
+# finer grid (gmtmbgrid's -C<n> without a suffix = clip mode "gap").
+function _tp_job_nanimp(Zh, hxv, hyv, hdx, hdy, reg, I, ix, iy, pad; progress = _tp_noprog)
+	progress(3, "Collecting the host skirt and the implant's non-NaN nodes…")
+	x_min = max(ix[1] - pad * hdx, hxv[1]);  x_max = min(ix[2] + pad * hdx, hxv[end])
+	y_min = max(iy[1] - pad * hdy, hyv[1]);  y_max = min(iy[2] + pad * hdy, hyv[end])
+	r0, r1, c0, c1 = _tp_crop_rc(hxv, hyv, hdx, hdy, x_min, x_max, y_min, y_max)
+	ixv, iyv, nyi, nxi = _grid_xy(I);  Zi = _zmat(I)
+	notnan = BitMatrix(.!isnan.(Zi))
+	D = _mask_dilate(notnan, 1)        # inside the outer polygon and not in one of its holes
+	idx, idy = I.inc[1], I.inc[2]
+	function inD(x, y)
+		ci = round(Int, (x - ixv[1]) / idx) + 1;  ri = round(Int, (y - iyv[1]) / idy) + 1
+		return 1 <= ci <= nxi && 1 <= ri <= nyi && D[ri, ci]
+	end
+	skirt = BitMatrix([!inD(hxv[c], hyv[r]) for r in r0:r1, c in c0:c1])
+	XX = Float64[];  YY = Float64[];  ZZ = Float64[]
+	_tp_host_pts!(XX, YY, ZZ, Zh, hxv, hyv, r0, c0, skirt)
+	@inbounds for ci in 1:nxi, ri in 1:nyi
+		notnan[ri, ci] || continue
+		push!(XX, ixv[ci]);  push!(YY, iyv[ri]);  push!(ZZ, Zi[ri, ci])
+	end
+	clipn = hdx < idx ? 2 * round(Int, idx / hdx) : 5
+	Zr = _tp_mbgrid(XX, YY, ZZ, (hxv[c0], hxv[c1], hyv[r0], hyv[r1]), (hdx, hdy), 0.25, 0,
+	                c1 - c0 + 1, r1 - r0 + 1; clipmode = :gap, clip = clipn, progress = progress)
+	return Zr, (r0, r1, c0, c1)
+end
+
+# The IMPLANTGRID dispatch. `keepres` true keeps the host resolution, false adopts the implant's.
+# Returns the new host grid and the replaced block (+ undo snapshot, + Mirone's warning if any).
+function _transplant_grid(H::GMTgrid, I::GMTgrid; keepres::Bool=true, pad::Int=6, progress = _tp_noprog)
 	hx0, hx1, hy0, hy1 = H.range[1], H.range[2], H.range[3], H.range[4]
 	ix0, ix1, iy0, iy1 = I.range[1], I.range[2], I.range[3], I.range[4]
 
 	# Both grids must share a region, else there is nothing to implant.
 	(ix1 <= hx0 || ix0 >= hx1 || iy1 <= hy0 || iy0 >= hy1) &&
-		error("The implant grid has no region in common with the host grid.")
+		error("The to-be-transplanted grid does not have any region in common with the base grid.")
 
-	# res == false -> resample the host to the implant increment first (Mirone lines 134-138), so
-	# everything downstream lives on one grid. res == true -> host stays as is.
-	Hwork = keepres ? H : GMT.grdsample(H; region=(hx0, hx1, hy0, hy1), inc=(I.inc[1], I.inc[2]))
+	host_has_nans       = any(isnan, H.z)       # handles.have_nans, taken BEFORE any resample
+	implanting_has_nans = any(isnan, I.z)
+
+	# ~res: resample the host to the implant's increment over the host's own region.
+	Hwork = if keepres
+		deepcopy(H)                    # the result is a NEW grid: the host is never written (derived-variable law)
+	else
+		lay = H.layout
+		progress(2, "Resampling the host to the implant's increment…")
+		S = GMT.grdsample(H; region = (hx0, hx1, hy0, hy1), inc = (I.inc[1], I.inc[2]))
+		H.layout = lay                 # GMT.grdsample re-labels its INPUT's layout; put the truth back
+		S
+	end
 	hdx, hdy = Hwork.inc[1], Hwork.inc[2]
+	hxv, hyv, hny, hnx = _grid_xy(Hwork)
+	Zh = _zmat(Hwork)              # a view over Hwork.z's OWN memory, so the write lands in its layout
+	ix = (ix0, ix1);  iy = (iy0, iy1)
 
-	# Seam tile = implant bounding box + `pad` host cells, clamped to the host — cropped on host nodes.
-	x_min = max(ix0 - pad * hdx, hx0);  x_max = min(ix1 + pad * hdx, hx1)
-	y_min = max(iy0 - pad * hdy, hy0);  y_max = min(iy1 + pad * hdy, hy1)
-	tile  = GMT.grdcut(Hwork; region=(x_min, x_max, y_min, y_max))
-	tx, ty, nyt, nxt = _grid_xy(tile)
+	warn = ""
+	if !host_has_nans && !implanting_has_nans
+		Zr, rc = _tp_job_no_nans(Zh, hxv, hyv, hdx, hdy, Hwork.registration, I, ix, iy, pad; progress = progress)
+	elseif host_has_nans && !implanting_has_nans
+		Zr, rc = _tp_job_nanhost(Zh, hxv, hyv, hdx, hdy, Hwork.registration, Tuple(Hwork.range[1:4]), I; progress = progress)
+	elseif !host_has_nans && implanting_has_nans
+		Zr, rc = _tp_job_nanimp(Zh, hxv, hyv, hdx, hdy, Hwork.registration, I, ix, iy, pad; progress = progress)
+	else
+		warn = "NaNs in both Host and Implanting grid is not yet implemented. Uknown result."
+		Zr, rc = _tp_job_nanhost(Zh, hxv, hyv, hdx, hdy, Hwork.registration, Tuple(Hwork.range[1:4]), I; progress = progress)
+	end
+	r0, r1, c0, c1 = rc
 
-	# Inner rect (implant BB + 1 host cell): host nodes OUTSIDE it form the skirt that is regridded
-	# with the implant so the seam is smooth; the implant owns everything inside.
-	x1 = max(ix0 - hdx, hx0);  x2 = min(ix1 + hdx, hx1)
-	y1 = max(iy0 - hdy, hy0);  y2 = min(iy1 + hdy, hy1)
+	# get_the_output: Z(r_c) = Z_rect — into the WORK copy; the host the window shows stays as it was.
+	@views Zh[r0:r1, c0:c1] .= Zr
 
-	# Host skirt points (tile nodes outside the inner rect). z is (ny,nx) row=y, col=x.
-	TX   = repeat(reshape(tx, 1, :), nyt, 1)
-	TY   = repeat(reshape(ty, :, 1), 1, nxt)
-	skirt = .!((TX .>= x1) .& (TX .<= x2) .& (TY .>= y1) .& (TY .<= y2))
-	XXs, YYs, ZZs = TX[skirt], TY[skirt], Float64.(tile.z[skirt])
-	gs   = .!isnan.(ZZs)                                   # host may carry NaNs under the skirt
-
-	# Implant points (all nodes; only the outside NaNs are dropped — inner holes are ignored, and
-	# surface fills them from the surrounding data, matching Mirone's intent).
-	ixv, iyv, nyi, nxi = _grid_xy(I)
-	IX   = repeat(reshape(ixv, 1, :), nyi, 1)
-	IY   = repeat(reshape(iyv, :, 1), 1, nxi)
-	XXi, YYi, ZZi = IX[:], IY[:], Float64.(I.z[:])
-	gi   = .!isnan.(ZZi)
-
-	XX = vcat(XXs[gs], XXi[gi]);  YY = vcat(YYs[gs], YYi[gi]);  ZZ = vcat(ZZs[gs], ZZi[gi])
-	(length(ZZ) < 4) && error("Not enough valid nodes to interpolate the seam.")
-
-	# gmtmbgrid substitute: minimum-curvature surface with the same tension Mirone uses (-T0.25).
-	#Gtile = GMT.surface([XX YY ZZ]; region=(tx[1], tx[end], ty[1], ty[end]), inc=(hdx, hdy), tension=0.25)
-	opts = "surface -R$(tx[1])/$(tx[end])/$(ty[1])/$(ty[end]) -I$(hdx)/$(hdy) -T0.25"
-	Gtile = GMT.gmt(opts, [XX YY ZZ])
-
-	# Paste the seam tile straight into the (working) host z IN PLACE — no whole-grid copy. addressed
-	# by host node index.
-	hxv, hyv, _, _ = _grid_xy(Hwork)
-	Zout = Hwork.z
-	r0 = round(Int, (ty[1] - hyv[1]) / hdy) + 1
-	c0 = round(Int, (tx[1] - hxv[1]) / hdx) + 1
-	gny, gnx = size(Gtile.z)
-	r1 = min(r0 + gny - 1, size(Zout, 1));  c1 = min(c0 + gnx - 1, size(Zout, 2))
-	# Undo needs the PRE-transplant values, but we overwrite Zout in place. When keepres (Hwork===H)
-	# Zout IS the registry host's array, so snapshot ONLY the block about to change here, BEFORE the
-	# paste — the sole small copy, replacing the old wasteful whole-grid copy. (!keepres -> Hwork is a
-	# fresh grdsample grid, H untouched, so no per-block snapshot needed; undo keeps whole H instead.)
-	oz = (Hwork === H) ? copy(Zout[r0:r1, c0:c1]) : nothing
-	Zout[r0:r1, c0:c1] .= Gtile.z[1:(r1 - r0 + 1), 1:(c1 - c0 + 1)]
-
-	Gout = mat2grid(Zout; x=hxv, y=hyv)
-	_grid_command!(Gout, "iGMT Transplant 2nd grid (GMT.surface seam, tension 0.25)")
+	# The new grid wraps Hwork's buffer AS IT LIES, so it carries that buffer's layout label too.
+	hreg = Hwork.registration      # mat2grid wants nx+1 cell EDGES for a pixel grid, nx nodes otherwise
+	Gout = hreg == 0 ? mat2grid(Hwork.z; x=hxv, y=hyv) :
+	       mat2grid(Hwork.z; x=collect(range(hxv[1] - hdx / 2; step=hdx, length=hnx + 1)),
+	                         y=collect(range(hyv[1] - hdy / 2; step=hdy, length=hny + 1)), reg=1)
+	Gout.layout = Hwork.layout
+	_grid_command!(Gout, "iGMT Transplant 2nd grid (Mirone transplants.m IMPLANTGRID, gmtmbgrid)")
 	isdefined(H, :proj4)   && !isempty(H.proj4)   && (Gout.proj4   = H.proj4)
 	isdefined(H, :wkt)     && !isempty(H.wkt)     && (Gout.wkt     = H.wkt)
 	Gout.registration = Hwork.registration
-	# `block` = the ONLY node rectangle that changed (r0:r1, c0:c1). `samegeom` is true when the host
-	# geometry was untouched (keepres) so those indices also address the ORIGINAL host — the undo then
-	# needs to keep just this block; otherwise (resampled host) the whole grid changed.
-	return Gout, (r0 = r0, r1 = r1, c0 = c0, c1 = c1, samegeom = (Hwork === H), oz = oz)
+	# `block` = the node rectangle Mirone's job rewrote (r_c); `warn` = its warndlg text, if any.
+	return Gout, (r0 = r0, r1 = r1, c0 = c0, c1 = c1, warn = warn)
 end
 
 # ── modify-in-place + undo ────────────────────────────────────────────────────────────────────
@@ -165,14 +298,24 @@ end
 
 # g_juliaEval entry point. `scene` = the window; `implant_path` = grid to implant; `res` = 1 keep
 # host resolution / 0 adopt implant resolution; `rectstr` = "W/E/S/N" from a rectangle context menu
-# (empty for the menu path) that clips the implant before implanting. The host grid is modified IN
-# PLACE (no new layer); the ORIGINAL host is kept so the operation can be undone (Ctrl+Z or the
-# rectangle's context menu).
-function _on_transplant(scene::Ptr{Cvoid}, implant_path::String, res::Int=1, rectstr::String="")
+# (empty for the menu path) that clips the implant before implanting; `gname` = the Scene Objects
+# name of the grid the window is SHOWING ("" = the base grid) — the host, as every grid tool takes it.
+#
+# The result is a NEW derived grid (SACRED_LAW.md derived-variable display law): a descriptive name,
+# through the ONE transition `_adopt_derived!` — checked, the host unchecked, Scene Objects unfolded.
+# The host itself is never written, so there is nothing to undo: the source is still there, and the
+# result has its own row with its own Remove.
+function _on_transplant(scene::Ptr{Cvoid}, implant_path::String, res::Int=1, rectstr::String="",
+                        gname::String="")
+	# No-dead-time law: the run shows what it is doing, step by step, from the first read to the add.
+	# Raised HERE — the one door both the Grid Tools menu and the rectangle menu come through.
+	try ccall(_fn(:gmtvtk_progress_show), Cint, (Cint, Cstring), Cint(_TP_NSTEPS), "Transplant 2nd grid")
+	catch end
 	try
-		H = _find_object(scene, :grid, "")
+		H = _find_object(scene, :grid, gname)
 		(H === nothing) && error("No host grid in this window to transplant into.")
 
+		_tp_dialog(1, "Reading $(basename(String(implant_path)))…")
 		I = _gmtread_trb(implant_path)      # grids are READ in "TRB" — THE reader
 		I isa GMTgrid || error("The chosen file is not a grid: $(basename(String(implant_path)))")
 
@@ -186,22 +329,28 @@ function _on_transplant(scene::Ptr{Cvoid}, implant_path::String, res::Int=1, rec
 			(e > w && n > s) && (I = GMT.grdcut(I; region=(w, e, s, n)))
 		end
 
-		Gout, blk = _transplant_grid(H, I; keepres=(res != 0))
-		name = _host_grid_name(scene)
+		Gout, blk = _transplant_grid(H, I; keepres=(res != 0), progress=_tp_dialog)
+		isempty(blk.warn) || _viewer_log_error(scene, "Transplant: " * blk.warn)   # Mirone's warndlg
 
-		# Keep ONLY the original subregion that changed (undo restores it exactly). The snapshot was
-		# taken BEFORE the in-place paste inside _transplant_grid (blk.oz) — reading H.z here would be
-		# too late (already transplanted). If the host geometry itself changed (resample), keep whole H.
-		_TRANSPLANT_ORIG[scene] = blk.samegeom ?
-			(r0 = blk.r0, r1 = blk.r1, c0 = blk.c0, c1 = blk.c1, z = blk.oz) : H
-		_apply_host_grid!(scene, Gout, name)
-		_set_transplant_undo(scene, true)     # an undo is now available (Ctrl+Z / rectangle menu)
-
-		_viewer_log_info(scene, "Transplant: host grid modified in place with " *
-		                         "$(basename(String(implant_path))) ($(res != 0 ? "host" : "implant") " *
-		                         "resolution). Undo with Ctrl+Z or the rectangle menu.")
+		# The base grid is registered unnamed; its Scene Objects label is the live scene's surf_name.
+		host = gname
+		isempty(host) && (host = try String(get(_scene_state(scene), "surf_name", "")) catch; "" end)
+		isempty(host) && (host = "Grid")
+		title = "$host + $(basename(String(implant_path))) (transplant, " *
+		        (res != 0 ? "host" : "implant") * " res)"
+		_tp_dialog(5, "Adding \"$title\" to the window…")
+		ccall(_fn(:gmtvtk_remove_grid_h), Cint, (Ptr{Cvoid}, Cstring), scene, title)   # re-run replaces
+		_forget_object!(scene, :grid, title)
+		has_surface = ccall(_fn(:gmtvtk_has_surface), Cint, (Ptr{Cvoid},), scene)
+		_add_grid_to_scene(scene, Gout, title; promote = (has_surface == 0)) ||
+			error("window closed, grid not added")
+		_adopt_derived!(scene, title, Gout)        # the ONE derived-variable transition (grid.jl)
+		_viewer_log_info(scene, "Transplant: \"$title\" added; \"$host\" is unchanged.")
 	catch e
+		try ccall(_fn(:gmtvtk_progress_close), Cvoid, ()) catch end   # never leave it over the error
 		_tool_failed(scene, "Transplant", e)
+	finally
+		try ccall(_fn(:gmtvtk_progress_close), Cvoid, ()) catch end
 	end
 	return nothing
 end
@@ -355,7 +504,7 @@ function _on_transplant_undo(scene::Ptr{Cvoid})
 			(G === nothing) && error("No host grid in this window to undo into.")
 			# Restore the changed block IN PLACE — no copy, no fresh GMTgrid. G (the transplanted host)
 			# is replaced by _apply_host_grid! right after, and already carries proj4/wkt/registration.
-			@views G.z[u.r0:u.r1, u.c0:u.c1] .= u.z
+			@views _zmat(G)[u.r0:u.r1, u.c0:u.c1] .= u.z   # same (ny,nx) south-first view it was taken from
 			_apply_host_grid!(scene, G, name)
 		end
 		delete!(_TRANSPLANT_ORIG, scene)
