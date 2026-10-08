@@ -66,6 +66,64 @@ _rawfd(x) = x isa RawFD ? x : RawFD(x)
 # `target` is the descriptor: 1 (stdout) or 2 (stderr). STDERR TOO: GMT writes its usage text, its
 # warnings and its errors (GMT_Message, GMT_Report) to stderr, so a console that read only fd 1 showed
 # `gmt("mblist")` as a bare "GMT error number = 72" with the help text it had just printed missing.
+#
+# TWO C RUNTIMES ON WINDOWS, TWO DESCRIPTOR TABLES. Julia's `dup` is msvcrt's; GMT, MB-System and
+# every MSVC-built library write through ucrt (ucrtbase.dll), whose fd 1/2 are separate entries that
+# merely START on the same OS handle. msvcrt's dup2 CLOSES that shared handle and opens the capture
+# file in its place, and ucrt only "followed" because Windows usually hands the new handle the SAME
+# number. When another thread opened a handle in between, ucrt's writes went to someone else's handle
+# and the report was lost (the mbprocess dialog's "nothing reported", test-mbprocess-gui.jl, only in a
+# full run). So the capture binds ucrt's own descriptor too, and the shared original handle is made
+# unclosable the first time, so neither runtime can close it under the other.
+const _UCRT = "ucrtbase"
+const _STD_PROTECTED = falses(2)
+
+_ucrt_osf(target::Int) = ccall((:_get_osfhandle, _UCRT), Int, (Cint,), Cint(target))
+
+# Called BEFORE msvcrt's dup2, which is what would close the shared original.
+function _std_protect(target::Int)
+	(Sys.iswindows() && !_STD_PROTECTED[target]) || return
+	try
+		hm = ccall((:_get_osfhandle, "msvcrt"), Int, (Cint,), Cint(target))
+		hu = _ucrt_osf(target)
+		if hu != -1 && hu == hm                              # still the shared original: never close it
+			ccall((:SetHandleInformation, "kernel32"), Cint, (Int, UInt32, UInt32), hu, 0x2, 0x2)
+		end
+		_STD_PROTECTED[target] = true
+	catch
+	end
+end
+
+function _ucrt_capture_begin(target::Int, io::IOStream)::Cint
+	Sys.iswindows() || return Cint(-1)
+	try
+		usaved = ccall((:_dup, _UCRT), Cint, (Cint,), Cint(target))      # -1 when ucrt has none
+		hf = ccall((:_get_osfhandle, "msvcrt"), Int, (Cint,), Cint(Int(fd(io))))
+		proc = ccall((:GetCurrentProcess, "kernel32"), Int, ())
+		hdup = Ref{Int}(0)
+		ccall((:DuplicateHandle, "kernel32"), Cint, (Int, Int, Int, Ref{Int}, UInt32, Cint, UInt32),
+		      proc, hf, proc, hdup, 0, 0, 0x2) == 0 && return usaved
+		ufd = ccall((:_open_osfhandle, _UCRT), Cint, (Int, Cint), hdup[], Cint(0x0001))   # _O_WRONLY
+		ufd < 0 && (ccall((:CloseHandle, "kernel32"), Cint, (Int,), hdup[]); return usaved)
+		ccall((:_dup2, _UCRT), Cint, (Cint, Cint), ufd, Cint(target))
+		ccall((:_close, _UCRT), Cint, (Cint,), ufd)
+		return usaved
+	catch
+		return Cint(-1)
+	end
+end
+
+function _ucrt_capture_end(target::Int, usaved::Cint)
+	Sys.iswindows() || return
+	try
+		ccall((:fflush, _UCRT), Cint, (Ptr{Cvoid},), C_NULL)          # ucrt's buffers, before the file is read
+		usaved < 0 && return
+		ccall((:_dup2, _UCRT), Cint, (Cint, Cint), usaved, Cint(target))
+		ccall((:_close, _UCRT), Cint, (Cint,), usaved)
+	catch
+	end
+end
+
 function _console_capture_file(target::Int = 1)
 	name = target == 1 ? "stdout" : "stderr"
 	path = tempname()
@@ -75,6 +133,7 @@ function _console_capture_file(target::Int = 1)
 	catch e
 		return nothing, "[this process has no $name to capture: " * sprint(showerror, e) * "]\n"
 	end
+	_std_protect(target)
 	saved = try Base.Libc.dup(RawFD(target)) catch; nothing end     # nothing when the fd really is closed
 	try
 		Base.Libc.dup(_rawfd(fd(io)), RawFD(target))
@@ -82,9 +141,10 @@ function _console_capture_file(target::Int = 1)
 		close(io); rm(path; force = true)
 		return nothing, "[this process has no $name to capture: " * sprint(showerror, e) * "]\n"
 	end
+	usaved = _ucrt_capture_begin(target, io)                  # ...ucrt's descriptor too (see above)
 	old = target == 1 ? stdout : stderr
 	try target == 1 ? redirect_stdout(io) : redirect_stderr(io) catch end   # ...and Julia's own prints as well
-	return (path = path, io = io, saved = saved, old = old, target = target), ""
+	return (path = path, io = io, saved = saved, old = old, target = target, usaved = usaved), ""
 end
 
 # Undo it and hand back what the command printed.
@@ -92,6 +152,7 @@ function _console_capture_file_end(st)
 	st === nothing && return ""
 	try st.target == 1 ? redirect_stdout(st.old) : redirect_stderr(st.old) catch end
 	ccall(:fflush, Cint, (Ptr{Cvoid},), C_NULL)                # C stdio buffers, before the file is read
+	_ucrt_capture_end(st.target, st.usaved)
 	if st.saved !== nothing
 		try Base.Libc.dup(st.saved, RawFD(st.target)) catch end
 		try ccall(:close, Cint, (Cint,), Cint(st.saved.fd)) catch end

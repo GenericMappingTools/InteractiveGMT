@@ -11,7 +11,7 @@
 //  Billboard labels read out z×, heading°, inclination°.
 // ============================================================================
 // ============================================================================
-enum class Grab { None, VScale, Tilt, Azimuth, Free, Profile };
+enum class Grab { None, VScale, Tilt, Azimuth, Free, Profile, Pan };
 
 struct Gizmo {
 	Scene *s = nullptr;
@@ -481,9 +481,10 @@ void DragCB(vtkObject *caller, unsigned long eid, void *clientData, void*) {
 				                                   // drag / edit-mode gesture (polygonHandleDblClick/Move,
 				                                   // 85_polygon.cpp; overlayPromoteSegmentToPolygon for
 				                                   // imported overlays).
-				else {                            // empty space -> axis-locked rotate OR tilt
-					if (!c->s->flat2d)            // 2D map: rotation + tilt locked
-						c->grab = Grab::Free;
+				else {                            // empty space -> PAN, the same camPanByDisplay the
+					                              // middle-drag and the arrow keys use. On the GLOBE the
+					                              // drag still turns it: that is how its centre is moved.
+					c->grab = c->s->globe ? Grab::Free : Grab::Pan;
 					c->startX = x; c->startY = y; c->freeAxis = 0;
 				}
 			}
@@ -541,8 +542,12 @@ void DragCB(vtkObject *caller, unsigned long eid, void *clientData, void*) {
 			ren->ResetCameraClippingRange();
 			renderWin(c); handled = true;
 		}
+		else if (c->grab == Grab::Pan && cam) {
+			camPanByDisplay(ren, c->lastX, c->lastY, x, y);
+			renderWin(c); handled = true;
+		}
 		else if (c->grab == Grab::Free && cam) {
-			// Empty left-drag is AXIS-LOCKED: the first dominant direction wins for the
+			// Empty left-drag on the globe is AXIS-LOCKED: the first dominant direction wins for the
 			// whole gesture. Horizontal gesture ONLY rotates (azimuth); vertical gesture
 			// ONLY tilts. Never both in one drag.
 			if (c->freeAxis == 0) {
