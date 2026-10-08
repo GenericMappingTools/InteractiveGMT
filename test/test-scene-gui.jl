@@ -903,6 +903,39 @@ end
 	end
 end
 
+# Transplant 2nd grid with several grids in the window: it works on the ACTIVE grid; the window's other
+# grids whose box meets the active one's are offered as the implant (beside "External file…"), a grid
+# elsewhere is not; and a window grid picked as the implant is used as it is, never read as a file.
+@testitem "Transplant 2nd grid: in-window sources are the grids meeting the active one" tags=[:gui] setup=[GmtvtkTest] begin
+	IG = InteractiveGMT; GMT = IG.GMT
+	mk(x0, n) = GMT.mat2grid(Float32[x + y for y in x0:x0+n, x in x0:x0+n];
+	                         x = collect(Float64, x0:x0+n), y = collect(Float64, x0:x0+n))
+	A = mk(0, 10);  B = mk(5, 10);  C = mk(40, 10)
+	f = view_grid(A; title = "A")
+	try
+		for _ in 1:10; IG._pump_once(); sleep(0.05); end
+		IG._add_grid_to_scene(f.h, C, "C")
+		IG._add_grid_to_scene(f.h, B, "B")
+		for _ in 1:10; IG._pump_once(); sleep(0.05); end
+		act = unsafe_string(ccall(GmtvtkTest._test_fn(:gmtvtk_active_grid_name_test), Cstring, (Ptr{Cvoid},), f.h))
+		cands = split(unsafe_string(ccall(GmtvtkTest._test_fn(:gmtvtk_transplant_cands_test), Cstring,
+		                                  (Ptr{Cvoid},), f.h)), '\n'; keepempty = false)
+		host = isempty(act) ? "A" : act
+		@test host in ("A", "B", "C")
+		@test !(host in cands)                      # never the host itself
+		@test !("C" in cands) || host == "C"        # C meets neither A nor B
+		host == "A" && @test "B" in cands           # A and B meet
+		host == "B" && @test "A" in cands
+		Az = copy(A.z)
+		IG._on_transplant(f.h, "B", 1, "", "")      # a window grid as the implant, by its label, into the base A
+		for _ in 1:5; IG._pump_once(); sleep(0.05); end
+		@test any(t -> t[1] === :grid && t[2] == "A + B (transplant, host res)", IG._SCENE_OBJS[f.h])
+		@test A.z == Az                             # the host is never written
+	finally
+		ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), f.h)
+	end
+end
+
 # 2026-10-08: unchecking the profile track's row deleted the ROW with the line — its row (and its place in
 # the vector pile) was gated on the line being VISIBLE, unlike every other vector element. Unchecked, the
 # row must stay, unchecked; checked again, the track is back.

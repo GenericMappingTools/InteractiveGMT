@@ -7473,6 +7473,23 @@ GMTVTK_API int gmtvtk_profile_drag_test(void *handle, double fx0, double fy0, do
 	return (s->profPD && s->profPD->GetPoints()) ? int(s->profPD->GetNumberOfPoints()) : 0;
 }
 
+// "Transplant 2nd grid"'s in-window source list for window `handle` (transplantCandidates): the other
+// grids meeting the active grid's box, newline-joined. Empty = the tool goes straight to the file picker.
+GMTVTK_API const char *gmtvtk_transplant_cands_test(void *handle) {
+	static std::string out;
+	Scene *s = static_cast<Scene *>(handle);
+	out = s ? transplantCandidates(s).join("\n").toStdString() : std::string();
+	return out.c_str();
+}
+
+// activeGridName for window `handle` ("" = the base surface): the grid every grid tool works on.
+GMTVTK_API const char *gmtvtk_active_grid_name_test(void *handle) {
+	static std::string out;
+	Scene *s = static_cast<Scene *>(handle);
+	out = s ? activeGridName(s) : std::string();
+	return out.c_str();
+}
+
 // Rebuild window `handle`'s Scene Objects panel now — what any later action in the window does. A row
 // whose existence wrongly hangs on a passing state (a checkbox) only shows that on the NEXT rebuild.
 GMTVTK_API int gmtvtk_objects_rebuild_test(void *handle) {

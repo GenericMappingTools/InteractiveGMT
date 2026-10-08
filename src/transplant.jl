@@ -315,9 +315,18 @@ function _on_transplant(scene::Ptr{Cvoid}, implant_path::String, res::Int=1, rec
 		H = _find_object(scene, :grid, gname)
 		(H === nothing) && error("No host grid in this window to transplant into.")
 
-		_tp_dialog(1, "Reading $(basename(String(implant_path)))…")
-		I = _gmtread_trb(implant_path)      # grids are READ in "TRB" — THE reader
-		I isa GMTgrid || error("The chosen file is not a grid: $(basename(String(implant_path)))")
+		# `implant_path` is EITHER a grid of this window (the chooser offers those that meet the host)
+		# OR a file — one entry point, the same resolution _on_nested_transplant makes.
+		Iw = _find_object_exact(scene, :grid, String(implant_path))
+		if Iw isa GMTgrid
+			I = Iw
+			ilabel = String(implant_path)
+		else
+			ilabel = basename(String(implant_path))
+			_tp_dialog(1, "Reading $ilabel…")
+			I = _gmtread_trb(implant_path)      # grids are READ in "TRB" — THE reader
+		end
+		I isa GMTgrid || error("The chosen file is not a grid: $ilabel")
 
 		# Optional rectangle clip (the rectangle-handle connection). Intersect the rect with the
 		# implant's own range so grdcut never gets an out-of-range region.
@@ -336,7 +345,7 @@ function _on_transplant(scene::Ptr{Cvoid}, implant_path::String, res::Int=1, rec
 		host = gname
 		isempty(host) && (host = try String(get(_scene_state(scene), "surf_name", "")) catch; "" end)
 		isempty(host) && (host = "Grid")
-		title = "$host + $(basename(String(implant_path))) (transplant, " *
+		title = "$host + $ilabel (transplant, " *
 		        (res != 0 ? "host" : "implant") * " res)"
 		_tp_dialog(5, "Adding \"$title\" to the window…")
 		ccall(_fn(:gmtvtk_remove_grid_h), Cint, (Ptr{Cvoid}, Cstring), scene, title)   # re-run replaces

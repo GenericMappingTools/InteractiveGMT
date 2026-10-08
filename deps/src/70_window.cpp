@@ -30869,25 +30869,17 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// resolution). Both hand params to Julia's _on_transplant via g_juliaEval, like Extract profile.
 	QMenu *mGridTools  = win->menuBar()->addMenu("Grid T&ools");
 	QMenu *mTransplant = mGridTools->addMenu("Transplant 2nd grid");
-	auto runTransplant = [win, s](int res) {
+	// The source is chosen by runTransplant (50_scene.cpp): the window's other grids that intersect
+	// the active grid, beside "External file…" — or straight the file picker when there are none.
+	auto menuTransplant = [win, s](int res) {
 		if (!g_juliaEval) {
 			QMessageBox::warning(win, "Transplant 2nd grid", "This computation needs the Julia/GMT host.");
 			return;
 		}
-		const QString fn = QFileDialog::getOpenFileName(win, "Select grid to implant", prefStartDir(),
-			"Grids (*.grd *.nc *.tif *.tiff *.img);;All files (*)");
-		if (fn.isEmpty()) return;
-		rememberStartDir(fn);
-		// The host is the grid the window is SHOWING (activeGridName), as every grid tool takes it.
-		const QString cmd = QString("InteractiveGMT._on_transplant(Ptr{Cvoid}(UInt(%1)),raw\"%2\",%3,\"\",raw\"%4\")")
-								.arg((qulonglong)reinterpret_cast<uintptr_t>(s)).arg(fn).arg(res)
-								.arg(QString::fromStdString(activeGridName(s)));
-		static std::vector<char> buf(1 << 12);
-		int n = g_juliaEval(s, cmd.toStdString().c_str(), buf.data(), (int)buf.size());
-		if (n < 0) sceneLogError(s, QString::fromUtf8(buf.data(), -n));   // Julia threw -> Errors tab
+		runTransplant(s, res, QString());
 	};
-	mTransplant->addAction("Keep host resolution",     [runTransplant]() { runTransplant(1); });
-	mTransplant->addAction("Adopt implant resolution", [runTransplant]() { runTransplant(0); });
+	mTransplant->addAction("Keep host resolution",     [menuTransplant]() { menuTransplant(1); });
+	mTransplant->addAction("Adopt implant resolution", [menuTransplant]() { menuTransplant(0); });
 
 	// "Clip Grid" (port of Mirone src_figs/ml_clip.m): threshold/statistical clipping of the window's
 	// grid into a NEW derived grid. Opens the clipp_grid.ui dialog (ClipGridDialog). Only meaningful

@@ -1934,6 +1934,46 @@ static bool nestGridExtent(Scene *s, const QString &nm, double &x0, double &x1, 
 	return false;
 }
 
+// THE implant-source chooser of every "Transplant 2nd grid": the grids of this window that can serve
+// (`cands`, by their Scene Objects labels) plus an "External file…" button; with no candidate it is
+// straight the file picker. Returns a grid label or a file path, empty = cancelled. One dialog for one
+// choice — the nesting-level fill and the Grid Tools / rectangle transplant both ask through it.
+// Ask only when there is something to ask about: with no usable grid in the window this is the file
+// picker, with no extra click in the way. When there IS, both routes are in plain sight — the grids to
+// pick from, and an "External file…" BUTTON beside OK, never an entry buried at the bottom of the list
+// where it reads as one more grid.
+static QString chooseImplantSource(Scene *s, const QString &prompt, const QStringList &cands) {
+	QString src;
+	if (!cands.isEmpty()) {
+		QDialog dlg(s->win);
+		dlg.setWindowTitle("Transplant 2nd grid");
+		auto *v = new QVBoxLayout(&dlg);
+		v->addWidget(new QLabel(prompt, &dlg));
+		auto *list = new QListWidget(&dlg);
+		list->addItems(cands);
+		list->setCurrentRow(0);
+		v->addWidget(list);
+		auto *bb = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+		QPushButton *bExt = bb->addButton("External file…", QDialogButtonBox::ActionRole);
+		v->addWidget(bb);
+		bool wantFile = false;
+		QObject::connect(bb, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+		QObject::connect(bb, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+		QObject::connect(list, &QListWidget::itemDoubleClicked, &dlg, [&dlg]() { dlg.accept(); });
+		QObject::connect(bExt, &QPushButton::clicked, &dlg, [&dlg, &wantFile]() { wantFile = true; dlg.accept(); });
+		if (dlg.exec() != QDialog::Accepted) return QString();
+		if (!wantFile && list->currentItem()) src = list->currentItem()->text();
+	}
+	if (src.isEmpty()) {                                   // external file (picked, or the only option)
+		const QString fn = QFileDialog::getOpenFileName(s->win, "Select grid to implant", prefStartDir(),
+			"Grids (*.grd *.nc *.tif *.tiff *.img);;All files (*)");
+		if (fn.isEmpty()) return QString();
+		rememberStartDir(fn);
+		src = fn;
+	}
+	return src;
+}
+
 static void runNestedTransplant(Scene *s, const QString &nm) {
 	if (!g_juliaEval) return;
 
@@ -1973,38 +2013,8 @@ static void runNestedTransplant(Scene *s, const QString &nm) {
 		}
 	}
 
-	// Ask only when there is something to ask about: with no usable grid in the window this is the
-	// file picker it has always been, with no extra click in the way. When there IS, both routes are
-	// in plain sight — the grids to pick from, and an "External file…" BUTTON beside OK, never an
-	// entry buried at the bottom of the list where it reads as one more grid.
-	QString src;
-	if (!cands.isEmpty()) {
-		QDialog dlg(s->win);
-		dlg.setWindowTitle("Transplant 2nd grid");
-		auto *v = new QVBoxLayout(&dlg);
-		v->addWidget(new QLabel(QString("Fill '%1' from a grid in this window:").arg(nm), &dlg));
-		auto *list = new QListWidget(&dlg);
-		list->addItems(cands);
-		list->setCurrentRow(0);
-		v->addWidget(list);
-		auto *bb = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
-		QPushButton *bExt = bb->addButton("External file…", QDialogButtonBox::ActionRole);
-		v->addWidget(bb);
-		bool wantFile = false;
-		QObject::connect(bb, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
-		QObject::connect(bb, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
-		QObject::connect(list, &QListWidget::itemDoubleClicked, &dlg, [&dlg]() { dlg.accept(); });
-		QObject::connect(bExt, &QPushButton::clicked, &dlg, [&dlg, &wantFile]() { wantFile = true; dlg.accept(); });
-		if (dlg.exec() != QDialog::Accepted) return;
-		if (!wantFile && list->currentItem()) src = list->currentItem()->text();
-	}
-	if (src.isEmpty()) {                                   // external file (picked, or the only option)
-		const QString fn = QFileDialog::getOpenFileName(s->win, "Select grid to implant", prefStartDir(),
-			"Grids (*.grd *.nc *.tif *.tiff *.img);;All files (*)");
-		if (fn.isEmpty()) return;
-		rememberStartDir(fn);
-		src = fn;
-	}
+	const QString src = chooseImplantSource(s, QString("Fill '%1' from a grid in this window:").arg(nm), cands);
+	if (src.isEmpty()) return;
 	// ONE entry point either way: Julia resolves `src` as an in-window grid name first, else as a path.
 	// The rectangle's geometry rides along when there is one: Julia builds the level at THAT size and
 	// samples into it, so a resized rectangle refills at its new size instead of the old grid's.
@@ -2018,6 +2028,51 @@ static void runNestedTransplant(Scene *s, const QString &nm) {
 	std::vector<char> buf(1 << 12);
 	int n = g_juliaEval(s, cmd.toStdString().c_str(), buf.data(), (int)buf.size());
 	if (n < 0) sceneLogError(s, QString::fromUtf8(buf.data(), -n));
+}
+
+// Grid Tools > "Transplant 2nd grid" and a rectangle's "Transplant 2nd grid…": implant into the ACTIVE
+// grid (the one the window is showing — every grid tool takes it). The window's OTHER grids whose
+// bounding box intersects the active grid's are offered first, beside "External file…"; with none of
+// them it is straight the file picker (chooseImplantSource). Same coordinate kind only: a lon/lat box
+// and a metre box cannot be compared, let alone implanted into one another. `res` 1 = keep host
+// resolution, 0 = adopt the implant's; `rect` = "W/E/S/N" clip of the rectangle path, "" otherwise.
+static QStringList transplantCandidates(Scene *s) {
+	const QString act = QString::fromStdString(activeGridName(s));   // "" = the base surface
+	double tx0 = s->gx0, tx1 = s->gx1, ty0 = s->gy0, ty1 = s->gy1; int tgeog = s->baseGeog, tnx, tny;
+	const bool haveT = act.isEmpty() ? !s->gridZ.empty()
+	                                 : nestGridExtent(s, act, tx0, tx1, ty0, ty1, tgeog, tnx, tny);
+	QStringList cands;
+	if (haveT) {
+		auto meets = [&](double x0, double x1, double y0, double y1) {
+			return x0 < tx1 && x1 > tx0 && y0 < ty1 && y1 > ty0;
+		};
+		// The base is the host when the active name is empty OR is the base's own label — never its own source.
+		const bool baseIsActive = act.isEmpty() || act == QString::fromStdString(s->surfName);
+		if (!baseIsActive && !s->gridZ.empty() && s->baseGeog == tgeog && meets(s->gx0, s->gx1, s->gy0, s->gy1))
+			cands << QString::fromStdString(s->surfName);
+		for (auto &ex : s->extras) {
+			const QString en = QString::fromStdString(ex.name);
+			if (ex.isImage || ex.isMesh || ex.gridZ.empty() || en == act) continue;
+			if (ex.geog != tgeog || !meets(ex.gx0, ex.gx1, ex.gy0, ex.gy1)) continue;
+			cands << en;
+		}
+	}
+	return cands;
+}
+
+static void runTransplant(Scene *s, int res, const QString &rect) {
+	if (!g_juliaEval) return;
+	const QString act  = QString::fromStdString(activeGridName(s));   // "" = the base surface
+	const QString host = act.isEmpty() ? QString::fromStdString(s->surfName) : act;
+	const QString src  = chooseImplantSource(s, QString("Implant into '%1' a grid from this window:").arg(host),
+	                                         transplantCandidates(s));
+	if (src.isEmpty()) return;
+	// Julia resolves `src` as a window grid name first, else as a file path (_on_transplant).
+	const QString cmd = QString("InteractiveGMT._on_transplant(Ptr{Cvoid}(UInt(%1)),raw\"%2\",%3,\"%4\",raw\"%5\")")
+		.arg((qulonglong)reinterpret_cast<uintptr_t>(s)).arg(src).arg(res).arg(rect).arg(act);
+	std::vector<char> buf(1 << 12);
+	int n = g_juliaEval(s, cmd.toStdString().c_str(), buf.data(), (int)buf.size());
+	if (n < 0) sceneLogError(s, QString::fromUtf8(buf.data(), -n));   // Julia threw -> Errors tab
 }
 
 // Run grdinfo on the named grid (Julia InteractiveGMT._info_text_named, info.jl) and show the report

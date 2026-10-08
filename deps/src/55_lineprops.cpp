@@ -903,19 +903,9 @@ static void rectTransplant(Scene *s, const LineRef &lr) {
 			so = std::min(so, p[1]);  no = std::max(no, p[1]);
 		}
 	if (!(e > w && no > so)) return;
-	const QString fn = QFileDialog::getOpenFileName(s->win, "Select grid to implant", prefStartDir(),
-		"Grids (*.grd *.nc *.tif *.tiff *.img);;All files (*)");
-	if (fn.isEmpty()) return;
-	rememberStartDir(fn);
 	const QString rect = QString("%1/%2/%3/%4").arg(w, 0, 'g', 16).arg(e, 0, 'g', 16)
 	                                           .arg(so, 0, 'g', 16).arg(no, 0, 'g', 16);
-	// The host is the grid the window is SHOWING (activeGridName), as every grid tool takes it.
-	const QString cmd = QString("InteractiveGMT._on_transplant(Ptr{Cvoid}(UInt(%1)),raw\"%2\",1,\"%3\",raw\"%4\")")
-							.arg((qulonglong)reinterpret_cast<uintptr_t>(s)).arg(fn).arg(rect)
-							.arg(QString::fromStdString(activeGridName(s)));
-	std::vector<char> buf(1 << 12);
-	int n = g_juliaEval(s, cmd.toStdString().c_str(), buf.data(), (int)buf.size());
-	if (n < 0) sceneLogError(s, QString::fromUtf8(buf.data(), -n));         // Julia threw -> Errors tab
+	runTransplant(s, 1, rect);   // the SAME transplant as the Grid Tools menu (source chooser included)
 }
 
 // Undo the last transplant (restores the original grid kept on the Julia side). Same action as Ctrl+Z.
