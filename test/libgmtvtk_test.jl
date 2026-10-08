@@ -99,6 +99,10 @@ const _TEST_SYMBOLS = (
 	:gmtvtk_movie_parked_test, :gmtvtk_movie_delete_dialog_test,
 	:gmtvtk_landmask_open_dialog_test, :gmtvtk_landmask_leave_dialog_test,
 	:gmtvtk_landmask_parked_test, :gmtvtk_landmask_delete_dialog_test,
+	:gmtvtk_grdblend_open_dialog_test, :gmtvtk_grdblend_leave_dialog_test, :gmtvtk_grdblend_parked_test,
+	:gmtvtk_grdblend_delete_dialog_test, :gmtvtk_grdblend_feed_test, :gmtvtk_grdblend_pick_test,
+	:gmtvtk_grdblend_region_test, :gmtvtk_grdblend_scan_test, :gmtvtk_grdblend_key_test,
+	:gmtvtk_set_grdblend_callbacks,   # NOT test-only -- mirrored here so the map can read headers
 	:gmtvtk_dgt_open_dialog_test, :gmtvtk_dgt_leave_dialog_test, :gmtvtk_dgt_parked_test,
 	:gmtvtk_dgt_use_region_test, :gmtvtk_dgt_delete_dialog_test,
 	:gmtvtk_scene_borrowed_test,      # does the test dll still count a (borrowed) window as alive?
@@ -189,6 +193,14 @@ fft_park(scene::Ptr{Cvoid}, park::Bool) =
 # The Scene Objects panel as text -- the only proof a result was really PUT IN THE WINDOW.
 objrows(scene::Ptr{Cvoid}) =
 	unsafe_string(ccall(_test_fn(:gmtvtk_objrows_test), Cstring, (Ptr{Cvoid},), scene))
+
+# grdblend's dialog reads grid headers through its own dll's callback: point THIS dll's copy at Julia.
+function _register_grdblend_test()
+	h = @cfunction((c) -> Base.invokelatest(InteractiveGMT._on_grdblend_headers, c), Cstring, (Cstring,))
+	r = @cfunction((s, c) -> Base.invokelatest(InteractiveGMT._on_grdblend, s, c)::Cint, Cint, (Ptr{Cvoid}, Cstring))
+	ccall(_test_fn(:gmtvtk_set_grdblend_callbacks), Cvoid, (Ptr{Cvoid}, Ptr{Cvoid}), h, r)
+	return
+end
 
 function _register_faultgeom_test()
 	fptr = @cfunction((a, b, c, d) -> Base.invokelatest(InteractiveGMT._on_faultgeom, a, b, c, d),

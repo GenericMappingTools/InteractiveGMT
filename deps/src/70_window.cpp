@@ -19142,6 +19142,819 @@ static int openGrdLandmaskDialog(QWidget *win, Scene *s) {
 	return 1;
 }
 
+// ============================================================================================
+// grdblend (GMT menu) — blend several grids into one, with cosine-taper weights in the overlaps or
+// (-C, clobber) by picking one grid's value per node. Options from grdblend.rst, minus -Q (a
+// header-less file is of no use inside this app). The .ui carries the shared "Griding Line
+// Geometry" block (adopted by GeoGridGeometry, as grdlandmask's), the Overlap options, an optional
+// blend file, and at the bottom the "Grids to blend" area: the grids of a directory are drawn on a
+// map as the rectangles of their limits (BlendFootprintMap) and picked with the mouse into the
+// list grdblend is handed — the alternative to typing a list of names. The LIST is the one source
+// of truth for what gets blended: the map only shows it (filled boxes) and edits it.
+// ============================================================================================
+struct BlendFoot {
+	QString path, name;
+	double w = 0, e = 0, s = 0, n = 0, dx = 0, dy = 0;
+	int nx = 0, ny = 0, reg = 0, geog = 0;
+};
+
+// The footprint map. Owns no selection: `isListed` asks the dialog, `onPick` edits its list.
+// Left click toggles the smallest box under the cursor; a left drag picks every box the band
+// touches (Ctrl+drag takes them off); wheel zooms about the cursor; right drag pans; a right click
+// without a drag opens the menu; double click frames everything.
+class BlendFootprintMap : public QWidget {
+public:
+	const std::vector<BlendFoot> *feet = nullptr;
+	std::function<bool(int)> isListed, isHighlighted;
+	std::function<void(const std::vector<int> &, int)> onPick;   // mode: 0 toggle, 1 add, 2 remove
+	std::function<void()> onSelectAll, onClear;
+
+	explicit BlendFootprintMap(QWidget *parent) : QWidget(parent) {
+		setMouseTracking(true);
+		setFocusPolicy(Qt::StrongFocus);      // a click or Tab gives it the keyboard (arrow-key pan)
+	}
+	QPointF viewCentre() const { return QPointF(cx, cy); }   // data coords of the frame's centre
+	void setRegion(bool on, double w, double e, double s, double n) {
+		hasRegion = on; rw = w; re = e; rs = s; rn = n;
+		update();
+	}
+	// Frame the footprints (the output region only when there are none: a region typed far from the
+	// grids must not shrink them to dots).
+	void fit() {
+		double x0 = 1e300, x1 = -1e300, y0 = 1e300, y1 = -1e300;
+		auto grow = [&](double w, double e, double s, double n) {
+			x0 = std::min(x0, w); x1 = std::max(x1, e); y0 = std::min(y0, s); y1 = std::max(y1, n);
+		};
+		bool geog = false;
+		if (feet) for (const auto &f : *feet) { grow(f.w, f.e, f.s, f.n); if (f.geog) geog = true; }
+		if ((!feet || feet->empty()) && hasRegion) grow(rw, re, rs, rn);
+		if (!(x1 >= x0) || !(y1 >= y0)) { x0 = 0; x1 = 1; y0 = 0; y1 = 1; }
+		if (x1 - x0 <= 0) { x0 -= 0.5; x1 += 0.5; }
+		if (y1 - y0 <= 0) { y0 -= 0.5; y1 += 0.5; }
+		// ISOMETRIC: one scale for X and Y (lon/lat at the true shape of the middle latitude). The
+		// frame fills the whole widget and the axes expand to the grids' bounding box: it touches
+		// the frame on the tight direction, the other direction gets only what isometry adds.
+		constexpr double kDeg2Rad = 3.14159265358979323846 / 180.0;   // not M_PI: not standard C++
+		asp = geog ? std::clamp(std::cos(0.5 * (y0 + y1) * kDeg2Rad), 0.1, 1.0) : 1.0;
+		cx = 0.5 * (x0 + x1);
+		cy = 0.5 * (y0 + y1);
+		const QRectF P = plot();
+		k = std::min(std::max(P.width(), 10.0) / ((x1 - x0) * asp), std::max(P.height(), 10.0) / (y1 - y0));
+		update();
+	}
+
+protected:
+	void paintEvent(QPaintEvent *) override {
+		QPainter p(this);
+		p.fillRect(rect(), palette().color(QPalette::Window));
+		const QRectF P = plot();
+		p.fillRect(P, palette().color(QPalette::Base));
+		if (!feet || feet->empty()) {
+			p.setPen(palette().color(QPalette::PlaceholderText));
+			p.drawText(P.adjusted(8, 8, -8, -8), Qt::AlignCenter | Qt::TextWordWrap,
+			           "Pick a directory (or Add... grids) to draw their limits here");
+			drawFrame(p, P, false);
+			return;
+		}
+		if (k <= 0) fit();
+		p.save();
+		p.setClipRect(P);
+		const QColor offPen(70, 130, 180), offFill(70, 130, 180, 28);
+		const QColor onPen(200, 90, 0), onFill(255, 140, 0, 110), hiPen(200, 0, 0);
+		// unlisted first, listed on top of them, the hovered one last
+		for (int pass = 0; pass < 2; ++pass)
+			for (int i = 0; i < (int)feet->size(); ++i) {
+				const bool on = isListed && isListed(i);
+				if (on != (pass == 1)) continue;
+				const bool hi = isHighlighted && isHighlighted(i);
+				p.setPen(QPen(hi ? hiPen : (on ? onPen : offPen), hi ? 2.0 : 1.0));
+				p.setBrush(on ? onFill : offFill);
+				p.drawRect(screenRect(i));
+			}
+		if (hover >= 0 && hover < (int)feet->size()) {
+			p.setPen(QPen(palette().color(QPalette::Text), 2.0));
+			p.setBrush(Qt::NoBrush);
+			p.drawRect(screenRect(hover));
+		}
+		if (hasRegion) {
+			QPen pen(QColor(220, 0, 0), 1.5, Qt::DashLine);
+			p.setPen(pen);
+			p.setBrush(Qt::NoBrush);
+			p.drawRect(QRectF(toScreen(rw, rn), toScreen(re, rs)).normalized());
+		}
+		if (banding) {
+			p.setPen(QPen(palette().color(QPalette::Highlight), 1.0, Qt::DashLine));
+			QColor f = palette().color(QPalette::Highlight);
+			f.setAlpha(40);
+			p.setBrush(f);
+			p.drawRect(QRect(pressPos, bandEnd).normalized());
+		}
+		// what is under the cursor: the hovered grid's name, and the coordinates
+		p.setPen(palette().color(QPalette::Text));
+		const QRectF T = P.adjusted(4, 2, -4, -2);
+		if (hover >= 0 && hover < (int)feet->size()) {
+			const BlendFoot &f = (*feet)[hover];
+			p.drawText(T, Qt::AlignLeft | Qt::AlignTop,
+			           p.fontMetrics().elidedText(f.name, Qt::ElideMiddle, int(T.width())));
+		}
+		if (hasCursor && P.contains(cursor)) {
+			double x, y;
+			toData(cursor, x, y);
+			p.drawText(T, Qt::AlignRight | Qt::AlignBottom, QString("%1, %2").arg(x, 0, 'g', 8).arg(y, 0, 'g', 8));
+		}
+		p.restore();
+		drawFrame(p, P, true);
+	}
+	void resizeEvent(QResizeEvent *) override { if (k <= 0 || !fitted) { fit(); fitted = width() > 10; } }
+	void mousePressEvent(QMouseEvent *e) override {
+		if (e->button() == Qt::LeftButton) {
+			pressPos = e->position().toPoint();
+			bandEnd = pressPos;
+			leftDown = true;
+			banding = false;
+		}
+		else if (e->button() == Qt::RightButton) {
+			panPos = e->position();
+			panning = true;
+			panMoved = false;
+		}
+	}
+	void mouseMoveEvent(QMouseEvent *e) override {
+		const QPointF q = e->position();
+		cursor = q;
+		hasCursor = true;
+		if (panning) {
+			const QPointF dl = q - panPos;
+			if (dl.manhattanLength() > 2) panMoved = true;
+			cx -= dl.x() / (k * asp);
+			cy += dl.y() / k;
+			panPos = q;
+			update();
+			return;
+		}
+		if (leftDown && (q.toPoint() - pressPos).manhattanLength() > 4) {
+			banding = true;
+			bandEnd = q.toPoint();
+			update();
+			return;
+		}
+		hover = hitTest(q);
+		update();
+	}
+	void mouseReleaseEvent(QMouseEvent *e) override {
+		if (e->button() == Qt::RightButton && panning) {
+			panning = false;
+			if (!panMoved) contextMenu(e->globalPosition().toPoint());
+			return;
+		}
+		if (e->button() != Qt::LeftButton || !leftDown) return;
+		leftDown = false;
+		if (banding) {
+			banding = false;
+			const QRectF band = QRectF(QRect(pressPos, bandEnd).normalized());
+			std::vector<int> hits;
+			if (feet)
+				for (int i = 0; i < (int)feet->size(); ++i)
+					if (band.intersects(screenRect(i))) hits.push_back(i);
+			if (onPick && !hits.empty()) onPick(hits, (e->modifiers() & Qt::ControlModifier) ? 2 : 1);
+			update();
+			return;
+		}
+		lastClick = hitTest(e->position());
+		if (lastClick >= 0 && onPick) onPick({ lastClick }, 0);
+	}
+	// The first click of a double click already toggled the box under it; give that back, then frame.
+	void mouseDoubleClickEvent(QMouseEvent *e) override {
+		if (e->button() != Qt::LeftButton) return;
+		if (lastClick >= 0 && lastClick == hitTest(e->position()) && onPick) onPick({ lastClick }, 0);
+		lastClick = -1;
+		fit();
+	}
+	void wheelEvent(QWheelEvent *e) override {
+		const QPointF q = e->position();
+		double x, y;
+		toData(q, x, y);
+		k *= std::pow(1.0015, e->angleDelta().y());
+		const QPointF c = plot().center();
+		cx = x - (q.x() - c.x()) / (k * asp);     // keep the point under the cursor in place
+		cy = y + (q.y() - c.y()) / k;
+		update();
+		e->accept();
+	}
+	void leaveEvent(QEvent *) override { hover = -1; hasCursor = false; update(); }
+	// Arrow keys pan: the view moves toward the arrow by a tenth of the frame (Shift: half a frame).
+	void keyPressEvent(QKeyEvent *e) override {
+		int dx = 0, dy = 0;
+		switch (e->key()) {
+			case Qt::Key_Left:  dx = -1; break;
+			case Qt::Key_Right: dx =  1; break;
+			case Qt::Key_Up:    dy =  1; break;
+			case Qt::Key_Down:  dy = -1; break;
+			default: QWidget::keyPressEvent(e); return;
+		}
+		if (k <= 0) { e->accept(); return; }
+		const QRectF P = plot();
+		const double f = (e->modifiers() & Qt::ShiftModifier) ? 0.5 : 0.1;
+		cx += dx * f * P.width() / (k * asp);
+		cy += dy * f * P.height() / k;
+		update();
+		e->accept();
+	}
+
+private:
+	double cx = 0, cy = 0, k = 0, asp = 1;     // view centre (data), px per Y unit, X shrink (cos lat)
+	bool fitted = false;
+	bool hasRegion = false;
+	double rw = 0, re = 0, rs = 0, rn = 0;
+	int hover = -1, lastClick = -1;
+	bool leftDown = false, banding = false, panning = false, panMoved = false, hasCursor = false;
+	QPoint pressPos, bandEnd;
+	QPointF panPos, cursor;
+
+	// The plot area: the widget minus room for the Y labels (left) and the X labels (bottom).
+	QRectF plot() const {
+		const QFontMetrics fm(font());
+		const double left = fm.horizontalAdvance("-0000000") + 10, bottom = fm.height() + 8;
+		return QRectF(left, 6, std::max(width() - left - 10, 10.0), std::max(height() - bottom - 6, 10.0));
+	}
+	QPointF toScreen(double x, double y) const {
+		const QPointF c = plot().center();
+		return QPointF(c.x() + (x - cx) * k * asp, c.y() - (y - cy) * k);
+	}
+	void toData(const QPointF &q, double &x, double &y) const {
+		const QPointF c = plot().center();
+		x = (k > 0) ? cx + (q.x() - c.x()) / (k * asp) : 0;
+		y = (k > 0) ? cy - (q.y() - c.y()) / k : 0;
+	}
+	// 1, 2 or 5 times a power of ten, giving about `n` intervals over `span`.
+	static double niceStep(double span, int n) {
+		const double raw = span / std::max(n, 1);
+		const double m = std::pow(10.0, std::floor(std::log10(raw)));
+		const double f = raw / m;
+		return (f < 1.5 ? 1.0 : f < 3.0 ? 2.0 : f < 7.0 ? 5.0 : 10.0) * m;
+	}
+	// The axes: a frame round the plot area, with ticks and numbers along the bottom (X) and the
+	// left (Y) for the part of the data the view shows.
+	void drawFrame(QPainter &p, const QRectF &P, bool ticks) {
+		p.setPen(QPen(palette().color(QPalette::Text), 1.0));
+		p.setBrush(Qt::NoBrush);
+		p.drawRect(P);
+		if (!ticks || k <= 0) return;
+		const QFontMetrics fm(font());
+		double xa, ya, xb, yb;
+		toData(P.topLeft(), xa, yb);
+		toData(P.bottomRight(), xb, ya);
+		auto label = [](double v, double step) {
+			if (std::fabs(v) < 1e-9 * step) v = 0;
+			return QString::number(v, 'g', 10);
+		};
+		// as many X ticks as labels of THIS data's width fit (metres of a projection are wide)
+		const double lw = std::max(fm.horizontalAdvance(label(xa, 1.0)), fm.horizontalAdvance(label(xb, 1.0))) + 16;
+		const double sx = niceStep(xb - xa, std::max(1, int(P.width() / lw)));
+		const double sy = niceStep(yb - ya, std::max(1, int(P.height() / (2.5 * fm.height()))));
+		double lastRight = -1e300;                 // a label that would overlap the previous one is skipped
+		for (double v = std::ceil(xa / sx) * sx; v <= xb + 1e-9 * sx; v += sx) {
+			const double px = toScreen(v, 0).x();
+			p.drawLine(QPointF(px, P.bottom()), QPointF(px, P.bottom() + 4));
+			const QString t = label(v, sx);
+			const double w = fm.horizontalAdvance(t);
+			if (px - w / 2 < lastRight + 6 || px + w / 2 > width() - 1) continue;
+			p.drawText(QRectF(px - w / 2 - 2, P.bottom() + 4, w + 4, fm.height()), Qt::AlignCenter, t);
+			lastRight = px + w / 2;
+		}
+		for (double v = std::ceil(ya / sy) * sy; v <= yb + 1e-9 * sy; v += sy) {
+			const double py = toScreen(0, v).y();
+			p.drawLine(QPointF(P.left() - 4, py), QPointF(P.left(), py));
+			p.drawText(QRectF(0, py - fm.height() / 2.0, P.left() - 6, fm.height()),
+			           Qt::AlignRight | Qt::AlignVCenter, label(v, sy));
+		}
+	}
+	QRectF screenRect(int i) const {
+		const BlendFoot &f = (*feet)[i];
+		return QRectF(toScreen(f.w, f.n), toScreen(f.e, f.s)).normalized();
+	}
+	// The SMALLEST box under the point: where grids nest, the click reaches the inner one too.
+	int hitTest(const QPointF &q) const {
+		if (!feet || k <= 0 || !plot().contains(q)) return -1;
+		double x, y;
+		toData(q, x, y);
+		int best = -1;
+		double bestA = 1e300;
+		for (int i = 0; i < (int)feet->size(); ++i) {
+			const BlendFoot &f = (*feet)[i];
+			if (x < f.w || x > f.e || y < f.s || y > f.n) continue;
+			const double a = (f.e - f.w) * (f.n - f.s);
+			if (a < bestA) { bestA = a; best = i; }
+		}
+		return best;
+	}
+	void contextMenu(const QPoint &g) {
+		QMenu m;
+		QAction *aAll = m.addAction("Select all");
+		QAction *aClr = m.addAction("Clear the list");
+		m.addSeparator();
+		QAction *aFit = m.addAction("Fit view");
+		QAction *pick = m.exec(g);
+		if (pick == aAll && onSelectAll) onSelectAll();
+		else if (pick == aClr && onClear) onClear();
+		else if (pick == aFit) fit();
+	}
+};
+
+class GrdBlendDialog;
+static std::map<Scene *, GrdBlendDialog *> g_blendDlgs;   // one per window, alive while parked
+
+class GrdBlendDialog {
+public:
+	QDialog *dlg = nullptr;
+	Scene *scn = nullptr;
+	bool parked = false;
+	bool reallyClose = false;          // set by the parked row's "Delete": lets the next close through
+
+	// Parking: the shared parkTool/unparkTool pair, exactly as GrdLandmaskDialog's.
+	void unpark() {
+		if (!dlg) return;
+		parked = false;
+		unparkTool(scn, dlg);
+		dlg->setWindowState(dlg->windowState() & ~Qt::WindowMinimized);
+		dlg->showNormal();
+		dlg->raise();
+		dlg->activateWindow();
+	}
+	std::function<void(const QPoint &)> parkedMenu() {
+		return [this](const QPoint &g) {
+			QMenu m;
+			QAction *aShow = m.addAction("Show");
+			m.addSeparator();
+			QAction *aDel  = m.addAction("Delete");
+			QAction *pick  = m.exec(g);
+			if (pick == aShow) unpark();
+			else if (pick == aDel) {
+				reallyClose = true;
+				unparkTool(scn, dlg);
+				forget();
+				dlg->deleteLater();          // destroyed -> this wrapper goes with it
+			}
+		};
+	}
+	bool parkNow() {
+		if (reallyClose || !dlg || !sceneAlive(scn)) return false;
+		if (parked) { dlg->hide(); return true; }
+		parked = true;
+		dlg->setWindowState(dlg->windowState() & ~Qt::WindowMinimized);
+		dlg->hide();
+		parkTool(scn, dlg, "grdblend", IC_Rect,
+		         "Closed grdblend — double-click to bring it back, click for Show / Delete",
+		         [this]() { unpark(); }, parkedMenu());
+		unfoldSceneObjects(scn);
+		return true;
+	}
+	void forget() {
+		for (auto it = g_blendDlgs.begin(); it != g_blendDlgs.end(); )
+			it = (it->second == this) ? g_blendDlgs.erase(it) : std::next(it);
+	}
+	~GrdBlendDialog() { forget(); }
+
+	GeoGridGeometry *geo = nullptr;
+	BlendFootprintMap *map = nullptr;
+	QPointer<BlendFootprintMap> mapAlive;   // null once the map is gone (the dialog is being destroyed)
+	bool listPending = false;               // a list rebuild is queued
+	QListWidget *list = nullptr;
+	QComboBox *modeCb = nullptr, *signCb = nullptr, *outCb = nullptr, *interpCb = nullptr;
+	QLineEdit *scaleEdit = nullptr, *nodataEdit = nullptr, *blendEdit = nullptr, *outEdit = nullptr;
+	QLineEdit *dirEdit = nullptr, *filterEdit = nullptr;
+	QCheckBox *pixelChk = nullptr, *geogChk = nullptr, *verboseChk = nullptr;
+	std::vector<BlendFoot> feet;       // every grid drawn on the map (scanned or added by name)
+	QSet<QString> listed;              // paths on the list, rebuilt whenever the list changes
+	bool geoTouched = false;           // the user typed a region: stop fitting it to the list
+	QString lastScan;                  // "dir\nfilter" of the last scan, so a focus-out does not re-read it
+
+	explicit GrdBlendDialog(QWidget *parent, Scene *scene) : scn(scene) {
+		QUiLoader loader;
+		QFile f(gmtvtkUiDir() + "/grdblend_dialog.ui");
+		if (!f.open(QFile::ReadOnly)) {
+			qWarning("GrdBlendDialog: cannot open %s", qUtf8Printable(f.fileName()));
+			return;
+		}
+		dlg = qobject_cast<QDialog *>(loader.load(&f, parent));
+		f.close();
+		if (!dlg) { qWarning("GrdBlendDialog: QUiLoader failed to load the .ui"); return; }
+		dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint | Qt::WindowMinimizeButtonHint);
+		dlg->setWindowModality(Qt::NonModal);
+		dlg->setWindowTitle("grdblend");
+		QDialog *d = dlg;
+		g_blendDlgs[scn] = this;
+		struct CloseParks : QObject {
+			GrdBlendDialog *gd;
+			CloseParks(QObject *p, GrdBlendDialog *g) : QObject(p), gd(g) {}
+			bool eventFilter(QObject *o, QEvent *e) override {
+				if (gd && e->type() == QEvent::Close && gd->parkNow()) {
+					e->ignore();
+					return true;
+				}
+				return QObject::eventFilter(o, e);
+			}
+		};
+		d->installEventFilter(new CloseParks(d, this));
+		parkOnMinimise(d, [this]() { parkNow(); });
+		QObject::connect(d, &QDialog::rejected, d, [this]() { parkNow(); });   // Esc
+
+		geo = GeoGridGeometry::adopt(d);
+		modeCb   = d->findChild<QComboBox *>("cb_mode");
+		signCb   = d->findChild<QComboBox *>("cb_sign");
+		outCb    = d->findChild<QComboBox *>("cb_output");
+		interpCb = d->findChild<QComboBox *>("cb_interp");
+		scaleEdit  = d->findChild<QLineEdit *>("edit_scale");
+		nodataEdit = d->findChild<QLineEdit *>("edit_nodata");
+		blendEdit  = d->findChild<QLineEdit *>("edit_blendfile");
+		outEdit    = d->findChild<QLineEdit *>("edit_outfile");
+		dirEdit    = d->findChild<QLineEdit *>("edit_dir");
+		filterEdit = d->findChild<QLineEdit *>("edit_filter");
+		pixelChk   = d->findChild<QCheckBox *>("chk_pixel");
+		geogChk    = d->findChild<QCheckBox *>("chk_geog");
+		verboseChk = d->findChild<QCheckBox *>("chk_verbose");
+		list       = d->findChild<QListWidget *>("list_grids");
+
+		if (modeCb) {
+			modeCb->addItem("Blend (cosine taper)", "");
+			modeCb->addItem("First grid (-Cf)", "f");
+			modeCb->addItem("Lowest value (-Cl)", "l");
+			modeCb->addItem("Last grid (-Co)", "o");
+			modeCb->addItem("Uppermost value (-Cu)", "u");
+		}
+		if (signCb) {
+			signCb->addItem("All values", "");
+			signCb->addItem("Only z <= 0 (+n)", "n");
+			signCb->addItem("Only z >= 0 (+p)", "p");
+		}
+		if (outCb) {
+			outCb->addItem("Blended grid", "");
+			outCb->addItem("Weights (-W)", "w");
+			outCb->addItem("Weight*z sum (-Wz)", "z");
+		}
+		if (interpCb) {
+			interpCb->addItem("Bicubic", "c");     // GMT's default: not sent
+			interpCb->addItem("B-spline", "b");
+			interpCb->addItem("Bilinear", "l");
+			interpCb->addItem("Nearest neighbour", "n");
+		}
+		// The +n/+p modifier belongs to clobber mode only.
+		auto syncMode = [this, d]() {
+			const bool clob = modeCb && !modeCb->currentData().toString().isEmpty();
+			if (signCb) signCb->setEnabled(clob);
+			if (auto *lb = d->findChild<QLabel *>("lb_sign")) lb->setEnabled(clob);
+		};
+		if (modeCb) QObject::connect(modeCb, &QComboBox::currentIndexChanged, d, syncMode);
+		syncMode();
+
+		// Prefill the geometry from the window's own grid, when it HAS one. An empty window's frame is
+		// a placeholder (0/1/0/1, no spacing), and an image has no grid spacing: neither is a region
+		// spec, so the boxes stay empty and the first grids put on the list fill them.
+		if (geo && scene && !scene->emptyStart && scene->surf && !scene->imageOnly &&
+		    scene->gnx > 1 && scene->gny > 1) {
+			geo->fillGeometry(QString("%1/%2/%3/%4/%5/%6/%7/%8")
+				.arg(scene->gx0).arg(scene->gx1).arg(scene->gy0).arg(scene->gy1)
+				.arg(scene->gdx).arg(scene->gdy).arg(scene->gnx).arg(scene->gny));
+			clearCaps();
+		}
+		if (pixelChk && geo)
+			QObject::connect(pixelChk, &QCheckBox::toggled, d, [this](bool on) {
+				if (geo) geo->setRegistration(on);
+				if (!geoTouched) fitRegion();
+			});
+		// A region typed by hand is the user's: from then on only "Region from list" re-fits it.
+		if (geo) {
+			for (QLineEdit *e : { geo->xMin, geo->xMax, geo->xInc, geo->xN, geo->yMin, geo->yMax, geo->yInc, geo->yN }) {
+				QObject::connect(e, &QLineEdit::textEdited, d, [this]() { geoTouched = true; });
+				QObject::connect(e, &QLineEdit::editingFinished, d, [this]() { showRegion(); });
+			}
+		}
+		if (auto *rb = d->findChild<QToolButton *>("refBtn"))
+			QObject::connect(rb, &QToolButton::clicked, d, [this]() { geoTouched = true; showRegion(); });
+
+		// --- the footprint map, filling its .ui placeholder -----------------------------------
+		if (auto *fr = d->findChild<QFrame *>("frame_map")) {
+			auto *lay = new QVBoxLayout(fr);
+			lay->setContentsMargins(1, 1, 1, 1);
+			map = new BlendFootprintMap(fr);
+			mapAlive = map;
+			lay->addWidget(map);
+			map->feet = &feet;
+			map->isListed = [this](int i) { return listed.contains(feet[i].path); };
+			map->isHighlighted = [this](int i) {
+				if (!list) return false;
+				for (QListWidgetItem *it : list->selectedItems())
+					if (it->data(Qt::UserRole).toString() == feet[i].path) return true;
+				return false;
+			};
+			map->onPick = [this](const std::vector<int> &idx, int mode) { pick(idx, mode); };
+			map->onSelectAll = [this]() { selectAll(); };
+			map->onClear = [this]() { if (list) list->clear(); };
+		}
+		if (list) {
+			tightenListRows(list);
+			list->setSelectionMode(QAbstractItemView::ExtendedSelection);
+			list->setDragDropMode(QAbstractItemView::InternalMove);
+			list->setDefaultDropAction(Qt::MoveAction);
+			QAbstractItemModel *m = list->model();
+			QObject::connect(m, &QAbstractItemModel::rowsInserted, d, [this]() { listChanged(); });
+			QObject::connect(m, &QAbstractItemModel::rowsRemoved,  d, [this]() { listChanged(); });
+			QObject::connect(m, &QAbstractItemModel::rowsMoved,    d, [this]() { listChanged(); });
+			QObject::connect(m, &QAbstractItemModel::modelReset,   d, [this]() { listChanged(); });
+			QObject::connect(list, &QListWidget::itemSelectionChanged, d, [this]() { if (mapAlive) mapAlive->update(); });
+		}
+
+		// --- directory, scan, list buttons ----------------------------------------------------
+		if (auto *b = d->findChild<QToolButton *>("btn_dir")) {
+			QObject::connect(b, &QToolButton::clicked, d, [this, d]() {
+				const QString start = (dirEdit && !dirEdit->text().trimmed().isEmpty()) ? dirEdit->text().trimmed() : prefStartDir();
+				const QString dir = QFileDialog::getExistingDirectory(d, "Directory with the grids to blend", start);
+				if (dir.isEmpty()) return;
+				if (dirEdit) dirEdit->setText(QDir::toNativeSeparators(dir));
+				scan();
+			});
+			if (dirEdit) fileBoxDoubleClick(dirEdit, b);
+		}
+		// A directory typed in (Enter or leaving the box) is scanned right away, and so is a changed
+		// filter; the same directory + filter is never read twice in a row.
+		auto rescan = [this]() {
+			const QString dir = dirEdit ? dirEdit->text().trimmed() : QString();
+			if (dir.isEmpty()) return;
+			const QString key = dir + '\n' + (filterEdit ? filterEdit->text().trimmed() : QString());
+			if (key != lastScan) scan();
+		};
+		if (dirEdit) QObject::connect(dirEdit, &QLineEdit::editingFinished, d, rescan);
+		if (filterEdit) QObject::connect(filterEdit, &QLineEdit::editingFinished, d, rescan);
+		if (auto *b = d->findChild<QPushButton *>("push_add")) QObject::connect(b, &QPushButton::clicked, d, [this, d]() { addFiles(d); });
+		if (auto *b = d->findChild<QPushButton *>("push_remove")) QObject::connect(b, &QPushButton::clicked, d, [this]() {
+			if (list) qDeleteAll(list->selectedItems());
+		});
+		if (auto *b = d->findChild<QPushButton *>("push_all")) QObject::connect(b, &QPushButton::clicked, d, [this]() { selectAll(); });
+		if (auto *b = d->findChild<QPushButton *>("push_clear")) QObject::connect(b, &QPushButton::clicked, d, [this]() { if (list) list->clear(); });
+		if (auto *b = d->findChild<QPushButton *>("push_fit")) QObject::connect(b, &QPushButton::clicked, d, [this]() {
+			geoTouched = false;
+			fitRegion();
+		});
+
+		if (auto *b = d->findChild<QToolButton *>("btn_blendfile")) {
+			QObject::connect(b, &QToolButton::clicked, d, [this, d]() {
+				QString p = QFileDialog::getOpenFileName(d, "Blend file", prefStartDir(),
+					"Blend files (*.txt *.job *.lis *.dat);;All files (*)");
+				if (!p.isEmpty() && blendEdit) { blendEdit->setText(p); rememberStartDir(p); }
+			});
+			if (blendEdit) fileBoxDoubleClick(blendEdit, b);
+		}
+		if (auto *b = d->findChild<QToolButton *>("btn_outfile")) {
+			QObject::connect(b, &QToolButton::clicked, d, [this, d]() {
+				QString p = QFileDialog::getSaveFileName(d, "Save blended grid", prefStartDir(),
+					"Grids (*.grd *.nc);;All files (*)");
+				if (!p.isEmpty() && outEdit) { outEdit->setText(p); rememberStartDir(p); }
+			});
+			if (outEdit) fileBoxDoubleClick(outEdit, b);
+		}
+
+		for (QPushButton *b : d->findChildren<QPushButton *>()) { b->setAutoDefault(false); b->setDefault(false); }
+		if (auto *b = d->findChild<QPushButton *>("push_compute")) QObject::connect(b, &QPushButton::clicked, d, [this, d]() { runCompute(d); });
+		if (auto *b = d->findChild<QPushButton *>("push_close"))   QObject::connect(b, &QPushButton::clicked, d, [d]() { d->close(); });
+		// the green ? disk in its .ui placeholder (absolute geometry: no button row to insert into);
+		// then the tooltips are reflowed, as every dialog's last construction step
+		if (auto *holder = d->findChild<QWidget *>("manualHolder")) {
+			auto *row = new QHBoxLayout(holder);
+			row->setContentsMargins(0, 0, 0, 0);
+			addManualButton(d, row, QString("grdblend"));
+		}
+		wrapTooltips(d);
+		showRegion();
+
+		QObject::connect(d, &QObject::destroyed, d, [this]() { delete this; });
+	}
+
+	// The prefill caps (a RESAMPLE may not leave its input) do not apply here: a blend may well
+	// reach past its grids and leave the rest as no-data.
+	void clearCaps() {
+		if (!geo) return;
+		geo->xMinOr.clear(); geo->xMaxOr.clear(); geo->yMinOr.clear(); geo->yMaxOr.clear();
+	}
+
+	// Draw the region the boxes describe on the map (dashed).
+	void showRegion() {
+		if (!geo || !map) return;
+		bool a, b, c, e;
+		const double w = geo->xMin->text().toDouble(&a), x = geo->xMax->text().toDouble(&b);
+		const double s = geo->yMin->text().toDouble(&c), n = geo->yMax->text().toDouble(&e);
+		map->setRegion(a && b && c && e && x > w && n > s, w, x, s, n);
+	}
+
+	int footOf(const QString &path) const {
+		for (int i = 0; i < (int)feet.size(); ++i) if (feet[i].path == path) return i;
+		return -1;
+	}
+
+	// Julia reads the headers (grdinfo); one BlendFoot per path, `ok` false for a non-grid.
+	std::vector<std::pair<BlendFoot, bool>> readHeaders(const QStringList &paths) {
+		std::vector<std::pair<BlendFoot, bool>> out;
+		if (paths.isEmpty()) return out;
+		if (!g_juliaGrdBlendHeaders) {
+			QMessageBox::warning(dlg, "grdblend", "grdblend: callback not registered (rebuild/restart needed?).");
+			return out;
+		}
+		showBusyDialog(paths.size() > 1 ? "Reading the grid headers..." : "Reading the grid header...");
+		const char *r = g_juliaGrdBlendHeaders(paths.join('\n').toUtf8().constData());
+		const QStringList lines = QString::fromUtf8(r ? r : "").split('\n');
+		closeBusyDialog();
+		for (int k = 0; k < paths.size(); ++k) {
+			BlendFoot f;
+			// ONE spelling per file, or the same grid lands on the map and the list twice: absolute,
+			// cleaned, native separators, and (Windows) an upper-case drive letter.
+			f.path = QDir::toNativeSeparators(QDir::cleanPath(QFileInfo(paths[k]).absoluteFilePath()));
+			if (f.path.size() > 1 && f.path[1] == ':') f.path[0] = f.path[0].toUpper();
+			f.name = QFileInfo(paths[k]).fileName();
+			const QStringList v = (k < lines.size()) ? lines[k].split(' ', Qt::SkipEmptyParts) : QStringList();
+			bool ok = v.size() >= 10;
+			if (ok) {
+				f.w = v[0].toDouble(); f.e = v[1].toDouble(); f.s = v[2].toDouble(); f.n = v[3].toDouble();
+				f.dx = v[4].toDouble(); f.dy = v[5].toDouble();
+				f.nx = v[6].toInt(); f.ny = v[7].toInt(); f.reg = v[8].toInt(); f.geog = v[9].toInt();
+				ok = f.e > f.w && f.n > f.s;
+			}
+			out.emplace_back(f, ok);
+		}
+		return out;
+	}
+
+	// Scan the directory: its matching grids replace the map's boxes, except the ones on the list,
+	// which stay drawn (the list is never touched by a scan).
+	void scan() {
+		const QString dir = dirEdit ? dirEdit->text().trimmed() : QString();
+		lastScan = dir + '\n' + (filterEdit ? filterEdit->text().trimmed() : QString());
+		QDir qd(dir);
+		if (dir.isEmpty() || !qd.exists()) {
+			QMessageBox::warning(dlg, "grdblend", dir.isEmpty() ? QString("Pick a directory first.")
+			                                                   : QString("No such directory:\n%1").arg(dir));
+			return;
+		}
+		QStringList pats = (filterEdit ? filterEdit->text() : QString("*")).split(QRegularExpression("[;\\s]+"), Qt::SkipEmptyParts);
+		if (pats.isEmpty()) pats << "*";
+		QStringList paths;
+		for (const QFileInfo &fi : qd.entryInfoList(pats, QDir::Files | QDir::Readable, QDir::Name))
+			paths << fi.absoluteFilePath();
+		if (paths.isEmpty()) {
+			QMessageBox::information(dlg, "grdblend", QString("No file matching \"%1\" in\n%2").arg(pats.join(' '), dir));
+			return;
+		}
+		prefPushDir(qd.absolutePath());
+		const auto got = readHeaders(paths);
+		std::vector<BlendFoot> keep;
+		for (const auto &f : feet) if (listed.contains(f.path)) keep.push_back(f);
+		feet.swap(keep);
+		int bad = 0;
+		for (const auto &g : got) {
+			if (!g.second) { ++bad; continue; }
+			if (footOf(g.first.path) < 0) feet.push_back(g.first);
+		}
+		if (map) map->fit();
+		if (bad == (int)got.size())
+			QMessageBox::information(dlg, "grdblend", QString("None of the %1 files matching \"%2\" could be read as a grid.")
+			                                          .arg(got.size()).arg(pats.join(' ')));
+	}
+
+	// "Add...": grids by name. Readable ones are drawn on the map as well; all go on the list.
+	void addFiles(QDialog *d) {
+		const QStringList ps = QFileDialog::getOpenFileNames(d, "Add grids to blend", prefStartDir(),
+			"Grids (*.grd *.nc *.tif *.tiff);;All files (*)");
+		if (ps.isEmpty()) return;
+		rememberStartDir(ps.first());
+		for (const auto &g : readHeaders(ps)) {
+			if (g.second && footOf(g.first.path) < 0) feet.push_back(g.first);
+			addToList(g.first.path, g.first.name);
+		}
+		if (map) map->fit();
+	}
+
+	void addToList(const QString &path, const QString &name) {
+		if (!list || listed.contains(path)) return;
+		auto *it = new QListWidgetItem(name);
+		it->setData(Qt::UserRole, path);
+		it->setToolTip(path);
+		it->setSizeHint(QSize(0, QFontMetrics(list->font()).height()));   // tight, as tightenListRows
+		list->addItem(it);              // rowsInserted -> listChanged
+		listed.insert(path);            // now, not at the queued rebuild: the next pick reads it
+	}
+	void removeFromList(const QString &path) {
+		if (!list) return;
+		for (int r = list->count() - 1; r >= 0; --r)
+			if (list->item(r)->data(Qt::UserRole).toString() == path) delete list->takeItem(r);
+		listed.remove(path);
+	}
+	// The map's edit of the list: 0 toggle, 1 add, 2 remove.
+	void pick(const std::vector<int> &idx, int mode) {
+		for (int i : idx) {
+			if (i < 0 || i >= (int)feet.size()) continue;
+			const BlendFoot &f = feet[i];
+			const bool on = listed.contains(f.path);
+			if ((mode == 0 && on) || (mode == 2 && on)) removeFromList(f.path);
+			else if (!on && mode != 2) addToList(f.path, f.name);
+		}
+	}
+	void selectAll() {
+		for (const auto &f : feet) addToList(f.path, f.name);
+	}
+
+	// Any change of the list (picks, Add, Remove, Clear, a drag) lands here. The work is QUEUED on the
+	// map: the list's model also reports its rows going away while the dialog is being destroyed,
+	// when the map and the geometry boxes may already be gone — a queued call on a dead map is dropped.
+	void listChanged() {
+		if (listPending || !mapAlive) return;
+		listPending = true;
+		QTimer::singleShot(0, mapAlive.data(), [this]() {
+			listPending = false;
+			tightenListRows(list);          // one text line per row, every time the list changes
+			listed.clear();
+			if (list) for (int r = 0; r < list->count(); ++r) listed.insert(list->item(r)->data(Qt::UserRole).toString());
+			if (!geoTouched) fitRegion();
+			if (map) map->update();
+		});
+	}
+
+	// Region = union of the listed grids, spacing = the finest of theirs. Grids without a header
+	// (added by name, unreadable here) do not count.
+	void fitRegion() {
+		if (!geo) return;
+		double w = 1e300, e = -1e300, s = 1e300, n = -1e300, dx = 1e300, dy = 1e300;
+		int cnt = 0, geog = 0;
+		for (const auto &f : feet) {
+			if (!listed.contains(f.path)) continue;
+			w = std::min(w, f.w); e = std::max(e, f.e); s = std::min(s, f.s); n = std::max(n, f.n);
+			if (f.dx > 0) dx = std::min(dx, f.dx);
+			if (f.dy > 0) dy = std::min(dy, f.dy);
+			geog += f.geog;
+			++cnt;
+		}
+		if (!cnt || !(e > w) || !(n > s) || dx >= 1e300 || dy >= 1e300) { showRegion(); return; }
+		const int one = (pixelChk && pixelChk->isChecked()) ? 0 : 1;
+		const long nx = std::lround((e - w) / dx) + one, ny = std::lround((n - s) / dy) + one;
+		auto num = [](double v) { return QString::number(v, 'g', 12); };
+		geo->fillGeometry(QString("%1/%2/%3/%4/%5/%6/%7/%8").arg(num(w), num(e), num(s), num(n), num(dx), num(dy))
+		                  .arg(nx).arg(ny));
+		clearCaps();
+		if (geogChk && geog == cnt) geogChk->setChecked(true);
+		showRegion();
+	}
+
+	QStringList listPaths() const {
+		QStringList ps;
+		if (list) for (int r = 0; r < list->count(); ++r) ps << list->item(r)->data(Qt::UserRole).toString();
+		return ps;
+	}
+
+	void runCompute(QDialog *d) {
+		if (!g_juliaGrdBlend) {
+			QMessageBox::warning(d, "grdblend", "grdblend: callback not registered (rebuild/restart needed?).");
+			return;
+		}
+		const QString blend = blendEdit ? blendEdit->text().trimmed() : QString();
+		const QStringList ps = listPaths();
+		if (blend.isEmpty() && ps.size() < 2) {
+			QMessageBox::warning(d, "grdblend", "Put at least two grids on the list (or give a blend file).");
+			return;
+		}
+		QStringList kv;
+		kv << "files=" + ps.join('\t');
+		kv << "blendfile=" + blend;
+		if (geo) {
+			kv << "region=" + geo->region();
+			kv << "inc=" + geo->inc();
+		}
+		kv << QString("pixel=%1").arg(pixelChk && pixelChk->isChecked() ? 1 : 0);
+		kv << "mode=" + (modeCb ? modeCb->currentData().toString() : QString());
+		if (signCb && signCb->isEnabled()) kv << "sign=" + signCb->currentData().toString();
+		kv << "weights=" + (outCb ? outCb->currentData().toString() : QString());
+		const QString sc = scaleEdit ? scaleEdit->text().trimmed() : QString();
+		if (!sc.isEmpty() && sc != "1") kv << "scale=" + sc;
+		const QString nd = nodataEdit ? nodataEdit->text().trimmed() : QString();
+		if (!nd.isEmpty() && nd.compare("NaN", Qt::CaseInsensitive) != 0) kv << "nodata=" + nd;
+		if (interpCb && interpCb->currentIndex() > 0) kv << "interp=" + interpCb->currentData().toString();
+		kv << QString("geog=%1").arg(geogChk && geogChk->isChecked() ? 1 : 0);
+		kv << QString("verbose=%1").arg(verboseChk && verboseChk->isChecked() ? 1 : 0);
+		if (outEdit && !outEdit->text().trimmed().isEmpty()) kv << "outfile=" + outEdit->text().trimmed();
+		showBusyDialog("Blending the grids...");
+		const int ok = g_juliaGrdBlend(scn, kv.join("\n").toUtf8().constData());
+		closeBusyDialog();
+		if (!ok) QMessageBox::warning(d, "grdblend", "grdblend failed — see this window's Errors console for details.");
+	}
+};
+
+// GMT > grdblend: the window's OWN dialog — a parked one comes back with its settings intact.
+// 1 = on screen.
+static int openGrdBlendDialog(QWidget *win, Scene *s) {
+	auto it = g_blendDlgs.find(s);
+	if (it != g_blendDlgs.end() && it->second && it->second->dlg) { it->second->unpark(); return 1; }
+	auto *w = new GrdBlendDialog(win, s);
+	if (!w->dlg) { delete w; return 0; }
+	w->dlg->show();
+	return 1;
+}
+
 // Ends an armed vector pick (85_polygon.cpp — that is where the pick itself is served, so the
 // disarm lives with it; declared here because this fragment is #included first).
 static void vectorPickDisarm(Scene *s);
@@ -29927,6 +30740,29 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	});
 	// grdlandmask needs no grid at all (it builds a mask from a region), so it is offered always.
 	mGMT->addAction("grdlandmask", [win, s]() { openGrdLandmaskDialog(win, s); });
+	// grdblend MAKES a grid out of grids on disk, so it needs none loaded either. Its Julia side is
+	// wired on first use (warm_register "grdblend", src/grdblend.jl), never at start-up: the entry
+	// waits for it (wait cursor, ~10 s cap) and then opens.
+	mGMT->addAction("grdblend", [win, s]() {
+		if (grdblendWired()) { openGrdBlendDialog(win, s); return; }
+		warmupTool("grdblend");
+		QApplication::setOverrideCursor(Qt::WaitCursor);
+		auto tries = std::make_shared<int>(0);
+		auto step = std::make_shared<std::function<void()>>();
+		*step = [win, s, tries, step]() {
+			if (!grdblendWired() && ++*tries < 200) {
+				QTimer::singleShot(50, win, *step);
+				return;
+			}
+			QApplication::restoreOverrideCursor();
+			if (!sceneAlive(s)) return;
+			if (grdblendWired())
+				openGrdBlendDialog(win, s);
+			else
+				QMessageBox::warning(win, "grdblend", "grdblend's Julia side did not answer (src/grdblend.jl).");
+		};
+		QTimer::singleShot(0, win, *step);
+	});
 	// Interpolation needs no grid either — it MAKES one from an x,y,z table.
 	mGMT->addAction("Interpolate", [win, s]() {
 		auto *w = new InterpolationDialog(win, s);

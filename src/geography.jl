@@ -410,7 +410,11 @@ function _on_geography(scene::Ptr{Cvoid}, req::String)::Cvoid
 			# offers to turn a shoreline into a dot cloud, and the user has ruled it out. Every other geo
 			# add already passed this flag (earthregions.jl, gadm.jl); this one, the coast/borders/rivers
 			# add where it matters most, was the one that did not.
-			_add_geo_overlay(scene, D; color=coastrgb, name=src, noConvertToPoints = true)
+			added = _add_geo_overlay(scene, D; color=coastrgb, name=src, noConvertToPoints = true)
+			# A coastline remembers its resolution: its menu's Mask > Land/Ocean (coastmask.jl) runs
+			# grdlandmask on the same shoreline it shows.
+			(added && kind == "coast") &&
+				ccall(_fn(:gmtvtk_overlay_set_coastres_h), Cint, (Ptr{Cvoid}, Cstring, Cstring), scene, src, String(res))
 		end
 		# Reached only when a layer was actually added (empty branches return early above): remember the
 		# exact request so Save Session can reproduce this feature. :menu -> no data stored.

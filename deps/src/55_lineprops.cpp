@@ -1692,6 +1692,57 @@ static void popupLineObjectMenu(Scene *s, const LineRef &lr, const QString &name
 				});
 			});
 		}
+		// A GSHHG coastline (Overlay::coastRes set): Mirone's "Mask > Land / Ocean" — grdlandmask, at the
+		// coastline's own resolution, applied to the raster this window shows (the active grid, else the
+		// topmost visible image). The result is a new derived element (coastmask.jl).
+		if (ovp && !ovp->coastRes.empty()) {
+			const std::string res = ovp->coastRes;
+			auto runMask = [s, res](bool land) {
+				std::string kind, target;
+				const ActiveGrid ag = resolveActiveGrid(s);
+				if (ag.valid && ag.z) { kind = "grid"; target = ag.name; }
+				else {
+					int best = 0; bool have = false;
+					vtkProp3D *sp = surfProp(s);
+					if (s->imageOnly && sp && sp->GetVisibility()) {
+						kind = "image"; target = s->surfName; best = s->surfStack; have = true;
+					}
+					for (auto &ex : s->extras) {
+						if (!ex.isImage || !ex.actor || !ex.actor->GetVisibility()) continue;
+						if (!have || ex.gstack >= best) { kind = "image"; target = ex.name; best = ex.gstack; have = true; }
+					}
+				}
+				if (kind.empty()) {
+					if (s->win) s->win->statusBar()->showMessage("Mask: no grid or image on display to mask.", 4000);
+					return;
+				}
+				if (!g_juliaEval) {
+					QMessageBox::warning(s->win, "Mask", "Needs the Julia/GMT host.");
+					return;
+				}
+				std::string esc;                          // the name as a Julia string literal
+				for (char c : target) {
+					if (c == '\\' || c == '"' || c == '$') esc += '\\';
+					esc += c;
+				}
+				const QString cmd = QString("InteractiveGMT._on_coast_mask(Ptr{Cvoid}(UInt(%1)),\"%2\",%3,\"%4\",\"%5\")")
+				                        .arg((qulonglong)reinterpret_cast<uintptr_t>(s))
+				                        .arg(QString::fromStdString(res))
+				                        .arg(land ? "true" : "false")
+				                        .arg(QString::fromStdString(kind))
+				                        .arg(QString::fromStdString(esc));
+				QTimer::singleShot(0, s->win, [s, cmd, land]() {
+					showBusyDialog(land ? "Masking land..." : "Masking ocean...");
+					std::vector<char> buf(1 << 12);
+					int n2 = g_juliaEval(s, cmd.toStdString().c_str(), buf.data(), (int)buf.size());
+					closeBusyDialog();
+					if (n2 < 0) sceneLogError(s, QString::fromUtf8(buf.data(), -n2));
+				});
+			};
+			QMenu *mk = m.addMenu("Mask");
+			mk->addAction("Land",  [runMask]() { runMask(true); });
+			mk->addAction("Ocean", [runMask]() { runMask(false); });
+		}
 		m.addAction(QString("Delete %1").arg(name),       // hide = the Scene Objects checkbox; this DELETES
 					[s, a]() { overlayDelete(s, a); });
 	}

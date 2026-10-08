@@ -20,7 +20,8 @@
 	          :_on_gmtflexure, :_register_gmtflexure, :_on_grdflexure, :_register_grdflexure,
 	          :_on_grdvolume, :_register_grdvolume, :_on_gravprisms, :_register_gravprisms,
 	          :_on_grdvector, :_register_grdvector,
-	          :_on_earthregions, :_register_earthregions)
+	          :_on_earthregions, :_register_earthregions,
+          :_on_grdblend, :_on_grdblend_headers, :_register_grdblend)
 		@test isdefined(IG, s)
 	end
 	# Every registration must have its export in the DLL symbol list, or the feature silently stays
@@ -35,7 +36,8 @@
 	            :gmtvtk_set_greenspline_callback, :gmtvtk_set_gmtflexure_callback,
 	            :gmtvtk_set_grdflexure_callback, :gmtvtk_set_grdvolume_callback,
 	            :gmtvtk_set_gravprisms_callback, :gmtvtk_set_grdvector_callback,
-	            :gmtvtk_set_earthregions_callback, :gmtvtk_earthregions_set_listing)
+	            :gmtvtk_set_earthregions_callback, :gmtvtk_earthregions_set_listing,
+	            :gmtvtk_set_grdblend_callbacks)
 		@test sym in IG._LIB_SYMBOLS
 	end
 end

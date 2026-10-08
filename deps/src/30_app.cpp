@@ -978,6 +978,23 @@ static JuliaDgtFn g_juliaDgt = nullptr;
 typedef int (*JuliaGrdLandmaskFn)(void *scene, const char *params);
 static JuliaGrdLandmaskFn g_juliaGrdLandmask = nullptr;
 
+// grdblend (GMT menu). GrdBlendDialog (70_window.cpp, loads deps/ui/grdblend_dialog.ui) asks Julia
+// (src/grdblend.jl) two things:
+//   headers(paths): `paths` newline-separated; returns one line per path, in order,
+//                   "w e s n dx dy nx ny reg geog" (blank-separated), or an EMPTY line for a path
+//                   that is not a readable grid. Julia owns the buffer until the next call.
+//   run(scene, params): the newline-separated "key=value" block: files (TAB-separated paths, in
+//                   the list's order), blendfile, region, inc, pixel, mode (f|l|o|u, empty = blend),
+//                   sign (n|p, empty = all), weights (empty | w | z), scale, nodata, interp, geog,
+//                   verbose, outfile. The result is added to `scene` as a NEW derived grid.
+//                   Returns 1 on success, 0 on failure.
+// Registered lazily (warm_register "grdblend"); grdblendWired() says whether both are set.
+typedef const char *(*JuliaGrdBlendHeadersFn)(const char *paths);
+typedef int (*JuliaGrdBlendFn)(void *scene, const char *params);
+static JuliaGrdBlendHeadersFn g_juliaGrdBlendHeaders = nullptr;
+static JuliaGrdBlendFn g_juliaGrdBlend = nullptr;
+static bool grdblendWired() { return g_juliaGrdBlendHeaders && g_juliaGrdBlend; }
+
 // grdfilter (GMT menu), dialog laid out after Mirone's Grdfilter window. GrdFilterDialog
 // (70_window.cpp, loads deps/ui/grdfilter_dialog.ui) hands a newline-separated "key=value" block to
 // Julia (_on_grdfilter, src/grdfilter.jl): filter (the whole -F string, code + width + modifiers),

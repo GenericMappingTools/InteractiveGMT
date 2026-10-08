@@ -136,6 +136,132 @@ end
 	@test ccall(_test_fn(:gmtvtk_scene_borrowed_test), Cint, (Ptr{Cvoid},), f.h) == 0
 end
 
+@testitem "grdblend blends a list of grids and a blend file" tags=[:gui] setup=[GmtModules] begin
+	IG = InteractiveGMT
+	d = mktempdir()
+	a = joinpath(d, "a.grd");  b = joinpath(d, "b.grd")
+	IG.GMT.gmtwrite(a, IG.GMT.grdmath("-R0/5/0/5 -I0.5 X Y ADD"))
+	IG.GMT.gmtwrite(b, IG.GMT.grdmath("-R4/9/1/6 -I0.5 X Y MUL"))
+	f = view_grid(GmtModules.grid())
+	call(kv) = GmtModules.send(IG._on_grdblend, f.h, kv)
+	try
+		# the map's header read: one line per path, empty for a non-grid
+		@test IG._grdblend_headers([a, b, joinpath(d, "nope.grd")])[1:2] ==
+		      ["0.0 5.0 0.0 5.0 0.5 0.5 11 11 0 0", "4.0 9.0 1.0 6.0 0.5 0.5 11 11 0 0"]
+		@test IG._grdblend_headers([joinpath(d, "nope.grd")]) == [""]
+		@test call(["files=$a\t$b", "region=0/9/0/6", "inc=0.5", "pixel=0", "mode=", "weights=",
+		            "geog=0", "verbose=0"]) == 1
+		B = GmtModules.grid_named(f.h, "Blended grid")
+		@test B !== nothing && IG.GMT.getsize(B) == (19, 13)
+		@test count(isnan, B.z) > 0 && count(!isnan, B.z) > 0       # (0..4, 5..6) is nobody's
+		# clobber "uppermost", no-data filled, and the weights output under its own name
+		@test call(["files=$a\t$b", "region=0/9/0/6", "inc=0.5", "mode=u", "sign=p", "nodata=-1",
+		            "weights="]) == 1
+		@test count(isnan, GmtModules.grid_named(f.h, "Blended grid").z) == 0
+		@test call(["files=$a\t$b", "region=0/9/0/6", "inc=0.5", "mode=", "weights=w"]) == 1
+		@test GmtModules.grid_named(f.h, "Blend weights") !== nothing
+		# a blend file in place of the list
+		job = joinpath(d, "blend.job")
+		write(job, "$a - 1\n$b - 2\n")
+		@test call(["files=", "blendfile=$job", "region=0/9/0/6", "inc=0.5"]) == 1
+		# the inputs' referencing system survives (GMT's grdblend drops it), and two systems are refused
+		utm = "+proj=utm +zone=29 +datum=WGS84 +units=m +no_defs"
+		ra = joinpath(d, "ra.grd");  rb = joinpath(d, "rb.grd");  rc = joinpath(d, "rc.grd")
+		for (p, w, e, srs) in ((ra, 0, 5, utm), (rb, 4, 9, utm), (rc, 4, 9, "+proj=utm +zone=30 +datum=WGS84 +units=m +no_defs"))
+			G = IG.GMT.grdmath("-R$w/$e/0/5 -I0.5 X Y ADD");  G.proj4 = srs
+			IG.GMT.gmtwrite(p, G)
+		end
+		@test call(["files=$ra\t$rb", "region=0/9/0/5", "inc=0.5"]) == 1
+		@test occursin("zone=29", GmtModules.grid_named(f.h, "Blended grid").proj4)
+		refused(kv) = IG._errored(call(kv), "grdblend") == 0
+		@test refused(["files=$ra\t$rc", "region=0/9/0/5", "inc=0.5"])
+		# no referencing next to lon/lat: taken along when its limits look like lon/lat, else refused;
+		# next to projected grids it is always refused (nothing tells its system)
+		geo = "+proj=longlat +datum=WGS84 +no_defs"
+		ga = joinpath(d, "ga.grd");  gb = joinpath(d, "gb.grd");  gx = joinpath(d, "gx.grd")
+		G = IG.GMT.grdmath("-R0/5/0/5 -I0.5 X Y ADD");  G.proj4 = geo;  IG.GMT.gmtwrite(ga, G)
+		IG.GMT.gmtwrite(gb, IG.GMT.grdmath("-R4/9/0/5 -I0.5 X Y MUL"))            # bare, lon/lat-ish
+		IG.GMT.gmtwrite(gx, IG.GMT.grdmath("-R400/900/0/500 -I50 X Y MUL"))       # bare, not lon/lat
+		@test call(["files=$ga\t$gb", "region=0/9/0/5", "inc=0.5"]) == 1
+		@test occursin("longlat", GmtModules.grid_named(f.h, "Blended grid").proj4)
+		@test refused(["files=$ga\t$gx", "region=0/900/0/500", "inc=50"])
+		@test refused(["files=$ra\t$gb", "region=0/9/0/5", "inc=0.5"])
+		# two GeoTIFF tiles (pixel registered): GMT's own reformat/resample of such inputs garbles the
+		# blend on Windows, so they go over in memory — every node of both tiles lands, values intact
+		t1 = joinpath(d, "t1.tif");  t2 = joinpath(d, "t2.tif")
+		G1 = IG.GMT.grdmath("-R0/10/0/10 -I1 -r X Y ADD");  G1.proj4 = utm;  IG.GMT.gmtwrite(t1, G1)
+		G2 = IG.GMT.grdmath("-R0/10/10/20 -I1 -r X Y MUL"); G2.proj4 = utm;  IG.GMT.gmtwrite(t2, G2)
+		@test call(["files=$t1\t$t2", "region=0/10/0/20", "inc=1", "pixel=1"]) == 1
+		T = GmtModules.grid_named(f.h, "Blended grid")
+		@test count(!isnan, T.z) == 200 && occursin("zone=29", T.proj4)
+		@test IG.GMT.grdtrack(T, [2.5 3.5; 7.5 15.5]).data[:, 3] ≈ [2.5 + 3.5, 7.5 * 15.5]
+		@test call(["files=$t1\t$t2", "region=0/10/0/20", "inc=1", "pixel=0"]) == 1   # gridline out
+		T = GmtModules.grid_named(f.h, "Blended grid")
+		@test T.registration == 0 && count(!isnan, T.z) >= 200
+		@test IG.GMT.grdtrack(T, [3.0 4.0; 7.0 15.0]).data[:, 3] ≈ [3.0 + 4.0, 7.0 * 15.0] atol = 1e-3
+		# refusals, each claimed: one grid only, a missing grid, no region
+		@test refused(["files=$a", "region=0/9/0/6", "inc=0.5"])
+		@test refused(["files=$a\t$(joinpath(d, "nope.grd"))", "region=0/9/0/6", "inc=0.5"])
+		@test refused(["files=$a\t$b", "region=///", "inc=0.5"])
+	finally
+		ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), f.h)
+		rm(d; recursive = true, force = true)
+	end
+end
+
+@testitem "grdblend dialog: map picks fill the list, park, Delete" tags=[:gui] setup=[GmtModules, GmtvtkTest] begin
+	IG = InteractiveGMT
+	_test_fn = GmtvtkTest._test_fn
+	GmtvtkTest._register_grdblend_test()
+	d = mktempdir()
+	a = joinpath(d, "a.grd");  b = joinpath(d, "b.grd")
+	IG.GMT.gmtwrite(a, IG.GMT.grdmath("-R0/5/0/5 -I0.5 X Y ADD"))
+	IG.GMT.gmtwrite(b, IG.GMT.grdmath("-R4/9/1/6 -I0.25 X Y MUL"))
+	f = view_grid(GmtModules.grid())
+	parked() = ccall(_test_fn(:gmtvtk_grdblend_parked_test), Cint, (Ptr{Cvoid},), f.h)
+	opened() = ccall(_test_fn(:gmtvtk_grdblend_open_dialog_test), Cint, (Ptr{Cvoid},), f.h)
+	leave(how) = ccall(_test_fn(:gmtvtk_grdblend_leave_dialog_test), Cvoid, (Ptr{Cvoid}, Cint), f.h, how)
+	pick(i, mode) = ccall(_test_fn(:gmtvtk_grdblend_pick_test), Cint, (Ptr{Cvoid}, Cint, Cint), f.h, i, mode)
+	region() = unsafe_string(ccall(_test_fn(:gmtvtk_grdblend_region_test), Cstring, (Ptr{Cvoid},), f.h))
+	rows() = unsafe_string(ccall(_test_fn(:gmtvtk_objrows_test), Cstring, (Ptr{Cvoid},), f.h))
+	try
+		@test opened() == 1 && parked() == 0
+		# entering the directory scans it: no button to press
+		@test ccall(_test_fn(:gmtvtk_grdblend_scan_test), Cint, (Ptr{Cvoid}, Cstring), f.h, d) == 2
+		@test ccall(_test_fn(:gmtvtk_grdblend_feed_test), Cint, (Ptr{Cvoid}, Cstring), f.h,
+		            "$a\n$b\n$(joinpath(d, "nope.grd"))") == 2          # the non-grid gets no box
+		@test pick(-1, 1) == 2                                         # a band over both
+		@test region() == "0/9/0/6|0.25"                               # union, finest spacing
+		@test pick(0, 0) == 1                                          # a click takes one off...
+		@test pick(0, 0) == 2                                          # ...and puts it back
+		@test pick(0, 1) == 2                                          # adding twice lists it once
+		@test pick(-1, 2) == 0                                         # Ctrl+band takes all off
+		# arrow keys pan the map: the view moves toward the arrow, Shift by more
+		key(k, sh) = (xy = zeros(2); ccall(_test_fn(:gmtvtk_grdblend_key_test), Cint,
+		              (Ptr{Cvoid}, Cint, Cint, Ptr{Cdouble}), f.h, k, sh, xy); xy)
+		c0 = key(-1, 0)
+		c1 = key(1, 0);  @test c1[1] > c0[1] && c1[2] == c0[2]          # Right: east
+		c2 = key(2, 0);  @test c2[2] > c1[2] && c2[1] == c1[1]          # Up: north
+		c3 = key(0, 1);  @test c1[1] - c0[1] < c2[1] - c3[1]            # Shift+Left: a bigger step west
+		c4 = key(3, 0);  @test c4[2] < c3[2]                            # Down: south
+		for how in (0, 1, 2)                                           # the X, minimise, Esc
+			leave(how)
+			@test parked() == 1
+			@test occursin("grdblend", rows())
+			@test opened() == 1 && parked() == 0
+		end
+		leave(0)
+		@test ccall(_test_fn(:gmtvtk_grdblend_delete_dialog_test), Cint, (Ptr{Cvoid},), f.h) == 1
+		@test parked() == -1
+		@test !occursin("grdblend", rows())
+	finally
+		ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), f.h)
+		rm(d; recursive = true, force = true)
+	end
+	for _ in 1:10; IG._pump_once(); sleep(0.02); end
+	@test ccall(_test_fn(:gmtvtk_scene_borrowed_test), Cint, (Ptr{Cvoid},), f.h) == 0
+end
+
 @testitem "grdfilter: every filter family the dialog can build" tags=[:gui] setup=[GmtModules] begin
 	IG = InteractiveGMT
 	f = view_grid(GmtModules.grid())

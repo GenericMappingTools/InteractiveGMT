@@ -4717,6 +4717,13 @@ GMTVTK_API void gmtvtk_set_grdlandmask_callback(JuliaGrdLandmaskFn fn) {
 	g_juliaGrdLandmask = fn;
 }
 
+// Register grdblend's two callbacks (GMT menu; contract in 30_app.cpp): `headers` reads the grid
+// headers the footprint map draws, `run` does the Compute. nullptr detaches.
+GMTVTK_API void gmtvtk_set_grdblend_callbacks(JuliaGrdBlendHeadersFn headers, JuliaGrdBlendFn run) {
+	g_juliaGrdBlendHeaders = headers;
+	g_juliaGrdBlend = run;
+}
+
 // Register the grdfilter Compute callback (GMT menu). fn(scene, params) with the "key=value" block
 // described in 30_app.cpp filters the window's grid and adds the result to `scene`. Returns 1/0.
 // nullptr to detach.
@@ -6619,6 +6626,19 @@ GMTVTK_API void gmtvtk_set_cube_warp(int n, const double *fwd, const double *inv
 // the clamp here. It never drapes the points itself; there is ONE clamp implementation and this is
 // the door to it. `name` matches an overlay's name or a group tag; returns the number of elements
 // switched (0 = nothing matched, or no grid to clamp to).
+// Mark the overlay named `name` (the most recently added one, when several share it) as a GSHHG
+// coastline plotted at resolution `res` — its line menu then offers "Mask > Land/Ocean".
+GMTVTK_API int gmtvtk_overlay_set_coastres_h(void *scene, const char *name, const char *res) {
+	Scene *s = (Scene*)scene;
+	if (!s || !sceneAlive(s) || !name || !name[0] || !res) return 0;
+	for (auto it = s->overlays.rbegin(); it != s->overlays.rend(); ++it) {
+		if (it->name != name) continue;
+		it->coastRes = res;
+		return 1;
+	}
+	return 0;
+}
+
 GMTVTK_API int gmtvtk_line_clamp_h(void *scene, const char *name, int on) {
 	Scene *s = (Scene*)scene;
 	if (!s || !sceneAlive(s) || !name || !name[0]) return 0;
@@ -8918,6 +8938,106 @@ GMTVTK_API int gmtvtk_landmask_delete_dialog_test(void *handle) {
 	if (!g) return 0;
 	testDeleteParkedDialog(&g);
 	return landmaskTestDlg(handle) == nullptr ? 1 : 0;
+}
+
+// grdblend (GMT menu): the same park contract (`how`: 0 = the X, 1 = minimise, 2 = Esc), plus the
+// footprint map's edit of the list, driven through the dialog's own pick().
+static GrdBlendDialog *blendTestDlg(void *handle) {
+	auto it = g_blendDlgs.find(static_cast<Scene *>(handle));
+	return (it == g_blendDlgs.end()) ? nullptr : it->second;
+}
+GMTVTK_API int gmtvtk_grdblend_open_dialog_test(void *handle) {
+	ensureApp();
+	Scene *s = static_cast<Scene *>(handle);
+	if (!s || !s->win) return 0;
+	testBorrowScene(s);
+	const int ok = openGrdBlendDialog(s->win, s);
+	QApplication::processEvents();
+	return ok;
+}
+GMTVTK_API void gmtvtk_grdblend_leave_dialog_test(void *handle, int how) {
+	GrdBlendDialog *g = blendTestDlg(handle);
+	if (!g || !g->dlg) return;
+	if (how == 1)      g->dlg->setWindowState(g->dlg->windowState() | Qt::WindowMinimized);
+	else if (how == 2) g->dlg->reject();
+	else               g->dlg->close();
+	QApplication::processEvents();
+}
+// 1 = parked (hidden + a Scene Objects row), 0 = on screen, -1 = no dialog.
+GMTVTK_API int gmtvtk_grdblend_parked_test(void *handle) {
+	Scene *s = static_cast<Scene *>(handle);
+	GrdBlendDialog *g = blendTestDlg(handle);
+	if (!g || !g->dlg) return -1;
+	const bool hidden = !g->dlg->isVisible();
+	bool row = false;
+	if (s) for (auto &pt : s->parkedTools) if (pt.win == g->dlg) row = true;
+	return (hidden && row) ? 1 : 0;
+}
+GMTVTK_API int gmtvtk_grdblend_delete_dialog_test(void *handle) {
+	GrdBlendDialog *g = blendTestDlg(handle);
+	if (!g) return 0;
+	testDeleteParkedDialog(&g);
+	return blendTestDlg(handle) == nullptr ? 1 : 0;
+}
+// Put `paths` (newline-separated) on the map through the dialog's own header read (the Julia
+// callback, as Scan and Add... do). Returns how many boxes the map holds.
+GMTVTK_API int gmtvtk_grdblend_feed_test(void *handle, const char *paths) {
+	GrdBlendDialog *g = blendTestDlg(handle);
+	if (!g || !paths) return -1;
+	for (const auto &h : g->readHeaders(QString::fromUtf8(paths).split('\n', Qt::SkipEmptyParts)))
+		if (h.second && g->footOf(h.first.path) < 0) g->feet.push_back(h.first);
+	if (g->map) g->map->fit();
+	return (int)g->feet.size();
+}
+// A map pick on box `i` (`mode` 0 toggle, 1 add, 2 remove; i = -1: every box). Returns the list size.
+GMTVTK_API int gmtvtk_grdblend_pick_test(void *handle, int i, int mode) {
+	GrdBlendDialog *g = blendTestDlg(handle);
+	if (!g) return -1;
+	std::vector<int> idx;
+	if (i >= 0) idx.push_back(i);
+	else for (int k = 0; k < (int)g->feet.size(); ++k) idx.push_back(k);
+	g->pick(idx, mode);
+	QApplication::processEvents();
+	return g->list ? g->list->count() : -1;
+}
+// Type `dir` into the Directory box and enter it (editingFinished, as Enter or a focus-out does).
+// Returns how many boxes the map holds.
+GMTVTK_API int gmtvtk_grdblend_scan_test(void *handle, const char *dir) {
+	GrdBlendDialog *g = blendTestDlg(handle);
+	if (!g || !g->dirEdit) return -1;
+	g->dirEdit->setText(QString::fromUtf8(dir ? dir : ""));
+	emit g->dirEdit->editingFinished();
+	QApplication::processEvents();
+	return (int)g->feet.size();
+}
+// The dialog as the user sees it, saved to `path` (PNG). 1 = written.
+GMTVTK_API int gmtvtk_grdblend_grab_test(void *handle, const char *path) {
+	GrdBlendDialog *g = blendTestDlg(handle);
+	if (!g || !g->dlg || !path) return 0;
+	QApplication::processEvents();
+	return g->dlg->grab().save(QString::fromUtf8(path)) ? 1 : 0;
+}
+// Press arrow key `key` (0 left, 1 right, 2 up, 3 down; `shift` 1 = with Shift) on the footprint
+// map; `xy` gets the view centre (data coords) after it. 1 = done.
+GMTVTK_API int gmtvtk_grdblend_key_test(void *handle, int key, int shift, double *xy) {
+	GrdBlendDialog *g = blendTestDlg(handle);
+	if (!g || !g->map || !xy) return 0;
+	static const int keys[4] = { Qt::Key_Left, Qt::Key_Right, Qt::Key_Up, Qt::Key_Down };
+	if (key >= 0 && key < 4) {
+		QKeyEvent ev(QEvent::KeyPress, keys[key], shift ? Qt::ShiftModifier : Qt::NoModifier);
+		QApplication::sendEvent(g->map, &ev);
+	}
+	const QPointF c = g->map->viewCentre();
+	xy[0] = c.x();
+	xy[1] = c.y();
+	return 1;
+}
+// The geometry boxes as "W/E/S/N|inc" (what Compute would send).
+GMTVTK_API const char *gmtvtk_grdblend_region_test(void *handle) {
+	static std::string buf;
+	GrdBlendDialog *g = blendTestDlg(handle);
+	buf = (g && g->geo) ? (g->geo->region() + "|" + g->geo->inc()).toStdString() : std::string();
+	return buf.c_str();
 }
 
 // The X: PARKS it (kept alive), same contract as the Euler dialog's.

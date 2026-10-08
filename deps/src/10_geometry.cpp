@@ -327,6 +327,9 @@ struct Overlay {
 	std::string mbFile;                      // the swath file of a track no mbgrdviz knows (a swath cloud's
 	int mbFormat = 0;                        // navigation, gmtvtk_mb_cloud_nav_h) and its MBIO format: the
 	                                          // "MB-System" submenu opens the editors on it. "" = mbgrdviz's
+	std::string coastRes;                    // a GSHHG COASTLINE's resolution letter (l/i/h/f/c/a), set by
+	                                          // gmtvtk_overlay_set_coastres_h. Non-empty = the line menu offers
+	                                          // "Mask > Land/Ocean" (grdlandmask at this same resolution).
 	bool noConvertToPoints = false;         // suppresses ONLY "Convert to points"/"Convert to line" in the
 	                                          // context menu, unlike isShapencBoundary which also drops
 	                                          // "Line length…"/"Azimuth…" -- for lines where scattering to

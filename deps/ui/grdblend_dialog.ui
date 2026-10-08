@@ -1,0 +1,797 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>GrdBlendDialog</class>
+ <widget class="QDialog" name="GrdBlendDialog">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>600</width>
+    <height>696</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>grdblend</string>
+  </property>
+  <widget class="QGroupBox" name="geoGroup">
+   <property name="geometry">
+    <rect>
+     <x>11</x>
+     <y>8</y>
+     <width>448</width>
+     <height>94</height>
+    </rect>
+   </property>
+   <property name="title">
+    <string>Griding Line Geometry</string>
+   </property>
+   <widget class="QLabel" name="minLab">
+    <property name="geometry">
+     <rect>
+      <x>82</x>
+      <y>18</y>
+      <width>80</width>
+      <height>18</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Min</string>
+    </property>
+    <property name="alignment">
+     <set>Qt::AlignmentFlag::AlignCenter</set>
+    </property>
+   </widget>
+   <widget class="QLabel" name="maxLab">
+    <property name="geometry">
+     <rect>
+      <x>166</x>
+      <y>18</y>
+      <width>80</width>
+      <height>18</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Max</string>
+    </property>
+    <property name="alignment">
+     <set>Qt::AlignmentFlag::AlignCenter</set>
+    </property>
+   </widget>
+   <widget class="QLabel" name="spacingLab">
+    <property name="geometry">
+     <rect>
+      <x>250</x>
+      <y>18</y>
+      <width>80</width>
+      <height>18</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Spacing</string>
+    </property>
+    <property name="alignment">
+     <set>Qt::AlignmentFlag::AlignCenter</set>
+    </property>
+   </widget>
+   <widget class="QLabel" name="nLinesLab">
+    <property name="geometry">
+     <rect>
+      <x>334</x>
+      <y>18</y>
+      <width>60</width>
+      <height>18</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string># of lines</string>
+    </property>
+    <property name="alignment">
+     <set>Qt::AlignmentFlag::AlignCenter</set>
+    </property>
+   </widget>
+   <widget class="QLabel" name="xDirLab">
+    <property name="geometry">
+     <rect>
+      <x>8</x>
+      <y>38</y>
+      <width>72</width>
+      <height>22</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>X Direction</string>
+    </property>
+   </widget>
+   <widget class="QLineEdit" name="xMin">
+    <property name="geometry">
+     <rect>
+      <x>82</x>
+      <y>38</y>
+      <width>80</width>
+      <height>22</height>
+     </rect>
+    </property>
+   </widget>
+   <widget class="QLineEdit" name="xMax">
+    <property name="geometry">
+     <rect>
+      <x>166</x>
+      <y>38</y>
+      <width>80</width>
+      <height>22</height>
+     </rect>
+    </property>
+   </widget>
+   <widget class="QLineEdit" name="xInc">
+    <property name="geometry">
+     <rect>
+      <x>250</x>
+      <y>38</y>
+      <width>80</width>
+      <height>22</height>
+     </rect>
+    </property>
+   </widget>
+   <widget class="QLineEdit" name="xN">
+    <property name="geometry">
+     <rect>
+      <x>334</x>
+      <y>38</y>
+      <width>60</width>
+      <height>22</height>
+     </rect>
+    </property>
+   </widget>
+   <widget class="QLabel" name="yDirLab">
+    <property name="geometry">
+     <rect>
+      <x>8</x>
+      <y>64</y>
+      <width>72</width>
+      <height>22</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Y Direction</string>
+    </property>
+   </widget>
+   <widget class="QLineEdit" name="yMin">
+    <property name="geometry">
+     <rect>
+      <x>82</x>
+      <y>64</y>
+      <width>80</width>
+      <height>22</height>
+     </rect>
+    </property>
+   </widget>
+   <widget class="QLineEdit" name="yMax">
+    <property name="geometry">
+     <rect>
+      <x>166</x>
+      <y>64</y>
+      <width>80</width>
+      <height>22</height>
+     </rect>
+    </property>
+   </widget>
+   <widget class="QLineEdit" name="yInc">
+    <property name="geometry">
+     <rect>
+      <x>250</x>
+      <y>64</y>
+      <width>80</width>
+      <height>22</height>
+     </rect>
+    </property>
+   </widget>
+   <widget class="QLineEdit" name="yN">
+    <property name="geometry">
+     <rect>
+      <x>334</x>
+      <y>64</y>
+      <width>60</width>
+      <height>22</height>
+     </rect>
+    </property>
+   </widget>
+   <widget class="QToolButton" name="helpBtn">
+    <property name="geometry">
+     <rect>
+      <x>404</x>
+      <y>38</y>
+      <width>32</width>
+      <height>48</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>Edit any two of Min/Max/Spacing/# and the rest are derived.</string>
+    </property>
+    <property name="text">
+     <string>?</string>
+    </property>
+   </widget>
+  </widget>
+  <widget class="QCheckBox" name="chk_pixel">
+   <property name="geometry">
+    <rect>
+     <x>470</x>
+     <y>26</y>
+     <width>119</width>
+     <height>22</height>
+    </rect>
+   </property>
+   <property name="toolTip">
+    <string>Pixel registration for the output grid (-r). Input grids with another registration are resampled first.</string>
+   </property>
+   <property name="text">
+    <string>Pixel registration</string>
+   </property>
+  </widget>
+  <widget class="QCheckBox" name="chk_geog">
+   <property name="geometry">
+    <rect>
+     <x>470</x>
+     <y>50</y>
+     <width>119</width>
+     <height>22</height>
+    </rect>
+   </property>
+   <property name="toolTip">
+    <string>The grids' x,y are longitude/latitude (-fg). Ticked by itself when the selected grids say so.</string>
+   </property>
+   <property name="text">
+    <string>Geographic</string>
+   </property>
+  </widget>
+  <widget class="QCheckBox" name="chk_verbose">
+   <property name="geometry">
+    <rect>
+     <x>470</x>
+     <y>74</y>
+     <width>119</width>
+     <height>22</height>
+    </rect>
+   </property>
+   <property name="toolTip">
+    <string>Let GMT report its progress (-V)</string>
+   </property>
+   <property name="text">
+    <string>Verbose</string>
+   </property>
+  </widget>
+  <widget class="QLabel" name="refLab">
+   <property name="geometry">
+    <rect>
+     <x>11</x>
+     <y>108</y>
+     <width>72</width>
+     <height>22</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>OR Ref grid</string>
+   </property>
+  </widget>
+  <widget class="QLineEdit" name="refEdit">
+   <property name="geometry">
+    <rect>
+     <x>85</x>
+     <y>108</y>
+     <width>476</width>
+     <height>22</height>
+    </rect>
+   </property>
+   <property name="toolTip">
+    <string>Pick a grid/image; its region, spacing and size fill the boxes above.</string>
+   </property>
+  </widget>
+  <widget class="QToolButton" name="refBtn">
+   <property name="geometry">
+    <rect>
+     <x>565</x>
+     <y>108</y>
+     <width>24</width>
+     <height>22</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>...</string>
+   </property>
+  </widget>
+  <widget class="QGroupBox" name="gb_mode">
+   <property name="geometry">
+    <rect>
+     <x>11</x>
+     <y>138</y>
+     <width>578</width>
+     <height>80</height>
+    </rect>
+   </property>
+   <property name="title">
+    <string>Overlap</string>
+   </property>
+   <widget class="QLabel" name="lb_mode">
+    <property name="geometry">
+     <rect>
+      <x>10</x>
+      <y>22</y>
+      <width>70</width>
+      <height>22</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Mode</string>
+    </property>
+   </widget>
+   <widget class="QComboBox" name="cb_mode">
+    <property name="geometry">
+     <rect>
+      <x>82</x>
+      <y>22</y>
+      <width>200</width>
+      <height>22</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>Blend the overlaps with cosine-taper weights, or (-C, clobber) just pick the value of one of the grids covering a node. Weights and tapering are ignored in clobber mode.</string>
+    </property>
+   </widget>
+   <widget class="QLabel" name="lb_sign">
+    <property name="geometry">
+     <rect>
+      <x>296</x>
+      <y>22</y>
+      <width>70</width>
+      <height>22</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Consider</string>
+    </property>
+   </widget>
+   <widget class="QComboBox" name="cb_sign">
+    <property name="geometry">
+     <rect>
+      <x>370</x>
+      <y>22</y>
+      <width>196</width>
+      <height>22</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>Clobber modifier: the output starts as the first grid, and later grids are considered only where their values are negative (+n) or positive (+p).</string>
+    </property>
+   </widget>
+   <widget class="QLabel" name="lb_output">
+    <property name="geometry">
+     <rect>
+      <x>10</x>
+      <y>50</y>
+      <width>70</width>
+      <height>22</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Output</string>
+    </property>
+   </widget>
+   <widget class="QComboBox" name="cb_output">
+    <property name="geometry">
+     <rect>
+      <x>82</x>
+      <y>50</y>
+      <width>200</width>
+      <height>22</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>The blended grid, or (-W) the weights used for each node instead, or (-Wz) the weight*z sum.</string>
+    </property>
+   </widget>
+   <widget class="QLabel" name="lb_interp">
+    <property name="geometry">
+     <rect>
+      <x>296</x>
+      <y>50</y>
+      <width>70</width>
+      <height>22</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Resample</string>
+    </property>
+   </widget>
+   <widget class="QComboBox" name="cb_interp">
+    <property name="geometry">
+     <rect>
+      <x>370</x>
+      <y>50</y>
+      <width>196</width>
+      <height>22</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>Interpolation (-n) used when an input grid does not share the output's spacing or registration and must be resampled first.</string>
+    </property>
+   </widget>
+  </widget>
+  <widget class="QLabel" name="lb_scale">
+   <property name="geometry">
+    <rect>
+     <x>11</x>
+     <y>226</y>
+     <width>72</width>
+     <height>22</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>Scale (-Z)</string>
+   </property>
+  </widget>
+  <widget class="QLineEdit" name="edit_scale">
+   <property name="geometry">
+    <rect>
+     <x>85</x>
+     <y>226</y>
+     <width>80</width>
+     <height>22</height>
+    </rect>
+   </property>
+   <property name="toolTip">
+    <string>Multiply the output values by this factor before writing them.</string>
+   </property>
+   <property name="text">
+    <string>1</string>
+   </property>
+  </widget>
+  <widget class="QLabel" name="lb_nodata">
+   <property name="geometry">
+    <rect>
+     <x>193</x>
+     <y>226</y>
+     <width>90</width>
+     <height>22</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>No data (-di)</string>
+   </property>
+  </widget>
+  <widget class="QLineEdit" name="edit_nodata">
+   <property name="geometry">
+    <rect>
+     <x>285</x>
+     <y>226</y>
+     <width>80</width>
+     <height>22</height>
+    </rect>
+   </property>
+   <property name="toolTip">
+    <string>Value given to the nodes that no input grid covers.</string>
+   </property>
+   <property name="text">
+    <string>NaN</string>
+   </property>
+  </widget>
+  <widget class="QLabel" name="lb_blendfile">
+   <property name="geometry">
+    <rect>
+     <x>11</x>
+     <y>256</y>
+     <width>72</width>
+     <height>22</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>Blend file</string>
+   </property>
+  </widget>
+  <widget class="QLineEdit" name="edit_blendfile">
+   <property name="geometry">
+    <rect>
+     <x>85</x>
+     <y>256</y>
+     <width>476</width>
+     <height>22</height>
+    </rect>
+   </property>
+   <property name="toolTip">
+    <string>Optional ASCII blend file: one record per grid, &quot;file [-Rinner|-] [weight]&quot;. When given it is used INSTEAD of the list of grids below.</string>
+   </property>
+  </widget>
+  <widget class="QToolButton" name="btn_blendfile">
+   <property name="geometry">
+    <rect>
+     <x>565</x>
+     <y>256</y>
+     <width>24</width>
+     <height>22</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>...</string>
+   </property>
+  </widget>
+  <widget class="QLabel" name="lb_out">
+   <property name="geometry">
+    <rect>
+     <x>11</x>
+     <y>286</y>
+     <width>72</width>
+     <height>22</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>Save result to</string>
+   </property>
+  </widget>
+  <widget class="QLineEdit" name="edit_outfile">
+   <property name="geometry">
+    <rect>
+     <x>85</x>
+     <y>286</y>
+     <width>476</width>
+     <height>22</height>
+    </rect>
+   </property>
+   <property name="toolTip">
+    <string>Optional output grid file. Leave empty to keep the result only in this window.</string>
+   </property>
+  </widget>
+  <widget class="QToolButton" name="btn_outfile">
+   <property name="geometry">
+    <rect>
+     <x>565</x>
+     <y>286</y>
+     <width>24</width>
+     <height>22</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>...</string>
+   </property>
+  </widget>
+  <widget class="QGroupBox" name="gb_grids">
+   <property name="geometry">
+    <rect>
+     <x>11</x>
+     <y>318</y>
+     <width>578</width>
+     <height>334</height>
+    </rect>
+   </property>
+   <property name="title">
+    <string>Grids to blend</string>
+   </property>
+   <widget class="QLabel" name="lb_dir">
+    <property name="geometry">
+     <rect>
+      <x>10</x>
+      <y>22</y>
+      <width>58</width>
+      <height>22</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Directory</string>
+    </property>
+   </widget>
+   <widget class="QLineEdit" name="edit_dir">
+    <property name="geometry">
+     <rect>
+      <x>70</x>
+      <y>22</y>
+      <width>282</width>
+      <height>22</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>Folder holding the grids. Pick it with &quot;...&quot; (or double-click here), or type it: its grids are drawn on the map as soon as it is entered.</string>
+    </property>
+   </widget>
+   <widget class="QToolButton" name="btn_dir">
+    <property name="geometry">
+     <rect>
+      <x>356</x>
+      <y>22</y>
+      <width>24</width>
+      <height>22</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>...</string>
+    </property>
+   </widget>
+   <widget class="QLabel" name="lb_filter">
+    <property name="geometry">
+     <rect>
+      <x>388</x>
+      <y>22</y>
+      <width>32</width>
+      <height>22</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Filter</string>
+    </property>
+   </widget>
+   <widget class="QLineEdit" name="edit_filter">
+    <property name="geometry">
+     <rect>
+      <x>422</x>
+      <y>22</y>
+      <width>141</width>
+      <height>22</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>File name patterns, separated by blanks or ';'.</string>
+    </property>
+    <property name="text">
+     <string>*.grd *.nc *.tif *.tiff</string>
+    </property>
+   </widget>
+   <widget class="QFrame" name="frame_map">
+    <property name="geometry">
+     <rect>
+      <x>10</x>
+      <y>52</y>
+      <width>380</width>
+      <height>246</height>
+     </rect>
+    </property>
+    <property name="frameShape">
+     <enum>QFrame::Shape::StyledPanel</enum>
+    </property>
+    <property name="frameShadow">
+     <enum>QFrame::Shadow::Sunken</enum>
+    </property>
+   </widget>
+   <widget class="QListWidget" name="list_grids">
+    <property name="geometry">
+     <rect>
+      <x>398</x>
+      <y>52</y>
+      <width>170</width>
+      <height>166</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>The grids grdblend uses, in this order (it matters for the First/Last clobber modes). Drag to reorder.</string>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="push_add">
+    <property name="geometry">
+     <rect>
+      <x>398</x>
+      <y>224</y>
+      <width>82</width>
+      <height>22</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>Add grid files by name (they are drawn on the map too).</string>
+    </property>
+    <property name="text">
+     <string>Add...</string>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="push_remove">
+    <property name="geometry">
+     <rect>
+      <x>486</x>
+      <y>224</y>
+      <width>82</width>
+      <height>22</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>Take the highlighted grids off the list.</string>
+    </property>
+    <property name="text">
+     <string>Remove</string>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="push_all">
+    <property name="geometry">
+     <rect>
+      <x>398</x>
+      <y>250</y>
+      <width>82</width>
+      <height>22</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>Select every grid on the map.</string>
+    </property>
+    <property name="text">
+     <string>All</string>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="push_clear">
+    <property name="geometry">
+     <rect>
+      <x>486</x>
+      <y>250</y>
+      <width>82</width>
+      <height>22</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>Empty the list.</string>
+    </property>
+    <property name="text">
+     <string>Clear</string>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="push_fit">
+    <property name="geometry">
+     <rect>
+      <x>398</x>
+      <y>276</y>
+      <width>170</width>
+      <height>22</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>Set the region to the union of the listed grids and the spacing to the finest of theirs.</string>
+    </property>
+    <property name="text">
+     <string>Region from list</string>
+    </property>
+   </widget>
+   <widget class="QLabel" name="lb_hint">
+    <property name="geometry">
+     <rect>
+      <x>10</x>
+      <y>304</y>
+      <width>558</width>
+      <height>22</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Click a box to toggle it; drag to select (Ctrl+drag deselects). Wheel zooms, right-drag pans, double-click fits.</string>
+    </property>
+   </widget>
+  </widget>
+  <widget class="QWidget" name="manualHolder" native="true">
+   <property name="geometry">
+    <rect>
+     <x>11</x>
+     <y>662</y>
+     <width>24</width>
+     <height>24</height>
+    </rect>
+   </property>
+  </widget>
+  <widget class="QPushButton" name="push_compute">
+   <property name="geometry">
+    <rect>
+     <x>409</x>
+     <y>662</y>
+     <width>90</width>
+     <height>24</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>Compute</string>
+   </property>
+  </widget>
+  <widget class="QPushButton" name="push_close">
+   <property name="geometry">
+    <rect>
+     <x>507</x>
+     <y>662</y>
+     <width>82</width>
+     <height>24</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>Close</string>
+   </property>
+  </widget>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

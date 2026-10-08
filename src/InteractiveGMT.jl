@@ -122,7 +122,9 @@ include("contours.jl")   # Grid Tools > Contours: GDAL-traced contour lines (por
 include("sdg.jl")        # Grid Tools > SDG: 2nd derivative along the gradient (port of Mirone GridToolsSDG_CB)
 include("multiscale.jl") # Grid Tools > Terrain Modeling: moving-window terrain analysis (port of Mirone mirblock.c)
 include("grdtrend.jl")   # GMT menu > grdtrend: polynomial trend surface / residuals / robust weights
+include("coastmask.jl")  # coastline menu > Mask > Land/Ocean: grdlandmask the window's grid/image
 include("grdlandmask.jl")# GMT menu > grdlandmask: wet/dry mask grid from the shoreline database
+include("grdblend.jl")   # GMT menu > grdblend: blend grids picked by name or on a footprint map
 include("grdfilter.jl")  # GMT menu > grdfilter: space-domain filtering of the window's grid
 include("grdfft.jl")     # GMT menu > grdfft: frequency-domain operations / power spectrum of the grid
 include("grdhisteq.jl")  # GMT menu > grdhisteq: histogram equalization / equal-area levels
