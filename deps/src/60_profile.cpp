@@ -27,6 +27,7 @@ public:
 	void setProfile(const std::vector<double> &s, const std::vector<double> &z,
 	                const QString &gridName = QString()) {
 		m_s = s; m_z = z;
+		if (z.empty()) setMark(std::numeric_limits<double>::quiet_NaN());   // no curve -> no marker
 		m_title = z.empty() ? QString() : (gridName.isEmpty() ? QString("Profile")
 		                                                      : QString("Profile %1").arg(gridName));
 		m_xlabel = "Distance"; m_ylabel = "Elevation"; m_isDate = false;
@@ -37,6 +38,7 @@ public:
 	void setSeries(const std::vector<double> &x, const std::vector<double> &y,
 	               const QString &title, const QString &xlabel, const QString &ylabel, bool isDate) {
 		m_s = x; m_z = y;
+		setMark(std::numeric_limits<double>::quiet_NaN());   // a different series: the old marker means nothing
 		m_title = title; m_xlabel = xlabel; m_ylabel = ylabel; m_isDate = isDate;
 		update();
 	}
@@ -57,6 +59,12 @@ public:
 	// comparing the wave against a solution from another instant, which is worse than no reference.
 	const std::vector<double> &seriesX2() const { return m_s2; }
 	const std::vector<double> &seriesY2() const { return m_z2; }
+	// The curve marker, by its x data value (NaN = none). setMarker is how the 3-D view's own marker
+	// drives this one; onMarker is told of EVERY change, whoever made it — the ONE sync path between
+	// the two markers.
+	double markerX() const { return m_mark; }
+	void   setMarker(double x) { setMark(x); }
+	std::function<void(double)> onMarker;
 	QString seriesTitle()  const { return m_title; }
 	QString seriesXLabel() const { return m_xlabel; }
 	QString seriesYLabel() const { return m_ylabel; }
@@ -68,6 +76,23 @@ protected:
 	QString m_xlabel = "Distance", m_ylabel = "Elevation";
 	bool    m_isDate = false;
 	QPoint  m_hover{-1, -1};             // last cursor position, widget coords (-1,-1 = outside)
+	// Marker on the curve: a left click ON the curve drops a circle there; dragging it slides it ALONG
+	// the curve (its x follows the cursor, its y is the curve's own value there) with an "x,  y" label
+	// beside it. Stored as an x data value, so a live re-sample of the profile (end handle dragged)
+	// keeps it at the same distance. NaN = no marker.
+	double  m_mark = std::numeric_limits<double>::quiet_NaN();
+	bool    m_markDrag = false;
+	bool    m_markNew = false;           // the last press PLACED it (so its double-click keeps it)
+	bool    m_markMoved = false;         // this press has started sliding it (past a 3 px dead zone)
+	QPointF m_markPress;
+
+	// Every marker change goes through here, so the 3-D marker can never miss one.
+	void setMark(double x) {
+		const bool same = (std::isnan(x) && std::isnan(m_mark)) || x == m_mark;
+		m_mark = x;
+		update();
+		if (!same && onMarker) onMarker(x);
+	}
 
 	// The plot frame and the data ranges drawn inside it. The painter and the hover readout MUST
 	// agree on this mapping or the numbers under the cursor would not be the numbers on the axes,
@@ -96,8 +121,104 @@ protected:
 	// "x,  y" text, same precision. A panel has no status bar, so it is painted at the LOWER LEFT.
 	void mouseMoveEvent(QMouseEvent *e) override {
 		m_hover = e->pos();
+		QRectF plot;
+		double smin, smax, zmin, zmax;
+		if (m_markDrag && !m_markMoved && (e->position() - m_markPress).manhattanLength() > 3)
+			m_markMoved = true;
+		if (m_markDrag && m_markMoved && plotFrame(plot, smin, smax, zmin, zmax)) {   // slide along the curve
+			const double x = smin + (e->position().x() - plot.left()) / plot.width() * (smax - smin);
+			setMark(std::clamp(x, m_s.front(), m_s.back()));
+		}
+		// the same four-arrow cursor every other draggable element shows
+		const bool over = m_markDrag || markerHit(e->position());
+		const bool isAll = cursor().shape() == Qt::SizeAllCursor;
+		if (over && !isAll)       setCursor(Qt::SizeAllCursor);
+		else if (!over && isAll)  unsetCursor();
 		update();
 		QWidget::mouseMoveEvent(e);
+	}
+	void mousePressEvent(QMouseEvent *e) override {
+		if (e->button() == Qt::LeftButton && m_s.size() >= 2) {
+			m_markPress = e->position();  m_markMoved = false;
+			if (markerHit(e->position())) { m_markDrag = true; m_markNew = false; return; }
+			double x;
+			if (curveHit(e->position(), x)) {          // click ON the curve: drop the marker there, already grabbed
+				m_markDrag = true; m_markNew = true;
+				setMark(x);
+				return;
+			}
+		}
+		QWidget::mousePressEvent(e);
+	}
+	// Double-click ON an existing marker removes it (and, through onMarker, its 3-D twin). The double-
+	// click's FIRST press already went through mousePressEvent: when that press is what PLACED the
+	// marker (m_markNew), this double-click is the placing one and keeps it. Double-click on the bare
+	// curve places it, like a single click.
+	void mouseDoubleClickEvent(QMouseEvent *e) override {
+		if (e->button() == Qt::LeftButton && m_s.size() >= 2) {
+			m_markDrag = false;
+			if (markerHit(e->position())) {
+				if (!m_markNew) setMark(std::numeric_limits<double>::quiet_NaN());
+				m_markNew = false;
+				return;
+			}
+			double x;
+			if (curveHit(e->position(), x)) { setMark(x); m_markNew = false; return; }
+		}
+		QWidget::mouseDoubleClickEvent(e);
+	}
+	void mouseReleaseEvent(QMouseEvent *e) override {
+		if (e->button() == Qt::LeftButton && m_markDrag) { m_markDrag = false; return; }
+		QWidget::mouseReleaseEvent(e);
+	}
+
+	// The curve's y at data x (linear between samples; x ascends along the curve).
+	double curveYAt(double x) const {
+		if (m_s.size() < 2) return std::numeric_limits<double>::quiet_NaN();
+		if (x <= m_s.front()) return m_z.front();
+		if (x >= m_s.back())  return m_z.back();
+		const size_t i = size_t(std::upper_bound(m_s.begin(), m_s.end(), x) - m_s.begin());   // m_s[i-1] <= x < m_s[i]
+		const double ds = m_s[i] - m_s[i-1];
+		const double t = ds > 0.0 ? (x - m_s[i-1]) / ds : 0.0;
+		return m_z[i-1] + t * (m_z[i] - m_z[i-1]);
+	}
+	// Marker's centre in widget coords; false when there is none (or nothing to put it on).
+	bool markerPos(QPointF &c) const {
+		QRectF plot;
+		double smin, smax, zmin, zmax;
+		if (std::isnan(m_mark) || !plotFrame(plot, smin, smax, zmin, zmax))
+			return false;
+		const double x = std::clamp(m_mark, m_s.front(), m_s.back());
+		c = QPointF(plot.left()   + (x - smin) / (smax - smin) * plot.width(),
+		            plot.bottom() - (curveYAt(x) - zmin) / (zmax - zmin) * plot.height());
+		return true;
+	}
+	bool markerHit(const QPointF &p) const {
+		QPointF c;
+		if (!markerPos(c)) return false;
+		const double dx = p.x() - c.x(), dy = p.y() - c.y();
+		return dx*dx + dy*dy <= 9.0 * 9.0;
+	}
+	// Is p within a few px of the drawn curve? `x` = the data x of the nearest point on it.
+	bool curveHit(const QPointF &p, double &x) const {
+		QRectF plot;
+		double smin, smax, zmin, zmax;
+		if (!plotFrame(plot, smin, smax, zmin, zmax)) return false;
+		auto X = [&](double s) { return plot.left()   + (s - smin) / (smax - smin) * plot.width();  };
+		auto Y = [&](double z) { return plot.bottom() - (z - zmin) / (zmax - zmin) * plot.height(); };
+		double best = 6.0 * 6.0;
+		bool hit = false;
+		for (size_t i = 0; i + 1 < m_s.size(); ++i) {
+			const double a[2] = { X(m_s[i]), Y(m_z[i]) }, b[2] = { X(m_s[i+1]), Y(m_z[i+1]) };
+			const double d2 = segDist2(p.x(), p.y(), a, b);
+			if (d2 <= best) {
+				best = d2;  hit = true;
+				const double sx = b[0] - a[0];       // project onto the segment along x
+				const double t = sx != 0.0 ? std::clamp((p.x() - a[0]) / sx, 0.0, 1.0) : 0.0;
+				x = m_s[i] + t * (m_s[i+1] - m_s[i]);
+			}
+		}
+		return hit;
 	}
 	void leaveEvent(QEvent *e) override {
 		m_hover = QPoint(-1, -1);
@@ -113,6 +234,10 @@ protected:
 			return QString();
 		const double dx = smin + (m_hover.x() - plot.left())   / plot.width()  * (smax - smin);
 		const double dy = zmax - (m_hover.y() - plot.top())    / plot.height() * (zmax - zmin);
+		return xyText(dx, dy);
+	}
+	// "x,  y" as the readout prints it — ONE formatter for the hover readout and the marker label.
+	QString xyText(double dx, double dy) const {
 		const QString xs = m_isDate
 			? QDateTime::fromSecsSinceEpoch((qint64)dx, Qt::UTC).toString("yyyy-MM-dd hh:mm:ss")
 			: QString("%1").arg(dx, 0, 'g', 8);
@@ -228,6 +353,26 @@ protected:
 			p.drawText(QRectF(3, height() - 15, width() - 6, 14),
 			           Qt::AlignLeft | Qt::AlignVCenter, hv);
 		}
+
+		// The marker: a circle on the curve + a tooltip-style "x,  y" box beside it, kept inside the frame.
+		QPointF mc;
+		if (markerPos(mc)) {
+			p.setPen(QPen(QColor(30, 30, 30), 1.5));
+			p.setBrush(QColor(255, 255, 255, 200));
+			p.drawEllipse(mc, 5.5, 5.5);
+			const double mx = std::clamp(m_mark, m_s.front(), m_s.back());
+			const QString lab = xyText(mx, curveYAt(mx));
+			const QFontMetrics fm(p.font());
+			QRectF box(0, 0, fm.horizontalAdvance(lab) + 10, fm.height() + 4);
+			box.moveBottomLeft(QPointF(mc.x() + 9, mc.y() - 7));
+			if (box.right()  > plot.right())  box.moveRight(mc.x() - 9);
+			if (box.top()    < plot.top())    box.moveTop(mc.y() + 7);
+			p.setPen(QColor(120, 120, 120));
+			p.setBrush(QColor(255, 255, 225));
+			p.drawRect(box);
+			p.setPen(Qt::black);
+			p.drawText(box, Qt::AlignCenter, lab);
+		}
 	}
 
 	// Right-click -> push the currently shown profile/series into a standalone X,Y plot window
@@ -237,16 +382,160 @@ protected:
 		QMenu m(this);
 		QAction *a = m.addAction("Open in X,Y plot tool");
 		a->setEnabled(m_s.size() >= 2);
-		if (m.exec(e->globalPos()) == a && m_s.size() >= 2)
+		QAction *rm = std::isnan(m_mark) ? nullptr : m.addAction("Remove marker");
+		QAction *got = m.exec(e->globalPos());
+		if (got && got == rm)
+			setMark(std::numeric_limits<double>::quiet_NaN());
+		else if (got == a && m_s.size() >= 2)
 			openSeriesInXYTool(m_s, m_z,
 				m_title.isEmpty() ? "Profile" : m_title.toUtf8().constData(),
 				m_xlabel.toUtf8().constData(), m_ylabel.toUtf8().constData());
 	}
 };
 
+static void polyExitEdit(Scene *s);   // leave vertex-edit mode, drop the handles (85_polygon.cpp)
+
+// Show the 3-D track marker at distance `x` along the track (the Profile panel's marker x; NaN =
+// none). The track's own samples (profPD points <-> profS distances, pushed together) place it, so
+// it sits ON the drawn line. Built lazily, styled like the edit handles (on top of every pile rank).
+static void profMarkSync(Scene *s, double x) {
+	if (!s || !s->ren) return;
+	vtkPoints *lp = s->profPD ? s->profPD->GetPoints() : nullptr;
+	const bool show = !std::isnan(x) && lp && s->profS.size() >= 2 &&
+	                  lp->GetNumberOfPoints() == (vtkIdType)s->profS.size() &&
+	                  s->profLine && s->profLine->GetVisibility();   // a hidden track hides its marker
+	if (!show) {
+		if (s->profMark && s->profMark->GetVisibility()) {
+			s->profMark->SetVisibility(0);
+			if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+		}
+		return;
+	}
+	const std::vector<double> &S = s->profS;
+	x = std::clamp(x, S.front(), S.back());
+	size_t i = size_t(std::upper_bound(S.begin(), S.end(), x) - S.begin());
+	i = std::clamp<size_t>(i, 1, S.size() - 1);                 // S[i-1] <= x <= S[i]
+	const double ds = S[i] - S[i-1];
+	const double t = ds > 0.0 ? (x - S[i-1]) / ds : 0.0;
+	double a[3], b[3];
+	lp->GetPoint(vtkIdType(i - 1), a);  lp->GetPoint(vtkIdType(i), b);
+	const double p[3] = { a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1]), a[2] + t * (b[2] - a[2]) };
+	if (!s->profMark) {
+		s->profMarkPD = vtkSmartPointer<vtkPolyData>::New();
+		vtkNew<vtkPolyDataMapper> map; map->SetInputData(s->profMarkPD); map->ScalarVisibilityOff();
+		vtkMapper::SetResolveCoincidentTopologyToPolygonOffset();
+		map->SetRelativeCoincidentTopologyPointOffsetParameter(-200000.0);   // above the track it rides
+		s->profMark = vtkSmartPointer<vtkActor>::New();
+		s->profMark->SetMapper(map);
+		s->profMark->GetProperty()->SetColor(1.0, 1.0, 1.0);
+		s->profMark->GetProperty()->SetPointSize(13.0);
+		s->profMark->GetProperty()->SetRenderPointsAsSpheres(true);   // a round dot: the panel's circle
+		s->profMark->GetProperty()->LightingOff();
+		s->profMark->PickableOff();
+		if (s->profLine) { double sc[3]; s->profLine->GetScale(sc); s->profMark->SetScale(sc); }
+		s->ren->AddActor(s->profMark);
+		if (s->globe) globeAttachActor(s, s->profMark, true, true);
+		// Whatever hides or shows the TRACK (its Scene Objects row, its group's box) takes the marker
+		// with it. Visibility only — no render from inside another actor's Modified.
+		if (s->profLine) {
+			vtkNew<vtkCallbackCommand> cb;
+			cb->SetClientData(s);
+			cb->SetCallback([](vtkObject *, unsigned long, void *cd, void *) {
+				Scene *sc = static_cast<Scene *>(cd);
+				if (!sc->profMark || !sc->profLine) return;
+				const bool want = sc->profLine->GetVisibility() && sc->prof && !std::isnan(sc->prof->markerX());
+				if ((sc->profMark->GetVisibility() != 0) != want) sc->profMark->SetVisibility(want ? 1 : 0);
+			});
+			s->profLine->AddObserver(vtkCommand::ModifiedEvent, cb);
+		}
+	}
+	vtkNew<vtkPoints> pts;  pts->SetDataTypeToDouble();
+	vtkNew<vtkCellArray> verts;
+	const vtkIdType id = pts->InsertNextPoint(p);
+	verts->InsertNextCell(1, &id);
+	s->profMarkPD->SetPoints(pts);  s->profMarkPD->SetVerts(verts);  s->profMarkPD->Modified();
+	s->profMark->SetVisibility(1);
+	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+}
+
+// Is display px (dx,dy) on the 3-D marker?
+static bool profMarkHit(Scene *s, int dx, int dy) {
+	if (!s || !s->ren || !s->profMark || !s->profMark->GetVisibility() || !s->profMarkPD ||
+	    !s->profMarkPD->GetPoints() || s->profMarkPD->GetNumberOfPoints() < 1)
+		return false;
+	double p[3], sc[3];
+	s->profMarkPD->GetPoint(0, p);  s->profMark->GetScale(sc);
+	s->ren->SetWorldPoint(p[0]*sc[0], p[1]*sc[1], p[2]*sc[2], 1.0);
+	s->ren->WorldToDisplay();
+	double d[3];  s->ren->GetDisplayPoint(d);
+	const double ex = d[0] - dx, ey = d[1] - dy;
+	return ex*ex + ey*ey <= 10.0 * 10.0;
+}
+
+// Distance along the track of the track point nearest to display px (dx,dy) — what the 3-D marker
+// slides to. Same screen-space projection profileHitAt uses.
+static bool profTrackDistAt(Scene *s, int dx, int dy, double &dist) {
+	vtkPoints *lp = s->profPD ? s->profPD->GetPoints() : nullptr;
+	if (!lp || !s->profLine || s->profS.size() < 2 || lp->GetNumberOfPoints() != (vtkIdType)s->profS.size())
+		return false;
+	double sc[3];  s->profLine->GetScale(sc);
+	const vtkIdType np = lp->GetNumberOfPoints();
+	std::vector<double> px(np), py(np);
+	for (vtkIdType i = 0; i < np; ++i) {
+		double p[3];  lp->GetPoint(i, p);
+		s->ren->SetWorldPoint(p[0]*sc[0], p[1]*sc[1], p[2]*sc[2], 1.0);
+		s->ren->WorldToDisplay();
+		double d[3];  s->ren->GetDisplayPoint(d);
+		px[i] = d[0];  py[i] = d[1];
+	}
+	double best = std::numeric_limits<double>::max();
+	for (vtkIdType i = 0; i + 1 < np; ++i) {
+		const double a[2] = { px[i], py[i] }, b[2] = { px[i+1], py[i+1] };
+		const double d2 = segDist2((double)dx, (double)dy, a, b);
+		if (d2 < best) {
+			best = d2;
+			const double vx = b[0] - a[0], vy = b[1] - a[1], L2 = vx*vx + vy*vy;
+			const double t = L2 > 0.0 ? std::clamp(((dx - a[0]) * vx + (dy - a[1]) * vy) / L2, 0.0, 1.0) : 0.0;
+			dist = s->profS[i] + t * (s->profS[i+1] - s->profS[i]);
+		}
+	}
+	return best < std::numeric_limits<double>::max();
+}
+
+// 3-D marker mouse: press on it grabs it, a drag slides it along the track (the panel's marker
+// follows through setMarker -> onMarker -> profMarkSync), a double-click removes it from both views.
+static bool profMarkPress(Scene *s, int x, int y) {
+	if (!s || !s->prof || !profMarkHit(s, x, y)) return false;
+	s->profMarkDrag = true;  s->profMarkMoved = false;
+	s->profMarkPX = x;  s->profMarkPY = y;
+	return true;
+}
+static bool profMarkMove(Scene *s, int x, int y) {
+	if (!s || !s->profMarkDrag) return false;
+	if (!s->profMarkMoved && std::abs(x - s->profMarkPX) + std::abs(y - s->profMarkPY) > 3)
+		s->profMarkMoved = true;
+	double d;
+	if (s->profMarkMoved && s->prof && profTrackDistAt(s, x, y, d))
+		s->prof->setMarker(d);
+	return true;
+}
+static bool profMarkRelease(Scene *s) {
+	if (!s || !s->profMarkDrag) return false;
+	s->profMarkDrag = false;
+	return true;
+}
+// Double-click on the 3-D marker removes it and the panel's (setMarker -> onMarker -> profMarkSync).
+static bool profMarkDblClick(Scene *s, int x, int y) {
+	if (!s || !s->prof || !profMarkHit(s, x, y)) return false;
+	s->profMarkDrag = false;
+	s->prof->setMarker(std::numeric_limits<double>::quiet_NaN());
+	return true;
+}
+
 // Wipe the profile: empty the 3D line, drop its texture/state, clear the 2D panel.
 static void profileClear(Scene *s) {
 	if (!s || !s->profLine) return;
+	if (s->profEdit) polyExitEdit(s);   // its end handles go with it
 	vtkNew<vtkPolyData> empty;
 	if (auto *mm = vtkPolyDataMapper::SafeDownCast(s->profLine->GetMapper()))
 		mm->SetInputData(empty);
@@ -289,7 +578,9 @@ static bool pickSurfaceXY(Scene *s, int dx, int dy, double &tx, double &ty) {
 // Sample the surface elevation along the straight track (ax,ay)->(bx,by) by shooting a
 // vertical ray at each densified (x,y) (one true z per sample), then refresh the 3D drape
 // line + the 2D panel. Arc length is in metres (geographic) / data units (cartesian).
-static void computeProfile(Scene *s, double ax, double ay, double bx, double by) {
+// keepStyle: an EDIT of an existing track (end handle dragged) keeps its dashed/dotted look; a
+// fresh Ctrl+drag track starts solid.
+static void computeProfile(Scene *s, double ax, double ay, double bx, double by, bool keepStyle = false) {
 	if (!s || (s->gridZ.empty() && !(s->actZ && !s->actZ->empty())))   // need a data layer (active grid or base)
 		return;
 	const int N = 300;
@@ -326,10 +617,16 @@ static void computeProfile(Scene *s, double ax, double ay, double bx, double by)
 		m->SetInputData(lpd);
 	const bool wasVisible = s->profLine->GetVisibility() != 0;
 	s->profLine->SetVisibility(np >= 2 ? 1 : 0);
-	s->profStyle = 0;                                  // a fresh line starts solid
-	s->profStripe = nullptr;
-	s->profLine->SetTexture(nullptr);
-	s->profLine->GetProperty()->SetOpacity(1.0);
+	s->track0[0] = ax; s->track0[1] = ay;              // the track's two ends — what the edit handles move
+	s->track1[0] = bx; s->track1[1] = by;
+	if (keepStyle && s->profStyle != 0 && np >= 2)     // edited track: re-stipple the NEW geometry
+		lineApplyStyle(s, LineRef{ LK_Profile, s->profLine }, s->profStyle);
+	else {
+		s->profStyle = 0;                              // a fresh line starts solid
+		s->profStripe = nullptr;
+		s->profLine->SetTexture(nullptr);
+		s->profLine->GetProperty()->SetOpacity(1.0);
+	}
 	s->profS = sv; s->profZ = zv;
 	// The track is a vector: give it a rank on the SHARED pile and let applyStacking place it — that is
 	// what lifts it above EVERY grid (the law), including a second grid added over the first. Only when
@@ -339,7 +636,10 @@ static void computeProfile(Scene *s, double ax, double ay, double bx, double by)
 		applyStacking(s);
 	}
 
-	if (s->prof) s->prof->setProfile(sv, zv, QString::fromStdString(activeGridName(s)));
+	if (s->prof) {
+		s->prof->setProfile(sv, zv, QString::fromStdString(activeGridName(s)));
+		profMarkSync(s, s->prof->markerX());       // the 3-D marker rides the re-sampled track
+	}
 	if (s->win && np >= 2)
 		s->win->statusBar()->showMessage(
 			QString("Profile: 2D distance %1   elevation %2 .. %3   (%4 samples)")
@@ -371,6 +671,7 @@ static bool profilerBegin(Scene *s, int dx, int dy) {
 	double tx, ty;
 	if (!pickSurfaceXY(s, dx, dy, tx, ty))         // no grid/image under the cursor -> nothing to track
 		return false;
+	if (s->profEdit) polyExitEdit(s);              // a new track replaces the one whose ends were under edit
 	s->track0[0] = tx; s->track0[1] = ty; s->profiling = true;
 	if (s->bottomDock) {                       // surface the Profile tab in the bottom dock
 		s->bottomDock->setVisible(true);
@@ -490,6 +791,7 @@ protected:
 			const bool over = colorbarHit(s, nx, ny)
 			               || (s->polyEdit >= 0 && polyHitHandle(s, (int)dx, (int)dy, 10.0) >= 0)
 			               || mecaHitAt(s, (int)dx, (int)dy) >= 0
+			               || s->profMarkDrag || profMarkHit(s, (int)dx, (int)dy)
 			               || (s->symArmed >= 0 && symHitHandle(s, (int)dx, (int)dy, 16.0));
 			const bool isAll = cursor().shape() == Qt::SizeAllCursor;
 			if (over && !isAll)       setCursor(Qt::SizeAllCursor);

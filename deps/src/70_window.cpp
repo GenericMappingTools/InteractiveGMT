@@ -26320,6 +26320,7 @@ static void buildSceneContent(Scene *s, vtkSmartPointer<vtkPolyData> pd,
 	                                    // own — every extra keeps the set IT owns, untouched)
 	// profLine is a pile vector -> it may live in the depth-cleared overlay renderer; clear both layers.
 	if (s->profLine) { s->ren->RemoveActor(s->profLine); if (s->axesRen) s->axesRen->RemoveActor(s->profLine); }
+	if (s->profMark) { s->ren->RemoveActor(s->profMark); s->profMark = nullptr; s->profMarkPD = nullptr; }
 	if (s->bar)      s->ren->RemoveViewProp(s->bar);
 	if (s->barTicks) s->ren->RemoveViewProp(s->barTicks);
 	for (auto &ta : s->barLabels) if (ta) s->ren->RemoveViewProp(ta);
@@ -31610,6 +31611,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// Tab 0 — Profile: 2D (distance, elevation) graph. Ctrl+left-drag a line on the surface
 	// fills it (the 3D drape line + this panel update live; GMTF3D / Fledermaus profile track).
 	s->prof = new ProfilePanel(tabs);
+	s->prof->onMarker = [s](double x) { profMarkSync(s, x); };   // panel marker -> its twin on the 3-D track
 	tabs->addTab(s->prof, "Profile");
 
 	// Tab 1 — Julia console: the viewer runs in-process in Julia, so a typed command is handed

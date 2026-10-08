@@ -2938,7 +2938,7 @@ static MbGrdVizHost mbgrdvizViewerHost() {
 		if (!e.valid() || e.n() < 2 || e.closedRing() || (e.pg && e.pg->closed))
 			return false;
 		l = MbGrdVizLine();
-		l.name = e.pg ? e.pg->name : e.ov->name;
+		l.name = e.pg ? e.pg->name : e.ov ? e.ov->name : std::string("Profile");
 		for (int i = 0; i < e.n(); i++) {
 			double p[3];
 			e.get(i, p);

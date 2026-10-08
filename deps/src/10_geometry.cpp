@@ -1718,6 +1718,14 @@ struct Scene {
 	                                                   // "vectors above every raster" law (gatherStackItems)
 	bool   profiling = false;
 	double track0[2] = {0, 0};                         // press point in TRUE (x,y)
+	double track1[2] = {0, 0};                         // end point in TRUE (x,y) — last drag/edit position
+	bool   profEdit = false;                           // its two ends are under vertex edit (EditVerts, 85)
+	// The marker on the track — the 3-D twin of the Profile panel's curve marker. The PANEL owns its
+	// position (ProfilePanel::markerX, a distance along the track); this actor only shows it.
+	vtkSmartPointer<vtkActor>    profMark;
+	vtkSmartPointer<vtkPolyData> profMarkPD;
+	bool   profMarkDrag = false, profMarkMoved = false;
+	int    profMarkPX = 0, profMarkPY = 0;             // press position (display px)
 	std::vector<double> profS, profZ;                  // last profile (along-track distance, elevation)
 
 	// --- polygon draw / edit tool (toolbar polygon button) ------------------
@@ -5348,6 +5356,7 @@ static void sceneGlobeSync(Scene *s) {
 	for (auto &cu : s->curtains)  globeAttachActor(s, cu.actor, on);
 	for (auto &ex : s->extras)  { globeAttachActor(s, ex.actor, on); globeAttachActor(s, ex.drape, on); }
 	globeAttachActor(s, s->profLine, on, true);
+	globeAttachActor(s, s->profMark, on, true);
 	globeAttachActor(s, s->rbHL, on, true);
 	for (auto &pg : s->polys) {
 		const int pv = pg.clamped ? VEC_GND : VEC_FLAT;         // same question, asked of the polygon
@@ -5420,6 +5429,7 @@ static void applyVE(Scene *s) {
 		if (ex.drape) ex.drape->SetScale(kx, 1.0, kzEx);
 	}
 	if (s->profLine) s->profLine->SetScale(kx, 1.0, kzAct);  // profile drape tracks the base
+	if (s->profMark) s->profMark->SetScale(kx, 1.0, kzAct);  // …and so does its marker
 	if (s->rbHL)     s->rbHL->SetScale(kx, 1.0, kzAct);      // selection highlight tracks the cloud
 	for (auto &pg : s->polys) {                                    // each polygon on ITS OWN layer's VE
 		const double kzPg = G ? 1.0 : layerZScale(s, pg.veOwner);

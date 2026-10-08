@@ -1835,6 +1835,7 @@ static void sceneRemoveSurface(Scene *s) {
 		if (s->axesRen) s->axesRen->RemoveActor(s->profLine);
 		s->profLine = nullptr;
 	}
+	if (s->profMark) { s->ren->RemoveActor(s->profMark); s->profMark = nullptr; s->profMarkPD = nullptr; }
 	// Full-res z data buffer + active-grid pointer
 	s->gridZ.clear(); s->gnx = 0; s->gny = 0; s->gdx = 0.0; s->gdy = 0.0; s->actZ = nullptr;
 	s->viewBoundsOverride = false;   // no content left to keep a derived variable's frame pinned to

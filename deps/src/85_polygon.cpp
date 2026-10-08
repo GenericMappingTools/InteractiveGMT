@@ -975,16 +975,28 @@ static void polyRebuildPreview(Scene *s, const double *cursor) {
 struct EditVerts {
 	Polygon *pg = nullptr;                 // drawn polygon under edit …
 	Overlay *ov = nullptr;                 // … or an overlay, whose segment is [a, z)
+	Scene   *pf = nullptr;                 // … or the Ctrl+drag profile track: its 2 ends (track0/track1)
 	int a = 0, z = 0;
 
-	bool valid() const { return pg || (ov && ov->baseLine && ov->baseLine->GetPoints() && z - a >= 2); }
-	int  n()     const { return pg ? (int)pg->v.size() : (z - a); }
+	bool valid() const { return pg || pf || (ov && ov->baseLine && ov->baseLine->GetPoints() && z - a >= 2); }
+	int  n()     const { return pg ? (int)pg->v.size() : pf ? 2 : (z - a); }
 	void get(int i, double p[3]) const {
 		if (pg) { p[0] = pg->v[i][0]; p[1] = pg->v[i][1]; p[2] = pg->v[i][2]; }
+		else if (pf) {                     // the end's own surface height; off-grid -> the drawn line's end
+			const double *t = i ? pf->track1 : pf->track0;
+			p[0] = t[0];  p[1] = t[1];  p[2] = sampleActiveZ(pf, t[0], t[1]);
+			if (std::isnan(p[2])) {
+				vtkPoints *lp = pf->profPD ? pf->profPD->GetPoints() : nullptr;
+				double q[3] = { 0, 0, 0 };
+				if (lp && lp->GetNumberOfPoints() > 0) lp->GetPoint(i ? lp->GetNumberOfPoints() - 1 : 0, q);
+				p[2] = q[2];
+			}
+		}
 		else    ov->baseLine->GetPoints()->GetPoint(a + i, p);
 	}
 	void set(int i, const double p[3]) {
 		if (pg) pg->v[i] = { p[0], p[1], p[2] };
+		else if (pf) { double *t = i ? pf->track1 : pf->track0;  t[0] = p[0];  t[1] = p[1]; }
 		else    ov->baseLine->GetPoints()->SetPoint(a + i, p);
 	}
 	// A closed ring stores its first vertex again at the end; one corner must still get ONE handle,
@@ -998,6 +1010,8 @@ struct EditVerts {
 	}
 	void commit(Scene *s) {
 		if (pg) polyRebuildLine(s, *pg);
+		else if (pf)                       // re-sample the moved track: 3-D line + 2-D panel follow live
+			computeProfile(s, s->track0[0], s->track0[1], s->track1[0], s->track1[1], /*keepStyle=*/true);
 		else if (ov && ov->baseLine) {
 			ov->baseLine->GetPoints()->Modified(); ov->baseLine->Modified();
 			if (ov->filled) overlayBuildFill(*ov);  // a moved corner can re-shape the area: re-split it
@@ -1013,6 +1027,7 @@ static EditVerts editVerts(Scene *s) {
 		e.z  = (int)e.pg->v.size();
 		return e;
 	}
+	if (s->profEdit && s->profPD) { e.pf = s; e.z = 2; return e; }
 	if (s->ovEdit >= 0 && s->ovEdit < (int)s->overlays.size()) {
 		Overlay &o = s->overlays[s->ovEdit];
 		if (s->ovEditSeg >= 0 && s->ovEditSeg < o.nseg && (int)o.segoff.size() > s->ovEditSeg + 1) {
@@ -1025,7 +1040,7 @@ static EditVerts editVerts(Scene *s) {
 }
 
 // True while ANY element is under vertex edit — a drawn polygon or an overlay line.
-static bool polyEditing(Scene *s) { return s && (s->polyEdit >= 0 || s->ovEdit >= 0); }
+static bool polyEditing(Scene *s) { return s && (s->polyEdit >= 0 || s->ovEdit >= 0 || s->profEdit); }
 
 // Ctrl+C while something is in vertex-edit mode (square handles showing): EVERY vertex of that
 // element to the clipboard, one tab-separated row per line, X/Y[/Z] in TRUE data coords (Z dropped
@@ -1095,7 +1110,8 @@ static void polyRebuildHandles(Scene *s) {
 static void polyEnterEdit(Scene *s, int idx, bool mid = false) {
 	s->polyEdit = idx;
 	s->polyEditMid = mid;                    // line area: edit its central line (true) or its box corners
-	s->ovEdit = -1;  s->ovEditSeg = -1;      // the two edit targets are mutually exclusive
+	s->ovEdit = -1;  s->ovEditSeg = -1;      // the edit targets are mutually exclusive
+	s->profEdit = false;
 	s->polyDragVert = -1;
 	polyRebuildHandles(s);
 }
@@ -1106,6 +1122,18 @@ static void overlayEnterEdit(Scene *s, int ovIdx, int segIdx) {
 	s->polyEdit = -1;
 	s->polyEditMid = false;
 	s->ovEdit = ovIdx;  s->ovEditSeg = segIdx;
+	s->profEdit = false;
+	s->polyDragVert = -1;
+	polyRebuildHandles(s);
+}
+
+// Edit the Ctrl+drag profile track: its two ends get handles; dragging one re-samples the profile
+// (EditVerts::commit -> computeProfile). Same entry contract as the two above.
+static void profileEnterEdit(Scene *s) {
+	s->polyEdit = -1;
+	s->polyEditMid = false;
+	s->ovEdit = -1;  s->ovEditSeg = -1;
+	s->profEdit = true;
 	s->polyDragVert = -1;
 	polyRebuildHandles(s);
 }
@@ -1114,6 +1142,7 @@ static void polyExitEdit(Scene *s) {
 	s->polyEdit = -1;
 	s->polyEditMid = false;
 	s->ovEdit = -1;  s->ovEditSeg = -1;
+	s->profEdit = false;
 	s->polyDragVert = -1;
 	polyRebuildHandles(s);
 }
@@ -2393,6 +2422,9 @@ static bool polygonHandlePress(Scene *s, int button, int x, int y, bool shift) {
 		}
 		return true;
 	}
+	// The profile track's marker sits on top of everything: grab it (drag = slide; double-click = remove)
+	if (button == 0 && !s->polyMode && profMarkPress(s, x, y))
+		return true;
 	const bool vertexTool = (s->polyShape == Scene::SH_Polygon || s->polyShape == Scene::SH_Polyline ||
 	                         s->polyShape == Scene::SH_Line || s->polyShape == Scene::SH_Fault ||
 	                         s->polyShape == Scene::SH_LineArea || s->polyShape == Scene::SH_Ruler);
@@ -2612,7 +2644,8 @@ static bool polygonHandlePress(Scene *s, int button, int x, int y, bool shift) {
 			const bool onEditedOverlay = ovHit && s->ovEdit < (int)s->overlays.size() &&
 			                             s->overlays[s->ovEdit].actor.Get() == ovHit && ovs == s->ovEditSeg;
 			if (polyPickWorld(s, x, y, w) &&
-			    (polyHitHandle(s, x, y, 10.0) >= 0 || polyHitPolygon(s, x, y, 10.0) >= 0 || onEditedOverlay)) {
+			    (polyHitHandle(s, x, y, 10.0) >= 0 || polyHitPolygon(s, x, y, 10.0) >= 0 || onEditedOverlay ||
+			     (s->profEdit && profileHitAt(s, x, y)))) {
 				s->polyDragWhole = true;
 				s->polyDragLastW[0] = w[0]; s->polyDragLastW[1] = w[1];
 				s->widget->setCursor(Qt::SizeAllCursor); // same thick 4-arrow cross as the other drag ops
@@ -2757,6 +2790,18 @@ static bool polygonHandleDblClick(Scene *s, int x, int y) {
 				return true;                                    // silent arming looked like nothing happened)
 			}
 		}
+		// The Ctrl+drag profile track: its two ends become handles; dragging one re-samples the
+		// profile live. It is drawn above every other vector, so it is tested first. Same toggle.
+		if (profMarkDblClick(s, x, y)) {                 // its marker sits ON the track: removing it wins
+			s->widget->renderWindow()->Render();
+			return true;
+		}
+		if (profileHitAt(s, x, y)) {
+			if (s->profEdit) polyExitEdit(s);
+			else             profileEnterEdit(s);
+			s->widget->renderWindow()->Render();
+			return true;
+		}
 		const int pi = polyHitPolygon(s, x, y, 8.0);
 		if (pi >= 0) {
 			// a line area has two editable parts: its central line (2 end handles) and its box (4 corners);
@@ -2790,6 +2835,8 @@ static bool polygonHandleDblClick(Scene *s, int x, int y) {
 
 // Mouse move: extend the draw preview to the cursor, or drag the grabbed vertex / text label.
 static bool polygonHandleMove(Scene *s, int x, int y) {
+	if (profMarkMove(s, x, y))                          // sliding the profile marker along its track
+		return true;
 	// "Copy me" clone in flight: translate every vertex by the incremental cursor delta (same
 	// pattern as polyDragWhole below) and redraw through the SAME polyRebuildLine every drawn
 	// shape uses. Takes priority over everything else — nothing else may steal this gesture.
@@ -2936,6 +2983,7 @@ static bool polygonHandleMove(Scene *s, int x, int y) {
 
 // Left release: end a vertex / text-label drag.
 static bool polygonHandleRelease(Scene *s) {
+	if (profMarkRelease(s)) return true;                 // ended a profile-marker drag / removed it
 	if (s->symLayerDrag >= 0) { s->symLayerDrag = -1; return true; }
 	if (s->symPtDrag    >= 0) { s->symPtDrag = -1; s->symPtIdx = -1; return true; }
 	if (s->mecaDrag >= 0) { s->mecaDrag = -1; return true; }
