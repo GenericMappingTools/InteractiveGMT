@@ -1266,6 +1266,21 @@ static int polyHitHandle(Scene *s, int x, int y, double tol) {
 // Close the current draw into a finished polygon (>=3 vertices). The stored ring is explicitly
 // closed (a copy of vertex 0 is appended so first == last), it is listed in the Scene Objects
 // panel as "polygon N", and the draw tool then ends (button untoggled -> arrow cursor).
+// The nesting chain is built on GRIDLINE nodes — nestBaseGrid's spacing, the corner rule and nswing
+// itself all assume it. A pixel-registered bathymetry is swapped by the host for its gridline twin
+// (grdedit -T: the same nodes, region shrunk by half a cell; nested.jl `_nested_gridline_base!`),
+// together with any grid already derived on it (Okada z), so no two registrations ever meet in the
+// chain. SYNCHRONOUS on purpose: the root rectangle's snap, right after, must see the new geometry.
+// No-op on a gridline base.
+static void nestGridlineBase(Scene *s) {
+	if (!g_juliaEval || s->gridZ.empty()) return;
+	const QString cmd = QString("InteractiveGMT._nested_gridline_base!(Ptr{Cvoid}(UInt(%1)))")
+	                        .arg((qulonglong)reinterpret_cast<uintptr_t>(s));
+	std::vector<char> buf(1 << 12);
+	const int n = g_juliaEval(s, cmd.toStdString().c_str(), buf.data(), (int)buf.size());
+	if (n < 0) sceneLogError(s, QString::fromUtf8(buf.data(), -n));
+}
+
 static void polyFinalize(Scene *s, std::vector<std::array<double,3>> verts, bool closed, const char *prefix) {
 	Polygon pg; pg.v = std::move(verts); pg.closed = closed;
 	if (std::string(prefix) == "Nested rectangle") pg.nestKind = 1;   // special "Nested grids" rectangle
@@ -1303,6 +1318,7 @@ static void polyFinalize(Scene *s, std::vector<std::array<double,3>> verts, bool
 		// at the base increment is rejected on X_MIN and Y_MAX, while the refined levels below it pass
 		// all four corners. The refinement is what makes a nesting level legal at all.
 		int nnest = 0; for (auto &p : s->polys) if (p.nestKind == 1) ++nnest;
+		if (nnest == 1) nestGridlineBase(s);         // pixel bathymetry -> gridline BEFORE the first snap
 		NestLims base;
 		if (nnest == 1 && nestBaseGrid(s, base)) {          // the ROOT rect, over a real grid
 			bool ok = false;

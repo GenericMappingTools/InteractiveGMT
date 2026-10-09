@@ -430,6 +430,10 @@ function _session_rebuild_faults!(fig, blob::String)
 	h = getfield(fig, :h)
 	# collect slip patches per group (in file order) for a single batched add each
 	groups = String[]; gpatch = Dict{String,Vector{Vector{SubString{String}}}}()
+	# Nested rectangles were saved snapped to GRIDLINE nodes, but the window's bathymetry has just been
+	# re-read from its file — pixel-registered again if that is what the file is. Put it on the chain's
+	# registration BEFORE the first rectangle reflows against it, exactly as drawing the root does.
+	any(l -> startswith(l, "N;"), split(blob, '\n'; keepempty=false)) && _nested_gridline_base!(h)
 	for line in split(blob, '\n'; keepempty=false)
 		try
 			if startswith(line, "F;")
@@ -819,6 +823,19 @@ function _session_dup_nest_handles(recipes::Vector{ElementRecipe})
 	return skip
 end
 
+# A layer a RECIPE makes is saved as that recipe and NOTHING ELSE. Coastlines are the `coast` request
+# in the manifest; writing their vertices into drawn/overlays.txt as well put ~5 MB of shoreline in
+# every session zip that the load then threw away (it skips a name the recipe already put back). Every
+# snapshot row whose name — or group, for labels and grouped layers — is the name of a :menu recipe in
+# this session is dropped here. Each line goes through THE parser of its family, so this never
+# re-reads a field layout of its own.
+function _session_strip_recipe_rows(blob::String, parse, owned::Set{String})::String
+	(isempty(owned) || isempty(blob)) && return blob
+	mine(r) = get(r, :name, "") in owned || get(r, :group, "") in owned
+	keep = [l for l in split(blob, '\n'; keepempty=false) if !any(mine, parse(String(l)))]
+	return isempty(keep) ? "" : join(keep, '\n') * '\n'
+end
+
 "File > Save Session: write the `scene` window's recipes + generated data to a `.igmtz` zip at `path`."
 function _on_save_session(scene::Ptr{Cvoid}, path::String)
 	recipes = get(_SESSION_LOG, scene, ElementRecipe[])
@@ -858,11 +875,12 @@ function _on_save_session(scene::Ptr{Cvoid}, path::String)
 	# faults/slip models + nested rects, text, line/point overlays, symbol layers, rulers. EVERY vector
 	# family the Scene holds is in this list — an element with no recipe and no snapshot is an element
 	# the session loses, which is what "several graphics elements missing" was.
+	owned = Set{String}(r.name for r in out if r.origin === :menu && !isempty(r.name))
 	for (entry, blob) in (("drawn/polys.txt",    _serialize_polys_raw(scene)),
 	                      ("drawn/faults.txt",   _serialize_faults_raw(scene)),
-	                      ("drawn/texts.txt",    _serialize_texts_raw(scene)),
-	                      ("drawn/overlays.txt", _serialize_overlays_raw(scene)),
-	                      ("drawn/symbols.txt",  _serialize_symbols_raw(scene)),
+	                      ("drawn/texts.txt",    _session_strip_recipe_rows(_serialize_texts_raw(scene), _parse_texts_blob, owned)),
+	                      ("drawn/overlays.txt", _session_strip_recipe_rows(_serialize_overlays_raw(scene), _parse_overlays_blob, owned)),
+	                      ("drawn/symbols.txt",  _session_strip_recipe_rows(_serialize_symbols_raw(scene), _parse_symbols_blob, owned)),
 	                      ("drawn/rulers.txt",   _serialize_rulers_raw(scene)))
 		isempty(blob) || push!(files, (entry, Vector{UInt8}(codeunits(blob))))
 	end
@@ -1001,7 +1019,7 @@ function _session_replay!(fig, r::ElementRecipe, obj, display, target::Ptr{Cvoid
 		# A raster kind (see `israster`), so it replays with the grids and BEFORE the vectors -- adding a
 		# surface during the vector pass would outrank, and bury, every overlay already put back.
 		# adopt=false: the saved `checked` + `state` decide what this window shows and how it is framed.
-		_on_elastic(h, replace(get(r.params, "cparams", ""), '\x1e' => '\n'); adopt=false)
+		_on_elastic(h, _elastic_request(r.params); adopt=false)
 		return fig
 	elseif r.kind === :illum                             # re-dispatch the Illumination model onto the rebuilt grid
 		# The reflectance is DERIVED, never stored: the same request block, through the same door the

@@ -468,6 +468,89 @@ GMTVTK_API int gmtvtk_set_object_visible(void *handle, const char *name, int vis
 	return 0;
 }
 
+// The polydata a single-mesh grid actor was built from (makeGridFromArray): the mapper's own input,
+// or the input of the vtkPolyDataNormals between them (the draped path). Its points are TRUE coords.
+static vtkPolyData *gridMeshPD(vtkActor *a) {
+	vtkPolyDataMapper *m = a ? vtkPolyDataMapper::SafeDownCast(a->GetMapper()) : nullptr;
+	if (!m) return nullptr;
+	if (vtkPolyDataNormals *nf = vtkPolyDataNormals::SafeDownCast(m->GetInputAlgorithm()))
+		return vtkPolyData::SafeDownCast(nf->GetInputDataObject(0, 0));
+	return m->GetInput();
+}
+
+// Move every point of a mesh from the old x/y frame onto the new one (an affine map per axis), z kept.
+static void meshRemapXY(vtkPolyData *pd, double ox0, double ox1, double oy0, double oy1,
+                        double nx0, double nx1, double ny0, double ny1) {
+	if (!pd || !pd->GetPoints() || ox1 == ox0 || oy1 == oy0) return;
+	vtkPoints *P = pd->GetPoints();
+	const double kx = (nx1 - nx0) / (ox1 - ox0), ky = (ny1 - ny0) / (oy1 - oy0);
+	for (vtkIdType i = 0, n = P->GetNumberOfPoints(); i < n; ++i) {
+		double p[3]; P->GetPoint(i, p);
+		P->SetPoint(i, nx0 + (p[0] - ox0) * kx, ny0 + (p[1] - oy0) * ky, p[2]);
+	}
+	P->Modified();
+	pd->Modified();
+}
+
+// After a layer's frame moved: everything that is DERIVED from frames re-reads them.
+static int gridFrameSettle(Scene *s) {
+	applyVE(s);                                  // cube boxes + scaled actors on the new bounds
+	nanPlaneUpdate(s);                           // the hole backdrop spans the new extent
+	refreshGridColorbar(s);                      // also re-routes the hover readout's footprint
+	rebuildAxisLabels(s);
+	s->ren->ResetCameraClippingRange();
+	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+	return 1;
+}
+
+// NEW COORDINATES, SAME GRID: move a grid layer's x/y frame IN PLACE — the base ("" or its own name)
+// or an extra by name. The nodes, their z, the palette, the actor, its Scene Objects row, its
+// visibility and its place in the pile are all untouched; only where the nodes stand changes. This
+// is what a registration toggle is (grdedit -T: same nodes, region moved half a cell — nested.jl
+// `_nested_gridline_base!`), so it must not cost the layer anything else. The tiled pyramid is
+// rebuilt on the new frame (its nodes carry their centres), a single mesh has its points remapped,
+// and the layer's own axes are re-framed to its new extent. Returns 1 done, 0 no such grid.
+GMTVTK_API int gmtvtk_set_grid_frame_h(void *handle, const char *name,
+                                       double x0, double x1, double y0, double y1) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !name || !(x1 > x0) || !(y1 > y0))
+		return 0;
+	for (auto &ex : s->extras) {
+		if (ex.isImage || ex.name != name || ex.gnx < 2 || ex.gny < 2) continue;
+		if (ex.lodRoot) {
+			extraLodFree(ex);
+			ex.lodRoot = buildQuadNode(0, ex.gnx - 1, 0, ex.gny - 1, 0,
+			                           x0, (x1 - x0) / (ex.gnx - 1), y0, (y1 - y0) / (ex.gny - 1));
+		}
+		else
+			meshRemapXY(gridMeshPD(ex.actor), ex.gx0, ex.gx1, ex.gy0, ex.gy1, x0, x1, y0, y1);
+		ex.gx0 = x0; ex.gx1 = x1; ex.gy0 = y0; ex.gy1 = y1;
+		if (ex.lodRoot) refineExtraLod(s, ex);
+		axesSetFrame(ex.ax, x0, x1, y0, y1, ex.zmin, ex.zmax, ex.geog);
+		return gridFrameSettle(s);
+	}
+	if (s->surf && !s->gridZ.empty() && s->gnx > 1 && s->gny > 1 && (!*name || s->surfName == name)) {
+		if (s->quadRoot) {
+			freeSubtreeActors(s, s->quadRoot);
+			quadFreeTree(s->quadRoot);
+		}
+		else
+			meshRemapXY(gridMeshPD(s->surf), s->gx0, s->gx1, s->gy0, s->gy1, x0, x1, y0, y1);
+		s->gx0 = x0; s->gx1 = x1; s->gy0 = y0; s->gy1 = y1;
+		s->gdx = (x1 - x0) / (s->gnx - 1);
+		s->gdy = (y1 - y0) / (s->gny - 1);
+		s->x0 = x0; s->x1 = x1; s->y0 = y0; s->y1 = y1;
+		if (s->quadRoot) {
+			s->quadRoot = buildQuadNode(0, s->gnx - 1, 0, s->gny - 1, 0, x0, s->gdx, y0, s->gdy);
+			refineQuadtree(s);
+		}
+		axesSetFrame(s->baseAxes, x0, x1, y0, y1, s->baseAxes.z0, s->baseAxes.z1, s->baseAxes.geog);
+		sceneRedrapeImages(s);                   // images draped on the base follow its nodes
+		return gridFrameSettle(s);
+	}
+	return 0;
+}
+
 // Add a GMTdataset overlay to the most-recent window (call right after gmtvtk_view_grid).
 // `xyz` = npts triples (x,y,z) in true data coords; `segoff` = nseg+1 segment offsets;
 // mode 0 = points, 1 = polylines. rgb in 0..1; linewidth/pointsize in px (<=0 = default).

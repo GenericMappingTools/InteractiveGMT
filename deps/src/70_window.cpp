@@ -24614,7 +24614,7 @@ public:
 	std::map<int, QString> nestNames;     // level -> in-scene "layerN" name (populateFromScene)
 	QRadioButton *rGrids, *rAnuga, *rMost;
 	QRadioButton *rSurf, *rTotal;
-	QRadioButton *rEnergy, *rPower;       // -Em,5 / -Epm,5: at most one, both may be off
+	QRadioButton *rEnergy, *rPower;       // -Em,2 / -Epm,2: at most one, both may be off
 	QLineEdit *tideEdit;                  // -Q<tide> when != 0
 	QCheckBox *cMax, *cVel, *cMom, *cMareg, *cGeog, *cCoriolis;
 	QCheckBox *cAutoLoad;                 // bottom row: open the finished cube in Aquamoto ("autoload")
@@ -24796,13 +24796,13 @@ public:
 		cCoriolis = new QCheckBox("Coriolis", gFld); cCoriolis->setToolTip("Add the Coriolis effect.");
 		fg->addWidget(rSurf, 0, 0); fg->addWidget(rTotal, 0, 1); fg->addWidget(cCoriolis, 0, 2);
 		fg->addWidget(cVel,  1, 0); fg->addWidget(cMom, 1, 1); fg->addWidget(cMax, 1, 2);
-		// Energy / Power (max, decimated by 5). Radio buttons, but a second click on the checked one
+		// Energy / Power (max, decimated by 2). Radio buttons, but a second click on the checked one
 		// clears it: the group is non-exclusive and each toggle-on unchecks the other by hand, so "none"
 		// stays a valid state.
 		rEnergy = new QRadioButton("Energy", gFld);
-		rEnergy->setToolTip("Write a grid with the max total energy, decimated by 5 (nswing -Em,5)");
+		rEnergy->setToolTip("Write a grid with the max total energy, decimated by 2 (nswing -Em,2)");
 		rPower  = new QRadioButton("Power",  gFld);
-		rPower->setToolTip("Write a grid with the max power, decimated by 5 (nswing -Epm,5)");
+		rPower->setToolTip("Write a grid with the max power, decimated by 2 (nswing -Epm,2)");
 		rEnergy->setAutoExclusive(false); rPower->setAutoExclusive(false);
 		QObject::connect(rEnergy, &QRadioButton::toggled, this, [this](bool on) { if (on) rPower->setChecked(false); });
 		QObject::connect(rPower,  &QRadioButton::toggled, this, [this](bool on) { if (on) rEnergy->setChecked(false); });

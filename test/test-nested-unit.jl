@@ -265,3 +265,26 @@ end
 		ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), fb.h)
 	end
 end
+
+# ONE registration for the nesting chain: a pixel-registered bathymetry is converted to gridline
+# under the hood (nested.jl `_as_gridline`), exactly what `grdedit -T` does — same nodes, same values,
+# region shrunk by half a cell — and an Okada field computed on it inherits gridline, so the two
+# grids nswing adds together can never carry different registrations.
+@testitem "nested grids: pixel bathymetry -> gridline, Okada follows" tags=[:unit, :nested] begin
+	IG = InteractiveGMT; GMT = IG.GMT
+	G = GMT.grdmath("-R-10/-8/37/39 -I0.1 -r X Y MUL =")
+	@test G.registration == 1
+	Gg = IG._as_gridline(G)
+	T  = GMT.grdedit(G, T=true)
+	@test Gg.registration == 0
+	@test Gg.range[1:4] == T.range[1:4]
+	@test GMT.getsize(Gg) == GMT.getsize(G)
+	@test Gg.z === G.z                                   # header moved, no value moved
+	@test Gg.x == collect(range(Gg.range[1], Gg.range[2]; length = 20))
+	@test G.registration == 1 && G.range[1] == -10.0     # the source is not mutated
+	@test IG._as_gridline(Gg) === Gg                     # gridline in, itself out
+	D = IG._okada_on_grid(Gg; x_start=-9.5, y_start=37.5, L=50.0, W=20.0, depth=5.0,
+	                      strike=30.0, dip=20.0, rake=90.0, slip=2.0)
+	@test D.registration == 0
+	@test D.x == Gg.x && D.y == Gg.y && D.range[1:4] == Gg.range[1:4]
+end

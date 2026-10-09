@@ -72,8 +72,8 @@ function _nswing_opts(d::Dict{String,String}; max_nest_level::Int=0)
 		max_nest_level >= 2 && append!(args, ("-M-", "-M+"))  # min / max-positive water level grids
 		_on(d, "velocity") && push!(args, "-S")          # velocity grids (_U/_V)
 		_on(d, "momentum") && push!(args, "-H")          # momentum grids
-		_on(d, "energy")   && push!(args, "-Em,5")       # max energy grid, decimated by 5
-		_on(d, "power")    && push!(args, "-Epm,5")      # max power grid, decimated by 5
+		_on(d, "energy")   && push!(args, "-Em,2")       # max energy grid, decimated by 2
+		_on(d, "power")    && push!(args, "-Epm,2")      # max power grid, decimated by 2
 	elseif (mode == "anuga")
 		isempty(name) && error("NSWING: ANUGA output needs a file Name")
 		push!(args, "-A$(name)")
@@ -608,7 +608,8 @@ function _nswing_check_nest_file(scene::Ptr{Cvoid}, level::Integer, childpath::A
 	child isa GMTgrid || (print(""); return nothing)  # unreadable / not a grid -> stay silent
 	parent = isempty(parentref) ? _find_object(scene, :grid, "") : _nswing_resolve_grid(scene, parentref)
 	parent isa GMTgrid || (print(""); return nothing) # no parent to check against yet -> silent
-	print(_nswing_nest_msg(parent, child))
+	# checked as the run will see them: both on gridline nodes (_nswing_validate converts the same way)
+	print(_nswing_nest_msg(_as_gridline(parent), _as_gridline(child)))
 	return nothing
 end
 
@@ -666,9 +667,16 @@ function _nswing_validate(scene::Ptr{Cvoid}, d::Dict{String,String})
 	# dialog-typed/browsed file — a typed path is loaded here (grdread, header + data) SPECIFICALLY so
 	# it obeys the identical nesting rules a scene-built one already does. No exemption for typed
 	# files: that was the bug — a bad nest file used to sail through unchecked.
+	# ONE registration for the whole run (nested.jl `_as_gridline`): a pixel-registered level is
+	# converted, and a pixel FILE is replaced in `nests` by its converted grid, so the run (and a CLI
+	# save) gets the gridline one, never the file as it lies.
 	loaded_nests = Tuple{Int,GMTgrid}[]
-	for (n, G) in nests
-		push!(loaded_nests, (n, G isa GMTgrid ? G : _gmtread_trb(String(G))))
+	for (i, (n, G)) in enumerate(nests)
+		Gl = G isa GMTgrid ? G : _gmtread_trb(String(G))
+		if Gl.registration == 1
+			Gl = _as_gridline(Gl);  nests[i] = (n, Gl)
+		end
+		push!(loaded_nests, (n, Gl))
 	end
 
 	# Each SCENE "layerN" starts as a literal all-zero placeholder (_nested_blank_grid, nested.jl)
@@ -680,6 +688,7 @@ function _nswing_validate(scene::Ptr{Cvoid}, d::Dict{String,String})
 		                          "fill it with real bathymetry via Transplant before running NSWING")
 	end
 	base = _find_object(scene, :grid, "")             # layer0: the window's base bathymetry grid
+	base isa GMTgrid && (base = _as_gridline(base))   # a run with no nest never went through the tool's swap
 
 	# Every nest level must fit inside its PARENT — bathy for layer1, the previous layer for the rest
 	# (_nswing_check_nest_fits, same rule the "Nested grids" rectangle tool enforces when it builds the
@@ -702,6 +711,10 @@ function _nswing_validate(scene::Ptr{Cvoid}, d::Dict{String,String})
 	end
 
 	src = isempty(srcname) ? "" : _nswing_grid_ref(scene, srcname)
+	# The Source (Okada z) on the SAME registration as the bathymetry it is added to: a scene grid is
+	# converted; a pixel FILE becomes its converted grid (then saved, never handed over as it lies).
+	src isa GMTgrid && (src = _as_gridline(src))
+	(src isa String && !isempty(src) && _grid_file_is_pixel(src)) && (src = _as_gridline(_gmtread_trb(src)))
 	(base isa GMTgrid && src isa GMTgrid) && _nswing_check_grid_compat(base, src, srcname)
 
 	return opts, msgs, nests, base, src
@@ -753,7 +766,9 @@ function _nswing_plan_paths(scene::Ptr{Cvoid}, d::Dict{String,String})
 	dir = _nswing_save_dir(scene, d)
 
 	bathy_known = _path_for_handle(scene)
-	bathy_needs_save = isempty(bathy_known)
+	# A pixel-registered bathymetry FILE is not what the run uses (`base` is its gridline twin), so the
+	# converted grid is saved beside the others instead of the file being referenced as it lies.
+	bathy_needs_save = isempty(bathy_known) || _grid_file_is_pixel(bathy_known)
 	bathy_path = bathy_needs_save ? joinpath(dir, "bathy.grd") : bathy_known
 
 	src_needs_save = src isa GMTgrid

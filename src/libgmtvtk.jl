@@ -127,7 +127,7 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_add_curtain_h, :gmtvtk_add_curtain_file_h,
 	:gmtvtk_view_points, :gmtvtk_promote_points_h, :gmtvtk_selection_count, :gmtvtk_get_selection,
 	:gmtvtk_get_selection_xyz, :gmtvtk_set_cloud_selection_callback,   # a cloud selection reaches the REPL (points.jl)
-	:gmtvtk_set_object_visible, :gmtvtk_set_axes_shown_h, :gmtvtk_set_extra_owner_h, :gmtvtk_restack_grid_h, :gmtvtk_refit_view_h,
+	:gmtvtk_set_object_visible, :gmtvtk_set_grid_frame_h, :gmtvtk_set_axes_shown_h, :gmtvtk_set_extra_owner_h, :gmtvtk_restack_grid_h, :gmtvtk_refit_view_h,
 	:gmtvtk_view_fv, :gmtvtk_promote_fv_h, :gmtvtk_set_julia_eval, :gmtvtk_set_table, :gmtvtk_log_error, :gmtvtk_log_info,
 	:gmtvtk_error_box, :gmtvtk_get_xfac,
 	:gmtvtk_take_messages, :gmtvtk_shutdown, :gmtvtk_set_headless,   # Qt's own warnings -> the failure sink; ordered teardown

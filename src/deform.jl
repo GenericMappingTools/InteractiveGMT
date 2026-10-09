@@ -125,13 +125,39 @@ function _okada_on_grid(G::GMTgrid; kw...)
 	return Gd
 end
 
-# Save Session: the dialog's request block, verbatim, as the window's ONE :elastic recipe. The Okada
-# field is DERIVED — fault geometry + slip through `GMT.okada` on this window's grid — so the session
-# stores the REQUEST and recomputes it on load, exactly as :illum and :focal do. Writing the result as
-# a netCDF sidecar instead put ~1 MB of recomputable pixels in every tsunami session zip.
-_session_record_elastic!(scene::Ptr{Cvoid}, raw::String) =
-	_session_record_single!(scene, :elastic, :menu;
-	                        params = Dict{String,Any}("cparams" => replace(raw, '\n' => '\x1e')))
+# Save Session: the dialog's request, as the window's ONE :elastic recipe. The Okada field is DERIVED
+# — fault geometry + slip through `GMT.okada` on this window's grid — so the session stores the
+# REQUEST and recomputes it on load, exactly as :illum and :focal do. Writing the result as a netCDF
+# sidecar instead put ~1 MB of recomputable pixels in every tsunami session zip.
+#
+# Stored as NAMED fields (param.length=…, param.strike=…), never as the dialog's positional ';' string:
+# a session file is read by people. The names are the dialog's own fields, in the order the dialog
+# (70_window.cpp `assemble`) writes them, so `_elastic_request` gives `_on_elastic` back exactly the
+# string it parses.
+const _ELASTIC_FIELDS = ("action", "coords", "length", "width", "strike", "dip", "depth", "depth_top",
+                         "rake", "slip", "hide", "scc", "N", "q", "mu", "region", "inc",
+                         "x_start", "y_start", "save_path")
+
+function _session_record_elastic!(scene::Ptr{Cvoid}, raw::String)
+	parts  = split(raw, ';')
+	params = Dict{String,Any}()
+	for (i, k) in enumerate(_ELASTIC_FIELDS)
+		params[k] = i <= length(parts) ? String(strip(parts[i])) : ""
+	end
+	for p in parts[length(_ELASTIC_FIELDS)+1:end]
+		startswith(strip(p), "MODELSLIP=") && (params["model_slip"] = String(strip(p)[length("MODELSLIP=")+1:end]))
+	end
+	return _session_record_single!(scene, :elastic, :menu; params = params)
+end
+
+# The dialog's request string back from a recipe's named fields. A session saved before the fields had
+# names carries the old positional `cparams` string, which is used as it is.
+function _elastic_request(params::AbstractDict)::String
+	haskey(params, "cparams") && return replace(String(params["cparams"]), '\x1e' => '\n')
+	raw = join((String(get(params, k, "")) for k in _ELASTIC_FIELDS), ';')
+	haskey(params, "model_slip") && (raw *= ";MODELSLIP=" * String(params["model_slip"]))
+	return raw
+end
 
 # `adopt` is FALSE only on a session replay. Running the derived-variable transition then is not the
 # law being honoured, it is the law being applied to the wrong actor: a REPLAY is not a new result

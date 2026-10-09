@@ -44,3 +44,69 @@ function _nested_blank_grid(scene::Ptr{Cvoid}, x0, x1, y0, y1, xi, yi, geog::Boo
 	ccall(_fn(:gmtvtk_set_object_visible), Cint, (Ptr{Cvoid}, Cstring, Cint), scene, nm, Cint(0))  # hidden
 	return nothing
 end
+
+# ── ONE registration for the whole nesting chain ─────────────────────────────────────────────────
+# The chain is GRIDLINE-registered end to end: the rectangle snap (85_polygon.cpp `nestBaseGrid`), the
+# corner rule (`_nest_binning`) and nswing itself all read a grid's nodes as range[1]:inc:range[2]. A
+# pixel-registered bathymetry breaks all three in ways that look like anything but a registration
+# problem, so it is converted UNDER THE HOOD and the run carries on as if nothing had happened.
+
+# What `grdedit -T` does to a pixel grid, in memory: the SAME nodes and values, the header moved onto
+# them — region shrunk by half a cell (GMT.jl's own `grid2pix`), x/y the cell centres, registration 0.
+# The z buffer is SHARED, not copied: no value moves, only the description of where they sit.
+# A gridline grid comes back as itself.
+function _as_gridline(G::GMTgrid)
+	G.registration == 1 || return G
+	nx, ny = _grid_dims(G)
+	hdr = GMT.grid2pix(G; pix = false)
+	Gg  = typeof(G)((getfield(G, f) for f in fieldnames(typeof(G)))...)
+	Gg.range = copy(G.range);  Gg.range[1:4] = hdr[1:4]
+	Gg.inc   = copy(G.inc)
+	Gg.x = collect(range(hdr[1], hdr[2]; length = nx))
+	Gg.y = collect(range(hdr[3], hdr[4]; length = ny))
+	Gg.registration = 0
+	return Gg
+end
+
+# Is the grid FILE at `path` pixel-registered? Header only (`grdinfo -C`, column 11 = registration),
+# so a file the run will use as-is is never read twice. Unreadable -> false: the reader that follows
+# reports it in its own words.
+_grid_file_is_pixel(path::AbstractString) =
+	try GMT.grdinfo(String(path), C = true).data[11] == 1 catch; false end
+
+# Called (synchronously, via g_juliaEval) by the C++ nested-rectangle tool the moment the ROOT rectangle
+# is drawn, before it snaps, and by a session load before it restores any nested rectangle. A pixel
+# bathymetry gets its gridline header, and so does every grid already derived ON it — same pixel
+# footprint, e.g. "Okada z", which `_okada_on_grid` gave the bathymetry's own header — so no two
+# registrations ever meet in the chain. An Okada field computed AFTER this inherits gridline from the
+# window grid by construction.
+#
+# NOTHING IS REBUILT. The values have not changed, so neither has the palette, the colour bar, the
+# layer's row or its visibility: the viewer moves each layer's x/y frame IN PLACE
+# (`gmtvtk_set_grid_frame_h`) and the registry swaps in the same z buffer under the new header.
+# No-op on a gridline base.
+function _nested_gridline_base!(scene::Ptr{Cvoid})
+	B = _find_object(scene, :grid, "")
+	(B isa GMTgrid && B.registration == 1) || return nothing
+	v = get(_SCENE_OBJS, scene, nothing)
+	v === nothing && return nothing
+	moved = String[]
+	for i in eachindex(v)
+		k, n, d = v[i]
+		(k === :grid && d isa GMTgrid && d.registration == 1) || continue
+		(d === B || (d.range[1:4] == B.range[1:4] && d.inc == B.inc)) || continue
+		Gg = _as_gridline(d)
+		# the base answers to "" as well as to its own name; an extra only to its own
+		nm = d === B ? "" : n
+		ccall(_fn(:gmtvtk_set_grid_frame_h), Cint, (Ptr{Cvoid}, Cstring, Cdouble, Cdouble, Cdouble, Cdouble),
+		      scene, nm, Gg.range[1], Gg.range[2], Gg.range[3], Gg.range[4]) == 0 &&
+			error("the viewer has no grid '$(isempty(nm) ? "base" : nm)' to move")
+		v[i] = (k, n, Gg)
+		d === B || push!(moved, n)
+		d === B && get(_FIGREG, scene, nothing) isa QtFigure && (_FIGREG[scene] = QtFigure(scene, Gg))
+	end
+	extra = isempty(moved) ? "" : " (and " * join(moved, ", ") * ")"
+	_viewer_log_info(scene, "Nested grids: the bathymetry$extra is pixel-registered; converted to " *
+		"gridline registration (grdedit -T) — the nesting chain and NSWING use gridline nodes.")
+	return nothing
+end

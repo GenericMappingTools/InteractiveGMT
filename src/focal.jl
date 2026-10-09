@@ -814,7 +814,9 @@ function _on_focal(scene::Ptr{Cvoid}, cparams::String)::Cvoid
 		_FOCAL_LAST[scene] = (d=d, lon=lon, lat=lat, dep=dep, mag=mag, str1=str1, dip1=dip1, rake1=rake1,
 		                      str2=str2, dip2=dip2, rake2=rake2, plon=plon, plat=plat, date=date, idx=idx)
 		# Save Session: remember the request (newlines escaped to keep it a single manifest value).
-		_session_record!(scene, :focal, :menu; params=Dict{String,Any}("cparams" => replace(cparams, '\n' => '\x1e')))
+		# Named for the layer it makes, so Save Session writes this request INSTEAD of the anchor lines
+		# and date labels it draws (`_session_strip_recipe_rows`).
+		_session_record!(scene, :focal, :menu; name="Focal mechanisms", params=Dict{String,Any}("cparams" => replace(cparams, '\n' => '\x1e')))
 		_viewer_log_info(scene, "Focal mechanisms: plotted $(length(idx)) of $(length(lon)) events ($n patches)")
 	catch e
 		_focal_fail(scene, "Focal mechanisms FAILED: $(sprint(showerror, e))")
