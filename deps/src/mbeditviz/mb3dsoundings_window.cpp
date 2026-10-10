@@ -203,6 +203,10 @@ struct Mb3dsdg {
 	bool view_secondary = false;
 	int view_profiles = MBS_VIEW_PROFILES_NONE;
 	bool view_scalewithflagged = true;
+	// a FIXED vertical / colour range (mb3dsdgSetFixedZRange): the box and Color by soundings span at least
+	// it, so successive views of one quantity (the rounds of residues) are drawn on the same scale
+	bool fixedZ = false;
+	double fixZmin = 0.0, fixZmax = 0.0;
 	int view_color = MBS_VIEW_COLOR_FLAG;
 
 	/* last sounding edited */
@@ -288,11 +292,11 @@ void msScaleZ() {
 	}
 }
 
-// A FLAGGED sounding may be drawn: always when the user flagged it here (it was good when the data came
-// in) -- an edit marks a sounding, it never makes it vanish -- and, for one that came in already flagged,
-// when "Show flagged" is on. The one rule every colour mode, the box and the pick tests use.
+// A FLAGGED sounding is drawn only while View > "Show flagged" is on -- whoever flagged it, the data as it
+// came in or an edit made here. Off hides every flagged sounding. The one rule every colour mode, the box
+// and the pick tests use.
 static bool msFlagVisible(const Mb3dsdg *m, const mb3dsoundings_sounding_struct *sounding) {
-	return m->view_flagged || mb_beam_ok(sounding->beamflagorg);
+	return m->view_flagged || mb_beam_ok(sounding->beamflag);
 }
 
 // Is this sounding drawn by msBuildScene in the current view? The SAME tests its point loops make
@@ -338,6 +342,11 @@ void msSetZScale() {
 			zmax = MAX(sounding->z, zmax);
 		}
 		nused++;
+	}
+	if (g_ms->fixedZ) {
+		zmin = nused ? MIN(zmin, g_ms->fixZmin) : g_ms->fixZmin;
+		zmax = nused ? MAX(zmax, g_ms->fixZmax) : g_ms->fixZmax;
+		nused = MAX(nused, 2);
 	}
 
 	soundingdata->zorigin = 0.5 * (zmin + zmax);
@@ -982,6 +991,10 @@ void msBuildScene() {
 						zmax = MAX(zmax, sounding->z);
 					}
 				}
+			}
+			if (m->fixedZ) {                     // the same colours for the same values, round after round
+				zmin = first ? m->fixZmin : MIN(zmin, m->fixZmin);
+				zmax = first ? m->fixZmax : MAX(zmax, m->fixZmax);
 			}
 			for (int i = 0; i < soundingdata->num_soundings; i++) {
 				mb3dsoundings_sounding_struct *sounding = &(soundingdata->soundings[i]);
@@ -2165,6 +2178,25 @@ bool mb3dsdgOpenPane(void *scene, const MbEditHost &host, mb3dsoundings_struct *
 				if (g_ms && g_ms->notify.grid)
 					g_ms->notify.grid();
 			});
+		// Residues: the caller shows these soundings minus the surface its Gridding made from them
+		if (auto *rb = content->findChild<QPushButton *>("residuesButton")) {
+			rb->hide();
+			QObject::connect(rb, &QPushButton::clicked, content, []() {
+				if (g_ms && g_ms->notify.residues)
+					g_ms->notify.residues();
+			});
+		}
+		// Auto flag (a residue pane): the caller flags the soundings farther than t x the largest residue
+		if (auto *sl = content->findChild<QSlider *>("autoFlagSlider")) {
+			auto *lb = content->findChild<QLabel *>("autoFlagLabel");
+			QObject::connect(sl, &QSlider::valueChanged, content, [lb](int v) {
+				const double t = 0.01 * v;
+				if (lb)
+					lb->setText(QString("Flag %1").arg(t, 0, 'f', 2));
+				if (g_ms && g_ms->notify.autoflag)
+					g_ms->notify.autoflag(t);
+			});
+		}
 		// CUBE filter: the caller opens CUBE on these soundings, set to flag (its dialog also grids)
 		if (auto *cb = content->findChild<QPushButton *>("cubeFilterButton"))
 			QObject::connect(cb, &QPushButton::clicked, content, []() {
@@ -2205,6 +2237,9 @@ bool mb3dsdgOpenPane(void *scene, const MbEditHost &host, mb3dsoundings_struct *
 	}
 	Mb3dsdg *m = g_ms;
 	m->notify = notify;
+	mb3dsdgShowResidues(false);              // the caller shows it when its soundings have a surface
+	mb3dsdgShowAutoFlag(false);              // ... and this one when they are residues
+	m->fixedZ = false;                       // ... and its scale fixed (mb3dsdgSetFixedZRange)
 	m->soundingdata = data;
 	m->last_sounding_defined = false;
 	m->last_sounding_edited = 0;
@@ -2223,9 +2258,12 @@ void mb3dsdgSetAreaMode() {
 		return;
 	QWidget *d = m->paneDock;
 	if (auto *sb = d->findChild<QPushButton *>("saveButton")) {
-		sb->setText("Accept flags");
-		sb->setToolTip("Hand the flags made here to the full cloud's window (its Save writes them to the .esf), "
-		               "close this view and give the full cloud its pane back");
+		// Accept and Discard share Save's row (Discard is laid there in the .ui): CUBE filter keeps its own
+		sb->setGeometry(sb->x(), sb->y(), 66, sb->height());
+		sb->setText("Accept");
+		sb->setToolTip("Hand the flags made here, and the points selected in this window (Shift+left-drag), "
+		               "to the full cloud's window (its Save writes them to the .esf), close this view and give "
+		               "the full cloud its pane back");
 	}
 	if (auto *db = d->findChild<QPushButton *>("discardButton"))
 		db->show();
@@ -2325,13 +2363,57 @@ int mb3dsdgPaneButtons() {
 	if (!m || !m->pane || !m->paneDock)
 		return -1;
 	int bits = 0, k = 0;
-	for (const char *nm : {"cubeFilterButton", "gridButton", "discardButton"}) {
+	for (const char *nm : {"cubeFilterButton", "gridButton", "discardButton", "residuesButton"}) {
 		auto *b = m->paneDock->findChild<QPushButton *>(nm);
 		if (b && !b->isHidden())
 			bits |= 1 << k;
 		k++;
 	}
 	return bits;
+}
+
+void mb3dsdgShowResidues(bool on) {
+	Mb3dsdg *m = g_ms;
+	if (!m || !m->pane || !m->paneDock)
+		return;
+	if (auto *b = m->paneDock->findChild<QPushButton *>("residuesButton"))
+		b->setVisible(on);
+}
+
+void mb3dsdgShowAutoFlag(bool on) {
+	Mb3dsdg *m = g_ms;
+	if (!m || !m->pane || !m->paneDock)
+		return;
+	if (auto *sl = m->paneDock->findChild<QSlider *>("autoFlagSlider")) {
+		QSignalBlocker b(sl);                // back to 1 (nothing flagged) without telling anyone
+		sl->setValue(sl->maximum());
+		sl->setVisible(on);
+	}
+	if (auto *lb = m->paneDock->findChild<QLabel *>("autoFlagLabel")) {
+		lb->setText("Flag 1.00");
+		lb->setVisible(on);
+	}
+}
+
+void mb3dsdgSetFixedZRange(double zmin, double zmax) {
+	Mb3dsdg *m = g_ms;
+	if (!m || !m->soundingdata || !(zmax > zmin))
+		return;
+	m->fixedZ = true;
+	m->fixZmin = zmin;
+	m->fixZmax = zmax;
+	msSetZScale();
+	msPlot();
+	msUpdateStatus();
+}
+
+bool mb3dsdgSetAutoFlag(double t) {
+	Mb3dsdg *m = g_ms;
+	auto *sl = (m && m->pane && m->paneDock) ? m->paneDock->findChild<QSlider *>("autoFlagSlider") : nullptr;
+	if (!sl || sl->isHidden())
+		return false;
+	sl->setValue(int(std::lround(100.0 * t)));
+	return true;
 }
 
 bool mb3dsdgSetShowFlagged(bool on) {

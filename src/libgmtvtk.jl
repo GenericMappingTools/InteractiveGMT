@@ -366,7 +366,11 @@ const _LIB_OPTIONAL = (
 	:gmtvtk_mb_tag_cloud_grid_h,      # a grid made from the pane's cloud: line areas offer "Show point-cloud"
 	:gmtvtk_mb_area_cloud_h, :gmtvtk_mb_area_finish_h,   # that area view from coordinates; its Accept/Discard
 	:gmtvtk_mb_file_cloud_h,          # the same view for a navigation track: the soundings of its swath file
-	:gmtvtk_mb_pane_buttons,          # which of the open pane's CUBE / Gridding / Discard buttons are shown
+	:gmtvtk_mb_cloud_gridded_h,       # the pane's cloud was gridded: its Residues button shows (interpolate.jl)
+	:gmtvtk_mb_residue_cloud_h,       # the pane's Residues view: good soundings minus that surface (interpolate.jl)
+	:gmtvtk_mb_pane_scene,            # the window the open pane is docked in (a residue / area view's own)
+	:gmtvtk_mb_residue_autoflag,      # the residue pane's Auto flag slider, moved as the user moves it
+	:gmtvtk_mb_pane_buttons,          # which of the open pane's CUBE / Gridding / Discard / Residues buttons are shown
 	:gmtvtk_mb_soundings_counts, :gmtvtk_mb_soundings_show_flagged,   # 3D Soundings: drawn/good/flagged; Show flagged
 	# EXPERIMENTAL mbgrdviz (deps/src/mbgrdviz/, IGMT_WITH_MBGRDVIZ)
 	:gmtvtk_mbgrdviz_open, :gmtvtk_mbgrdviz_state, :gmtvtk_mbgrdviz_open_file, :gmtvtk_mbgrdviz_save,

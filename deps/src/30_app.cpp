@@ -2049,6 +2049,7 @@ static void mbAttachZRange(void *view, double zmin, double zmax);
 static QWidget *mbAddPane(void *scene, QWidget *content, const char *title, std::function<void()> closed);
 static void mbOpenCubeOnCloud(void *scene, const char *name, bool filter);   // 70_window.cpp
 static void mbOpenGridOnCloud(void *scene, const char *name);                 // 70_window.cpp
+static void mbResiduesOnCloud(void *scene);                                     // 70_window.cpp
 static MbEditHost mbeditViewerHost() {
 	MbEditHost h;
 	h.uiDir = gmtvtkUiDir();
@@ -2089,6 +2090,19 @@ static MbEditHost mbeditViewerHost() {
 	h.addPane = mbAddPane;
 	h.openCubeOnCloud = mbOpenCubeOnCloud;
 	h.openGridOnCloud = mbOpenGridOnCloud;
+	h.residuesOnCloud = mbResiduesOnCloud;
+	h.cloudSelection = [](void *scene, int *ids, int cap) -> int {
+		Scene *s = static_cast<Scene *>(scene);
+		if (!sceneAlive(s))
+			return 0;
+		int k = 0;
+		for (vtkIdType id : s->rbSel) {
+			if (ids && k < cap)
+				ids[k] = int(id);
+			k++;
+		}
+		return ids ? std::min(k, cap) : k;
+	};
 	return h;
 }
 #endif // GMTVTK_MBEDIT

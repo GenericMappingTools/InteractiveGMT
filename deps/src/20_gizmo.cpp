@@ -481,10 +481,10 @@ void DragCB(vtkObject *caller, unsigned long eid, void *clientData, void*) {
 				                                   // drag / edit-mode gesture (polygonHandleDblClick/Move,
 				                                   // 85_polygon.cpp; overlayPromoteSegmentToPolygon for
 				                                   // imported overlays).
-				else {                            // empty space -> PAN, the same camPanByDisplay the
-					                              // middle-drag and the arrow keys use. On the GLOBE the
-					                              // drag still turns it: that is how its centre is moved.
-					c->grab = c->s->globe ? Grab::Free : Grab::Pan;
+				else {                            // empty space: 2-D map -> PAN, the same camPanByDisplay
+					                              // the middle-drag and the arrow keys use. 3-D and the
+					                              // GLOBE -> axis-locked rotate/tilt (Grab::Free).
+					c->grab = (c->s->flat2d && !c->s->globe) ? Grab::Pan : Grab::Free;
 					c->startX = x; c->startY = y; c->freeAxis = 0;
 				}
 			}
@@ -547,7 +547,7 @@ void DragCB(vtkObject *caller, unsigned long eid, void *clientData, void*) {
 			renderWin(c); handled = true;
 		}
 		else if (c->grab == Grab::Free && cam) {
-			// Empty left-drag on the globe is AXIS-LOCKED: the first dominant direction wins for the
+			// Empty left-drag in 3-D / on the globe is AXIS-LOCKED: the first dominant direction wins for the
 			// whole gesture. Horizontal gesture ONLY rotates (azimuth); vertical gesture
 			// ONLY tilts. Never both in one drag.
 			if (c->freeAxis == 0) {

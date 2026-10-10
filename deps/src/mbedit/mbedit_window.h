@@ -81,6 +81,12 @@ struct MbEditHost {
 	void (*openCubeOnCloud)(void *scene, const char *name, bool filter) = nullptr;   // filter: Flag soundings preset
 	// the Interpolate dialog on that window's swath point cloud (its good soundings), set to mbgrid
 	void (*openGridOnCloud)(void *scene, const char *name) = nullptr;
+	// the residues of that window's swath point cloud: its good soundings minus the surface its Gridding
+	// made from them (the host samples the grid and calls back mb3dsdgOpenResidueCloud)
+	void (*residuesOnCloud)(void *scene) = nullptr;
+	// the points selected in that window's cloud (Shift+left-drag / Ctrl+right-drag), ids into the points
+	// it was made with: into ids (up to cap; null counts). How many
+	int (*cloudSelection)(void *scene, int *ids, int cap) = nullptr;
 };
 
 // Make a tool window parkable — the ONE implementation every MB-System tool uses. Install it AFTER

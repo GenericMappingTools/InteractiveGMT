@@ -173,7 +173,7 @@
   </widget>
   <widget class="QLineEdit" name="edit_flagk">
    <property name="geometry"><rect><x>372</x><y>440</y><width>50</width><height>22</height></rect></property>
-   <property name="text"><string>2.5</string></property>
+   <property name="text"><string>1.5</string></property>
    <property name="toolTip"><string>A sounding is flagged when |depth - CUBE depth| &gt; k * sqrt(sounding variance + node variance)</string></property>
   </widget>
   <widget class="QLabel" name="lb_out">

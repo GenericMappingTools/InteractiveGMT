@@ -101,7 +101,7 @@ the hypothesis CUBE chose at its nearest node. It is flagged when it misses that
 - `σ_sounding` is the sounding's own vertical uncertainty, the one CUBE was given (the IHO order, or
   the *Vertical uncertainty a/b* box);
 - `σ_node` comes from CUBE's 95% uncertainty of that node (*Reported uncertainty* chooses which);
-- **k** is the box next to *Flag soundings* (default 2.5). Smaller k flags more.
+- **k** is the box next to *Flag soundings* (default 1.5). Smaller k flags more.
 
 A sounding whose node got no depth is not judged. Everything above — the geometry, the IHO order,
 the hypothesis selection — changes the surface, and so what is flagged.
@@ -114,6 +114,36 @@ the hypothesis selection — changes the surface, and so what is flagged.
 - a **swath file or datalist** picked from the menu (no pane to show them in): they are written
   straight into each file's `.esf` as filter flags, and editing is switched on in its `.par`, so
   `mbprocess` applies them as it applies `mbedit`'s and `mbfilter`'s.
+
+## Residues (3D Soundings pane)
+
+Once the pane's **Gridding** (or CUBE's *Make grid*) has made a surface from the swath cloud, the
+pane shows a **Residues** button. It opens the cloud's good soundings — the ones that went into the
+surface — in a view of their own, each at its residue: the sounding minus the surface at that point
+(GMT's `grdtrack`; a sounding off the grid is left out). The view has its own 3D Soundings pane, so
+every editing tool works on the residues: Toggle, Pick, Erase, Grab, the sparse-voxel filter, CUBE
+filter.
+
+The residue pane has an **Auto flag** slider, from 1 down to 0.1: every sounding whose residue is
+farther from the surface than that fraction of the largest residue is flagged, at once, as the slider
+moves. At **1** nothing is flagged; at **0.1** everything but the soundings right on the surface is.
+Moving it back restores the soundings it flagged (a sounding you edit by hand is yours, and the slider
+leaves it alone).
+
+Points **selected** in that window with the point-cloud selection (**Shift+left-drag** a box) are
+dropped too, exactly like the flagged ones (by hand or by the slider). They reach the full cloud — which then gets its pane
+back — by any of:
+
+- **Accept** (beside **Discard**, on the Save row);
+- **closing** the residue window (unlike an area view, closing it keeps what was done there);
+- its **Gridding**, which regrids the FULL cloud without them (the full cloud's Gridding dialog opens).
+
+Back in the full cloud they are flagged as a **cleaning**, the way soundings that came in flagged are:
+**View ▸ Show flagged** off hides them, as it hides every flagged sounding.
+While the residue window is still open, the full cloud's Gridding already leaves them out.
+
+**Discard** drops them all. The next **Gridding** grids only the soundings still good — the flagged
+and selected ones never enter the new surface. **Save .esf** writes them to the files.
 
 ## Options
 

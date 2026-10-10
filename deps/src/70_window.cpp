@@ -23249,6 +23249,20 @@ static void mbOpenGridOnCloud(void *scene, const char *name) {
 	w->dlg->show();
 	mbPlaceRight(w->dlg, s->win);
 }
+// MbEditHost::residuesOnCloud: the 3D Soundings pane's Residues button -- Julia samples the surface the
+// pane's Gridding made at the good soundings and opens the residue view (gmtvtk_mb_residue_cloud_h)
+static void mbResiduesOnCloud(void *scene) {
+	Scene *s = static_cast<Scene *>(scene);
+	if (!sceneAlive(s) || !g_juliaEval)
+		return;
+	const QString cmd = QString("InteractiveGMT._mb_cloud_residues(Ptr{Cvoid}(UInt(%1)))")
+	                        .arg((qulonglong)reinterpret_cast<uintptr_t>(s));
+	std::vector<char> buf(1 << 12);
+	showBusyDialog("Computing the residues...");
+	const int n = g_juliaEval(s, cmd.toStdString().c_str(), buf.data(), (int)buf.size());
+	closeBusyDialog();
+	if (n < 0) sceneLogError(s, QString::fromUtf8(buf.data(), -n));
+}
 // MbEditHost::openCubeOnCloud: the 3D Soundings pane's CUBE filter button
 static void mbOpenCubeOnCloud(void *scene, const char *name, bool filter) {
 	openCubeDialog(static_cast<Scene *>(scene), QString(), QString::fromUtf8(name ? name : ""), filter);

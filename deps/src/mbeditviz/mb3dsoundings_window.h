@@ -38,6 +38,8 @@ struct Mb3dsdgNotify {
 	void (*cube)(bool filter) = nullptr;   // the pane's CUBE filter button (true: Flag soundings preset)
 	void (*grid)() = nullptr;              // the pane's Gridding button: grid the pane's good soundings
 	void (*discard)() = nullptr;           // an area pane's Discard button (its Save is then "Accept flags")
+	void (*residues)() = nullptr;          // the pane's Residues button (shown only once Gridding made a surface)
+	void (*autoflag)(double t) = nullptr;  // a residue pane's Auto flag slider: t in [0.1, 1]
 };
 
 // mb3dsoundings_open: show `data` (raise the window, or make it). `host` is mbeditviz's: its uiDir
@@ -72,8 +74,18 @@ bool mb3dsdgKey(int ch);
 bool mb3dsdgCounts(int *drawn, int *good, int *flagged);
 // View > Show flagged, through the menu entry itself
 bool mb3dsdgSetShowFlagged(bool on);
-// The open pane's buttons that are shown: bit 0 CUBE filter, bit 1 Gridding, bit 2 Discard; -1 = no pane
+// The open pane's buttons that are shown: bit 0 CUBE filter, bit 1 Gridding, bit 2 Discard, bit 3
+// Residues; -1 = no pane
 int mb3dsdgPaneButtons();
+// Show / hide the open pane's Residues button (its pane opens with it hidden)
+void mb3dsdgShowResidues(bool on);
+// Show / hide the open pane's Auto flag slider (a residue pane's; hidden at every open, set back to 1)
+void mb3dsdgShowAutoFlag(bool on);
+// Fix the open view's vertical box and Color-by-soundings range to span at least [zmin, zmax] (cleared at
+// every open): successive residue rounds are drawn on the first round's scale, so their shrinking shows
+void mb3dsdgSetFixedZRange(double zmin, double zmax);
+// Move the open pane's Auto flag slider to t (0.1 .. 1), as the user does: its handler runs. False = not shown
+bool mb3dsdgSetAutoFlag(double t);
 // one of the six edit modes (MB3DSDG_MOUSE_TOGGLE .. _INFO)
 bool mb3dsdgSetEditMode(int mode);
 // the window-pixel position (y down) of sounding i as last drawn

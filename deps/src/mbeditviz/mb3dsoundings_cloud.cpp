@@ -9,6 +9,7 @@
 #include "mbeditviz.h"
 
 #include <QDir>
+#include <QEvent>
 #include <QFileInfo>
 #include <QMessageBox>
 #include <QTimer>
@@ -16,6 +17,7 @@
 #include <algorithm>
 #include <cmath>
 #include <functional>
+#include <memory>
 #include <cstdio>
 #include <cstring>
 #include <unordered_map>
@@ -48,16 +50,69 @@ struct Cloud {
 	// parent, Discard drops them; either way the parent gets its pane back. closeWin closes its window.
 	struct Cloud *parent = nullptr;
 	std::function<void(void *)> closeWin;
+	bool gridded = false;                      // its Gridding made a surface in its window: Residues shows
+	// a sub-cloud view: [point id of its window's cloud] -> index into parent->s. The window's own point
+	// selection (Shift+left-drag) is turned into flags of those parent soundings when the view hands over.
+	std::vector<size_t> viewToParent;
+	// the Residues view: closing its window KEEPS its flags (hands them over), and its Gridding regrids
+	// the PARENT -- its flags and selection dropped -- instead of gridding the residues
+	bool residue = false;
+	// its window's selection, taken as that window starts closing (the window is gone by the time the pane
+	// hears of it, and the selection with it)
+	std::vector<int> selAtClose;
+	bool selTaken = false;
+	// the residue view's Auto flag slider: [sounding] -> flagged by it (so moving it back restores exactly
+	// those); maxAbs = the largest |residue|, what the slider's fraction is of
+	std::vector<char> autoFlag;
+	double maxAbs = 0.0;
+	// the full cloud's FIRST residue round: its range, the scale every later round is drawn on
+	bool resRange = false;
+	double resZmin = 0.0, resZmax = 0.0;
 	double cellsize() const {                 // mbeditviz's grid cell size rule (2% of the depth)
 		return maxDepth > 0.0 ? 0.02 * maxDepth : 1.0;
 	}
 };
 Cloud *g_cloud = nullptr;
 
+// The points selected in a sub-cloud view's window (its point ids): live while the window stands, the
+// snapshot its closing took after.
+std::vector<int> cloudSelection(const Cloud *a) {
+	if (a->selTaken)
+		return a->selAtClose;
+	std::vector<int> ids;
+	if (!a->host.cloudSelection)
+		return ids;
+	const int n = a->host.cloudSelection(a->scene, nullptr, 0);
+	if (n <= 0)
+		return ids;
+	ids.resize(size_t(n));
+	ids.resize(size_t(std::max(a->host.cloudSelection(a->scene, ids.data(), n), 0)));
+	return ids;
+}
+
+// Watches a sub-cloud view's window: as it starts closing, its selection is taken (see Cloud::selAtClose)
+class CloseWatch : public QObject {
+public:
+	std::function<void()> onClose;
+	using QObject::QObject;
+	bool eventFilter(QObject *o, QEvent *e) override {
+		if (e->type() == QEvent::Close && onClose)
+			onClose();
+		return QObject::eventFilter(o, e);
+	}
+};
+
 void cloudEdit(int ifile, int iping, int ibeam, char beamflag, int flush) {
 	(void)ifile;
 	if (!g_cloud || flush == MB3DSDG_EDIT_FLUSHPREVIOUS)
 		return;
+	// a hand edit of a sounding the Auto flag slider flagged makes it the user's: the slider lets go of it
+	if (!g_cloud->autoFlag.empty())
+		for (size_t i = 0; i < g_cloud->s.size(); i++)
+			if (g_cloud->s[i].iping == iping && g_cloud->s[i].ibeam == ibeam) {
+				g_cloud->autoFlag[i] = 0;
+				break;
+			}
 	g_cloud->edits.push_back({iping, ibeam, beamflag});
 	g_cloud->nedits++;
 }
@@ -210,8 +265,20 @@ void cloudDiscard() {
 // CUBE gridding: the host's CUBE dialog, its input these soundings (mb3dsdgCloudGood)
 // Gridding: the host's gridding dialog (Interpolate, on mbgrid), its input these soundings
 void cloudGrid() {
-	if (g_cloud && g_cloud->host.openGridOnCloud)
-		g_cloud->host.openGridOnCloud(g_cloud->scene, g_cloud->name.toUtf8().constData());
+	if (!g_cloud || !g_cloud->host.openGridOnCloud)
+		return;
+	if (g_cloud->residue && g_cloud->parent) {
+		// regrid: the residue view's flags and selected points go to the full cloud, which gets its pane
+		// back, and ITS Gridding opens -- on the soundings still good
+		Cloud *p = g_cloud->parent;
+		areaFinish(true, true);
+		QTimer::singleShot(0, [p]() {           // after areaFinish's own deferred hand-back
+			if (g_cloud == p && p->host.openGridOnCloud)
+				p->host.openGridOnCloud(p->scene, p->name.toUtf8().constData());
+		});
+		return;
+	}
+	g_cloud->host.openGridOnCloud(g_cloud->scene, g_cloud->name.toUtf8().constData());
 }
 
 void cloudCube(bool filter) {
@@ -219,11 +286,56 @@ void cloudCube(bool filter) {
 		g_cloud->host.openCubeOnCloud(g_cloud->scene, g_cloud->name.toUtf8().constData(), filter);
 }
 
+// Residues: the host samples the surface Gridding made and opens the residue view (mb3dsdgOpenResidueCloud)
+// The residue view's Auto flag slider at t (0.1 .. 1): every sounding whose residue is farther from the
+// surface than t x the largest one is flagged (as a filter flag); those it flagged before and that are
+// now within reach are restored. At 1 nothing is flagged. Handed to the full cloud like the view's edits.
+void cloudAutoFlag(double t) {
+	Cloud *c = g_cloud;
+	if (!c || !c->residue)
+		return;
+	if (c->autoFlag.size() != c->s.size())
+		c->autoFlag.assign(c->s.size(), 0);
+	const double lim = t * c->maxAbs;
+	for (size_t i = 0; i < c->s.size(); i++) {
+		auto &s = c->s[i];
+		const bool far = std::fabs(s.z) > lim;
+		if (far && mb_beam_ok(s.beamflag)) {
+			s.beamflag = char(MB_FLAG_FLAG + MB_FLAG_FILTER);
+			c->autoFlag[i] = 1;
+			c->data.num_soundings_unflagged--;
+			c->data.num_soundings_flagged++;
+		}
+		else if (!far && c->autoFlag[i]) {
+			s.beamflag = char(MB_FLAG_NONE);
+			c->autoFlag[i] = 0;
+			c->data.num_soundings_unflagged++;
+			c->data.num_soundings_flagged--;
+		}
+	}
+	mb3dsdgPlot();
+}
+
+// (after this click: the view it opens ends the very pane whose button got us here)
+void cloudResidues() {
+	if (!g_cloud || !g_cloud->host.residuesOnCloud)
+		return;
+	Cloud *c = g_cloud;
+	QTimer::singleShot(0, [c]() {
+		if (g_cloud == c)
+			c->host.residuesOnCloud(c->scene);
+	});
+}
+
+// A cloud's pane back in its window (a sub-cloud view ended, or never opened): the same pane, its
+// Residues button as the cloud stands. False when the pane cannot open.
+bool cloudReopenPane(Cloud *p);
+
 // the pane is gone: what is not saved yet is saved, the soundings released. An area cloud's pane gone by
 // itself (its window closed) is a Discard.
 void cloudDismiss() {
 	if (g_cloud && g_cloud->parent) {
-		areaFinish(false, false);
+		areaFinish(g_cloud->residue, false);     // a residue view's flags are kept; an area's dropped
 		return;
 	}
 	Cloud *c = g_cloud;
@@ -246,7 +358,16 @@ Mb3dsdgNotify cloudNotify() {
 	n.cube = &cloudCube;
 	n.grid = &cloudGrid;
 	n.discard = &cloudDiscard;
+	n.residues = &cloudResidues;
+	n.autoflag = &cloudAutoFlag;
 	return n;
+}
+
+bool cloudReopenPane(Cloud *p) {
+	if (!mb3dsdgOpenPane(p->scene, p->host, &p->data, cloudNotify()))
+		return false;
+	mb3dsdgShowResidues(p->gridded);
+	return true;
 }
 
 // End the area cloud in g_cloud: with `accept` its edits become the parent's (each sounding found by its
@@ -285,6 +406,55 @@ void areaFinish(bool accept, bool closeWindow) {
 			p->nedits++;
 		}
 	}
+	// the points selected in the view's window (its own Shift+left-drag selection, highlighted there): those
+	// soundings are flagged in the parent too -- a selection made to drop points never stays behind
+	if (accept && !a->viewToParent.empty()) {
+		for (int id : cloudSelection(a)) {
+			if (id < 0 || size_t(id) >= a->viewToParent.size())
+				continue;
+			auto &s = p->s[a->viewToParent[size_t(id)]];
+			if (!mb_beam_ok(s.beamflag))
+				continue;                            // already flagged (by the view's own edits)
+			s.beamflag = char(MB_FLAG_FLAG + MB_FLAG_MANUAL);
+			p->data.num_soundings_unflagged--;
+			p->data.num_soundings_flagged++;
+			p->edits.push_back({s.iping, s.ibeam, s.beamflag});
+			p->nedits++;
+		}
+	}
+	// the residue view's Auto flag: the soundings its slider holds flagged, flagged in the parent too
+	if (accept && std::find(a->autoFlag.begin(), a->autoFlag.end(), char(1)) != a->autoFlag.end()) {
+		int nb = 0;
+		for (const auto &s : p->s)
+			nb = std::max(nb, s.ibeam + 1);
+		std::unordered_map<long long, size_t> at;
+		for (size_t i = 0; i < p->s.size(); i++)
+			at[(long long)p->s[i].iping * nb + p->s[i].ibeam] = i;
+		for (size_t i = 0; i < a->s.size(); i++) {
+			if (!a->autoFlag[i])
+				continue;
+			auto it = at.find((long long)a->s[i].iping * nb + a->s[i].ibeam);
+			if (it == at.end())
+				continue;
+			auto &s = p->s[it->second];
+			if (!mb_beam_ok(s.beamflag))
+				continue;
+			s.beamflag = char(MB_FLAG_FLAG + MB_FLAG_FILTER);
+			p->data.num_soundings_unflagged--;
+			p->data.num_soundings_flagged++;
+			p->edits.push_back({s.iping, s.ibeam, s.beamflag});
+			p->nedits++;
+		}
+	}
+	// What the residues flagged comes back to the full cloud as a CLEANING, not as an edit to look at: those
+	// soundings are flagged as if they had come in flagged, so View > Show flagged hides them there (an
+	// edit made in the full cloud's own pane stays drawn, as ever)
+	if (accept && a->residue)
+		for (size_t k : a->viewToParent) {
+			auto &s = p->s[k];
+			if (!mb_beam_ok(s.beamflag))
+				s.beamflagorg = s.beamflag;
+		}
 	void *areaScene = a->scene;
 	auto closeWin = a->closeWin;
 	g_cloud = nullptr;                           // the area pane's teardown then saves nothing
@@ -297,7 +467,7 @@ void areaFinish(bool accept, bool closeWindow) {
 			closeWin(areaScene);
 		if (p->host.sceneWindow && p->host.sceneWindow(p->scene)) {
 			g_cloud = p;
-			if (!mb3dsdgOpenPane(p->scene, p->host, &p->data, cloudNotify())) {
+			if (!cloudReopenPane(p)) {
 				g_cloud = nullptr;
 				cloudSaveEdits(p);
 				delete p;
@@ -353,10 +523,12 @@ int mb3dsdgEsfFlag(const MbEditHost &host, const QStringList &files, const doubl
 // inside it) and a navigation track's (the soundings of its file). `keep` says which of the parent's
 // soundings go; everything else -- the window, the pane, Accept / Discard, the parent stepping aside --
 // is this one function, so the two views cannot drift apart. `none` is said when nothing is kept.
+// `zOf` (the Residues view): the z each kept sounding is shown at, by its index in the parent (null: its depth).
 static bool openSubCloud(void *parentScene, const std::function<bool(const mb3dsoundings_sounding_struct &)> &keep,
                          const QString &suffix, const QString &none,
                          const std::function<void *(const double *xyz, int n, const QString &title)> &makeWindow,
-                         const std::function<void(void *)> &closeWin) {
+                         const std::function<void(void *)> &closeWin,
+                         const std::function<double(size_t)> &zOf = nullptr) {
 	Cloud *p = g_cloud;
 	if (!p || p->scene != parentScene || !keep || !makeWindow)
 		return false;
@@ -370,18 +542,22 @@ static bool openSubCloud(void *parentScene, const std::function<bool(const mb3ds
 		return false;
 	const size_t nn = size_t(nping) * size_t(nbeam);
 	std::vector<double> lon(nn, NAN), lat(nn, NAN), z(nn, NAN), good;
-	for (const auto &s : p->s) {
+	std::vector<size_t> viewToParent;              // the window's point id -> the parent's sounding
+	for (size_t i = 0; i < p->s.size(); i++) {
+		const auto &s = p->s[i];
 		if (!keep(s))
 			continue;
 		const size_t k = size_t(s.ibeam) * size_t(nping) + size_t(s.iping);
+		const double sz = zOf ? zOf(i) : s.z;
 		lon[k] = s.x;
 		lat[k] = s.y;
 		const bool ok = mb_beam_ok(s.beamflag);
-		z[k] = ok ? s.z : s.z - kFlagShift;
+		z[k] = ok ? sz : sz - kFlagShift;
 		if (ok) {
 			good.push_back(s.x);
 			good.push_back(s.y);
-			good.push_back(s.z);
+			good.push_back(sz);
+			viewToParent.push_back(i);
 		}
 	}
 	if (good.empty()) {
@@ -399,6 +575,18 @@ static bool openSubCloud(void *parentScene, const std::function<bool(const mb3ds
 	if (ok && g_cloud && g_cloud->scene == areaScene) {
 		g_cloud->parent = p;
 		g_cloud->closeWin = closeWin;
+		g_cloud->viewToParent = std::move(viewToParent);
+		if (QWidget *w = p->host.sceneWindow ? p->host.sceneWindow(areaScene) : nullptr) {
+			auto *watch = new CloseWatch(w);
+			Cloud *a = g_cloud;
+			watch->onClose = [a]() {
+				if (g_cloud == a && !a->selTaken) {
+					a->selAtClose = cloudSelection(a);
+					a->selTaken = true;
+				}
+			};
+			w->installEventFilter(watch);
+		}
 		mb3dsdgSetAreaMode();
 		return true;
 	}
@@ -406,7 +594,7 @@ static bool openSubCloud(void *parentScene, const std::function<bool(const mb3ds
 	if (areaScene && closeWin)
 		closeWin(areaScene);
 	g_cloud = p;
-	if (!mb3dsdgOpenPane(p->scene, p->host, &p->data, cloudNotify())) {
+	if (!cloudReopenPane(p)) {
 		g_cloud = nullptr;
 		cloudSaveEdits(p);
 		delete p;
@@ -484,6 +672,57 @@ bool mb3dsdgOpenFileCloud(void *parentScene, const QStringList &files,
 	                    makeWindow, closeWin);
 }
 
+bool mb3dsdgOpenResidueCloud(void *parentScene, const double *res, int n,
+                             const std::function<void *(const double *xyz, int n, const QString &title)> &makeWindow,
+                             const std::function<void(void *)> &closeWin) {
+	Cloud *p = g_cloud;
+	if (!p || p->scene != parentScene || !res || n <= 0)
+		return false;
+	if (!p->resRange) {                          // the first round: its range is the scale from now on
+		bool any = false;
+		for (int k = 0; k < n; k++)
+			if (!std::isnan(res[k])) {
+				p->resZmin = any ? std::min(p->resZmin, res[k]) : res[k];
+				p->resZmax = any ? std::max(p->resZmax, res[k]) : res[k];
+				any = true;
+			}
+		p->resRange = any && p->resZmax > p->resZmin;
+	}
+	// res is in mb3dsdgCloudGood's order (the good soundings, as they stand): onto the parent's indices
+	auto at = std::make_shared<std::vector<double>>(p->s.size(), NAN);
+	int i = 0;
+	for (size_t k = 0; k < p->s.size() && i < n; k++)
+		if (mb_beam_ok(p->s[k].beamflag))
+			(*at)[k] = res[i++];
+	const mb3dsoundings_sounding_struct *base = p->s.data();
+	auto onGrid = [at, base](const mb3dsoundings_sounding_struct &s) {
+		return !std::isnan((*at)[size_t(&s - base)]);
+	};
+	auto residue = [at](size_t k) { return (*at)[k]; };
+	if (!openSubCloud(parentScene, onGrid, "residues", "No good sounding of %1 lies on the gridded surface.",
+	                  makeWindow, closeWin, residue))
+		return false;
+	Cloud *c = g_cloud;
+	c->residue = true;
+	for (const auto &s : c->s)
+		c->maxAbs = std::max(c->maxAbs, std::fabs(s.z));
+	mb3dsdgShowAutoFlag(true);
+	if (p->resRange)                             // drawn on the first round's scale: a smaller round LOOKS smaller
+		mb3dsdgSetFixedZRange(p->resZmin, p->resZmax);
+	return true;
+}
+
+bool mb3dsdgAutoFlag(double t) {
+	return g_cloud && g_cloud->residue && mb3dsdgSetAutoFlag(t);
+}
+
+void mb3dsdgCloudGridded(void *scene) {
+	if (!g_cloud || g_cloud->scene != scene)
+		return;
+	g_cloud->gridded = true;
+	mb3dsdgShowResidues(true);
+}
+
 bool mb3dsdgAreaOpen() {
 	return g_cloud && g_cloud->parent;
 }
@@ -495,16 +734,48 @@ bool mb3dsdgAreaFinish(bool accept) {
 	return true;
 }
 
+void *mb3dsdgCloudScene() {
+	return g_cloud ? g_cloud->scene : nullptr;
+}
+
 QString mb3dsdgCloudName(void *scene) {
 	return (g_cloud && g_cloud->scene == scene) ? g_cloud->name : QString();
 }
 
 int mb3dsdgCloudGood(void *scene, double *xyz, int cap) {
-	if (!g_cloud || g_cloud->scene != scene)
+	if (!g_cloud)
 		return -1;
+	// The full cloud asked for while one of its views is open (its Gridding dialog's Compute, with the
+	// residue window still up): its good soundings MINUS what that view has flagged or selected so far --
+	// the view's flags and selection count at once, not only once it hands them over
+	const Cloud *c = g_cloud;
+	std::vector<char> drop;
+	if (g_cloud->scene != scene) {
+		const Cloud *a = g_cloud;
+		if (!a->parent || a->parent->scene != scene)
+			return -1;
+		c = a->parent;
+		drop.assign(c->s.size(), 0);
+		int nb = 0;
+		for (const auto &s : c->s)
+			nb = std::max(nb, s.ibeam + 1);
+		std::unordered_map<long long, size_t> at;
+		for (size_t i = 0; i < c->s.size(); i++)
+			at[(long long)c->s[i].iping * nb + c->s[i].ibeam] = i;
+		for (const auto &s : a->s)
+			if (!mb_beam_ok(s.beamflag)) {
+				auto it = at.find((long long)s.iping * nb + s.ibeam);
+				if (it != at.end())
+					drop[it->second] = 1;
+			}
+		for (int id : cloudSelection(a))
+			if (id >= 0 && size_t(id) < a->viewToParent.size())
+				drop[a->viewToParent[size_t(id)]] = 1;
+	}
 	int n = 0;
-	for (const auto &s : g_cloud->s) {
-		if (!mb_beam_ok(s.beamflag))
+	for (size_t i = 0; i < c->s.size(); i++) {
+		const auto &s = c->s[i];
+		if (!mb_beam_ok(s.beamflag) || (!drop.empty() && drop[i]))
 			continue;
 		if (xyz && n < cap) {
 			xyz[3 * n] = s.x;

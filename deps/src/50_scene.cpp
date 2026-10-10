@@ -388,11 +388,29 @@ static bool aquaLandColorbarVisible(Scene *s) { return s && s->aquaLandBar && s-
 // polygon-vertex / text-label drags. Qt delivers the press to the widget BEFORE VTK's interactor
 // adapter, so a VTK observer would lose the race to the trackball — the widget path is the only
 // reliable one in this codebase. nx/ny are NORMALIZED viewport coords (bottom-up, 0..1).
-static bool colorbarHit(Scene *s, double nx, double ny) {   // cursor over the (visible) bar frame?
+// The cursor must be ON the bar itself (coloured strip + its ticks) or ON one of its numbers --
+// never the empty part of the actor's frame or a margin around it.
+static bool colorbarLabelHit(Scene *s, const std::vector<vtkSmartPointer<vtkTextActor>> &labels,
+                             double nx, double ny) {
+	if (!s->ren->GetRenderWindow()) return false;
+	const int *sz = s->ren->GetRenderWindow()->GetSize();   // same pixels nx/ny were normalised by
+	if (!sz || sz[0] <= 0 || sz[1] <= 0) return false;
+	const double px = nx * sz[0], py = ny * sz[1];
+	double bb[4];
+	for (const auto &ta : labels) {
+		if (!ta || !ta->GetVisibility()) continue;
+		ta->GetBoundingBox(s->ren, bb);              // display pixels: xmin, xmax, ymin, ymax
+		if (px >= bb[0] && px <= bb[1] && py >= bb[2] && py <= bb[3]) return true;
+	}
+	return false;
+}
+static bool colorbarHit(Scene *s, double nx, double ny) {   // cursor over the (visible) bar or a label?
 	if (!s || (!colorbarVisible(s) && !aquaLandColorbarVisible(s))) return false;
-	const double L = s->barX0 - 0.05, R = s->barX0 + cbar::W;   // include the numbers to the left
-	const double B = s->barY0 - 0.02, T = s->barY0 + cbar::H + 0.02;
-	return nx >= L && nx <= R && ny >= B && ny <= T;
+	const double L = s->barX0 + cbar::W * (1.0 - cbar::BARRATIO) - cbar::TICKLEN, R = s->barX0 + cbar::W;
+	const double B = s->barY0, T = s->barY0 + cbar::H;
+	if (nx >= L && nx <= R && ny >= B && ny <= T) return true;
+	return (colorbarVisible(s) && colorbarLabelHit(s, s->barLabels, nx, ny)) ||
+	       (aquaLandColorbarVisible(s) && colorbarLabelHit(s, s->aquaLandBarLabels, nx, ny));
 }
 static bool colorbarGrab(Scene *s, double nx, double ny) {
 	if (!colorbarHit(s, nx, ny)) return false;

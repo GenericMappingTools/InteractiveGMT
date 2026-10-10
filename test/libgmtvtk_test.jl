@@ -112,6 +112,7 @@ const _TEST_SYMBOLS = (
 	:gmtvtk_set_euler_callback, :gmtvtk_euler_result,   # same, for the Plates dialogs.
 	:gmtvtk_set_ui_dir,               # ditto: the .ui directory is a file-static override per dll.
 	:gmtvtk_tile_mesh_test,           # the grid mesh's NaN contract, counted off makeGridTile's output
+	:gmtvtk_cloud_select_box_test,    # a Shift+left-drag box over a point cloud (rbAreaPick), as the mouse ends one
 )
 
 function _load_test_library()

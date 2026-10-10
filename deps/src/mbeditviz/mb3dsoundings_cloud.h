@@ -50,6 +50,17 @@ bool mb3dsdgOpenAreaCloud(void *parentScene, const double *ring, int nring,
 bool mb3dsdgOpenFileCloud(void *parentScene, const QStringList &files,
                           const std::function<void *(const double *xyz, int n, const QString &title)> &makeWindow,
                           const std::function<void(void *)> &closeWin);
+// The pane's Residues view: the same view again (the same function underneath), its soundings the GOOD
+// ones of `parentScene`'s cloud with their depth replaced by `res` (n values, mb3dsdgCloudGood's order:
+// the sounding minus the gridded surface there; NaN = off the grid, left out). Its flags go back to the
+// parent on Accept like an area's, so the next Gridding leaves them out. False when nothing opened.
+bool mb3dsdgOpenResidueCloud(void *parentScene, const double *res, int n,
+                             const std::function<void *(const double *xyz, int n, const QString &title)> &makeWindow,
+                             const std::function<void(void *)> &closeWin);
+// The open residue view's Auto flag slider moved to t (0.1 .. 1), as the user moves it. False = none open
+bool mb3dsdgAutoFlag(double t);
+// `scene`'s cloud has been gridded (its Gridding made a surface in that window): its pane shows Residues
+void mb3dsdgCloudGridded(void *scene);
 // Does `parentScene`'s swath cloud hold any of `files`? (what offers a track's "Show point-cloud")
 bool mb3dsdgHasCloudFiles(void *parentScene, const QStringList &files);
 // The open 3D Soundings view (mb3dsoundings_window.h): points it draws, good / flagged counts; and View >
@@ -60,6 +71,8 @@ bool mb3dsdgSetShowFlagged(bool on);
 // An area pane is the open one (its parent waiting); its Accept (true) or Discard (false), as its buttons
 bool mb3dsdgAreaOpen();
 bool mb3dsdgAreaFinish(bool accept);
+// The window the open swath-cloud pane is docked in (a sub-cloud view's while one is open); null = none
+void *mb3dsdgCloudScene();
 // The name of `scene`'s swath-cloud pane cloud ("" when it has none)
 QString mb3dsdgCloudName(void *scene);
 

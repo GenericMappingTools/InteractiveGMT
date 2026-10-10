@@ -2760,6 +2760,41 @@ static void mbShowFilesCloud(Scene *s, const QStringList &files) {
 	mb3dsdgOpenFileCloud(s, files, mbSubCloudWindowMaker(s), mbSubCloudWindowClose);
 	QApplication::restoreOverrideCursor();
 }
+// The 3D Soundings pane's Residues: window `handle`'s good soundings (gmtvtk_mb_cloud_good_h's order) at
+// z = res[i], the sounding minus the surface its Gridding made (NaN = off that grid, left out), in the same
+// view an area gets -- Accept hands its flags to the full cloud, so the next Gridding drops them. 1 = opened
+GMTVTK_API int gmtvtk_mb_residue_cloud_h(void *handle, const double *res, int n) {
+	Scene *s = static_cast<Scene *>(handle);
+	if (!sceneAlive(s) || !res || n <= 0)
+		return 0;
+	QApplication::setOverrideCursor(Qt::WaitCursor);
+	const bool ok = mb3dsdgOpenResidueCloud(s, res, n, mbSubCloudWindowMaker(s), mbSubCloudWindowClose);
+	QApplication::restoreOverrideCursor();
+	return ok ? 1 : 0;
+}
+// The open residue view's Auto flag slider, moved to t (0.1 .. 1) as the user moves it: the soundings
+// farther from the surface than t x the largest residue get flagged. The good count after it, -1 = none
+GMTVTK_API int gmtvtk_mb_residue_autoflag(double t) {
+	if (!mb3dsdgAutoFlag(t))
+		return -1;
+	int drawn = 0, good = 0, flagged = 0;
+	mb3dsdgCounts(&drawn, &good, &flagged);
+	return good;
+}
+// The window the open swath-cloud pane is docked in -- a residue / area / track view's own window while one
+// is open. Null = no pane
+GMTVTK_API void *gmtvtk_mb_pane_scene() {
+	return mb3dsdgCloudScene();
+}
+// Window `handle`'s swath cloud has been gridded (the pane's Gridding / CUBE made a surface in it): its
+// pane offers Residues. 1 = the window has such a pane
+GMTVTK_API int gmtvtk_mb_cloud_gridded_h(void *handle) {
+	Scene *s = static_cast<Scene *>(handle);
+	if (!sceneAlive(s) || mb3dsdgCloudName(s).isEmpty())
+		return 0;
+	mb3dsdgCloudGridded(s);
+	return 1;
+}
 // The same from the host: window `handle`'s cloud, the soundings of the swath file `file`. 1 = opened
 GMTVTK_API int gmtvtk_mb_file_cloud_h(void *handle, const char *file) {
 	Scene *s = static_cast<Scene *>(handle);
@@ -10450,6 +10485,24 @@ GMTVTK_API int gmtvtk_tile_mesh_test(const float *z, int nx, int ny, int step, i
 	out[0] = nCells; out[1] = (double)pd->GetNumberOfPoints(); out[2] = nNaNCell;
 	out[3] = nOnNaN; out[4] = nInvented; out[5] = nMissed;
 	return 1;
+}
+
+// A rubber-band box over window `handle`'s point cloud, as Shift+left-drag ends one: the cloud points
+// inside the display rectangle (fractions of the view, 0..1) are TOGGLED in the selection by the same
+// rbAreaPick the mouse uses. The selection's size after it.
+GMTVTK_API int gmtvtk_cloud_select_box_test(void *handle, double fx0, double fy0, double fx1, double fy1) {
+	Scene *s = static_cast<Scene *>(handle);
+	if (!s || !s->ren || !s->cloudPD)
+		return -1;
+	const int *sz = s->ren->GetSize();
+	std::vector<vtkIdType> hit;
+	rbAreaPick(s, int(fx0 * sz[0]), int(fy0 * sz[1]), int(fx1 * sz[0]), int(fy1 * sz[1]), hit);
+	for (vtkIdType id : hit) {
+		auto it = s->rbSel.find(id);
+		if (it == s->rbSel.end()) s->rbSel.insert(id);
+		else                      s->rbSel.erase(it);
+	}
+	return int(s->rbSel.size());
 }
 #endif // GMTVTK_TEST_API
 

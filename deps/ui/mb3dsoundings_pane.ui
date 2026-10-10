@@ -226,9 +226,9 @@
   <widget class="QPushButton" name="discardButton">
    <property name="geometry">
     <rect>
-     <x>6</x>
-     <y>276</y>
-     <width>138</width>
+     <x>78</x>
+     <y>244</y>
+     <width>66</width>
      <height>26</height>
     </rect>
    </property>
@@ -261,13 +261,73 @@
     <bool>false</bool>
    </property>
   </widget>
-  <widget class="QLabel" name="labelStatus">
+  <widget class="QPushButton" name="residuesButton">
+   <property name="geometry">
+    <rect>
+     <x>6</x>
+     <y>340</y>
+     <width>138</width>
+     <height>26</height>
+    </rect>
+   </property>
+   <property name="toolTip">
+    <string>The good soundings minus the surface Gridding made from them, as a point cloud of its own with its own 3D Soundings pane: the soundings flagged there, or selected in its window (Shift+left-drag), are dropped from the full cloud on Accept, on closing that window, or by its Gridding, which regrids the full cloud without them</string>
+   </property>
+   <property name="text">
+    <string>Residues</string>
+   </property>
+   <property name="autoDefault">
+    <bool>false</bool>
+   </property>
+  </widget>
+  <widget class="QLabel" name="autoFlagLabel">
    <property name="geometry">
     <rect>
      <x>6</x>
      <y>342</y>
+     <width>56</width>
+     <height>22</height>
+    </rect>
+   </property>
+   <property name="toolTip">
+    <string>Auto flag: soundings whose residue is farther from the surface than this fraction of the largest residue are flagged (1 = none, 0.1 = all but those right on the surface)</string>
+   </property>
+   <property name="text">
+    <string>Flag 1.00</string>
+   </property>
+  </widget>
+  <widget class="QSlider" name="autoFlagSlider">
+   <property name="geometry">
+    <rect>
+     <x>64</x>
+     <y>342</y>
+     <width>80</width>
+     <height>22</height>
+    </rect>
+   </property>
+   <property name="toolTip">
+    <string>Auto flag: soundings whose residue is farther from the surface than this fraction of the largest residue are flagged (1 = none, 0.1 = all but those right on the surface). Moving it back restores them</string>
+   </property>
+   <property name="minimum">
+    <number>10</number>
+   </property>
+   <property name="maximum">
+    <number>100</number>
+   </property>
+   <property name="value">
+    <number>100</number>
+   </property>
+   <property name="orientation">
+    <enum>Qt::Orientation::Horizontal</enum>
+   </property>
+  </widget>
+  <widget class="QLabel" name="labelStatus">
+   <property name="geometry">
+    <rect>
+     <x>6</x>
+     <y>374</y>
      <width>138</width>
-     <height>110</height>
+     <height>78</height>
     </rect>
    </property>
    <property name="text">

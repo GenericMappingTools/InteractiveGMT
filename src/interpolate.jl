@@ -150,7 +150,7 @@ function _on_interpolate(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		# (saved with its Save), or straight into each swath file's .esf.
 		if method == "cube" && _get(d, "mode") == "flag"
 			pop!(kw, :extra, nothing)
-			k = parse(Float64, _get(d, "flag_k", "2.5"))
+			k = parse(Float64, _get(d, "flag_k", "1.5"))
 			f = cubegrid_all(D; kw..., flag_k = k).flagged
 			nf = count(f)
 			if cloud
@@ -189,6 +189,11 @@ function _on_interpolate(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		# gridded from the window's swath cloud: a line area drawn on it offers "Show point-cloud"
 		cloud && ok == Cint(1) && haskey(_LIB_FNS, :gmtvtk_mb_tag_cloud_grid_h) &&
 			ccall(_fn(:gmtvtk_mb_tag_cloud_grid_h), Cint, (Ptr{Cvoid}, Cstring), scene, "Gridded ($method)")
+		# ... and its pane offers Residues: the soundings minus THIS surface (_mb_cloud_residues)
+		if cloud && ok == Cint(1) && haskey(_LIB_FNS, :gmtvtk_mb_cloud_gridded_h)
+			_MB_CLOUD_GRID[scene] = "Gridded ($method)"
+			ccall(_fn(:gmtvtk_mb_cloud_gridded_h), Cint, (Ptr{Cvoid},), scene)
+		end
 		# The data points go ON TOP of the new grid (vectors always ride above rasters), from the very
 		# dataset that was gridded — not a second read of the file.
 		if ok == Cint(1) && _on(d, "plotpts")
@@ -202,6 +207,30 @@ function _on_interpolate(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		_tool_failed(scene, "Interpolate", e)
 		return Cint(0)
 	end
+end
+
+# The name of the grid the 3D Soundings pane's Gridding (or CUBE's Make grid) last made in each window
+# from that window's swath cloud: the surface its Residues are taken against.
+const _MB_CLOUD_GRID = Dict{Ptr{Cvoid}, String}()
+
+# The 3D Soundings pane's Residues button (mbResiduesOnCloud, 70_window.cpp): the pane's good soundings
+# as they stand, minus the surface Gridding made from them, sampled there by GMT's own grdtrack (-N: a
+# sounding off the grid comes back NaN, keeping the order). The residues go to the pane's residue view,
+# where they are flagged like any soundings; Accept hands the flags back, the next Gridding drops them.
+function _mb_cloud_residues(scene::Ptr{Cvoid})
+	name = get(_MB_CLOUD_GRID, scene, "")
+	G = _find_object_exact(scene, :grid, name)
+	G isa GMTgrid || error("Residues: the surface Gridding made (\"$name\") is no longer in this window")
+	D = _mb_cloud_dataset(scene)
+	S = GMT.grdtrack(G, D; no_skip = true, z_only = true, V = :q)
+	res = D.data[:, 3] .- S.data[:, 1]
+	all(isnan, res) && error("Residues: no good sounding lies on \"$name\"")
+	ok = ccall(_fn(:gmtvtk_mb_residue_cloud_h), Cint, (Ptr{Cvoid}, Ptr{Cdouble}, Cint), scene, res, Cint(length(res)))
+	ok == Cint(1) || error("Residues: the residue view did not open")
+	r = filter(!isnan, res)
+	_viewer_log_info(scene, "Residues of $(length(r)) soundings against \"$name\": mean $(round(sum(r) / length(r); sigdigits = 4)), " *
+	                        "range $(round(minimum(r); sigdigits = 4)) to $(round(maximum(r); sigdigits = 4))")
+	return nothing
 end
 
 function _register_interpolate()
