@@ -244,6 +244,87 @@ potrace_pdf(fname::String, layers::Vector{Pair{String,PotraceResult}}; kw...) =
 	open(io -> potrace_pdf(io, layers; kw...), fname, "w")
 
 # ---------------------------------------------------------------------------------------------
+# GMT custom symbol (.def)
+
+# One curve in GMT's custom-symbol macro language: D per corner leg, B (cx1 cy1 cx2 cy2 ex ey) per
+# Bézier, each point through `tr`. It continues the path already open (M or the bridge's D), and
+# ends back at its own start point.
+function _def_curve(io::IO, cv::PrivCurve, tr)
+	f(q) = (t = tr(q); string(round(t[1]; digits=5), " ", round(t[2]; digits=5)))
+	for i = 1:cv.n
+		c1, c2, c3 = cv.c[i, 1], cv.c[i, 2], cv.c[i, 3]
+		if cv.tag[i] == CORNER
+			println(io, f(c2), " D")
+			println(io, f(c3), " D")
+		else
+			println(io, f(c1), " ", f(c2), " ", f(c3), " B")
+		end
+	end
+	return nothing
+end
+
+"""
+    potrace_def(fname::String, res::PotraceResult; color="#000000")
+    potrace_def(io::IO, res::PotraceResult; ...)
+    potrace_def(fname_or_io, layers::Vector{Pair{String,PotraceResult}}; background=nothing)
+
+Write the traced curves as a GMT custom symbol (`-Sk`): the bitmap fitted into the symbol's
+[-0.5, 0.5] box by its longer side, centred, y up. Béziers are written as the macro language's
+cubic Bézier `B` code (GMT 6.7+). Same drawing as `potrace_eps`: each positive path is one polygon
+filled with its layer's colour (`-G`, no outline), the layers in the order given, over an optional
+`background` rectangle the size of the bitmap.
+
+A symbol polygon (`M`) has no holes, so each hole is joined to its outer path by a bridge — a
+straight `D` to the hole's start and back — that encloses no area: the polygon's fill leaves the
+hole open under either fill rule (holes run opposite to their outer path).
+"""
+potrace_def(io::IO, res::PotraceResult; color::String="#000000") = potrace_def(io, [color => res])
+
+function potrace_def(io::IO, layers::Vector{Pair{String,PotraceResult}}; background::Union{Nothing,String}=nothing)
+	isempty(layers) && error("potrace_def: no layers")
+	res = layers[1].second
+	s = 1.0 / max(res.w, res.h)
+	tr(q) = ((q.x - res.w / 2) * s, (q.y - res.h / 2) * s)
+	gfill(col) = join(round.(Int, 255 .* collect(_rgb01(col))), '/')
+	println(io, "# GMT custom symbol written by InteractiveGMT (Vector Wizard), Julia port of potrace 1.16")
+	println(io, "# (Peter Selinger 2001-2019). Bezier curves use the B code: needs GMT 6.7 or later.")
+	println(io, "# Use with -Sk<this file name without .def>/<size>.")
+	if background !== nothing
+		hx, hy = 0.5 * res.w * s, 0.5 * res.h * s
+		hx, hy = round(hx; digits=5), round(hy; digits=5)
+		println(io, -hx, " ", -hy, " M -G", gfill(background), " -W-")
+		println(io, hx, " ", -hy, " D")
+		println(io, hx, " ", hy, " D")
+		println(io, -hx, " ", hy, " D")
+	end
+	for (color, lr) in layers
+		(lr.w == res.w && lr.h == res.h) || error("potrace_def: layers of different bitmap sizes")
+		g = gfill(color)
+		p = lr.plist
+		while p !== nothing
+			cv = p.fcurve
+			t0 = tr(cv.c[cv.n, 3])
+			st = string(round(t0[1]; digits=5), " ", round(t0[2]; digits=5))
+			println(io, st, " M -G", g, " -W-")
+			_def_curve(io, cv, tr)
+			q = p.next
+			while q !== nothing && q.sign == '-'           # its holes, bridged in and back out
+				h0 = tr(q.fcurve.c[q.fcurve.n, 3])
+				println(io, round(h0[1]; digits=5), " ", round(h0[2]; digits=5), " D")
+				_def_curve(io, q.fcurve, tr)
+				println(io, st, " D")
+				q = q.next
+			end
+			p = q
+		end
+	end
+	return nothing
+end
+potrace_def(fname::String, res::PotraceResult; kw...) = open(io -> potrace_def(io, res; kw...), fname, "w")
+potrace_def(fname::String, layers::Vector{Pair{String,PotraceResult}}; kw...) =
+	open(io -> potrace_def(io, layers; kw...), fname, "w")
+
+# ---------------------------------------------------------------------------------------------
 # GMTdataset
 
 # A curve as a closed polyline: corners as they are, each Bézier sampled at `steps` equal steps of

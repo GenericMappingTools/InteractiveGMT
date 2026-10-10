@@ -1396,7 +1396,7 @@ static void popupLineObjectMenu(Scene *s, const LineRef &lr, const QString &name
 		// A Vector Wizard product writes the trace it came from (the whole trace, whichever tone was clicked).
 	if (ovp && !ovp->vwKey.empty()) {
 		const std::string key = ovp->vwKey;
-		m.addAction("Save as SVG / EPS / PDF…", [s, key]() { vwSaveProduct(s, key); });
+		m.addAction("Save as SVG / EPS / PDF / DEF…", [s, key]() { vwSaveProduct(s, key); });
 		m.addSeparator();
 	}
 	// A line overlay's rings can be FILLED (a polygon file, a traced picture's colour layer): the

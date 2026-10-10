@@ -3319,7 +3319,7 @@ static void rebuildSceneObjects(Scene *s) {
 			// Declared as part of a bigger plot? Then this group is a CHILD of that plot's master row.
 			if (QTreeWidgetItem *mi = masterItemFor(gn)) { ovlMasterSave = curParent; curParent = mi; }
 			const bool cptable = ov.cptColorable;      // a group of per-level lines (contours)
-			const std::string vwKey = ov.vwKey;        // a Vector Wizard trace: saveable as SVG/EPS/PDF
+			const std::string vwKey = ov.vwKey;        // a Vector Wizard trace: saveable as SVG/EPS/PDF/DEF
 			// ONE menu on both buttons — left-click properties and right-click context are the same
 			// thing, so they are the same lambda (never two look-alikes).
 			auto grpMenu = [s, gn, cptable, vwKey](const QPoint &g) {
@@ -3328,7 +3328,7 @@ static void rebuildSceneObjects(Scene *s) {
 				// A group of MB-System navigation tracks: mbgrdviz's Action menu editors, on every track
 				// of the group (each submenu item does its own work, so `pick` matches nothing below).
 				addMbSystemMenu(m, lineGroupMbNavs(s, gn), s->win, lineGroupMbFiles(s, gn), s);
-				QAction *aVw = vwKey.empty() ? nullptr : m.addAction("Save as SVG / EPS / PDF…");
+				QAction *aVw = vwKey.empty() ? nullptr : m.addAction("Save as SVG / EPS / PDF / DEF…");
 				if (aVw) m.addSeparator();
 				if (cptable) {
 					// Each line of this group IS one value of the grid, so it can be painted with the
@@ -4167,12 +4167,12 @@ static void overlaySetFilled(Scene *s, vtkActor *a, bool on) {
 	}
 }
 
-// "Save as SVG / EPS / PDF…" on a Vector Wizard product (Overlay::vwKey): ask for the file, then the
+// "Save as SVG / EPS / PDF / DEF…" on a Vector Wizard product (Overlay::vwKey): ask for the file, then the
 // Wizard's own callback writes the trace kept under `key` — the same writers its Save… button uses.
 static void vwSaveProduct(Scene *s, const std::string &key) {
 	if (!s || !sceneAlive(s) || key.empty() || !g_juliaVectorWizard) return;
 	const QString fn = QFileDialog::getSaveFileName(s->win, "Save traced vectors", prefStartDir("traced.svg"),
-		"SVG (*.svg);;Encapsulated PostScript (*.eps);;PDF (*.pdf)");
+		"SVG (*.svg);;Encapsulated PostScript (*.eps);;PDF (*.pdf);;GMT custom symbol (*.def)");
 	if (fn.isEmpty()) return;
 	rememberStartDir(fn);
 	const QString msg = "saveproduct\n" + fn + "\n" + QString::fromStdString(key);

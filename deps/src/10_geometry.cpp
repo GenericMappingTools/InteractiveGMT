@@ -314,7 +314,7 @@ struct Overlay {
 	// visibility, VE, the globe and the vector pile treat outline and fill as one element.
 	bool filled = false;
 	// A Vector Wizard product: the key Julia keeps its trace under (src/vectorwizard.jl), so its menu can
-	// offer "Save as SVG / EPS / PDF…" of that trace. Empty = not one. A key, not the name: a rename
+	// offer "Save as SVG / EPS / PDF / DEF…" of that trace. Empty = not one. A key, not the name: a rename
 	// must not orphan it.
 	std::string vwKey;
 	bool noFill = false;                     // suppresses ONLY "Fill polygons": set by the MB-System swath
@@ -972,7 +972,7 @@ static void addMbSystemMenu(QMenu &m, const std::vector<std::string> &navs, QWid
                             const std::vector<std::pair<std::string, int>> &own = {}, Scene *s = nullptr);
 static void overlayBuildFill(Overlay &ov);                                 // filled overlay's triangles (50_scene.cpp)
 static bool overlayActorFilled(Scene *s, vtkActor *a);                     // ...is this actor one? (50_scene.cpp)
-static void vwSaveProduct(Scene *s, const std::string &key);               // Vector Wizard product -> SVG/EPS/PDF (50_scene.cpp)
+static void vwSaveProduct(Scene *s, const std::string &key);               // Vector Wizard product -> SVG/EPS/PDF/DEF (50_scene.cpp)
 static void lineRenamePrompt(Scene *s, const LineRef &lr);               // ...the same for ONE element's label
 static void applyVectorStacking(Scene *s);                      // shared vector-pile draw-order (50_scene.cpp)
 static void restackVector(Scene *s, int *stackPtr, int op);    // move one vector element through the pile

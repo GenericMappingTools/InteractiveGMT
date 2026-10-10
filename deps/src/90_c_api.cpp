@@ -756,7 +756,7 @@ GMTVTK_API int gmtvtk_grid_share_zscale_h(void *handle, const char *name, int on
 }
 
 // Mark the overlay(s) called `name` as the Vector Wizard product kept under `key` (Overlay::vwKey), so
-// their menus offer "Save as SVG / EPS / PDF…". Returns how many matched.
+// their menus offer "Save as SVG / EPS / PDF / DEF…". Returns how many matched.
 GMTVTK_API int gmtvtk_overlay_set_vwkey_h(void *handle, const char *name, const char *key) {
 	Scene *s = static_cast<Scene*>(handle);
 	if (!sceneAlive(s) || !name || !key) return 0;

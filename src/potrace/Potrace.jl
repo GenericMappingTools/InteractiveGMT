@@ -10,7 +10,7 @@
 # -> the tiny hook helpers in types.jl, which keep the C's exact list surgery in pathlist_to_tree.
 #
 # NOT ported: the frontend (main.c, getopt, bitmap_io, greymap, mkbitmap, progress bars) and the
-# backends. The writers in output.jl (SVG, EPS, GMTdataset) are new and write the same geometry
+# backends. The writers in output.jl (SVG, EPS, PDF, GMT custom symbol, GMTdataset) are new and write the same geometry
 # the C backends write.
 #
 # Coordinates: potrace counts y from the BOTTOM — pixel (x,y) has its lower-left corner at the path
@@ -20,7 +20,7 @@ module Potrace
 
 using GMT: GMT, GMTdataset
 
-export PotraceParams, PotraceBitmap, PotraceResult, potrace, paths, potrace_svg, potrace_eps, potrace_pdf, potrace_gmtds
+export PotraceParams, PotraceBitmap, PotraceResult, potrace, paths, potrace_svg, potrace_eps, potrace_pdf, potrace_def, potrace_gmtds
 
 include("types.jl")
 include("decompose.jl")

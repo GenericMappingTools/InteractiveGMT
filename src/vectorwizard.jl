@@ -11,8 +11,9 @@
 # layer k is "tone k or darker" — so the layers nest and leave no gaps between colours.
 #
 # Each traced layer lands in the window as an ordinary line overlay made FILLED (Overlay::filled,
-# gmtvtk_overlay_set_filled_h), all under ONE group named for the source; Save writes SVG / EPS
-# (potrace_svg / potrace_eps, layered) or a GMT multisegment file (" -G" per polygon, " -Ph" holes).
+# gmtvtk_overlay_set_filled_h), all under ONE group named for the source; Save writes SVG / EPS / PDF
+# (potrace_svg / potrace_eps / potrace_pdf, layered), a GMT custom symbol (potrace_def) or a GMT
+# multisegment file (" -G" per polygon, " -Ph" holes).
 
 # Per-dialog state: the source picture, top row first, and where its pixel EDGES lie in the world.
 mutable struct _VWState
@@ -309,7 +310,8 @@ function _vw_add_to_window(st::_VWState, bg, layers)
 	return length(sets)
 end
 
-# Save by extension: .svg / .eps / .pdf (pixel units, the page is the picture) or a GMT multisegment table
+# Save by extension: .svg / .eps / .pdf (pixel units, the page is the picture), .def (a GMT custom symbol,
+# the picture fitted into the symbol box) or a GMT multisegment table
 # .txt / .dat (world coordinates, one " -G" polygon per segment, holes " -Ph", the background first).
 function _vw_save(st::_VWState, path::String, bg, layers)
 	ext = lowercase(splitext(path)[2])
@@ -319,6 +321,8 @@ function _vw_save(st::_VWState, path::String, bg, layers)
 		Potrace.potrace_eps(path, layers; background=bg)
 	elseif ext == ".pdf"
 		Potrace.potrace_pdf(path, layers; background=bg)
+	elseif ext == ".def"
+		Potrace.potrace_def(path, layers; background=bg)
 	elseif ext == ".txt" || ext == ".dat"
 		out = GMTdataset{Float64,2}[]
 		x0, x1, y0, y1 = st.region
@@ -340,7 +344,7 @@ function _vw_save(st::_VWState, path::String, bg, layers)
 		GMT.gmtwrite(path, out)
 	else
 		# not ".gmt": that is the OGR/GMT format, which has no place for the -G / -Ph headers
-		error("unknown file type '$ext' (use .svg, .eps, .pdf, .txt or .dat)")
+		error("unknown file type '$ext' (use .svg, .eps, .pdf, .def, .txt or .dat)")
 	end
 	return
 end
@@ -358,11 +362,11 @@ function _on_vectorwizard(scene::Ptr{Cvoid}, dlg::Ptr{Cvoid}, cparams::Cstring):
 			delete!(_VWSTATE, dlg)
 			return Cint(1)
 		end
-		if op == "saveproduct"                # a product's own "Save as SVG / EPS / PDF…": arg = path, line 3 = key
+		if op == "saveproduct"                # a product's own "Save as SVG / EPS / PDF / DEF…": arg = path, line 3 = key
 			pr = get(get(_VW_PRODUCTS, scene, valtype(_VW_PRODUCTS)()), strip(kv), nothing)
 			pr === nothing && error("this trace is no longer available (traced in an earlier session?)")
 			path = String(strip(arg))
-			lowercase(splitext(path)[2]) in (".svg", ".eps", ".pdf") || error("save as .svg, .eps or .pdf")
+			lowercase(splitext(path)[2]) in (".svg", ".eps", ".pdf", ".def") || error("save as .svg, .eps, .pdf or .def")
 			_vw_save(pr[1], path, pr[2], pr[3])
 			return Cint(1)
 		end

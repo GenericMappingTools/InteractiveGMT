@@ -9265,7 +9265,8 @@ public:
 		if (auto *b = d->findChild<QPushButton *>("saveButton"))
 			QObject::connect(b, &QPushButton::clicked, d, [this]() {
 				const QString fn = QFileDialog::getSaveFileName(dlg, "Save traced vectors", prefStartDir("traced.svg"),
-					"SVG (*.svg);;Encapsulated PostScript (*.eps);;PDF (*.pdf);;GMT multisegment table (*.txt *.dat)");
+					"SVG (*.svg);;Encapsulated PostScript (*.eps);;PDF (*.pdf);;GMT custom symbol (*.def);;"
+					"GMT multisegment table (*.txt *.dat)");
 				if (fn.isEmpty()) return;
 				if (!send("save", fn, "Tracing…"))
 					QMessageBox::warning(dlg, "Vector Wizard", "Save failed — see this window's Errors console.");

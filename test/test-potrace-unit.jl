@@ -71,6 +71,30 @@ end
 	@test count("closepath", ep) == 2 && count("\nfill", ep) == 1
 end
 
+@testitem "potrace: GMT custom symbol writer" tags=[:unit, :fast] begin
+	PT = InteractiveGMT.Potrace
+	T = falses(10, 12)
+	T[2:9, 2:8] .= true
+	T[4:6, 4:6] .= false
+	U = falses(10, 12);  U[4:6, 4:6] .= true
+	io = IOBuffer(); PT.potrace_def(io, ["#ff0000" => PT.potrace(T), "#0000ff" => PT.potrace(U)]; background="#ffffff")
+	df = String(take!(io))
+	ln = filter(l -> !isempty(l) && !startswith(l, '#'), split(df, '\n'))
+	@test count(l -> occursin(" M ", l), ln) == 3                 # background + outer-with-hole + inner square
+	@test occursin("M -G255/255/255 -W-", df) && occursin("M -G255/0/0 -W-", df) && occursin("M -G0/0/255 -W-", df)
+	@test findfirst("255/0/0", df)[1] < findfirst("0/0/255", df)[1]   # painted in the order given
+	for l in ln                                                   # every command is well formed and inside the box
+		w = split(l)
+		code = occursin(" M ", l) ? "M" : w[end]
+		nums = parse.(Float64, code == "M" ? w[1:2] : w[1:end-1])
+		@test (code, length(nums)) in (("M", 2), ("D", 2), ("B", 6))
+		@test all(abs.(nums) .<= 0.5 + 1e-9)
+	end
+	# the hole is bridged into its outer polygon: the outer's start point comes back as a D
+	m = match(r"([-\d.e]+ [-\d.e]+) M -G255/0/0", df)
+	@test occursin("\n" * m[1] * " D\n", df)
+end
+
 @testitem "potrace: layered SVG and EPS" tags=[:unit, :fast] begin
 	PT = InteractiveGMT.Potrace
 	T = falses(10, 12);  T[2:9, 2:8] .= true
