@@ -13869,6 +13869,7 @@ static void rsShowScriptEditor(QWidget *parent, const QString &name, const QStri
 }
 
 static void rsOpenL2With(Scene *s, const QString &file);   // below, after the dialogs' registry
+static void vectorPickDisarm(Scene *s);                    // 85_polygon.cpp: the shared click pick's off switch
 
 class RemoteSDialog {
 public:
@@ -13881,7 +13882,15 @@ public:
 	bool applying = false;           // directives being applied: widget signals are not user changes
 
 	void forget();
-	~RemoteSDialog() { forget(); }
+	bool pickArmed = false;          // a pickline_ pick of THIS dialog is armed on the window
+	~RemoteSDialog() {
+		// The armed pick's callback points at this dialog: never leave it behind on the window.
+		if (pickArmed && sceneAlive(scn)) {
+			vectorPickDisarm(scn);
+			scn->vectorPickCB = nullptr;
+		}
+		forget();
+	}
 
 	void unpark() {
 		if (!dlg) return;
@@ -14028,7 +14037,11 @@ public:
 		// A window being closed tears its child dialogs down, and a text box losing focus on the way out
 		// fires editingFinished -> refresh: never call Julia (or touch the window) for a dying Scene.
 		if (!sceneAlive(scn)) return false;
-		if (!g_juliaRemoteS) { say("Remote sensing: callback not registered."); return false; }
+		if (!g_juliaRemoteS) {
+			say("Remote sensing: callback not registered.");
+			if (run && dlg) QMessageBox::warning(dlg, dlg->windowTitle(), "Remote sensing: the Julia side is not connected.");
+			return false;
+		}
 		const QString kv = collect(what) + extra;
 		std::vector<char> buf(1 << 23);    // 8 MB: a year's download script comes back through here
 		buf[0] = '\0';
@@ -14039,7 +14052,14 @@ public:
 		else     QApplication::restoreOverrideCursor();
 		const QString ans = QString::fromUtf8(buf.data());
 		if (!ok) {
-			say(ans.isEmpty() ? QString("Remote sensing: failed, and the Julia side said nothing about why.") : ans.trimmed());
+			const QString why = ans.isEmpty() ? QString("Remote sensing: failed, and the Julia side said nothing about why.")
+			                                  : ans.trimmed();
+			say(why);
+			// A button the user pressed that failed says so IN FRONT of them, never only in the status
+			// line or the Messages log ("Plot the swaths" before "Find the passes" was found there,
+			// unread). Not for init/refresh: those run while typing, and a box per keystroke is worse.
+			if (run && dlg && sceneAlive(scn))
+				QMessageBox::warning(dlg, dlg->windowTitle(), why);
 			return false;
 		}
 		apply(ans);
@@ -14049,6 +14069,47 @@ public:
 	void refresh() {
 		if (applying) return;
 		request("refresh", false);
+	}
+
+	// A line of the view was pointed at (the pickline_ button, or a guide line's own menu item).
+	void pickedLine(const QString &verb, const QString &line, const QString &busy = QString()) {
+		request(verb, true, busy, "picked=" + line + "\n");
+	}
+
+	// The pickline_<verb> button: arm the shared click pick for one line (see the constructor).
+	void armLinePick(QPushButton *pb, const QString &verb) {
+		if (!sceneAlive(scn)) return;
+		if (pickArmed) {                                         // pressed again: disarm
+			if (scn->vectorPickMode == 1) vectorPickDisarm(scn);
+			scn->vectorPickCB = nullptr;
+			pickArmed = false;
+			say("Pick cancelled.");
+			return;
+		}
+		QPointer<QPushButton> btn(pb);
+		Scene *s = scn;
+		const QString busy = pb->property("busy").toString();
+		s->vectorPickCB = [this, s, btn, verb, busy](const std::string &names) {
+			const std::string nm = names.substr(0, names.find('\n'));
+			if (nm.empty()) return;                              // clicked past every line: stay armed
+			vectorPickDisarm(s);
+			pickArmed = false;
+			// Not from inside the callback: request() may rebuild the very element list this pick
+			// came from, and the vector pick machinery is still on the stack.
+			QTimer::singleShot(0, dlg, [this, btn, verb, busy, nm]() {
+				if (btn) btn->setDown(false);
+				if (dlg) dlg->raise();                       // the answer is in the dialog: bring it forward
+				pickedLine(verb, QString::fromStdString(nm), busy);
+			});
+			s->vectorPickCB = nullptr;
+		};
+		s->vectorPickPrevShape = (int)s->polyShape;
+		s->vectorPickMode = 1;
+		s->vectorPickDbl = false;
+		s->vectorPickDrawing = false;
+		pickArmed = true;
+		if (s->widget) s->widget->setCursor(Qt::CrossCursor);
+		say("Click a line in the view (press the button again to cancel).");
 	}
 
 	RemoteSDialog(QWidget *parent, Scene *scene, const std::string &toolName) {
@@ -14128,6 +14189,37 @@ public:
 				QObject::connect(pb, &QPushButton::clicked, [this, pb, verb] {
 					request(verb, true, pb->property("busy").toString());
 				});
+			}
+			// tutorial: a QToolButton whose dynamic property `page` names a page of the iGMT manual
+			// (docs/src, e.g. "74c-swot-tutorial"). It becomes the green ? disk every tool dialog carries
+			// and opens that page in the browser — the same plain openUrl the Help menu's manual uses.
+			if (n == "tutorial") {
+				auto *tb = qobject_cast<QToolButton *>(w);
+				const QString page = w->property("page").toString();
+				if (!tb || page.isEmpty()) continue;
+				tb->setIcon(makeHelpDiskIcon(18));
+				tb->setIconSize(QSize(18, 18));
+				tb->setAutoRaise(true);
+				tb->setText(QString());
+				tb->setCursor(Qt::PointingHandCursor);
+				tb->setFocusPolicy(Qt::NoFocus);
+				if (tb->toolTip().isEmpty()) tb->setToolTip("Open the tutorial");
+				QObject::connect(tb, &QToolButton::clicked, d, [d, page]() {
+					const QUrl u("https://www.generic-mapping-tools.org/InteractiveGMT/dev/" + page + "/");
+					if (!QDesktopServices::openUrl(u))
+						QMessageBox::warning(d, d->windowTitle(), QString("Could not open a browser for\n\n%1").arg(u.toString()));
+				});
+			}
+			// pickline_<verb>: point at a line in the view. Arms the viewer's shared click pick
+			// (Scene::vectorPickMode 1, vectorPickFire) for ONE line; that line's Scene Objects name is
+			// sent as what=<verb>, picked=<name> — the same request its guide line's own menu item sends
+			// (Overlay::pickTool, g_overlayToolPick). A click on nothing keeps it armed; pressing the
+			// button again disarms it.
+			if (n.startsWith("pickline_")) {
+				auto *pb = qobject_cast<QPushButton *>(w);
+				if (!pb) continue;
+				const QString verb = n.mid(9);
+				QObject::connect(pb, &QPushButton::clicked, [this, pb, verb] { armLinePick(pb, verb); });
 			}
 		}
 
@@ -14217,6 +14309,39 @@ static void openRemoteSDialogNow(QWidget *win, Scene *s, const std::string &tool
 	QApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
 	rd->request("init", false);   // prefill (the window's own file, its bands, the tool's lists)
 }
+
+// A guide line's own menu item (Overlay::pickTool/pickVerb, 55_lineprops.cpp) points its tool's dialog
+// at it: the dialog is brought up (or back from the dock) and sent the SAME request its pickline_
+// button sends.
+static const bool g_remotesToolPickHook = [] {
+	g_overlayToolPick = [](Scene *s, const std::string &tool, const std::string &verb, const std::string &line) {
+		// This runs from INSIDE the line's menu, which still holds the input grab: a dialog raised, a
+		// busy notice or an error box shown now never reaches the screen (the reason openRemoteSDialog
+		// waits too), so the item looked like it did nothing. Wait for the popup to be gone, then open/
+		// raise the dialog and send the pick — the same wait openRemoteSDialog does, ~1 s at most.
+		auto tries = std::make_shared<int>(0);
+		auto step = std::make_shared<std::function<void()>>();
+		*step = [s, tool, verb, line, tries, step]() {
+			if (!sceneAlive(s) || !s->win) return;
+			if (QApplication::activePopupWidget() && ++*tries < 30) {
+				QTimer::singleShot(30, s->win, *step);
+				return;
+			}
+			openRemoteSDialogNow(s->win, s, tool);
+			auto it = g_remotesDlgs.find({s, tool});
+			if (it == g_remotesDlgs.end() || !it->second || !it->second->dlg) {
+				// Never a silent no-op: the user clicked something and must be told it went nowhere.
+				QMessageBox::warning(s->win, "Pick",
+				                     QString("Could not open the %1 dialog to pick \"%2\".")
+				                         .arg(QString::fromStdString(tool), QString::fromStdString(line)));
+				return;
+			}
+			it->second->pickedLine(QString::fromStdString(verb), QString::fromStdString(line));
+		};
+		if (sceneAlive(s) && s->win) QTimer::singleShot(0, s->win, *step);
+	};
+	return true;
+}();
 
 // "MODIS L2 swath to grid" opened (or brought back) with `file` in its File box, and refreshed: the
 // arrays, the increment and the region fill in. It grids only when the user presses Grid it.
@@ -30630,6 +30755,9 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		warmupTool("oceancolor");
 		new OceanColorDialog(win, s);
 	});
+	// SWOT — PO.DAAC Level-2 sea surface / water heights (src/swot.jl). One more tool of the Remote
+	// sensing dialog family: deps/ui/remotes_swot.ui over the same generic RemoteSDialog.
+	mSat->addAction("SWOT…", [win, s]() { openRemoteSDialog(win, s, "swot"); });
 	// Remote sensing — the RemoteS port (src/RemoteS/). ONE addMenu at the end of this menu; every
 	// entry is the same generic dialog over its own .ui (RemoteSDialog, above).
 	QMenu *mRs = mSat->addMenu("Remote sensing");

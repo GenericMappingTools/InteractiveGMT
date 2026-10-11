@@ -5,7 +5,7 @@
 # directives this file answers with. So each tool's behaviour lives HERE, in one function per tool,
 # and its .ui is only its face. Wire format, newline-separated both ways:
 #
-#   request:  tool=<indices|truecolor|calibration|classify|cutcube|modisl2|modisscenes>
+#   request:  tool=<indices|truecolor|calibration|classify|cutcube|modisl2|modisscenes|swot (swot.jl)>
 #             what=init|refresh|<the run_ button's suffix>
 #             <p_widget>=<value>        (combos also send <p_widget>_idx=<0-based index>)
 #   answer:   items:<widget>=a\tb\tc    (fill a combo / list)
@@ -634,10 +634,14 @@ end
 # urs.earthdata.nasa.gov, and curl answers it from the netrc there (what wget --auth-no-challenge
 # does in the scripts), with the session cookie kept along the redirect chain. Written to a ".part"
 # file and checked to be netCDF/HDF5 before it takes the name: a refused login sends back a web page.
-function _rs_download(url::String, path::String)::Nothing
+# `kind = :zip` (SWOT's river and lake shapefiles, swot.jl) checks for a zip archive instead.
+# `machine`/`who`: the .netrc entry the server's login is read from (AVISO+ for SWOT L3, swot.jl); curl
+# answers any host's HTTP Basic challenge from its own entry.
+function _rs_download(url::String, path::String; kind::Symbol = :netcdf, machine::String = _RS_URS,
+                      who::String = "Earthdata")::Nothing
 	nrc = _rs_netrc_path()
-	u, p = _rs_netrc_get(nrc, _RS_URS)
-	(isempty(u) || isempty(p)) && error("Downloading needs your Earthdata login: save it in the Accounts tab.")
+	u, p = _rs_netrc_get(nrc, machine)
+	(isempty(u) || isempty(p)) && error("Downloading needs your $(who) login: save it in the Accounts tab.")
 	C = Downloads.Curl
 	dl = Downloads.Downloader()
 	dl.easy_hook = (easy, info) -> begin
@@ -653,8 +657,13 @@ function _rs_download(url::String, path::String)::Nothing
 	try
 		Downloads.download(url, part; downloader = dl, progress = prog)
 		head = open(io -> read(io, 4), part)
-		(head == UInt8[0x89, 0x48, 0x44, 0x46] || head[1:3] == UInt8[0x43, 0x44, 0x46]) ||
-			error("OB.DAAC did not send a netCDF file (a refused Earthdata login sends a web page): check the login in the Accounts tab.")
+		if kind === :zip
+			head == UInt8[0x50, 0x4b, 0x03, 0x04] ||
+				error("The server did not send a zip file (a refused Earthdata login sends a web page): check the login in the Accounts tab.")
+		else
+			(head == UInt8[0x89, 0x48, 0x44, 0x46] || head[1:3] == UInt8[0x43, 0x44, 0x46]) ||
+				error("OB.DAAC did not send a netCDF file (a refused Earthdata login sends a web page): check the login in the Accounts tab.")
+		end
 		mv(part, path; force = true)
 	finally
 		isfile(part) && rm(part; force = true)
@@ -926,7 +935,7 @@ end
 const _RS_TOOLS = Dict{String,Function}(
 	"indices" => _rs_indices, "truecolor" => _rs_truecolor, "calibration" => _rs_calibration,
 	"classify" => _rs_classify, "cutcube" => _rs_cutcube, "modisl2" => _rs_modisl2,
-	"modisscenes" => _rs_modisscenes)
+	"modisscenes" => _rs_modisscenes, "swot" => _rs_swot)
 
 function _on_remotes(scene::Ptr{Cvoid}, params::Cstring, out::Ptr{UInt8}, cap::Cint)::Cint
 	tool = ""

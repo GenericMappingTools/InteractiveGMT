@@ -113,6 +113,11 @@ const _TEST_SYMBOLS = (
 	:gmtvtk_set_ui_dir,               # ditto: the .ui directory is a file-static override per dll.
 	:gmtvtk_tile_mesh_test,           # the grid mesh's NaN contract, counted off makeGridTile's output
 	:gmtvtk_cloud_select_box_test,    # a Shift+left-drag box over a point cloud (rbAreaPick), as the mouse ends one
+	:gmtvtk_line_menu_click_test,     # a line's right-click menu, its item clicked with the mouse (under the menu's grab)
+	:gmtvtk_combo_index_test,         # a dialog combo's current index
+	:gmtvtk_widget_screen_test, :gmtvtk_objrow_screen_test, :gmtvtk_popup_item_screen_test, :gmtvtk_active_window_test, :gmtvtk_popup_autoclick_os_test, :gmtvtk_autoclick_trace_test, :gmtvtk_overlay_point_screen_test,  # screen positions + a real click inside a menu, for REAL-mouse tests
+	:gmtvtk_scene_remove_surface_test, # the base row's Remove (sceneRemoveSurface)
+	:gmtvtk_set_remotes_callback,     # NOT test-only -- mirrored: this dll's Remote sensing dialogs call Julia too
 )
 
 function _load_test_library()

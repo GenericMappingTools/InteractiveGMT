@@ -327,6 +327,11 @@ struct Overlay {
 	std::string mbFile;                      // the swath file of a track no mbgrdviz knows (a swath cloud's
 	int mbFormat = 0;                        // navigation, gmtvtk_mb_cloud_nav_h) and its MBIO format: the
 	                                          // "MB-System" submenu opens the editors on it. "" = mbgrdviz's
+	// A tool's GUIDE line that the tool's dialog can be pointed at (Satellite > SWOT's swath edges):
+	// `pickTool` names the dialog, `pickVerb` the request it is sent, `pickLabel` the menu item that
+	// sends it (g_overlayToolPick, 55_lineprops.cpp). Set by gmtvtk_overlay_set_tool_pick_h. Non-empty =
+	// a guide, not data: its menus drop "Clamp to ground", "Fill polygons" and "Show names".
+	std::string pickTool, pickVerb, pickLabel;
 	std::string coastRes;                    // a GSHHG COASTLINE's resolution letter (l/i/h/f/c/a), set by
 	                                          // gmtvtk_overlay_set_coastres_h. Non-empty = the line menu offers
 	                                          // "Mask > Land/Ocean" (grdlandmask at this same resolution).
@@ -952,6 +957,7 @@ static void lineGroupSetClamped(Scene *s, const std::string &gname, bool on);
 static bool lineGroupHasNames(Scene *s, const std::string &gname);      // per-segment names available?
 static bool lineGroupNamesShown(Scene *s, const std::string &gname);    // ...and plotted right now?
 static void lineGroupSetNames(Scene *s, const std::string &gname, bool on);
+static bool lineGroupIsGuide(Scene *s, const std::string &gname);       // every member a tool's guide line?
 static void lineGroupRename(Scene *s, const std::string &oldName, const std::string &newName);
 static void lineGroupRenamePrompt(Scene *s, const std::string &gname);   // ask, then rename (menu + dbl-click)
 // The "MB-System" submenu (mbgrdviz's Action menu editors) of a navigation track and of its group's
@@ -5543,11 +5549,17 @@ static void sceneAfterObjectRemoved(Scene *s) {
 	bool anyVisible = false;
 	for (auto &ex : s->extras)
 		if (ex.actor && ex.actor->GetVisibility()) { anyVisible = true; break; }
-	if (!anyVisible && !s->imageOnly) {
+	// The base layer counts whatever it is: a grid surface, or an IMAGE base (a basemap tile, a blank
+	// map canvas, a dropped picture), whose picture is its drape. An image base used to be skipped
+	// here, so removing the last layer shown over it left it hidden for good: no picture, no axes
+	// (2026-10-11, SWOT: remove the gridded pass, and the map under it never came back).
+	const bool hasBase = surfProp(s) || s->drape;
+	if (!anyVisible && hasBase) {
 		if (vtkProp3D *sp = surfProp(s)) anyVisible = sp->GetVisibility() != 0;
+		if (s->drape) anyVisible = anyVisible || s->drape->GetVisibility() != 0;
 	}
 	if (!anyVisible) {
-		// Topmost survivor first (extras are the pile, last = most recently added), else the base surface.
+		// Topmost survivor first (extras are the pile, last = most recently added), else the base layer.
 		bool restored = false;
 		for (size_t i = s->extras.size(); i-- > 0; ) {
 			if (!s->extras[i].actor) continue;
@@ -5555,7 +5567,7 @@ static void sceneAfterObjectRemoved(Scene *s) {
 			restored = true;
 			break;
 		}
-		if (!restored && !s->imageOnly) baseLayerSetVisible(s, true);
+		if (!restored && hasBase) baseLayerSetVisible(s, true);
 	}
 	sceneClearViewOverride(s);
 	// (3) GROUND STATE. Nothing left to show -> the window is a fresh empty launcher again, body mode

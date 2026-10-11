@@ -1307,6 +1307,24 @@ static std::vector<std::pair<std::string, int>> lineGroupMbFiles(Scene *s, const
 	return out;
 }
 
+// Point a tool dialog at one of its guide lines (Overlay::pickTool/pickVerb, the line's `pickLabel`
+// menu item): (window, tool, verb, the line's name). Set by the dialog family that owns the tool
+// (RemoteSDialog, 70_window.cpp) — the same request its "Pick … in the view" button sends.
+static std::function<void(Scene *, const std::string &, const std::string &, const std::string &)> g_overlayToolPick;
+
+// Every line of group `gname` is a tool's guide line (Overlay::pickTool): the group menu then offers
+// no "Clamp to ground" / "Show names" either.
+static bool lineGroupIsGuide(Scene *s, const std::string &gname) {
+	if (!s || gname.empty()) return false;
+	bool any = false;
+	for (const auto &o : s->overlays) {
+		if (o.groupName != gname) continue;
+		if (o.pickTool.empty()) return false;
+		any = true;
+	}
+	return any;
+}
+
 // The unified right-click menu for a line object: "Line properties…" plus the kind's own actions
 // (profile: save / delete; overlay & polygon: hide; polygon: delete). Shared by the 3-D-view
 // right-click hit-test and the Scene Objects list rows, so both routes give the same menu.
@@ -1330,6 +1348,17 @@ static void popupLineObjectMenu(Scene *s, const LineRef &lr, const QString &name
 	Overlay *ovp = nullptr;
 	if (lr.kind == LK_Overlay)
 		for (auto &o : s->overlays) if (o.actor.Get() == a) { ovp = &o; break; }
+	// A tool's guide line (Overlay::pickTool): a picture of where something is, not data.
+	const bool guide = ovp && !ovp->pickTool.empty();
+
+	// ...whose first property is pointing its tool at it — the same request as the dialog's own
+	// "Pick … in the view" button.
+	if (guide && g_overlayToolPick) {
+		const std::string tool = ovp->pickTool, verb = ovp->pickVerb, nm = ovp->name;
+		m.addAction(QString::fromStdString(ovp->pickLabel.empty() ? "Pick in the tool" : ovp->pickLabel),
+		            [s, tool, verb, nm]() { if (g_overlayToolPick) g_overlayToolPick(s, tool, verb, nm); });
+		m.addSeparator();
+	}
 
 	// A fault line's (or slip patch's) first property is the elastic-deformation dialog. For a slip
 	// patch the dialog opens seeded from THIS patch (faultRunDialog finds it via polyIndexOfActor) and
@@ -1386,7 +1415,7 @@ static void popupLineObjectMenu(Scene *s, const LineRef &lr, const QString &name
 		m.addAction("Line properties…", [s, lr]() { showLineProperties(s, lr); });
 		// Drape this element on the terrain, or put it back on its own z. Offered only where there IS
 		// a ground to clamp to; checkable, because it is a state the user flips both ways.
-		if (lineCanClamp(s, lr)) {
+		if (!guide && lineCanClamp(s, lr)) {
 			QAction *cl = m.addAction("Clamp to ground");
 			cl->setCheckable(true);
 			cl->setChecked(lineIsClamped(s, lr));
@@ -1402,7 +1431,7 @@ static void popupLineObjectMenu(Scene *s, const LineRef &lr, const QString &name
 	// A line overlay's rings can be FILLED (a polygon file, a traced picture's colour layer): the
 		// area takes the line colour, a ring inside a ring is a hole. Checkable, a state flipped both ways.
 		// Not on an overlay whose maker said it is never an area (Overlay::noFill: the MB-System swath tracks).
-		if (ovp && ovp->mode == 1 && !ovp->noFill) {
+		if (ovp && ovp->mode == 1 && !ovp->noFill && !guide) {
 			QAction *fa = m.addAction("Fill polygons");
 			fa->setCheckable(true);
 			fa->setChecked(ovp->filled);
@@ -1625,7 +1654,7 @@ static void popupLineObjectMenu(Scene *s, const LineRef &lr, const QString &name
 		}
 		// The per-SEGMENT twin: a line whose segments are named things (GADM provinces, plate
 		// boundaries) can put those names on the map, one per segment at its centroid.
-		if (ovp && !ovp->info.empty()) {
+		if (ovp && !ovp->info.empty() && !guide) {
 			QAction *nm = m.addAction("Show names", [s, ovp]() { overlayToggleNames(s, ovp); });
 			nm->setCheckable(true);
 			nm->setChecked(ovp->namesShown);

@@ -186,6 +186,7 @@ include("isocs.jl")      # parse Mirone data/isocs/*.dat isochron header -> writ
 include("palettes.jl")   # Image > Color Palettes: the six palette families + CPT I/O (port of Mirone color_palettes.m)
 include("bandslist.jl")  # Image > Load Bands: multiband/.vrt band picker (port of Mirone bands_list.m)
 include("RemoteS/RemoteS.jl") # submodule InteractiveGMT.RemoteS: port of RemoteS.jl (indices, Landsat, MODIS L2, orbits)
+include("swot.jl")      # Satellite > SWOT: PO.DAAC L2 search/download/grid (a Remote sensing dialog tool)
 include("RemoteS/remotes_gui.jl") # Satellite > Remote sensing: the dialogs over that submodule
 
 export gmtscript, gmtreplay,

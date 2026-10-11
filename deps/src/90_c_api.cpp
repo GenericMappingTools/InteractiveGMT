@@ -6923,6 +6923,24 @@ GMTVTK_API int gmtvtk_overlay_set_coastres_h(void *scene, const char *name, cons
 	return 0;
 }
 
+// Mark the overlay named `name` (the most recently added one, when several share it) as a GUIDE line
+// of tool dialog `tool` (Overlay::pickTool): its menu offers `label`, which sends that dialog the
+// request `verb` with the line's name — what the dialog's own pickline_ button does — and drops
+// "Clamp to ground", "Fill polygons" and "Show names". Returns 1 when the overlay was found.
+GMTVTK_API int gmtvtk_overlay_set_tool_pick_h(void *scene, const char *name, const char *tool,
+                                              const char *verb, const char *label) {
+	Scene *s = (Scene*)scene;
+	if (!s || !sceneAlive(s) || !name || !name[0] || !tool || !tool[0] || !verb || !verb[0]) return 0;
+	for (auto it = s->overlays.rbegin(); it != s->overlays.rend(); ++it) {
+		if (it->name != name) continue;
+		it->pickTool = tool;
+		it->pickVerb = verb;
+		it->pickLabel = label ? label : "";
+		return 1;
+	}
+	return 0;
+}
+
 GMTVTK_API int gmtvtk_line_clamp_h(void *scene, const char *name, int on) {
 	Scene *s = (Scene*)scene;
 	if (!s || !sceneAlive(s) || !name || !name[0]) return 0;
@@ -8059,6 +8077,19 @@ GMTVTK_API const char *gmtvtk_objtree_checks_test(void *scene) {
 	};
 	for (int i = 0; i < tree->topLevelItemCount(); ++i) walk(tree->topLevelItem(i), 0);
 	return buf.c_str();
+}
+
+// test hook: the base surface row's "Remove" — the SAME sceneRemoveSurface its menu item calls.
+// Returns 1 when there was a base surface to remove.
+static void testBorrowScene(Scene *s);   // below: borrow, given back when the window goes
+GMTVTK_API int gmtvtk_scene_remove_surface_test(void *scene) {
+	Scene *s = (Scene*)scene;
+	if (!s) return 0;
+	testBorrowScene(s);                      // a window of the production dll: alive here too
+	if (!sceneAlive(s) || (!s->surf && !s->surfGroup && !s->drape)) return 0;
+	sceneRemoveSurface(s);
+	for (int i = 0; i < 5; ++i) QApplication::processEvents();
+	return 1;
 }
 
 // test hook: CLICK the checkbox of the Scene Objects row at `path` ("tsu.nc/z", "tsu.nc/z/Axes" —
@@ -9767,6 +9798,236 @@ GMTVTK_API int gmtvtk_widget_enabled_test(const char *name) {
 		if (QWidget *w = tl->findChild<QWidget *>(n))
 			return w->isEnabled() ? 1 : 0;
 	return -1;
+}
+
+// test hooks: WHERE ON THE SCREEN things are, for tests that press the REAL OS mouse (the user's
+// gesture, through whichever viewer library owns the window). Each returns 1 and the global pixel
+// centre in *x, *y; 0/-1 when not found.
+//  - a widget `widget` of the visible top-level window `window` (both by object name)
+GMTVTK_API int gmtvtk_widget_screen_test(const char *window, const char *widget, int *x, int *y) {
+	if (!window || !widget || !x || !y) return -1;
+	for (QWidget *tl : QApplication::topLevelWidgets()) {
+		if (tl->objectName() != QString::fromUtf8(window) || !tl->isVisible()) continue;
+		QWidget *w = tl->findChild<QWidget *>(QString::fromUtf8(widget));
+		if (!w || !w->isVisible()) return 0;
+		const QPoint g = w->mapToGlobal(w->rect().center());
+		*x = g.x(); *y = g.y();
+		return 1;
+	}
+	return -1;
+}
+//  - the Scene Objects row labelled `label` (anywhere in the tree; its groups are unfolded and the
+//    row scrolled into view first, as the user would)
+GMTVTK_API int gmtvtk_objrow_screen_test(void *scene, const char *label, int *x, int *y) {
+	Scene *s = (Scene*)scene;
+	if (!s || !s->objPanel || !label || !x || !y) return -1;
+	QTreeWidget *tree = s->objPanel->findChild<QTreeWidget*>();
+	if (!tree) return -1;
+	const QString want = QString::fromUtf8(label);
+	std::function<QTreeWidgetItem *(QTreeWidgetItem *)> walk = [&](QTreeWidgetItem *it) -> QTreeWidgetItem * {
+		QString l;
+		if (QWidget *w = tree->itemWidget(it, 0))
+			for (QLabel *lb : w->findChildren<QLabel*>())
+				if (!lb->text().isEmpty()) { l = lb->text(); break; }
+		if (l.isEmpty()) l = it->text(0);
+		if (l == want) return it;
+		for (int i = 0; i < it->childCount(); ++i)
+			if (QTreeWidgetItem *r = walk(it->child(i))) return r;
+		return nullptr;
+	};
+	QTreeWidgetItem *hit = nullptr;
+	for (int i = 0; i < tree->topLevelItemCount() && !hit; ++i) hit = walk(tree->topLevelItem(i));
+	if (!hit) return 0;
+	for (QTreeWidgetItem *p = hit->parent(); p; p = p->parent()) p->setExpanded(true);
+	tree->scrollToItem(hit);
+	for (int i = 0; i < 5; ++i) QApplication::processEvents();
+	const QRect r = tree->visualItemRect(hit);
+	const QPoint g = tree->viewport()->mapToGlobal(QPoint(r.left() + std::min(60, r.width() / 2), r.center().y()));
+	*x = g.x(); *y = g.y();
+	return 1;
+}
+//  - vertex `i` of the overlay named `name`, where it is drawn in the 3-D view
+GMTVTK_API int gmtvtk_overlay_point_screen_test(void *scene, const char *name, int i, int *x, int *y) {
+	Scene *s = (Scene*)scene;
+	if (!s || !name || !x || !y || !s->widget || !s->ren) return -1;
+	for (auto &o : s->overlays) {
+		if (o.name != name || !o.actor || !o.baseLine) continue;
+		vtkPoints *pts = o.baseLine->GetPoints();
+		if (!pts || i < 0 || i >= pts->GetNumberOfPoints()) return 0;
+		double p[4] = { 0, 0, 0, 1 }, q[4];
+		pts->GetPoint(i, p);
+		o.actor->GetMatrix()->MultiplyPoint(p, q);
+		s->ren->SetWorldPoint(q[0], q[1], q[2], 1.0);
+		s->ren->WorldToDisplay();
+		double d[3]; s->ren->GetDisplayPoint(d);
+		const double dpr = s->widget->devicePixelRatioF();
+		const int H = s->widget->renderWindow()->GetSize()[1];
+		const QPoint g = s->widget->mapToGlobal(QPoint(int(d[0] / dpr), int((H - d[1]) / dpr)));
+		*x = g.x(); *y = g.y();
+		return 1;
+	}
+	return -1;
+}
+//  - the item `text` of the menu now popped up
+GMTVTK_API int gmtvtk_popup_item_screen_test(const char *text, int *x, int *y) {
+	if (!text || !x || !y) return -1;
+	auto *m = qobject_cast<QMenu *>(QApplication::activePopupWidget());
+	if (!m) return -1;
+	for (QAction *a : m->actions())
+		if (a->text() == QString::fromUtf8(text)) {
+			const QPoint g = m->mapToGlobal(m->actionGeometry(a).center());
+			*x = g.x(); *y = g.y();
+			return 1;
+		}
+	return 0;
+}
+// test hook: ARM A REAL OS CLICK on the item `text` of the NEXT menu that pops up. A menu runs its own
+// modal loop (QMenu::exec) inside whatever event the user's right-click arrived in, so a test driving
+// the real mouse from outside never regains control while it is open; this does the second click
+// from inside that loop instead — still real OS input (SetCursorPos + mouse_event, physical pixels =
+// Qt's logical pixels x the screen's device pixel ratio), so the menu receives exactly the user's click.
+// Disarms itself after one menu. Returns 1 when armed (Windows only; 0 elsewhere).
+#ifdef _WIN32
+extern "C" __declspec(dllimport) int __stdcall SetCursorPos(int x, int y);                                          // user32
+extern "C" __declspec(dllimport) void __stdcall mouse_event(unsigned long f, unsigned long dx, unsigned long dy, unsigned long d, unsigned long long extra);
+#endif
+static QString g_autoclickTrace;          // what the armed real click saw and did (gmtvtk_autoclick_trace_test)
+GMTVTK_API int gmtvtk_autoclick_trace_test(char *buf, int cap) {
+	const QByteArray b = g_autoclickTrace.toUtf8();
+	if (buf && cap > 0) { const int n = std::min(int(b.size()), cap - 1); std::memcpy(buf, b.constData(), size_t(n)); buf[n] = '\0'; }
+	return int(b.size());
+}
+GMTVTK_API int gmtvtk_popup_autoclick_os_test(const char *text) {
+#ifdef _WIN32
+	if (!text) return 0;
+	g_autoclickTrace.clear();
+	struct OsClicker : QObject {
+		QString want; bool done = false;
+		bool eventFilter(QObject *o, QEvent *e) override {
+			auto *m = qobject_cast<QMenu *>(o);
+			if (m && e->type() == QEvent::Show && !done) {
+				done = true;
+				QPointer<QMenu> pm(m);
+				const QString w = want;
+				auto tries = std::make_shared<int>(0);
+				auto step = std::make_shared<std::function<void()>>();
+				*step = [pm, w, tries, step]() {
+					if (!pm) return;
+					QAction *hit = nullptr;
+					for (QAction *a : pm->actions()) if (a->text() == w) { hit = a; break; }
+					if (*tries == 0) { QStringList t; for (QAction *a : pm->actions()) t << a->text(); g_autoclickTrace += "menu: " + t.join(" | ") + "\n"; }
+					if (!(pm->isVisible() && hit && QApplication::activePopupWidget() == pm.data())) {
+						if (++*tries < 100) QTimer::singleShot(30, pm, *step); else { g_autoclickTrace += "gave up\n"; pm->close(); }
+						return;
+					}
+					const QPoint g = pm->mapToGlobal(pm->actionGeometry(hit).center());
+					const double r = pm->devicePixelRatioF();
+					SetCursorPos(int(std::lround(g.x() * r)), int(std::lround(g.y() * r)));
+					g_autoclickTrace += QString("click at %1,%2 (ratio %3)\n").arg(std::lround(g.x() * r)).arg(std::lround(g.y() * r)).arg(r);
+					QTimer::singleShot(250, [] {
+						mouse_event(0x0002ul, 0, 0, 0, 0);   // MOUSEEVENTF_LEFTDOWN
+						mouse_event(0x0004ul, 0, 0, 0, 0);     // MOUSEEVENTF_LEFTUP
+					});
+				};
+				QTimer::singleShot(100, pm, *step);
+				qApp->removeEventFilter(this);
+				deleteLater();
+			}
+			return QObject::eventFilter(o, e);
+		}
+	};
+	auto *f = new OsClicker;
+	f->want = QString::fromUtf8(text);
+	qApp->installEventFilter(f);
+	return 1;
+#else
+	(void)text;
+	return 0;
+#endif
+}
+
+//  - the object name of the active (front) top-level window -> buf
+GMTVTK_API int gmtvtk_active_window_test(char *buf, int cap) {
+	QWidget *w = QApplication::activeWindow();
+	const QByteArray n = w ? w->objectName().toUtf8() : QByteArray();
+	if (buf && cap > 0) { const int k = std::min(int(n.size()), cap - 1); std::memcpy(buf, n.constData(), size_t(k)); buf[k] = '\0'; }
+	return w ? 1 : 0;
+}
+
+// test hook: THE CURRENT INDEX of the combo box `widget` inside the visible top-level window `window`
+// (both by object name); -1 when there is no such combo.
+GMTVTK_API int gmtvtk_combo_index_test(const char *window, const char *widget) {
+	if (!window || !widget) return -1;
+	for (QWidget *tl : QApplication::topLevelWidgets()) {
+		if (tl->objectName() != QString::fromUtf8(window) || !tl->isVisible()) continue;
+		if (auto *cb = tl->findChild<QComboBox *>(QString::fromUtf8(widget))) return cb->currentIndex();
+	}
+	return -1;
+}
+
+// test hook: RIGHT-CLICK MENU OF A LINE, CLICKED WITH THE MOUSE. Opens the SAME menu a right-click on
+// the overlay named `overlay` opens (popupLineObjectMenu, modal exec, holding the input grab) and,
+// once it is on screen, presses and releases the left button on the item whose text is `item` — the
+// user's click, not a QAction::trigger(), so the item runs exactly where it runs for real: inside the
+// menu's own event loop, under its grab. Then lets the queued work land (~2 s of events). Returns 1
+// when the item was clicked, 0 when the menu had no such item, -1 when there is no such overlay.
+static void testBorrowScene(Scene *s);   // below: borrow, given back when the window goes
+GMTVTK_API int gmtvtk_line_menu_click_test(void *scene, const char *overlay, const char *item) {
+	Scene *s = (Scene*)scene;
+	if (!s || !overlay || !item) return -1;
+	testBorrowScene(s);
+	vtkActor *act = nullptr;
+	for (auto it = s->overlays.rbegin(); it != s->overlays.rend(); ++it)
+		if (it->name == overlay) { act = it->actor.Get(); break; }
+	if (!act) return -1;
+	const QString want = QString::fromUtf8(item);
+	auto clicked = std::make_shared<int>(0);
+	// Watch for THE menu being shown, then click its item where it is drawn.
+	struct MenuClicker : QObject {
+		QString want; std::shared_ptr<int> clicked;
+		bool eventFilter(QObject *o, QEvent *e) override {
+			auto *m = qobject_cast<QMenu *>(o);
+			if (m && e->type() == QEvent::Show && *clicked == 0) {
+				QPointer<QMenu> pm(m);
+				QString w = want; auto c = clicked;
+				// Poll until the menu is really up with its item laid out (a busy machine can take far
+				// longer than any fixed delay), then click; give up after ~3 s and close it.
+				auto tries = std::make_shared<int>(0);
+				auto step = std::make_shared<std::function<void()>>();
+				*step = [pm, w, c, tries, step]() {
+					if (!pm || *c) return;
+					QAction *hit = nullptr;
+					for (QAction *a : pm->actions())
+						if (a->text() == w) { hit = a; break; }
+					const bool ready = pm->isVisible() && hit && pm->actionGeometry(hit).isValid() &&
+					                   QApplication::activePopupWidget() == pm.data();
+					if (!ready) {
+						if (++*tries < 100) QTimer::singleShot(30, pm, *step);
+						else { *c = -2; pm->close(); }
+						return;
+					}
+					const QPoint p = pm->actionGeometry(hit).center();
+					const QPointF gp = pm->mapToGlobal(p);
+					QMouseEvent press(QEvent::MouseButtonPress, p, gp, Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+					QApplication::sendEvent(pm, &press);
+					QMouseEvent rel(QEvent::MouseButtonRelease, p, gp, Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+					QApplication::sendEvent(pm, &rel);
+					*c = 1;
+				};
+				QTimer::singleShot(30, pm, *step);
+			}
+			return QObject::eventFilter(o, e);
+		}
+	};
+	auto *f = new MenuClicker;
+	f->want = want; f->clicked = clicked;
+	qApp->installEventFilter(f);
+	popupLineObjectMenu(s, LineRef{ LK_Overlay, act }, QString::fromUtf8(overlay), QPoint(200, 200));
+	qApp->removeEventFilter(f);
+	delete f;
+	QElapsedTimer t; t.start();
+	while (t.elapsed() < 4000) { QApplication::processEvents(QEventLoop::AllEvents, 50); }
+	return *clicked == 1 ? 1 : 0;
 }
 
 // test hook: IS THE TOP-LEVEL WINDOW OF THIS OBJECT NAME VISIBLE AND THE ACTIVE (front) ONE?

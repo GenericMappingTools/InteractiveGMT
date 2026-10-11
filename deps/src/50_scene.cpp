@@ -3343,7 +3343,8 @@ static void rebuildSceneObjects(Scene *s) {
 				// by TAG through lineGroupSetClamped, which loops over the same lineSetClamped a single
 				// row uses (per-group ops apply by tag, and never a second implementation).
 				QAction *aClamp = nullptr;
-				if (lineGroupCanClamp(s, gn)) {
+				const bool guide = lineGroupIsGuide(s, gn);   // a tool's guide lines: no clamp, no names
+				if (!guide && lineGroupCanClamp(s, gn)) {
 					aClamp = m.addAction("Clamp to ground");
 					aClamp->setCheckable(true);
 					aClamp->setChecked(lineGroupIsClamped(s, gn));
@@ -3353,7 +3354,7 @@ static void rebuildSceneObjects(Scene *s) {
 				// Plot every member's own name (GADM's provinces, a plate-boundary set) in one click —
 				// by TAG, through the same overlayToggleNames a single row uses.
 				QAction *aNames = nullptr;
-				if (lineGroupHasNames(s, gn)) {
+				if (!guide && lineGroupHasNames(s, gn)) {
 					aNames = m.addAction("Show names");
 					aNames->setCheckable(true);
 					aNames->setChecked(lineGroupNamesShown(s, gn));
