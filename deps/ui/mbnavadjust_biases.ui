@@ -1,0 +1,121 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  mbnavadjust_biases.ui - Settings > Biases of the analysis window of the navigation adjustment tool
+  (mbnavadjust's bulletinBoard_biases, mbnavadjust_creation.c): heading and roll biases of the two
+  sections' files, the same for both or each its own. Loaded at runtime by
+  src/mbnavadjust/mbnavadjust_window.cpp. Absolute geometry from the Motif bulletin board, no layouts.
+  Each Motif XmScale (titled, showValue on, one decimal) is a title label, a slider, and a label
+  named after it + "Value".
+-->
+<ui version="4.0">
+ <class>MbNavAdjustBiases</class>
+ <widget class="QDialog" name="bulletinBoard_biases">
+  <property name="geometry">
+   <rect><x>0</x><y>0</y><width>284</width><height>440</height></rect>
+  </property>
+  <property name="windowTitle">
+   <string>MBnavadjust - Biases</string>
+  </property>
+  <widget class="QLabel" name="label_biases_files">
+   <property name="geometry"><rect><x>10</x><y>10</y><width>140</width><height>50</height></rect></property>
+   <property name="alignment"><set>Qt::AlignLeft|Qt::AlignTop</set></property>
+  </widget>
+  <widget class="QRadioButton" name="toggleButton_biases_together">
+   <property name="geometry"><rect><x>156</x><y>12</y><width>121</width><height>24</height></rect></property>
+   <property name="text"><string>Same biases</string></property>
+  </widget>
+  <widget class="QRadioButton" name="toggleButton_biases_separate">
+   <property name="geometry"><rect><x>156</x><y>38</y><width>121</width><height>24</height></rect></property>
+   <property name="text"><string>Different biases</string></property>
+  </widget>
+  <widget class="Line" name="separator8">
+   <property name="geometry"><rect><x>10</x><y>64</y><width>260</width><height>12</height></rect></property>
+   <property name="orientation"><enum>Qt::Horizontal</enum></property>
+  </widget>
+  <widget class="QLabel" name="label_biases_heading1">
+   <property name="geometry"><rect><x>10</x><y>80</y><width>200</width><height>18</height></rect></property>
+   <property name="text"><string>Section 1 Heading (deg)</string></property>
+  </widget>
+  <widget class="QLabel" name="scale_biases_heading1Value">
+   <property name="geometry"><rect><x>214</x><y>80</y><width>56</width><height>18</height></rect></property>
+   <property name="text"><string>0.0</string></property>
+   <property name="alignment"><set>Qt::AlignRight|Qt::AlignVCenter</set></property>
+  </widget>
+  <widget class="QSlider" name="scale_biases_heading1">
+   <property name="geometry"><rect><x>10</x><y>100</y><width>260</width><height>22</height></rect></property>
+   <property name="orientation"><enum>Qt::Horizontal</enum></property>
+   <property name="minimum"><number>-99</number></property>
+   <property name="maximum"><number>99</number></property>
+  </widget>
+  <widget class="QLabel" name="label_biases_roll1">
+   <property name="geometry"><rect><x>10</x><y>140</y><width>200</width><height>18</height></rect></property>
+   <property name="text"><string>Section 1 Roll (deg)</string></property>
+  </widget>
+  <widget class="QLabel" name="scale_biases_roll1Value">
+   <property name="geometry"><rect><x>214</x><y>140</y><width>56</width><height>18</height></rect></property>
+   <property name="text"><string>0.0</string></property>
+   <property name="alignment"><set>Qt::AlignRight|Qt::AlignVCenter</set></property>
+  </widget>
+  <widget class="QSlider" name="scale_biases_roll1">
+   <property name="geometry"><rect><x>10</x><y>160</y><width>260</width><height>22</height></rect></property>
+   <property name="orientation"><enum>Qt::Horizontal</enum></property>
+   <property name="minimum"><number>-99</number></property>
+   <property name="maximum"><number>99</number></property>
+  </widget>
+  <widget class="Line" name="separator6">
+   <property name="geometry"><rect><x>10</x><y>200</y><width>260</width><height>12</height></rect></property>
+   <property name="orientation"><enum>Qt::Horizontal</enum></property>
+  </widget>
+  <widget class="QLabel" name="label_biases_heading2">
+   <property name="geometry"><rect><x>10</x><y>220</y><width>200</width><height>18</height></rect></property>
+   <property name="text"><string>Section 2 Heading (deg)</string></property>
+  </widget>
+  <widget class="QLabel" name="scale_biases_heading2Value">
+   <property name="geometry"><rect><x>214</x><y>220</y><width>56</width><height>18</height></rect></property>
+   <property name="text"><string>0.0</string></property>
+   <property name="alignment"><set>Qt::AlignRight|Qt::AlignVCenter</set></property>
+  </widget>
+  <widget class="QSlider" name="scale_biases_heading2">
+   <property name="geometry"><rect><x>10</x><y>240</y><width>260</width><height>22</height></rect></property>
+   <property name="orientation"><enum>Qt::Horizontal</enum></property>
+   <property name="minimum"><number>-99</number></property>
+   <property name="maximum"><number>99</number></property>
+  </widget>
+  <widget class="QLabel" name="label_biases_roll2">
+   <property name="geometry"><rect><x>10</x><y>280</y><width>200</width><height>18</height></rect></property>
+   <property name="text"><string>Section 2 Roll (deg)</string></property>
+  </widget>
+  <widget class="QLabel" name="scale_biases_roll2Value">
+   <property name="geometry"><rect><x>214</x><y>280</y><width>56</width><height>18</height></rect></property>
+   <property name="text"><string>0.0</string></property>
+   <property name="alignment"><set>Qt::AlignRight|Qt::AlignVCenter</set></property>
+  </widget>
+  <widget class="QSlider" name="scale_biases_roll2">
+   <property name="geometry"><rect><x>10</x><y>300</y><width>260</width><height>22</height></rect></property>
+   <property name="orientation"><enum>Qt::Horizontal</enum></property>
+   <property name="minimum"><number>-99</number></property>
+   <property name="maximum"><number>99</number></property>
+  </widget>
+  <widget class="Line" name="separator9">
+   <property name="geometry"><rect><x>10</x><y>336</y><width>260</width><height>12</height></rect></property>
+   <property name="orientation"><enum>Qt::Horizontal</enum></property>
+  </widget>
+  <widget class="QPushButton" name="pushButton_biases_applyall">
+   <property name="geometry"><rect><x>70</x><y>356</y><width>140</width><height>30</height></rect></property>
+   <property name="text"><string>Apply to All Files</string></property>
+   <property name="autoDefault"><bool>false</bool></property>
+  </widget>
+  <widget class="QPushButton" name="pushButton_biases_apply">
+   <property name="geometry"><rect><x>70</x><y>396</y><width>70</width><height>30</height></rect></property>
+   <property name="text"><string>Apply</string></property>
+   <property name="autoDefault"><bool>false</bool></property>
+  </widget>
+  <widget class="QPushButton" name="pushButton_biases_dismiss">
+   <property name="geometry"><rect><x>140</x><y>396</y><width>70</width><height>30</height></rect></property>
+   <property name="text"><string>Dismiss</string></property>
+   <property name="autoDefault"><bool>false</bool></property>
+  </widget>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

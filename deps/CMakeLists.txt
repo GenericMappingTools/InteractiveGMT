@@ -304,7 +304,30 @@ endif()
 set(CUBE_SRC src/cube/mb_cube.c)
 set_source_files_properties(${CUBE_SRC} PROPERTIES COMPILE_DEFINITIONS MB_CUBE_BUILD_DLL)
 
-set(GMTVTK_SRC src/gmtvtk.cpp src/mbgrid.c ${CUBE_SRC} src/satellite.cpp ${SAT_CODE_SRC} ${MBEDIT_SRC} ${MBVELOCITY_SRC} ${MBNAVEDIT_SRC} ${MBEDITVIZ_SRC} ${MBGRDVIZ_SRC} ${PCE_SRC} ${WCDVIEWER_SRC})
+# EXPERIMENTAL -- the navigation adjustment tool (MB-System's mbnavadjust, ported), in src/mbnavadjust/.
+# ON/OFF with this ONE line (Geophysics > MB-System entry and gmtvtk_mbnavadjust_* exports sit behind
+# #ifdef GMTVTK_MBNAVADJUST). MB-System's GUI-free core (mbnavadjust_io/_autopick/_invertnav.c) is
+# carried as it is; the engine and the Motif callbacks are plain C on a by-name widget bridge whose other
+# side is the Qt window. Like mbnavedit it reads swath files through the swath editor's run-time MBIO
+# loader, so it is built only when the editor is, and its visualization uses mbgrdviz's doors into a viewer
+# window (the file door, the tracks, the line pick), so only with mbgrdviz too.
+set(IGMT_WITH_MBNAVADJUST ON)
+
+set(MBNAVADJUST_SRC)
+if(IGMT_WITH_MBNAVADJUST AND MBEDIT_SRC AND MBGRDVIZ_SRC AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/mbnavadjust/mbnavadjust.c")
+  set(MBNAVADJUST_C src/mbnavadjust/mbnavadjust_io.c src/mbnavadjust/mbnavadjust_autopick.c
+      src/mbnavadjust/mbnavadjust_invertnav.c src/mbnavadjust/mbnavadjust.c src/mbnavadjust/mbnavadjust_callbacks.c
+      src/mbnavadjust/mbna_aux.c src/mbnavadjust/mbna_grid.c src/mbnavadjust/mbna_mbio.c src/mbnavadjust/mbna_motif.c)
+  set(MBNAVADJUST_SRC ${MBNAVADJUST_C} src/mbnavadjust/mbnavadjust_window.cpp)
+  add_compile_definitions(GMTVTK_MBNAVADJUST)
+  if(MSVC)
+    # MB-System's own sprintf/strcpy/sscanf, line for line
+    set_source_files_properties(${MBNAVADJUST_C} PROPERTIES COMPILE_DEFINITIONS "_CRT_SECURE_NO_WARNINGS;_CRT_NONSTDC_NO_WARNINGS")
+  endif()
+  message(STATUS "gmtvtk: building the EXPERIMENTAL navigation adjustment tool (src/mbnavadjust/)")
+endif()
+
+set(GMTVTK_SRC src/gmtvtk.cpp src/mbgrid.c ${CUBE_SRC} src/satellite.cpp ${SAT_CODE_SRC} ${MBEDIT_SRC} ${MBVELOCITY_SRC} ${MBNAVEDIT_SRC} ${MBEDITVIZ_SRC} ${MBGRDVIZ_SRC} ${PCE_SRC} ${WCDVIEWER_SRC} ${MBNAVADJUST_SRC})
 
 # deps/ui/*.ui are loaded at RUNTIME (QUiLoader, see FocalMechanismsDialog in 70_window.cpp) for
 # dialogs where the .ui must stay the single source of truth — no hand-ported C++ to fall out of

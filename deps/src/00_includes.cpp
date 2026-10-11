@@ -273,6 +273,13 @@
 #ifdef GMTVTK_MBGRDVIZ                      // EXPERIMENTAL mbgrdviz (IGMT_WITH_MBGRDVIZ)
 #include "mbgrdviz/mbgrdviz_window.h"
 #endif
+#ifdef GMTVTK_MBNAVADJUST                   // EXPERIMENTAL mbnavadjust (IGMT_WITH_MBNAVADJUST)
+#include "mbnavadjust/mbnavadjust_window.h"
+// Geophysics > MB-System > MBnavadjust (70_window.cpp): opens the tool once its Julia side answers
+// (defined with its host in 90_c_api.cpp)
+struct Scene;
+static void mbnavadjustMenuOpen(QWidget *win, Scene *s);
+#endif
 #ifdef GMTVTK_PCE                           // EXPERIMENTAL pointCloudEditor (IGMT_WITH_PCE)
 #include "pointcloudeditor/pce_window.h"
 #endif

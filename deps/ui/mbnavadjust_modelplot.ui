@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  mbnavadjust_modelplot.ui - View > Show Modelplot of the navigation adjustment tool (mbnavadjust's
+  bulletinBoard_modelplot, mbnavadjust_creation.c): the adjustment model as time series, as
+  perturbation, or the tie offsets. Loaded at runtime by src/mbnavadjust/mbnavadjust_window.cpp.
+  Absolute geometry from the Motif bulletin board, no layouts. The drawing area follows the window's
+  size, MBNA_MODELPLOT_LEFT_WIDTH (25) narrower and MBNA_MODELPLOT_LEFT_HEIGHT (65) lower, as
+  do_modelplot_resize sizes it.
+-->
+<ui version="4.0">
+ <class>MbNavAdjustModelplot</class>
+ <widget class="QDialog" name="bulletinBoard_modelplot">
+  <property name="geometry">
+   <rect><x>0</x><y>0</y><width>1015</width><height>485</height></rect>
+  </property>
+  <property name="windowTitle">
+   <string>MBnavadjust - Navigation Adjustment Model</string>
+  </property>
+  <widget class="QPushButton" name="pushButton_modelplot_dismiss">
+   <property name="geometry"><rect><x>10</x><y>10</y><width>60</width><height>32</height></rect></property>
+   <property name="text"><string>Dismiss</string></property>
+   <property name="autoDefault"><bool>false</bool></property>
+  </widget>
+  <widget class="QRadioButton" name="toggleButton_modelplot_timeseries">
+   <property name="geometry"><rect><x>80</x><y>14</y><width>96</width><height>26</height></rect></property>
+   <property name="text"><string>Time Series</string></property>
+  </widget>
+  <widget class="QRadioButton" name="toggleButton_modelplot_perturbation">
+   <property name="geometry"><rect><x>178</x><y>14</y><width>100</width><height>26</height></rect></property>
+   <property name="text"><string>Perturbation</string></property>
+  </widget>
+  <widget class="QRadioButton" name="toggleButton_modelplot_tieoffsets">
+   <property name="geometry"><rect><x>280</x><y>14</y><width>100</width><height>26</height></rect></property>
+   <property name="text"><string>Tie Offsets</string></property>
+  </widget>
+  <widget class="QPushButton" name="pushButton_modelplot_fullsize">
+   <property name="geometry"><rect><x>390</x><y>10</y><width>80</width><height>32</height></rect></property>
+   <property name="text"><string>Full Size</string></property>
+   <property name="autoDefault"><bool>false</bool></property>
+  </widget>
+  <widget class="QPushButton" name="pushButton_modelplot_clearblock">
+   <property name="geometry"><rect><x>480</x><y>10</y><width>80</width><height>32</height></rect></property>
+   <property name="text"><string>Clear Block</string></property>
+   <property name="autoDefault"><bool>false</bool></property>
+  </widget>
+  <widget class="QLabel" name="label_modelplot_status">
+   <property name="geometry"><rect><x>570</x><y>6</y><width>436</width><height>40</height></rect></property>
+   <property name="alignment"><set>Qt::AlignLeft|Qt::AlignTop</set></property>
+  </widget>
+  <widget class="QWidget" name="drawingArea_modelplot">
+   <property name="geometry"><rect><x>10</x><y>50</y><width>990</width><height>420</height></rect></property>
+   <property name="toolTip"><string>Left button picks a tie, middle button a crossing or block, right button drags a zoom</string></property>
+  </widget>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

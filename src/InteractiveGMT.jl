@@ -167,6 +167,10 @@ isfile(joinpath(@__DIR__, "mbvelocitytool.jl")) && include("mbvelocitytool.jl")
 # EXPERIMENTAL navigation editor (MB-System's mbnavedit, deps/src/mbnavedit/), switched the same way: this
 # line for the Julia side (`mbnavedit`), IGMT_WITH_MBNAVEDIT for the C side.
 isfile(joinpath(@__DIR__, "mbnavedit.jl")) && include("mbnavedit.jl")
+# EXPERIMENTAL navigation adjustment tool (MB-System's mbnavadjust, deps/src/mbnavadjust/), switched the same
+# way: this line for the Julia side (`mbnavadjust`), IGMT_WITH_MBNAVADJUST for the C side. After mbprocess.jl:
+# its programs run through that file's MB module runner.
+isfile(joinpath(@__DIR__, "mbnavadjust.jl")) && include("mbnavadjust.jl")
 # EXPERIMENTAL mbeditviz (MB-System's mbeditviz, deps/src/mbeditviz/), switched the same way: this line for the
 # Julia side (`mbeditviz`), IGMT_WITH_MBEDITVIZ for the C side.
 isfile(joinpath(@__DIR__, "mbeditviz.jl")) && include("mbeditviz.jl")

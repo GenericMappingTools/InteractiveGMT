@@ -1,0 +1,144 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  mbnavadjust_naverr.ui - the crossing / section analysis window of the navigation adjustment tool
+  (mbnavadjust's bulletinBoard_naverr, mbnavadjust_creation.c). Loaded at runtime by
+  src/mbnavadjust/mbnavadjust_window.cpp. Absolute geometry from the Motif bulletin board, no
+  layouts. The three drawing areas are plain widgets the window paints into: the two sections'
+  contours (drawingArea_naverr_cont, 600 x 600), the misfit grid (drawingArea_naverr_corr,
+  301 x 301) and the z offset misfit (drawingArea_naverr_zcorr, 300 x 60), as the uil sizes them.
+  "Settings" opens the Biases and Contours dialogs, as the Motif menu bar of the same name did.
+-->
+<ui version="4.0">
+ <class>MbNavAdjustNaverr</class>
+ <widget class="QDialog" name="bulletinBoard_naverr">
+  <property name="geometry">
+   <rect><x>0</x><y>0</y><width>935</width><height>685</height></rect>
+  </property>
+  <property name="windowTitle">
+   <string>MBnavadjust - Navigation Adjustment Analysis</string>
+  </property>
+  <widget class="QPushButton" name="cascadeButton_settings">
+   <property name="geometry"><rect><x>10</x><y>10</y><width>76</width><height>30</height></rect></property>
+   <property name="text"><string>Settings</string></property>
+   <property name="autoDefault"><bool>false</bool></property>
+  </widget>
+  <widget class="QPushButton" name="pushButton_naverr_previous">
+   <property name="geometry"><rect><x>90</x><y>10</y><width>80</width><height>30</height></rect></property>
+   <property name="text"><string>Previous</string></property>
+   <property name="autoDefault"><bool>false</bool></property>
+  </widget>
+  <widget class="QPushButton" name="pushButton_naverr_next">
+   <property name="geometry"><rect><x>170</x><y>10</y><width>80</width><height>30</height></rect></property>
+   <property name="text"><string>Next</string></property>
+   <property name="autoDefault"><bool>false</bool></property>
+  </widget>
+  <widget class="QPushButton" name="pushButton_naverr_nextunset">
+   <property name="geometry"><rect><x>250</x><y>10</y><width>90</width><height>30</height></rect></property>
+   <property name="text"><string>Next Unset</string></property>
+   <property name="autoDefault"><bool>false</bool></property>
+  </widget>
+  <widget class="QPushButton" name="pushButton_naverr_setnone">
+   <property name="geometry"><rect><x>350</x><y>10</y><width>100</width><height>30</height></rect></property>
+   <property name="text"><string>Skip Crossing</string></property>
+   <property name="autoDefault"><bool>false</bool></property>
+  </widget>
+  <widget class="QPushButton" name="pushButton_naverr_unset">
+   <property name="geometry"><rect><x>450</x><y>10</y><width>100</width><height>30</height></rect></property>
+   <property name="text"><string>Unset Crossing</string></property>
+   <property name="autoDefault"><bool>false</bool></property>
+  </widget>
+  <widget class="QPushButton" name="pushButton_naverr_settie">
+   <property name="geometry"><rect><x>550</x><y>10</y><width>100</width><height>30</height></rect></property>
+   <property name="text"><string>Set Offset</string></property>
+   <property name="autoDefault"><bool>false</bool></property>
+  </widget>
+  <widget class="QPushButton" name="pushButton_naverr_addtie">
+   <property name="geometry"><rect><x>650</x><y>10</y><width>100</width><height>30</height></rect></property>
+   <property name="text"><string>Add Tie</string></property>
+   <property name="autoDefault"><bool>false</bool></property>
+  </widget>
+  <widget class="QPushButton" name="pushButton_naverr_selecttie">
+   <property name="geometry"><rect><x>750</x><y>10</y><width>100</width><height>30</height></rect></property>
+   <property name="text"><string>Select Tie</string></property>
+   <property name="autoDefault"><bool>false</bool></property>
+  </widget>
+  <widget class="QPushButton" name="pushButton_naverr_dismiss">
+   <property name="geometry"><rect><x>850</x><y>10</y><width>70</width><height>60</height></rect></property>
+   <property name="text"><string>Dismiss</string></property>
+   <property name="autoDefault"><bool>false</bool></property>
+  </widget>
+  <widget class="QPushButton" name="pushButton_naverr_fullsize">
+   <property name="geometry"><rect><x>350</x><y>40</y><width>100</width><height>30</height></rect></property>
+   <property name="text"><string>Full Size</string></property>
+   <property name="autoDefault"><bool>false</bool></property>
+  </widget>
+  <widget class="QPushButton" name="pushButton_naverr_resettie">
+   <property name="geometry"><rect><x>450</x><y>40</y><width>100</width><height>30</height></rect></property>
+   <property name="text"><string>Reset Offset</string></property>
+   <property name="autoDefault"><bool>false</bool></property>
+  </widget>
+  <widget class="QPushButton" name="pushButton_naverr_zerozoffset">
+   <property name="geometry"><rect><x>550</x><y>40</y><width>100</width><height>30</height></rect></property>
+   <property name="text"><string>Zero Z Offset</string></property>
+   <property name="autoDefault"><bool>false</bool></property>
+  </widget>
+  <widget class="QPushButton" name="pushButton_naverr_zerooffset">
+   <property name="geometry"><rect><x>650</x><y>40</y><width>100</width><height>30</height></rect></property>
+   <property name="text"><string>Zero Offset</string></property>
+   <property name="autoDefault"><bool>false</bool></property>
+  </widget>
+  <widget class="QPushButton" name="pushButton_naverr_deletetie">
+   <property name="geometry"><rect><x>750</x><y>40</y><width>100</width><height>30</height></rect></property>
+   <property name="text"><string>Delete Tie</string></property>
+   <property name="autoDefault"><bool>false</bool></property>
+  </widget>
+  <widget class="QLabel" name="label_naverr_status">
+   <property name="geometry"><rect><x>10</x><y>50</y><width>300</width><height>150</height></rect></property>
+   <property name="text"><string>No Data Imported</string></property>
+   <property name="alignment"><set>Qt::AlignLeft|Qt::AlignTop</set></property>
+  </widget>
+  <widget class="QLabel" name="label_naverr_offsets">
+   <property name="geometry"><rect><x>10</x><y>200</y><width>300</width><height>40</height></rect></property>
+   <property name="text"><string>No Data Imported</string></property>
+   <property name="alignment"><set>Qt::AlignLeft|Qt::AlignTop</set></property>
+  </widget>
+  <widget class="QWidget" name="drawingArea_naverr_corr">
+   <property name="geometry"><rect><x>10</x><y>240</y><width>301</width><height>301</height></rect></property>
+   <property name="toolTip"><string>Misfit of the two sections against the offset: left button sets the offset</string></property>
+  </widget>
+  <widget class="QWidget" name="drawingArea_naverr_zcorr">
+   <property name="geometry"><rect><x>10</x><y>550</y><width>300</width><height>60</height></rect></property>
+   <property name="toolTip"><string>Misfit against the z offset: left button sets the z offset</string></property>
+  </widget>
+  <widget class="QPushButton" name="pushButton_naverr_minimum">
+   <property name="geometry"><rect><x>10</x><y>620</y><width>120</width><height>30</height></rect></property>
+   <property name="text"><string>Minimum Misfit</string></property>
+   <property name="autoDefault"><bool>false</bool></property>
+  </widget>
+  <widget class="QPushButton" name="pushButton_naverr_minxymisfit">
+   <property name="geometry"><rect><x>10</x><y>650</y><width>120</width><height>32</height></rect></property>
+   <property name="text"><string>Minimum XY Misfit</string></property>
+   <property name="autoDefault"><bool>false</bool></property>
+  </widget>
+  <widget class="QRadioButton" name="toggleButton_misfitcenter_zero">
+   <property name="geometry"><rect><x>136</x><y>624</y><width>174</width><height>26</height></rect></property>
+   <property name="text"><string>Center on Zero Offset</string></property>
+  </widget>
+  <widget class="QRadioButton" name="toggleButton_misfitcenter_auto">
+   <property name="geometry"><rect><x>136</x><y>652</y><width>174</width><height>26</height></rect></property>
+   <property name="text"><string>Center on Current Offset</string></property>
+  </widget>
+  <widget class="QWidget" name="drawingArea_naverr_cont">
+   <property name="geometry"><rect><x>320</x><y>76</y><width>600</width><height>600</height></rect></property>
+   <property name="toolTip"><string>The two sections' contours: left button drags the offset, middle button zooms, right button picks the tie points</string></property>
+  </widget>
+  <action name="pushButton_naverr_biases">
+   <property name="text"><string>Biases...</string></property>
+  </action>
+  <action name="pushButton_naverr_controls">
+   <property name="text"><string>Contours...</string></property>
+  </action>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

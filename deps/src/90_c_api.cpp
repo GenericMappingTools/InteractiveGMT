@@ -3320,6 +3320,172 @@ GMTVTK_API int gmtvtk_mbgrdviz_nav_editor(int which, const char *track) {
 }
 #endif // GMTVTK_MBGRDVIZ
 
+#ifdef GMTVTK_MBNAVADJUST
+// EXPERIMENTAL (IGMT_WITH_MBNAVADJUST in CMakeLists.txt; Julia lists these in _LIB_OPTIONAL).
+// The navigation adjustment tool (MB-System's mbnavadjust, ported: deps/src/mbnavadjust/). Its Julia side
+// (src/mbnavadjust.jl) runs the MB-System programs upstream runs through system() and reads grids the way
+// GMT_Read_Data hands them to MB-System; both are wired the first time the tool is opened.
+//   run(command) -> exit status
+//   grid(path, idims[3] = ncols, nrows, registration, dvals[8] = wesn, inc, zmin, zmax, remark[160],
+//        data (ncols * nrows floats, north row first, NaN = no data; null = header only), n) -> 1 ok, 0 not
+typedef int (*JuliaMbnaRunFn)(const char *command);
+typedef int (*JuliaMbnaGridFn)(const char *path, int *idims, double *dvals, char *remark, float *data, long long n);
+static JuliaMbnaRunFn g_juliaMbnaRun = nullptr;
+static JuliaMbnaGridFn g_juliaMbnaGrid = nullptr;
+
+GMTVTK_API void gmtvtk_set_mbnavadjust_callbacks(JuliaMbnaRunFn run, JuliaMbnaGridFn grid) {
+	g_juliaMbnaRun = run;
+	g_juliaMbnaGrid = grid;
+}
+
+static int mbnavadjustReadGrid(const char *path, struct mbna_gmtgrid *hdr, float *data) {
+	if (!g_juliaMbnaGrid || !path || !hdr)
+		return 0;
+	int idims[3] = {0, 0, 0};
+	double dvals[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+	char remark[160] = "";
+	const long long n = data ? (long long)hdr->n_columns * hdr->n_rows : 0;
+	if (g_juliaMbnaGrid(path, idims, dvals, remark, data, n) != 1)
+		return 0;
+	hdr->n_columns = idims[0];
+	hdr->n_rows = idims[1];
+	hdr->registration = idims[2];
+	for (int i = 0; i < 4; i++)
+		hdr->wesn[i] = dvals[i];
+	hdr->inc[0] = dvals[4];
+	hdr->inc[1] = dvals[5];
+	hdr->z_min = dvals[6];
+	hdr->z_max = dvals[7];
+	std::memcpy(hdr->remark, remark, sizeof(hdr->remark));
+	hdr->remark[sizeof(hdr->remark) - 1] = '\0';
+	return 1;
+}
+
+// The viewer's doors for the tool: mbgrdviz's own (the file door, the window's tracks, the line pick),
+// plus a line's pen and a group's removal through the exports every element already has.
+static MbNavAdjustHost mbnavadjustViewerHost() {
+	MbNavAdjustHost h;
+	h.base = mbeditViewerHost();
+	h.base.busyText = [](const char *text) {      // the app's ONE busy notice, named for this tool
+		if (!g_progress)
+			showBusyDialog("MBnavadjust");
+		if (g_progress) {
+			g_progress->setLabelText(QString::fromUtf8(text));
+			QApplication::processEvents();
+		}
+	};
+	const MbGrdVizHost gv = mbgrdvizViewerHost();
+	h.alive = gv.alive;
+	h.window = gv.window;
+	h.openFile = [](const char *path, const char *title) -> void * {
+		Scene *s = static_cast<Scene *>(gmtvtk_open_empty(title && title[0] ? title : "MBnavadjust"));
+		if (!sceneAlive(s))
+			return nullptr;
+		juliaOpenFile(s, path);
+		return sceneAlive(s) ? s : nullptr;
+	};
+	h.addLine = [](void *win, const double *xyz, int npts, double r, double g, double b, double width, const char *name,
+	               const char *group) {
+		const int segoff[2] = {0, npts};
+		return mbHostAddTrack(win, xyz, npts, segoff, 1, r, g, b, width, name, group);
+	};
+	h.removeGroup = [](void *win, const char *group) { return gmtvtk_remove_overlay_group_h(win, group) == 1; };
+	h.setLineStyle = [](void *win, const char *name, double r, double g, double b, double width) {
+		return gmtvtk_set_overlay_style_h(win, name, r, g, b, width, 0, 1.0) == 1;
+	};
+	h.pickLine = gv.pickNav;
+	h.render = gv.render;
+	h.run = [](const char *command) { return g_juliaMbnaRun ? g_juliaMbnaRun(command) : -1; };
+	h.readGrid = mbnavadjustReadGrid;
+	return h;
+}
+
+// Geophysics > MB-System > MBnavadjust. Its Julia side is wired the first time it is opened, through the
+// warm-up hook (nothing of it at start-up), so the first open waits for it, as mbprocess's entry does.
+static void mbnavadjustMenuOpen(QWidget *win, Scene *s) {
+	auto open = [win, s]() {
+		MbNavAdjustHost h = mbnavadjustViewerHost();
+		h.base.parkScene = sceneAlive(s) ? s : nullptr;
+		mbnavadjustOpenWindow(win, h);
+	};
+	if (g_juliaMbnaRun && g_juliaMbnaGrid) {
+		open();
+		return;
+	}
+	warmupTool("mbnavadjust");
+	QApplication::setOverrideCursor(Qt::WaitCursor);
+	auto tries = std::make_shared<int>(0);
+	auto step = std::make_shared<std::function<void()>>();
+	*step = [win, open, tries, step]() {
+		if (!(g_juliaMbnaRun && g_juliaMbnaGrid) && ++*tries < 200) {   // ~10 s, then say so instead of hanging
+			QTimer::singleShot(50, win, *step);
+			return;
+		}
+		QApplication::restoreOverrideCursor();
+		if (g_juliaMbnaRun && g_juliaMbnaGrid)
+			open();
+		else
+			QMessageBox::warning(win, "MBnavadjust", "The MBnavadjust tool's Julia side did not answer (src/mbnavadjust.jl).");
+	};
+	QTimer::singleShot(0, win, *step);
+}
+
+// Open the tool (or raise it), from viewer window `handle` (may be null: it parks in the first one);
+// with a `project` (.nvh), opened as `mbnavadjust -I project`. 1 = open (and the project, when given).
+GMTVTK_API int gmtvtk_mbnavadjust_open(void *handle, const char *project) {
+	ensureApp();
+	Scene *s = static_cast<Scene *>(handle);
+	MbNavAdjustHost h = mbnavadjustViewerHost();
+	h.base.parkScene = sceneAlive(s) ? s : nullptr;
+	return mbnavadjustOpenWindow(sceneAlive(s) ? s->win : nullptr, h, QString::fromUtf8(project ? project : "")) ? 1 : 0;
+}
+// [open, project_open, num_files, num_surveys, num_crossings, num_crossings_analyzed, num_truecrossings,
+//  num_ties, num_globalties, inversion_status, grid_status, naverr_mode, view_list, crossing_select,
+//  tie_select, modelplot, visualization_status, list_count]
+GMTVTK_API int gmtvtk_mbnavadjust_state(int *out, int n) {
+	return out ? mbnavadjustState(out, n) : 0;
+}
+// click the button / toggle / menu entry of that object name (mbnavadjust*.ui)
+GMTVTK_API int gmtvtk_mbnavadjust_press(const char *name) {
+	return (name && mbnavadjustPress(QString::fromUtf8(name))) ? 1 : 0;
+}
+// File > New (1) / Open (2) / Import Swath Data (3) / ... as One Survey (4) / Import Reference Grid (5),
+// without the file dialog; `format` the MBIO format id of an import (0: from the file name)
+GMTVTK_API int gmtvtk_mbnavadjust_file_select(int mode, const char *path, int format) {
+	return (path && mbnavadjustFileSelect(mode, QString::fromUtf8(path), format)) ? 1 : 0;
+}
+GMTVTK_API int gmtvtk_mbnavadjust_list_select(int row) {
+	return mbnavadjustListSelect(row) ? 1 : 0;
+}
+// row `row` of the list into `out`; its full length, -1 past the end
+GMTVTK_API int gmtvtk_mbnavadjust_list_item(int row, char *out, int cap) {
+	const QString s = mbnavadjustListItem(row);
+	if (s.isNull())
+		return -1;
+	const QByteArray b = s.toUtf8();
+	if (out && cap > 0)
+		std::snprintf(out, size_t(cap), "%s", b.constData());
+	return int(b.size());
+}
+// canvas: 0 contours, 1 misfit, 2 z offset, 3 modelplot
+GMTVTK_API int gmtvtk_mbnavadjust_mouse(int canvas, int button, int x0, int y0, int x1, int y1) {
+	return mbnavadjustMouse(canvas, button, x0, y0, x1, y1) ? 1 : 0;
+}
+GMTVTK_API int gmtvtk_mbnavadjust_save_png(int canvas, const char *path) {
+	return (path && mbnavadjustSavePng(canvas, QString::fromUtf8(path))) ? 1 : 0;
+}
+// the message log into `out`; its full length
+GMTVTK_API int gmtvtk_mbnavadjust_messages(char *out, int cap) {
+	const QByteArray b = mbnavadjustMessages().toUtf8();
+	if (out && cap > 0)
+		std::snprintf(out, size_t(cap), "%s", b.constData());
+	return int(b.size());
+}
+GMTVTK_API int gmtvtk_mbnavadjust_close(void) {
+	return mbnavadjustClose() ? 1 : 0;
+}
+#endif // GMTVTK_MBNAVADJUST
+
 #ifdef GMTVTK_PCE
 // EXPERIMENTAL (IGMT_WITH_PCE in CMakeLists.txt; Julia lists these in _LIB_OPTIONAL).
 // The point cloud editor: mbgrdviz's own window doors (a window's grid, the file door), the swath

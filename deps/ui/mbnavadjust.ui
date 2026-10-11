@@ -1,0 +1,332 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  mbnavadjust.ui - the navigation adjustment main window (port of MB-System's mbnavadjust,
+  mbnavadjust.uil / mbnavadjust_creation.c, CreatemainWindow). Loaded at RUNTIME by
+  deps/src/mbnavadjust/mbnavadjust_window.cpp (QUiLoader). The objectNames are the Motif widget
+  names; the callbacks (mbnavadjust_callbacks.c) reach every one by name, so rename one and the
+  tool refuses to open, naming the missing widget.
+  Absolute geometry from the Motif form, no layouts: the list and the message text follow the
+  window's size from code, as the Motif form's attachments made them follow it.
+-->
+<ui version="4.0">
+ <class>MbNavAdjustWindow</class>
+ <widget class="QMainWindow" name="MbNavAdjustWindow">
+  <property name="geometry">
+   <rect><x>0</x><y>0</y><width>962</width><height>394</height></rect>
+  </property>
+  <property name="windowTitle">
+   <string>MBnavadjust - Interactive Navigation Adjustment</string>
+  </property>
+  <widget class="QWidget" name="form_mbnavadjust">
+   <widget class="QLabel" name="label_status">
+    <property name="geometry"><rect><x>4</x><y>2</y><width>440</width><height>140</height></rect></property>
+    <property name="text"><string>No Data Imported</string></property>
+    <property name="alignment"><set>Qt::AlignLeft|Qt::AlignTop</set></property>
+    <property name="frameShape"><enum>QFrame::StyledPanel</enum></property>
+    <property name="textInteractionFlags"><set>Qt::TextSelectableByMouse</set></property>
+   </widget>
+   <widget class="QPlainTextEdit" name="text_messages">
+    <property name="geometry"><rect><x>4</x><y>148</y><width>440</width><height>220</height></rect></property>
+    <property name="readOnly"><bool>true</bool></property>
+    <property name="lineWrapMode"><enum>QPlainTextEdit::NoWrap</enum></property>
+    <property name="toolTip"><string>What MBnavadjust has done, with who and when (also in the project's log)</string></property>
+   </widget>
+   <widget class="QLabel" name="label_listdata">
+    <property name="geometry"><rect><x>450</x><y>2</y><width>490</width><height>20</height></rect></property>
+    <property name="text"><string>Data Files:</string></property>
+   </widget>
+   <widget class="QListWidget" name="list_data">
+    <property name="geometry"><rect><x>450</x><y>26</y><width>506</width><height>342</height></rect></property>
+    <property name="toolTip"><string>Select an item: the List menu chooses what is listed, the View menu which of them</string></property>
+    <property name="selectionMode"><enum>QAbstractItemView::SingleSelection</enum></property>
+    <property name="uniformItemSizes"><bool>true</bool></property>
+    <property name="horizontalScrollBarPolicy"><enum>Qt::ScrollBarAsNeeded</enum></property>
+   </widget>
+  </widget>
+  <widget class="QMenuBar" name="menuBar_mbnavadjust">
+   <widget class="QMenu" name="pulldownMenu_file">
+    <property name="title"><string>File</string></property>
+    <property name="toolTipsVisible"><bool>true</bool></property>
+    <addaction name="pushButton_new"/>
+    <addaction name="pushButton_open"/>
+    <addaction name="pushButton_close"/>
+    <addaction name="separator"/>
+    <addaction name="pushButton_importdata"/>
+    <addaction name="pushButton_importsurvey"/>
+    <addaction name="pushButton_importreference"/>
+    <addaction name="separator"/>
+    <addaction name="pushButton_quit"/>
+   </widget>
+   <widget class="QMenu" name="pulldownMenu_option">
+    <property name="title"><string>Option</string></property>
+    <property name="toolTipsVisible"><bool>true</bool></property>
+    <addaction name="pushButton_controls"/>
+   </widget>
+   <widget class="QMenu" name="pulldownMenu_list">
+    <property name="title"><string>List</string></property>
+    <property name="toolTipsVisible"><bool>true</bool></property>
+    <addaction name="pushButton_showreferencegrids"/>
+    <addaction name="separator"/>
+    <addaction name="pushButton_showsections"/>
+    <addaction name="pushButton_showglobalties"/>
+    <addaction name="pushButton_showglobaltiessorted"/>
+    <addaction name="separator"/>
+    <addaction name="pushButton_showdata"/>
+    <addaction name="pushButton_showsurveys"/>
+    <addaction name="pushButton_showblocks"/>
+    <addaction name="separator"/>
+    <addaction name="pushButton_showcrossings"/>
+    <addaction name="pushButton_showmediocrecrossings"/>
+    <addaction name="pushButton_showgoodcrossings"/>
+    <addaction name="pushButton_showbettercrossings"/>
+    <addaction name="pushButton_showtruecrossings"/>
+    <addaction name="pushButton_showcrossingties"/>
+    <addaction name="pushButton_showcrossingtiessortedall"/>
+    <addaction name="pushButton_showcrossingtiessortedbad"/>
+    <addaction name="pushButton_showcrossingtiessortedworst"/>
+   </widget>
+   <widget class="QMenu" name="pulldownMenu_view">
+    <property name="title"><string>View</string></property>
+    <property name="toolTipsVisible"><bool>true</bool></property>
+    <addaction name="toggleButton_showallsurveys"/>
+    <addaction name="toggleButton_showselectedsurvey"/>
+    <addaction name="toggleButton_showselectedblock"/>
+    <addaction name="toggleButton_showselectedfile"/>
+    <addaction name="toggleButton_showwithselectedsurvey"/>
+    <addaction name="toggleButton_showwithselectedfile"/>
+    <addaction name="toggleButton_showselectedsection"/>
+    <addaction name="separator"/>
+    <addaction name="pushButton_visualize"/>
+    <addaction name="pushButton_showmodelplot"/>
+   </widget>
+   <widget class="QMenu" name="pulldownMenu_action">
+    <property name="title"><string>Action</string></property>
+    <property name="toolTipsVisible"><bool>true</bool></property>
+    <addaction name="pushButton_poornav"/>
+    <addaction name="pushButton_goodnav"/>
+    <addaction name="pushButton_fixednav"/>
+    <addaction name="pushButton_fixedxynav"/>
+    <addaction name="pushButton_fixedznav"/>
+    <addaction name="pushButton_tie_xy"/>
+    <addaction name="pushButton_tie_z"/>
+    <addaction name="pushButton_tie_xyz"/>
+    <addaction name="pushButton_tie_unfixed"/>
+    <addaction name="pushButton_tie_fixed"/>
+    <addaction name="separator"/>
+    <addaction name="pushButton_autopick"/>
+    <addaction name="pushButton_autopickhorizontal"/>
+    <addaction name="pushButton_autosetsvsvertical"/>
+    <addaction name="separator"/>
+    <addaction name="pushButton_newcrossings"/>
+    <addaction name="separator"/>
+    <addaction name="pushButton_analyzecrossings"/>
+    <addaction name="separator"/>
+    <addaction name="pushButton_zerozoffsets"/>
+    <addaction name="pushButton_unsetskipped"/>
+    <addaction name="separator"/>
+    <addaction name="pushButton_invertnav"/>
+    <addaction name="pushButton_updategrids"/>
+    <addaction name="pushButton_applynav"/>
+   </widget>
+   <widget class="QMenu" name="pulldownMenu_about">
+    <property name="title"><string>Help</string></property>
+    <addaction name="actionHelp"/>
+    <addaction name="pushButton_about"/>
+   </widget>
+   <addaction name="pulldownMenu_file"/>
+   <addaction name="pulldownMenu_option"/>
+   <addaction name="pulldownMenu_list"/>
+   <addaction name="pulldownMenu_view"/>
+   <addaction name="pulldownMenu_action"/>
+   <addaction name="pulldownMenu_about"/>
+  </widget>
+  <action name="pushButton_new">
+   <property name="text"><string>New...</string></property>
+   <property name="toolTip"><string>Create a new project (a .nvh file and its data folder)</string></property>
+  </action>
+  <action name="pushButton_open">
+   <property name="text"><string>Open...</string></property>
+   <property name="toolTip"><string>Open an existing project (.nvh)</string></property>
+  </action>
+  <action name="pushButton_close">
+   <property name="text"><string>Close</string></property>
+   <property name="toolTip"><string>Close the project, saving outstanding changes</string></property>
+  </action>
+  <action name="pushButton_importdata">
+   <property name="text"><string>Import Swath Data...</string></property>
+   <property name="toolTip"><string>Add swath files (or a datalist) to the project, each survey of its own</string></property>
+  </action>
+  <action name="pushButton_importsurvey">
+   <property name="text"><string>Import Swath Data as Single Survey...</string></property>
+   <property name="toolTip"><string>Add swath files (or a datalist) to the project as one survey</string></property>
+  </action>
+  <action name="pushButton_importreference">
+   <property name="text"><string>Import Reference Grid...</string></property>
+   <property name="toolTip"><string>Add a topography grid the sections can be tied to (global ties)</string></property>
+  </action>
+  <action name="pushButton_quit">
+   <property name="text"><string>Quit</string></property>
+  </action>
+  <action name="pushButton_controls">
+   <property name="text"><string>Controls...</string></property>
+   <property name="toolTip"><string>Section size, contouring, inversion smoothing, z offset width, use of the model</string></property>
+  </action>
+  <action name="pushButton_showreferencegrids">
+   <property name="text"><string>Show Reference Grids</string></property>
+  </action>
+  <action name="pushButton_showsections">
+   <property name="text"><string>Show Data File Sections</string></property>
+  </action>
+  <action name="pushButton_showglobalties">
+   <property name="text"><string>Show Global Ties</string></property>
+  </action>
+  <action name="pushButton_showglobaltiessorted">
+   <property name="text"><string>Show Global Ties Sorted</string></property>
+  </action>
+  <action name="pushButton_showdata">
+   <property name="text"><string>Show Data Files</string></property>
+  </action>
+  <action name="pushButton_showsurveys">
+   <property name="text"><string>Show Surveys</string></property>
+  </action>
+  <action name="pushButton_showblocks">
+   <property name="text"><string>Show Survey-vs-Survey Blocks</string></property>
+  </action>
+  <action name="pushButton_showcrossings">
+   <property name="text"><string>Show All Crossings</string></property>
+  </action>
+  <action name="pushButton_showmediocrecrossings">
+   <property name="text"><string>Show &gt;10% Overlap Crossings</string></property>
+  </action>
+  <action name="pushButton_showgoodcrossings">
+   <property name="text"><string>Show &gt;25% Overlap Crossings</string></property>
+  </action>
+  <action name="pushButton_showbettercrossings">
+   <property name="text"><string>Show &gt;50% Overlap Crossings</string></property>
+  </action>
+  <action name="pushButton_showtruecrossings">
+   <property name="text"><string>Show True Crossings</string></property>
+  </action>
+  <action name="pushButton_showcrossingties">
+   <property name="text"><string>Show Crossing Ties</string></property>
+  </action>
+  <action name="pushButton_showcrossingtiessortedall">
+   <property name="text"><string>Show All Crossing Ties Sorted</string></property>
+  </action>
+  <action name="pushButton_showcrossingtiessortedbad">
+   <property name="text"><string>Show Crossing Ties Sorted (5% Worst Misfit)</string></property>
+  </action>
+  <action name="pushButton_showcrossingtiessortedworst">
+   <property name="text"><string>Show Crossing Ties Sorted (1% Worst Misfit)</string></property>
+  </action>
+  <action name="toggleButton_showallsurveys">
+   <property name="checkable"><bool>true</bool></property>
+   <property name="text"><string>Show All Surveys</string></property>
+  </action>
+  <action name="toggleButton_showselectedsurvey">
+   <property name="checkable"><bool>true</bool></property>
+   <property name="text"><string>Show Only Selected Survey</string></property>
+  </action>
+  <action name="toggleButton_showselectedblock">
+   <property name="checkable"><bool>true</bool></property>
+   <property name="text"><string>Show Only Selected Survey-vs-Survey Block</string></property>
+  </action>
+  <action name="toggleButton_showselectedfile">
+   <property name="checkable"><bool>true</bool></property>
+   <property name="text"><string>Show Only Selected File</string></property>
+  </action>
+  <action name="toggleButton_showwithselectedsurvey">
+   <property name="checkable"><bool>true</bool></property>
+   <property name="text"><string>Show Only With Selected Survey</string></property>
+  </action>
+  <action name="toggleButton_showwithselectedfile">
+   <property name="checkable"><bool>true</bool></property>
+   <property name="text"><string>Show Only With Selected File</string></property>
+  </action>
+  <action name="toggleButton_showselectedsection">
+   <property name="checkable"><bool>true</bool></property>
+   <property name="text"><string>Show Only With Selected Section</string></property>
+  </action>
+  <action name="pushButton_visualize">
+   <property name="text"><string>Visualize Survey</string></property>
+   <property name="toolTip"><string>Show the project's adjusted topography grid in a viewer window, with the sections' navigation and the ties</string></property>
+  </action>
+  <action name="pushButton_showmodelplot">
+   <property name="text"><string>Show Modelplot</string></property>
+   <property name="toolTip"><string>Plot the navigation adjustment model and the tie offsets</string></property>
+  </action>
+  <action name="pushButton_poornav">
+   <property name="text"><string>Set File Poor Navigation</string></property>
+  </action>
+  <action name="pushButton_goodnav">
+   <property name="text"><string>Set File Good Navigation</string></property>
+  </action>
+  <action name="pushButton_fixednav">
+   <property name="text"><string>Set File Fixed Navigation</string></property>
+  </action>
+  <action name="pushButton_fixedxynav">
+   <property name="text"><string>Set File Fixed XY Navigation</string></property>
+  </action>
+  <action name="pushButton_fixedznav">
+   <property name="text"><string>Set File Fixed Z Navigation</string></property>
+  </action>
+  <action name="pushButton_tie_xy">
+   <property name="text"><string>Set tie to XY only</string></property>
+  </action>
+  <action name="pushButton_tie_z">
+   <property name="text"><string>Set tie to Z only</string></property>
+  </action>
+  <action name="pushButton_tie_xyz">
+   <property name="text"><string>Set tie to full XYZ</string></property>
+  </action>
+  <action name="pushButton_tie_unfixed">
+   <property name="text"><string>Set tie unfixed</string></property>
+  </action>
+  <action name="pushButton_tie_fixed">
+   <property name="text"><string>Set tie fixed</string></property>
+  </action>
+  <action name="pushButton_autopick">
+   <property name="text"><string>Auto-Pick Offsets</string></property>
+   <property name="toolTip"><string>Correlate every unset crossing listed and set its offset</string></property>
+  </action>
+  <action name="pushButton_autopickhorizontal">
+   <property name="text"><string>Auto-Pick Horizontal Offsets</string></property>
+  </action>
+  <action name="pushButton_autosetsvsvertical">
+   <property name="text"><string>Auto-Set Survey-vs-Survey Vertical Offsets</string></property>
+  </action>
+  <action name="pushButton_newcrossings">
+   <property name="text"><string>Check For New Crossings</string></property>
+  </action>
+  <action name="pushButton_analyzecrossings">
+   <property name="text"><string>Analyze Crossings</string></property>
+  </action>
+  <action name="pushButton_zerozoffsets">
+   <property name="text"><string>Zero All Z Offsets</string></property>
+  </action>
+  <action name="pushButton_unsetskipped">
+   <property name="text"><string>Unset Skipped Crossings in List</string></property>
+  </action>
+  <action name="pushButton_invertnav">
+   <property name="text"><string>Invert Navigation</string></property>
+   <property name="toolTip"><string>Solve for the navigation adjustment that best fits the ties</string></property>
+  </action>
+  <action name="pushButton_updategrids">
+   <property name="text"><string>Update Grids</string></property>
+   <property name="toolTip"><string>Apply the adjustment to the project's sections and grid them again (mbprocess, mbgrid)</string></property>
+  </action>
+  <action name="pushButton_applynav">
+   <property name="text"><string>Apply Adjusted Navigation</string></property>
+   <property name="toolTip"><string>Write the adjusted navigation of every file and set it in the file's mbprocess parameters</string></property>
+  </action>
+  <action name="actionHelp">
+   <property name="text"><string>How to use MBnavadjust</string></property>
+   <property name="shortcut"><string>F1</string></property>
+  </action>
+  <action name="pushButton_about">
+   <property name="text"><string>About MBnavadjust</string></property>
+  </action>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

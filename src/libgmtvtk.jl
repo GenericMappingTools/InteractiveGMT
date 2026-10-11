@@ -353,6 +353,11 @@ const _LIB_OPTIONAL = (
 	:gmtvtk_mbnavedit_open, :gmtvtk_mbnavedit_state, :gmtvtk_mbnavedit_record, :gmtvtk_mbnavedit_plot_box,
 	:gmtvtk_mbnavedit_record_xy, :gmtvtk_mbnavedit_mouse, :gmtvtk_mbnavedit_key, :gmtvtk_mbnavedit_press,
 	:gmtvtk_mbnavedit_save_png, :gmtvtk_mbnavedit_close,
+	# EXPERIMENTAL navigation adjustment tool (deps/src/mbnavadjust/, IGMT_WITH_MBNAVADJUST)
+	:gmtvtk_set_mbnavadjust_callbacks, :gmtvtk_mbnavadjust_open, :gmtvtk_mbnavadjust_state,
+	:gmtvtk_mbnavadjust_press, :gmtvtk_mbnavadjust_file_select, :gmtvtk_mbnavadjust_list_select,
+	:gmtvtk_mbnavadjust_list_item, :gmtvtk_mbnavadjust_mouse, :gmtvtk_mbnavadjust_save_png,
+	:gmtvtk_mbnavadjust_messages, :gmtvtk_mbnavadjust_close,
 	# EXPERIMENTAL mbeditviz (deps/src/mbeditviz/, IGMT_WITH_MBEDITVIZ)
 	:gmtvtk_mbeditviz_open, :gmtvtk_mbeditviz_state, :gmtvtk_mbeditviz_view_all, :gmtvtk_mbeditviz_select,
 	:gmtvtk_mbeditviz_select_box, :gmtvtk_mbeditviz_editor_key, :gmtvtk_mbeditviz_editor_mode,

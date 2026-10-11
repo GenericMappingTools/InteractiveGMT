@@ -35,6 +35,7 @@ const titles = Dict(
     "76-cube.md" => "CUBE",
     "77-mbplugin.md" => "MB-System plugin (Linux, macOS)",
     "78-mbprocess.md" => "mbprocess",
+    "79-mbnavadjust.md" => "MBnavadjust",
     "80-benchmark1.md" => "Catalina Benchmark 1",
     "90-user-manual.md" => "User Manual",
     "95-reference.md" => "API Reference",

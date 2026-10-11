@@ -30436,6 +30436,14 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		});
 		++n;
 #endif
+#ifdef GMTVTK_MBNAVADJUST
+		// EXPERIMENTAL "MBnavadjust": MB-System's mbnavadjust, ported (deps/src/mbnavadjust/; its
+		// visualization is a window of this viewer). Built only with IGMT_WITH_MBNAVADJUST.
+		mGphy->addAction("MBnavadjust", [win, s, afterPopup]() {
+			afterPopup([win, s]() { mbnavadjustMenuOpen(win, s); });
+		});
+		++n;
+#endif
 #ifdef GMTVTK_MBEDITVIZ
 		// EXPERIMENTAL "MBeditviz": MB-System's mbeditviz, ported
 		// (deps/src/mbeditviz/; its survey map is a window of this viewer). Built only with IGMT_WITH_MBEDITVIZ.
