@@ -24748,6 +24748,7 @@ public:
 	QString params;                       // "key=value\n…" on RUN, else empty
 	QLineEdit *srcEdit, *nestEdit, *nameEdit, *manningEdit;
 	QLineEdit *maregInEdit, *maregOutEdit, *cumintEdit;
+	QToolButton *maregInBtn = nullptr;    // In file's "..." — disabled while the gauges are in memory
 	QLineEdit *cyclesEdit, *jumpEdit, *dtEdit, *grnEdit;
 	QComboBox *levelCombo;
 	QComboBox *maxLevelCombo;             // deepest nesting level a RUN may use ("maxlevel", -1 = all)
@@ -24790,6 +24791,10 @@ protected:
 		QDialog::changeEvent(e);
 		if (e->type() == QEvent::WindowStateChange && windowState().testFlag(Qt::WindowMinimized))
 			QTimer::singleShot(0, this, [this]() { parkNow(); });
+		// Gauges may be plotted, moved or removed while this non-modal dialog is open: re-read them
+		// every time it comes back to the front.
+		if (e->type() == QEvent::ActivationChange && isActiveWindow())
+			syncTideGauges();
 	}
 
 public:
@@ -24983,7 +24988,9 @@ public:
 		cumintEdit->setToolTip("Maregraph saving step (time = Time step * this)");
 		crow->addWidget(cumintEdit);
 		mv->addLayout(crow);
-		mv->addLayout(fileRow("In file",  maregInEdit,  "Maregraph (*.dat *.xy);;All files (*)"));
+		QLayout *inRow = fileRow("In file",  maregInEdit,  "Maregraph (*.dat *.xy);;All files (*)");
+		maregInBtn = qobject_cast<QToolButton*>(inRow->itemAt(2)->widget());   // its "..." (grayed with the box)
+		mv->addLayout(inRow);
 		mv->addLayout(saveRow("Out file", maregOutEdit, "Maregraph (*.dat *.xy);;All files (*)"));   // written by the run: full path
 		v->addWidget(gMar);
 
@@ -25198,6 +25205,7 @@ public:
 		// show()-vs-exec(), so `rejected` alone catches every close (RUN never calls accept()/close()
 		// itself, per this dialog's one-instance-per-window design, comment above).
 		if (scene_ && !scene_->nswingParams.isEmpty()) applyParams(scene_->nswingParams);
+		syncTideGauges();                     // after the remembered block: a plotted gauge outranks a saved In file
 		nestReady_ = true;                    // seeding done — from here, a nest file load runs the check
 		QObject::connect(this, &QDialog::rejected, this, [this]{
 			if (scene_) scene_->nswingParams = collectParams();
@@ -25252,7 +25260,71 @@ public:
 	// Serialize every dialog field into the "key=value\n…" block _on_nswing/_nswing_check/
 	// _nswing_show_cli/_on_nswing_save_run all parse the same way (nswing.jl _nswing_parse). Shared by
 	// the main RUN button and both "Save files & RUN" sub-options — one field list, not three.
+	// The window's virtual tide gauges (Tsunamis > Plot virtual tide gauges): every VISIBLE symbol
+	// layer flagged tideGauge, as "x,y;x,y;…" in TRUE coordinates (symbolGetPointTrue — where it is NOW,
+	// after any drag). Empty when there are none.
+	QString tideGaugeXY() const {
+		QStringList L;
+		if (!scene_ || !sceneAlive(scene_)) return QString();
+		for (const SymbolLayer &sl : scene_->symbols) {
+			if (!sl.tideGauge || !sl.actor || !sl.actor->GetVisibility()) continue;
+			double p[3];
+			symbolGetPointTrue(scene_, sl, 0, p);
+			L << (QString::number(p[0], 'g', 17) + "," + QString::number(p[1], 'g', 17));
+		}
+		return L.join(";");
+	}
+
+	// Their Scene Objects names, same order as tideGaugeXY, ";"-joined. nswing writes them as the
+	// maregraph file's first header row (one blank-free word per column), so blanks become '_'.
+	QString tideGaugeNames() const {
+		QStringList L;
+		if (!scene_ || !sceneAlive(scene_)) return QString();
+		for (const SymbolLayer &sl : scene_->symbols) {
+			if (!sl.tideGauge || !sl.actor || !sl.actor->GetVisibility()) continue;
+			QString n = QString::fromStdString(sl.name).simplified();
+			n.replace(' ', '_');  n.replace(';', '_');
+			L << n;
+		}
+		return L.join(";");
+	}
+
+	// With gauges plotted, the maregraph positions are IN MEMORY: "In file" says so, grayed, with its
+	// "..." off. With none (all removed or hidden) the box comes back empty and editable.
+	void syncTideGauges() {
+		static const QString memText = "In memory location";
+		const QString xy = tideGaugeXY();
+		if (!xy.isEmpty()) {
+			const int n = (int)xy.count(';') + 1;
+			// Gauges just went in memory (Mirone's swan_options does the same): Maregraphs on, and the
+			// series the run writes gets a FULL path — beside the bathymetry file, else the session
+			// file (_nswing_out_dir, nswing.jl), else the last-used directory — never a bare default
+			// name landing in whatever the process cwd happens to be.
+			if (maregInEdit->isEnabled()) {
+				cMareg->setChecked(true);
+				if (maregOutEdit->text().trimmed().isEmpty()) {
+					QString dir;
+					juliaEvalCall(QString("InteractiveGMT._nswing_out_dir_print(Ptr{Cvoid}(UInt(%1)))")
+					                  .arg((qulonglong)reinterpret_cast<uintptr_t>(scene_)), dir);
+					maregOutEdit->setText(QDir::toNativeSeparators(QDir(dir.isEmpty() ? prefStartDir() : dir).filePath("maregs.dat")));
+				}
+			}
+			maregInEdit->setText(memText);
+			maregInEdit->setEnabled(false);
+			maregInEdit->setToolTip(QString::number(n) + (n == 1 ? " virtual tide gauge" : " virtual tide gauges") +
+			                        " plotted in this window (Tsunamis > Plot virtual tide gauges)");
+			if (maregInBtn) maregInBtn->setEnabled(false);
+		}
+		else if (!maregInEdit->isEnabled() || maregInEdit->text() == memText) {
+			maregInEdit->clear();
+			maregInEdit->setEnabled(true);
+			maregInEdit->setToolTip(QString());
+			if (maregInBtn) maregInBtn->setEnabled(true);
+		}
+	}
+
 	QString collectParams() {
+		syncTideGauges();                     // the gauges as they are at THIS moment
 		const QString mode = rGrids->isChecked() ? "grids" : (rAnuga->isChecked() ? "anuga" : "most");
 		const QString field = rTotal->isChecked() ? "total" : "surface";
 		QStringList L;
@@ -25279,7 +25351,10 @@ public:
 		kv("coriolis", cCoriolis->isChecked() ? "1" : "0");
 		kv("manning",  manningEdit->text().trimmed());
 		kv("maregs",   cMareg->isChecked() ? "1" : "0");
-		kv("maregin",  maregInEdit->text().trimmed());
+		// In memory: no file name, the positions themselves (nswing.jl hands them over as a dataset)
+		kv("maregin",  maregInEdit->isEnabled() ? maregInEdit->text().trimmed() : QString());
+		kv("maregxy",  maregInEdit->isEnabled() ? QString() : tideGaugeXY());
+		kv("maregnames", maregInEdit->isEnabled() ? QString() : tideGaugeNames());
 		kv("maregout", maregOutEdit->text().trimmed());
 		kv("cumint",   cumintEdit->text().trimmed());
 		kv("ncycles",  cyclesEdit->text().trimmed());
@@ -26142,6 +26217,7 @@ static void unfoldSceneObjects(Scene *s) {
 // button toggles draw mode via polygonSetMode; the mouse gestures are driven from GLView.
 static void polygonSetMode(Scene *s, bool on);
 static void polygonToolToggled(Scene *s, QAction *act, Scene::ShapeKind shape, bool on);
+static void tideGaugeArm(Scene *s);
 static QIcon makePolygonIcon();
 static QIcon makePolylineIcon();
 static QIcon makeLineIcon();
@@ -30118,6 +30194,9 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 			dlg->setWindowModality(Qt::NonModal);
 			dlg->show();
 		});
+		// One click drops one virtual tide gauge (a flagged circle symbol, tideGaugeArm, 85_polygon.cpp).
+		// The NSWING dialog above takes every visible one as its maregraph positions, in memory.
+		mGphy->addAction("Plot virtual tide gauges", [s]() { tideGaugeArm(s); });
 		// GMT.jl's travel-time API (ttt / wave_travel_time / tttimes) — see TttDialog above. Non-modal
 		// like every other tool dialog here: the 3-D view stays live while a source is picked, and the
 		// dialog survives any number of runs.

@@ -26,13 +26,114 @@ end
 _get(d, k, default="") = get(d, k, default)
 _on(d, k) = get(d, k, "0") == "1"
 
+# Where a run's outputs go by default: beside the bathymetry's own file, else beside the session
+# file the window was saved to / loaded from (session.jl `_SESSION_FILE`), else "" (the dialog then
+# falls back to the last-used directory). ONE answer for every NSWING output default.
+function _nswing_out_dir(scene::Ptr{Cvoid})::String
+	p = _path_for_handle(scene)
+	isempty(p) || return dirname(p)
+	s = get(_SESSION_FILE, scene, "")
+	return isempty(s) ? "" : dirname(s)
+end
+_nswing_out_dir_print(scene::Ptr{Cvoid}) = (print(_nswing_out_dir(scene)); nothing)   # for the C++ dialog
+
+# The dialog's virtual tide gauges (Tsunamis > Plot virtual tide gauges), key `maregxy` = "x,y;x,y;…",
+# as the x y dataset nswing's -T reads. `nothing` when the dialog sent none (the In file route).
+function _nswing_gauges(d::Dict{String,String})
+	s = _get(d, "maregxy")
+	isempty(s) && return nothing
+	pts = [parse.(Float64, split(p, ',')) for p in split(s, ';') if !isempty(p)]
+	isempty(pts) && return nothing
+	m = [p[k] for p in pts, k in 1:2]
+	# Their names ride as the dataset's text: nswing writes them as the output's first header row
+	names = split(_get(d, "maregnames"), ';')
+	length(names) == length(pts) || (names = ["Tide_gauge_$i" for i in eachindex(pts)])
+	return mat2ds(m, txt=String.(names))
+end
+
+# The maregraph series file a run writes (-T…+o<out>): what nswing itself does with the name — no
+# name = "maregs_out.dat", no extension = ".dat" — resolved against `dir`, the directory the run
+# works in. "" when the run writes no .dat series (maregraphs off, or a .nc output).
+function _nswing_maregs_path(d::Dict{String,String}, dir::String)::String
+	_on(d, "maregs") || return ""
+	(isempty(_get(d, "maregin")) && isempty(_get(d, "maregxy"))) && return ""
+	mo = _get(d, "maregout")
+	isempty(mo) && (mo = "maregs_out.dat")
+	endswith(lowercase(mo), ".nc") && return ""
+	occursin('.', basename(mo)) || (mo *= ".dat")
+	return isabspath(mo) ? mo : joinpath(dir, mo)
+end
+
+# nswing writes six bare header rows above the series. Say what they are, IN the file, right before
+# the ">XY" line (so rows 1-6 keep their place for every reader that knows them, Mirone included).
+# Layout from nswing.c's writer: names; X and Y of the grid node each gauge was moved to; the water
+# depth there; the same X and Y again behind "# X"/"# Y"; then time + one column per gauge.
+const _MAREGS_NOTE_TAG = "# --- What the header rows above mean"
+function _nswing_annotate_maregs(path::String, names::Vector{String}=String[])
+	isfile(path) || return false
+	lines = readlines(path)
+	any(startswith(_MAREGS_NOTE_TAG), lines) && return true       # already explained
+	k = findfirst(==(">XY"), lines)
+	k === nothing && return false
+	# nswing prints row 1 as "%8s" per name with NO separator, so names longer than 8 characters run
+	# into each other ("Tide_gauge_1Tide_gauge_2"). The names it was given are known here: write them
+	# back tab-separated, one per column like every other row.
+	# Only when every gauge made it into the file: nswing drops one outside the grid, and the names
+	# would then shift onto the wrong columns (row 2 has one number per gauge actually written).
+	ncol = k > 2 ? length(split(lines[2])) - 1 : -1
+	(!isempty(names) && ncol == length(names) && startswith(lines[1], "#")) &&
+		(lines[1] = "#\t" * join(names, "\t"))
+	note = [_MAREGS_NOTE_TAG * " (written by InteractiveGMT) ---",
+	        "# Row 1: name of each tide gauge, one per column.",
+	        "# Row 2: X (longitude, if geographic) of the grid node where each gauge is computed",
+	        "#        (the gauge position moved to the nearest node of the grid the series is computed on:",
+	        "#        the innermost nested grid, or the bathymetry when there is no nesting).",
+	        "# Row 3: Y (latitude, if geographic) of that same node.",
+	        "# Row 4: water depth at that node, in metres, positive down (negative = land).",
+	        "# Row 5: \"# X\" — the same X coordinates as row 2, the form Mirone reads.",
+	        "# Row 6: \"# Y\" — the same Y coordinates as row 3.",
+	        "# Data below \">XY\": column 1 = time in seconds since the start of the simulation;",
+	        "#        columns 2.. = water surface height (m) at each gauge, in the column order above."]
+	open(path, "w") do io
+		for l in lines[1:k-1]; println(io, l); end
+		for l in note;          println(io, l); end
+		for l in lines[k:end];  println(io, l); end
+	end
+	return true
+end
+
+# "Auto load simulation" also shows the gauges: the series in an X,Y Plot window, time on X and one
+# curve per gauge, named by row 1 of the file. The plot is a CHILD of `owner` — the iGMT window the
+# simulation cube opened in: its own window (not a page of some unrelated plot), owned by that viewer,
+# so its X parks it in that window's Scene Objects like every plot opened from a viewer.
+function _nswing_plot_maregs(path::String, owner::Ptr{Cvoid})
+	D = GMT.gmtread(path, table=true)
+	D isa AbstractVector && (D = D[1])
+	names = String[]
+	for l in eachline(path)                                  # row 1: "#\t name name …"
+		startswith(l, "#") || break
+		names = split(strip(l[2:end])); break
+	end
+	nc = size(D.data, 2)
+	D.colnames = vcat("Time (s)", [i <= length(names) ? String(names[i]) : "gauge $i" for i in 1:nc-1])
+	h = ccall(_fn(:gmtvtk_xyplot_open), Ptr{Cvoid}, (Cstring,), "i'GMT  —  Tide gauges  —  " * basename(path))
+	h == C_NULL && error("NSWING: could not open the X,Y plot for $path")
+	owner == C_NULL || ccall(_fn(:gmtvtk_xyplot_set_owner), Cvoid, (Ptr{Cvoid}, Ptr{Cvoid}), h, owner)
+	p = _register_fig!(QtXYPlot(h))
+	_start_pump()
+	_XY_CURRENT[] = h
+	_xy_set_labels(p, "Time (s)", "Water height (m)")
+	_xy_add_dataset(p, D)                                     # THE table -> series function
+	return nothing
+end
+
 # Default output-name stem for the RUN dialog's Name field: "tsu" living beside the bathymetry
 # grid's OWN source file (if the window was opened from one), else just "tsu" (cwd). Called
 # synchronously from the C++ dialog constructor over the console-eval bridge (same idiom as
 # measure.jl's `_fault_lenaz` — prints, returns nothing, so no `show`-quoting reaches the buffer).
 function _nswing_default_name(scene::Ptr{Cvoid})
-	path = _path_for_handle(scene)
-	print(isempty(path) ? "tsu" : joinpath(dirname(path), "tsu"))
+	dir = _nswing_out_dir(scene)
+	print(isempty(dir) ? "tsu" : joinpath(dir, "tsu"))
 	return nothing
 end
 
@@ -89,7 +190,15 @@ function _nswing_opts(d::Dict{String,String}; max_nest_level::Int=0)
 
 	if _on(d, "maregs")
 		mi = _get(d, "maregin"); mo = _get(d, "maregout"); ci = _get(d, "cumint", "1")
-		if isempty(mi)
+		if _nswing_gauges(d) !== nothing
+			# Virtual tide gauges, in memory: -T with NO file name. nswing's KEYS declare -T a dataset
+			# input (TD(), so GMT fills the empty name with the dataset object handed after the grids
+			# (_on_nswing), or the "Save files" path writes the gauges and puts their file name in.
+			t = "-T"
+			isempty(mo) || (t *= "+o$(mo)")
+			isempty(ci) || (t *= "+t$(ci)")
+			push!(args, t)
+		elseif isempty(mi)
 			push!(msgs, "Maregraphs checked but no In file given — skipping -T")
 		else
 			t = "-T$(mi)"
@@ -354,7 +463,7 @@ end
 # did across a process boundary. nswing's `-v` text is simply PRINTED, as libgmt prints everything
 # else in this session — it is not captured, and nothing here redirects a file descriptor around a
 # GMT call (banned: it corrupts GMT's own downloads).
-function _nswing_run_inproc(scene::Ptr{Cvoid}, cmdstr::String, grids::Vector{GMTgrid}; on_done=nothing)
+function _nswing_run_inproc(scene::Ptr{Cvoid}, cmdstr::String, grids::Vector{Union{GMTgrid,GMTdataset}}; on_done=nothing)
 	progf = _nswing_progress_file()                  # -W<file>: nswing rewrites it in place each tick
 	cmd   = cmdstr * " -W" * _gmt_quote_path(progf)
 	err   = Ref("")
@@ -403,6 +512,31 @@ function _nswing_autoload(scene::Ptr{Cvoid}, d::Dict{String,String})
 		end
 		fig = iview()                             # a NEW window — never the one the run came from
 		ccall(_fn(:gmtvtk_aqua_queue_open), Cvoid, (Ptr{Cvoid}, Cstring), fig.h, p)
+		return fig.h                              # the tide-gauge plot hangs off this window
+	end
+end
+
+# What a SUCCESSFUL run does afterwards, for every way of starting one (`dir` = the directory the run
+# worked in, where a relative output name landed). The maregraph series file gets its header rows
+# explained (always — the file is the result, with or without Auto load); with "Auto load simulation"
+# on it is also shown in an X,Y Plot window, beside the cube _nswing_autoload opens.
+function _nswing_on_done(scene::Ptr{Cvoid}, d::Dict{String,String}; dir::String = pwd())
+	mpath = _nswing_maregs_path(d, dir)
+	cube  = _nswing_autoload(scene, d)
+	g     = _on(d, "maregs") ? _nswing_gauges(d) : nothing
+	names = g === nothing ? String[] : String.(g.text)   # in-memory gauges: the names nswing was given
+	return function (err)
+		isempty(err) || return nothing            # a failed run has nothing to show
+		# The cube first: its window is the one the tide-gauge plot belongs to
+		win = cube === nothing ? nothing : cube(err)
+		if !isempty(mpath)
+			if _nswing_annotate_maregs(mpath, names)
+				_viewer_log_info(scene, "NSWING: tide gauge series written to $mpath")
+				_on(d, "autoload") && _nswing_plot_maregs(mpath, win isa Ptr{Cvoid} ? win : scene)
+			else
+				_viewer_log_error(scene, "NSWING: no maregraph series found at $mpath")
+			end
+		end
 		return nothing
 	end
 end
@@ -735,8 +869,7 @@ end
 # from one (_path_for_handle, dispatch.jl). Called via g_juliaEval to seed NswingDialog's save-dir
 # edit box the FIRST time (before anything is remembered in QSettings); prints "" if unknown.
 function _nswing_bathy_dir(scene::Ptr{Cvoid})
-	p = _path_for_handle(scene)
-	print(isempty(p) ? "" : dirname(p))
+	print(_nswing_out_dir(scene))
 	return nothing
 end
 
@@ -746,8 +879,8 @@ end
 function _nswing_save_dir(scene::Ptr{Cvoid}, d::Dict{String,String})
 	savedir = _get(d, "savedir")
 	isempty(savedir) || return savedir
-	path = _path_for_handle(scene)
-	return isempty(path) ? pwd() : dirname(path)
+	dir = _nswing_out_dir(scene)
+	return isempty(dir) ? pwd() : dir
 end
 
 # Decide, for every grid a run needs, where it would live on disk WITHOUT writing anything — shared by
@@ -882,7 +1015,17 @@ function _nswing_save_files(scene::Ptr{Cvoid}, d::Dict{String,String})
 		push!(saved, "$(basename(p)) — nesting level $n, a grid that existed only in this session")
 	end
 	nestflags = ["-$(n)$(p)" for (n, p) in plan.nest_paths]   # nswing CLI: -1<grd> -2<grd> … (path ATTACHED, no space)
-	return plan.opts, plan.bathy_path, plan.src_path, nestflags, plan.dir, saved
+	# Virtual tide gauges have no file either: a command line can only name one, so they are written
+	# beside the grids, like every other thing this run needs that only lived in the window.
+	opts = plan.opts
+	gauges = _on(d, "maregs") ? _nswing_gauges(d) : nothing
+	if gauges !== nothing
+		gpath = joinpath(plan.dir, "tide_gauges.dat")
+		gmtwrite(gpath, gauges)
+		push!(saved, "$(basename(gpath)) — the virtual tide gauges plotted in the window")
+		opts = [startswith(o, "-T") ? "-T" * gpath * o[3:end] : o for o in opts]
+	end
+	return opts, plan.bathy_path, plan.src_path, nestflags, plan.dir, saved
 end
 
 # Validate, save every grid this run needs, and assemble the CLI arg vector plus the save dir — shared
@@ -959,7 +1102,7 @@ function _on_nswing_save_run(scene::Ptr{Cvoid}, cparams::AbstractString)
 	_progress_show_async(100, "NSWING running…")
 	# Same checkbox, same door: "Auto load simulation" belongs to the RUN, not to one of the two ways
 	# of starting it.
-	_nswing_run_external(scene, args; dir, on_done = _nswing_autoload(scene, _nswing_parse(cparams)))
+	_nswing_run_external(scene, args; dir, on_done = _nswing_on_done(scene, _nswing_parse(cparams); dir))
 	return nothing
 end
 
@@ -1002,21 +1145,35 @@ function _on_nswing(scene::Ptr{Cvoid}, cparams::Cstring)::Cvoid
 			isempty(opts) || (cmd *= " " * join((occursin(' ', o) ? _gmt_quote_path(o) : o for o in opts), " "))
 			cmd *= " -v"
 			append!(grids, GMTgrid[(G isa GMTgrid ? G : _gmtread_trb(String(G))) for (_, G) in nests])
-			_viewer_log_info(scene, "NSWING command: $cmd   [+ $(length(grids)) grid objects]")
+			objs = Union{GMTgrid,GMTdataset}[grids...]
+			# Virtual tide gauges ride LAST, after the nest chain: that is where GMT binds the -T dataset
+			# (verified live: placed before the nests they are taken for a nest grid).
+			gauges = _on(d, "maregs") ? _nswing_gauges(d) : nothing
+			gauges === nothing || push!(objs, gauges)
+			_viewer_log_info(scene, "NSWING command: $cmd   [+ $(length(grids)) grid objects" *
+			                 (gauges === nothing ? "]" : ", $(size(gauges.data, 1)) tide gauges in memory]"))
 			_NSWING_RUNNING[] = true
 			_progress_show_async(100, "NSWING running…")
-			_nswing_run_inproc(scene, cmd, grids; on_done = _nswing_autoload(scene, d))
+			_nswing_run_inproc(scene, cmd, objs; on_done = _nswing_on_done(scene, d))
 		else
 			# ── file run: no scene base grid; Source/Nest are file paths -> detached `gmt nswing` (paths) ──
 			srcpath = _get(d, "source")
 			nestpath = _get(d, "nest");  level = tryparse(Int, _get(d, "level", "0"))
 			args = String[srcpath]
 			(!isempty(nestpath) && level !== nothing && level >= 1) && push!(args, "-$(level)$(nestpath)")
+			# A process takes no objects: one tide gauge goes inline (-Tx/y), more need the in-memory run
+			gauges = _on(d, "maregs") ? _nswing_gauges(d) : nothing
+			if gauges !== nothing
+				size(gauges.data, 1) == 1 || error("NSWING: $(size(gauges.data, 1)) virtual tide gauges need a " *
+				                                   "bathymetry grid in this window (they are passed in memory)")
+				xy = "$(gauges.data[1,1])/$(gauges.data[1,2])"
+				opts = [startswith(o, "-T") ? "-T" * xy * o[3:end] : o for o in opts]
+			end
 			append!(args, opts);  push!(args, "-v")
 			_viewer_log_info(scene, "NSWING command: gmt nswing " * join(args, " "))
 			_NSWING_RUNNING[] = true
 			_progress_show_async(100, "NSWING running…")
-			_nswing_run_external(scene, args; on_done = _nswing_autoload(scene, d))
+			_nswing_run_external(scene, args; on_done = _nswing_on_done(scene, d))
 		end
 	catch e
 		_progress_close();  _NSWING_RUNNING[] = false

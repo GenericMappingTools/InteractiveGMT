@@ -1817,6 +1817,21 @@ static void xyUnpark(XYPlot *p) {
 	p->win->activateWindow();
 }
 
+static std::function<void(const QPoint &)> xyParkedMenu(XYPlot *p);
+
+// Park a plot (already hidden) as a handle in its owner window's Scene Objects. ONE function for both
+// ways of parking it: the X (XYCloseParks) and the minimise button (gmtvtk_xyplot_set_owner).
+static void xyParkNow(XYPlot *p) {
+	if (!xyAlive(p) || !p->win || !p->owner || !sceneAlive(p->owner)) return;
+	p->parked = true;
+	parkTool(p->owner, p->win, p->win->windowTitle(), IC_Profile,
+	         "Closed X,Y plot — double-click to bring it back, click for Show / Delete",
+	         [p]() { xyUnpark(p); }, xyParkedMenu(p));
+	// A handle the user cannot see is the same as no handle at all: reveal + unfold the dock,
+	// exactly as a derived grid does when it lands there.
+	unfoldSceneObjects(p->owner);
+}
+
 // The parked plot's menu, reached by EITHER button — the row's properties button and its context menu
 // are the same thing, so they are the same lambda, not two look-alikes.
 static std::function<void(const QPoint &)> xyParkedMenu(XYPlot *p) {
@@ -2280,14 +2295,7 @@ static XYPlot *buildXYPlot(const char *title) {
 			if (e->type() == QEvent::Close && p && !p->reallyClose && p->owner && sceneAlive(p->owner)) {
 				e->ignore();
 				p->win->hide();
-				p->parked = true;
-				XYPlot *pp = p;                  // a lambda cannot capture a member of the enclosing class
-				parkTool(pp->owner, pp->win, pp->win->windowTitle(), IC_Profile,
-				         "Closed X,Y plot — double-click to bring it back, click for Show / Delete",
-				         [pp]() { xyUnpark(pp); }, xyParkedMenu(pp));
-				// A handle the user cannot see is the same as no handle at all: reveal + unfold the
-				// dock, exactly as a derived grid does when it lands there.
-				unfoldSceneObjects(p->owner);
+				xyParkNow(p);
 				return true;
 			}
 			return QObject::eventFilter(o, e);

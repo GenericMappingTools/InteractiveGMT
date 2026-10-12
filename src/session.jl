@@ -29,6 +29,10 @@ ElementRecipe(kind, origin, source=""; name="", params=Dict{String,Any}()) =
 # Per-window provenance log, keyed by the opaque Scene* (parallel to savefile.jl `_SCENE_OBJS`).
 const _SESSION_LOG = Dict{Ptr{Cvoid}, Vector{ElementRecipe}}()
 
+# The session file (.igmtz) each window was last saved to or loaded from, keyed by Scene*. A tool's
+# outputs default beside it when the window has no file of its own (nswing.jl `_nswing_out_dir`).
+const _SESSION_FILE = Dict{Ptr{Cvoid}, String}()
+
 "Append one recipe for `scene` (no-op on a null handle). Returns the recipe."
 function _session_record!(scene::Ptr{Cvoid}, r::ElementRecipe)
 	scene == C_NULL && return r
@@ -40,7 +44,7 @@ _session_record!(scene::Ptr{Cvoid}, kind, origin, source=""; name="", params=Dic
 	_session_record!(scene, ElementRecipe(kind, origin, source; name=name, params=params))
 
 "Forget a window's provenance log (call on window close / re-promote)."
-_session_reset!(scene::Ptr{Cvoid}) = (delete!(_SESSION_LOG, scene); nothing)
+_session_reset!(scene::Ptr{Cvoid}) = (delete!(_SESSION_LOG, scene); delete!(_SESSION_FILE, scene); nothing)
 
 # Drop every recipe of `kind` this window holds. For a STATE a window has one of at a time -- the
 # Illumination model lighting it, say -- where a second run REPLACES the first rather than adding a
@@ -570,7 +574,7 @@ is empty unless the layer is an ARROW field, whose world length is then `worldSi
 const SymbolRow = @NamedTuple{sym::String, sizePx::Float64, filled::Bool,
                               r::Float64, g::Float64, b::Float64,
                               er::Float64, eg::Float64, eb::Float64, ew::Float64, evis::Bool,
-                              stack::Int, visible::Bool, oneShot::Bool, name::String,
+                              stack::Int, visible::Bool, oneShot::Bool, tideGauge::Bool, name::String,
                               xyz::Matrix{Float64}, scale::Vector{Float64}, rgb::Matrix{Float64},
                               uv::Matrix{Float64}, worldSize::Float64}
 
@@ -578,17 +582,18 @@ function _parse_symbols_blob(blob::String)::Vector{SymbolRow}
 	out = SymbolRow[]
 	isempty(blob) && return out
 	for line in split(blob, '\n'; keepempty=false)
-		# 20 fields since arrow layers exist (… hasRGB;hasVec;worldSize;name;points); a blob saved
-		# before that has 18 (no hasVec/worldSize). Names and points never carry ';' (the writer
-		# replaces it), so the count alone tells the two layouts apart.
+		# 21 fields since virtual tide gauges exist (… worldSize;tideGauge;name;points), 20 before
+		# that (no tideGauge), 18 before arrow layers (no hasVec/worldSize). Names and points never
+		# carry ';' (the writer replaces it), so the count alone tells the layouts apart.
 		nf = count(==(';'), line) + 1
-		nf in (18, 20) || continue
+		nf in (18, 20, 21) || continue
 		f = split(line, ';'; limit=nf)
 		nums = map(i -> tryparse(Float64, f[i]), 2:(nf - 2))
 		any(isnothing, nums) && continue
 		hasScale = nums[14] != 0; hasRGB = nums[15] != 0
-		hasVec = nf == 20 && nums[16] != 0
-		worldSize = nf == 20 ? nums[17] : 0.0
+		hasVec = nf >= 20 && nums[16] != 0
+		worldSize = nf >= 20 ? nums[17] : 0.0
+		tideGauge = nf == 21 && nums[18] != 0
 		pts = split(f[nf], '|'; keepempty=false)
 		isempty(pts) && continue
 		xyz = Matrix{Float64}(undef, length(pts), 3)
@@ -630,7 +635,7 @@ function _parse_symbols_blob(blob::String)::Vector{SymbolRow}
 		push!(out, (sym=String(f[1]), sizePx=nums[1], filled=nums[2] != 0,
 		            r=nums[3], g=nums[4], b=nums[5], er=nums[6], eg=nums[7], eb=nums[8],
 		            ew=nums[9], evis=nums[10] != 0, stack=Int(nums[11]), visible=nums[12] != 0,
-		            oneShot=nums[13] != 0, name=String(f[nf - 1]), xyz=xyz, scale=scale, rgb=rgb,
+		            oneShot=nums[13] != 0, tideGauge=tideGauge, name=String(f[nf - 1]), xyz=xyz, scale=scale, rgb=rgb,
 		            uv=uv, worldSize=worldSize))
 	end
 	return out
@@ -760,6 +765,11 @@ function _session_rebuild_symbols!(fig, blob::String, skip::Set{String})
 				h, xyz, Cint(n), sl.sym, sl.sizePx, Cint(sl.filled),
 				sl.r, sl.g, sl.b, sl.er, sl.eg, sl.eb, sl.ew,
 				sl.name, "", scale, isempty(rgbv) ? C_NULL : pointer(rgbv))
+			# The flags the builder above does not take: a Symbols-tool point stays draggable as one, and
+			# a virtual tide gauge is one again for the NSWING dialog.
+			(sl.oneShot || sl.tideGauge) &&
+				ccall(_fn(:gmtvtk_symbol_set_flags_h), Cint, (Ptr{Cvoid}, Cstring, Cint, Cint),
+				      h, sl.name, Cint(sl.oneShot), Cint(sl.tideGauge))
 			sl.visible || _set_vector_visible(h, sl.name, false)
 		catch e
 			@warn "session: skipped a malformed symbol layer" name=sl.name exception=(e,)
@@ -885,6 +895,7 @@ function _on_save_session(scene::Ptr{Cvoid}, path::String)
 		isempty(blob) || push!(files, (entry, Vector{UInt8}(codeunits(blob))))
 	end
 	_zip_write(path, files)
+	_SESSION_FILE[scene] = abspath(String(path))
 	# A saved session is a file the user opens again — it goes in Recent Files (cat 3 = Sessions),
 	# exactly like every successful open does. Saved AND loaded sessions both register, so a session
 	# is reachable from the menu straight after writing it, not only after loading it once.
@@ -1194,6 +1205,7 @@ function _on_load_session(scene::Ptr{Cvoid}, path::String)
 		# of any other file does. Here, not in the callback wrapper, so EVERY route lands it: the File
 		# > Load Session menu, a dropped .igmtz, the Recent Files entry itself, and the console helper.
 		ccall(_fn(:gmtvtk_add_recent), Cvoid, (Cstring, Cint), abspath(String(path)), Cint(3))
+		fig === nothing || (_SESSION_FILE[getfield(fig, :h)] = abspath(String(path)))
 		return fig
 	finally
 		ccall(_fn(:gmtvtk_progress_close), Cvoid, ())

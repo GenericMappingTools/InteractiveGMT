@@ -170,6 +170,7 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_set_dimfun_callback, :gmtvtk_set_nswing_callback,
 	:gmtvtk_set_save_session_callback, :gmtvtk_set_load_session_callback, :gmtvtk_load_session_h,
 	:gmtvtk_serialize_overlays, :gmtvtk_serialize_symbols, :gmtvtk_layer_display,
+	:gmtvtk_symbol_set_flags_h,         # session rebuild: a symbol layer's oneShot + tideGauge flags
 	:gmtvtk_window_screenshot,
 	:gmtvtk_scene_state_full, :gmtvtk_apply_scene_state, :gmtvtk_serialize_texts,
 	# View mode (0 = 3-D, 1 = flat 2-D map, 2 = globe / geographic orthographic). The globe is refused

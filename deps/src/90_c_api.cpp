@@ -954,6 +954,22 @@ GMTVTK_API int gmtvtk_add_symbols_ex_h(void *handle, const double *xyz, int npts
 	                  /*oneShot=*/false, sizeScale, ptRGB);
 }
 
+// Put back the two per-layer flags a session snapshot carries but gmtvtk_add_symbols_ex_h cannot take
+// (session.jl `_session_rebuild_symbols!`): `oneShot` (a Symbols-tool point — whole-layer double-click
+// then drag) and `tideGauge` (a virtual tide gauge the NSWING dialog collects). Applied to the layer
+// named `name`, the last one with that name (the one just rebuilt). Returns 1, or 0 when none matches.
+GMTVTK_API int gmtvtk_symbol_set_flags_h(void *handle, const char *name, int oneShot, int tideGauge) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !name) return 0;
+	for (auto it = s->symbols.rbegin(); it != s->symbols.rend(); ++it)
+		if (it->name == name) {
+			it->oneShot   = oneShot != 0;
+			it->tideGauge = tideGauge != 0;
+			return 1;
+		}
+	return 0;
+}
+
 // Add a VECTOR FIELD as solid 3-D arrows (the Fault plane demo's vtkArrowSource), one symbol layer:
 // `xyz` = npts (x,y,z) TRUE tail positions, a NaN z = "stand on the relief" (arrowGroundZ); `uv` =
 // npts (east, north) components; `length` = the WORLD length of the LONGEST arrow (world y = the data
@@ -5705,9 +5721,10 @@ GMTVTK_API int gmtvtk_serialize_overlays(void *handle, char *buf, int cap) {
 
 // Serialize the window's SYMBOL layers (volcanoes, seismicity, cities, tide stations, the Symbols
 // draw tool) as one line each:
-//   sym;sizePx;filled;r;g;b;er;eg;eb;ew;evis;stack;visible;oneShot;hasScale;hasRGB;hasVec;worldSize;name;<points>\n
-// (20 fields; blobs written before arrow layers existed have 18 — no hasVec/worldSize — and the
-// reader, _parse_symbols_blob, tells the two apart by that count.)
+//   sym;sizePx;filled;r;g;b;er;eg;eb;ew;evis;stack;visible;oneShot;hasScale;hasRGB;hasVec;worldSize;tideGauge;name;<points>\n
+// (21 fields; blobs written before virtual tide gauges existed have 20 — no tideGauge — and before
+// arrow layers 18 — no hasVec/worldSize either; the reader, _parse_symbols_blob, tells them apart by
+// that count.)
 // `sym` is the GMT symbol code the layer was built with, so a consumer can ask GMT for the same
 // glyph instead of inventing one. Points come from the glyph pipeline's input polydata via
 // symInputPD — the accessor that already covers BOTH pipelines (flat vtkGlyph3D and solid3D
@@ -5751,10 +5768,10 @@ GMTVTK_API int gmtvtk_serialize_symbols(void *handle, char *buf, int cap) {
 			// An ARROW layer also carries each point's (east, north) vector and its world length —
 			// without them a restored field would come back as arrows pointing nowhere, at no size.
 			const bool hasVec = (sl.uvOrig.size() == (size_t)pd->GetPoints()->GetNumberOfPoints() * 2);
-			snprintf(t, sizeof(t), "%s;%.6g;%d;%.6g;%.6g;%.6g;%.6g;%.6g;%.6g;%.6g;%d;%d;%d;%d;%d;%d;%d;%.10g;",
+			snprintf(t, sizeof(t), "%s;%.6g;%d;%.6g;%.6g;%.6g;%.6g;%.6g;%.6g;%.6g;%d;%d;%d;%d;%d;%d;%d;%.10g;%d;",
 			         sl.sym.c_str(), sl.sizePx, sl.filled ? 1 : 0, c[0], c[1], c[2],
 			         e[0], e[1], e[2], ew, evis, sl.stack, vis, sl.oneShot ? 1 : 0,
-			         scArr ? 1 : 0, rgbArr ? 1 : 0, hasVec ? 1 : 0, sl.worldSize);
+			         scArr ? 1 : 0, rgbArr ? 1 : 0, hasVec ? 1 : 0, sl.worldSize, sl.tideGauge ? 1 : 0);
 			o += t;
 			std::string nm = sl.name;      // ';' only — see the overlay serializer's `clean` above
 			for (char &ch : nm) if (ch == ';' || ch == '\n' || ch == '\r') ch = '_';
@@ -10931,6 +10948,17 @@ GMTVTK_API int gmtvtk_cloud_select_box_test(void *handle, double fx0, double fy0
 	}
 	return int(s->rbSel.size());
 }
+
+// Grab the first visible top-level window whose title contains `title` to a PNG (docs screenshots of
+// tool dialogs, e.g. "NSWING"). 1 = saved, 0 = no such window or the save failed.
+GMTVTK_API int gmtvtk_toplevel_grab_test(const char *title, const char *path) {
+	if (!title || !path) return 0;
+	const QString want = QString::fromUtf8(title);
+	for (QWidget *w : QApplication::topLevelWidgets())
+		if (w->isVisible() && w->windowTitle().contains(want, Qt::CaseInsensitive))
+			return w->grab().save(QString::fromUtf8(path), "PNG") ? 1 : 0;
+	return 0;
+}
 #endif // GMTVTK_TEST_API
 
 // Register the grid-metadata callback used by the grdsample dialog's "OR Ref grid" picker.
@@ -13821,6 +13849,12 @@ GMTVTK_API void gmtvtk_xyplot_set_owner(void *handle, void *scene) {
 	if (!xyAlive(p)) return;
 	Scene *s = static_cast<Scene*>(scene);
 	p->owner = (s && sceneAlive(s)) ? s : nullptr;
+	// An owned plot parks on MINIMISE too, like every tool that has a window to park in. Installed
+	// once per plot; a plot with no owner keeps the window manager's own minimise.
+	if (p->owner && p->win && !p->win->property("igmtMinParks").toBool()) {
+		p->win->setProperty("igmtMinParks", true);
+		parkOnMinimise(p->win, [p]() { xyParkNow(p); });
+	}
 }
 
 // Bring an X,Y plot window to the front.

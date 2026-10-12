@@ -426,6 +426,9 @@ struct SymbolLayer {
 	bool   oneShot = false;                   // placed by the Symbols draw tool: exactly ONE point, whole-
 	                                           // layer double-click-then-drag moves that single point
 	                                           // (see symLayerDrag) — false for batch layers (volcanoes etc)
+	bool   tideGauge = false;                 // a VIRTUAL TIDE GAUGE (Tsunamis > Plot virtual tide gauges): the
+	                                           // NSWING dialog collects every visible one as its maregraph
+	                                           // positions, in memory ("In memory location"), never a file
 	// The layer's OWN DATA, one row per point: what the thing IS (a catalog's lon/lat/depth/mag/date),
 	// supplied by whoever plotted it (gmtvtk_symbol_set_table_h). "Show data table" shows THIS —
 	// never a graphical property like the on-screen symbol size, which is not data.
@@ -1744,7 +1747,8 @@ struct Scene {
 	// a billboard label instead. polyShape selects which tool the active (checked) button drives.
 	enum ShapeKind { SH_Polygon, SH_Polyline, SH_Line, SH_Rect, SH_Circle, SH_Text, SH_RectN, SH_Fault, SH_Ruler,
 	                 SH_SymCircle, SH_SymSquare, SH_SymStar,     // Symbols flyout: one-click regular shapes
-	                 SH_LineArea };                               // a straight line inside its own rectangle
+	                 SH_LineArea,                                 // a straight line inside its own rectangle
+	                 SH_TideGauge };                              // Tsunamis > Plot virtual tide gauges: one circle per click
 	ShapeKind polyShape = SH_Polygon;                  // active tool while polyMode is on
 	std::vector<Polygon> polys;                        // finished polygons / polylines / rects / circles
 	// "Point at a line" pick a tool can ARM (Plates > Euler rotations' "Pick in view" / "Rect

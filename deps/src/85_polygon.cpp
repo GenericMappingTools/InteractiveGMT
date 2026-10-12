@@ -1929,6 +1929,23 @@ static void polygonToolToggled(Scene *s, QAction *act, Scene::ShapeKind shape, b
 	}
 }
 
+// Tsunamis > "Plot virtual tide gauges": arm the one-click SH_TideGauge placement. A menu entry, not a
+// toolbar button, so there is no QAction to carry: any checked draw tool is dropped first (its own
+// toggle handler leaves draw mode), then the gauge kind takes over with polyAct = nullptr.
+static void tideGaugeArm(Scene *s) {
+	if (!s || !sceneAlive(s)) return;
+	if (s->emptyStart) {                                // blank launcher: nothing to place a gauge ON yet
+		if (s->win) s->win->statusBar()->showMessage("Load a grid first — a tide gauge is placed on it.", 4000);
+		return;
+	}
+	for (QAction *a : s->shapeActs)
+		if (a->isChecked()) a->setChecked(false);
+	s->polyShape = Scene::SH_TideGauge;
+	s->polyAct   = nullptr;
+	polygonSetMode(s, true);
+	if (s->win) s->win->statusBar()->showMessage("Click to place a virtual tide gauge.", 4000);
+}
+
 // Cursor (mx,my device px) -> the point on the z=0 (XY) plane it projects to, in TRUE coords. Used
 // to place / drag flat text labels anywhere, even off the surface (clicking the sky still lands on
 // the plane). Returns false only if the view ray is parallel to the plane.
@@ -2645,6 +2662,20 @@ static bool polygonHandlePress(Scene *s, int button, int x, int y, bool shift) {
 			addSymbols(s, w, 1, sym, sizePx, 1, 1.0, 0.55, 0.0, 0.0, 0.0, 0.0, 1.0, "", nullptr, true);
 			if (s->polyAct) s->polyAct->setChecked(false);   // one-shot tool, same as every other draw tool
 			else            polygonSetMode(s, false);
+			break;
+		}
+		case Scene::SH_TideGauge: {                      // a virtual tide gauge: the SAME native one-click
+			                                              // symbol as the Circle tool, same size and colours (so
+			                                              // it drags, resizes and removes like one, and its yellow
+			                                              // drag handle shows on it), FLAGGED so the NSWING
+			                                              // dialog can find it
+			int n = 1;
+			for (const SymbolLayer &sl : s->symbols) if (sl.tideGauge) ++n;
+			const double sizePx = 10.0 * (96.0 / 72.0);
+			if (addSymbols(s, w, 1, "c", sizePx, 1, 1.0, 0.55, 0.0, 0.0, 0.0, 0.0, 1.0,
+			               "Tide gauge " + std::to_string(n), nullptr, true))
+				s->symbols.back().tideGauge = true;
+			polygonSetMode(s, false);                    // one gauge per menu pick
 			break;
 		}
 		case Scene::SH_Text: break;                      // handled above

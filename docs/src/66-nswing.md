@@ -88,6 +88,10 @@ These three points are off Costa da Caparica, in the Tejo channel at Belém, and
 waterfront. Put gauges **in the water** and inside the finest grid that covers them. **Out file**
 receives the time series. **Saving step** records one sample every that many time steps.
 
+Instead of a file, the gauges can be placed with the mouse (*Tsunamis → Plot virtual tide
+gauges*); **In file** then says *In memory location*. See
+[Virtual Tide Gauges](66b-tide-gauges.md).
+
 ## 6. Run parameters
 
 | Field | Meaning |
