@@ -1768,7 +1768,7 @@ function _add_image_to_scene(scene::Ptr{Cvoid}, I::GMTimage, name; promote=false
 	img, iw, ih, ibands = _drape_to_bbox(I, ir[1], ir[2], ir[3], ir[4]; outside=:transparent, fill=fillu)
 	# guessgeog (not isgeog): a plain lon/lat image with no embedded proj still reads geographic via
 	# the lon/lat-range heuristic, so geographic axes + the Geography menu activate (set_crs below).
-	geog = try GMT.guessgeog(I) catch; GMT.isgeog(I) end
+	geog = _isgeographic(I)
 	fn = promote ? :gmtvtk_promote_surface_h : :gmtvtk_add_surface_h
 	ok = promote ?
 		ccall(_fn(fn), Cint,
@@ -1824,7 +1824,7 @@ function iview_image_obj(I::GMTimage, name::AbstractString; title::String="i'GMT
 	h = ccall(_fn(:gmtvtk_open_empty), Ptr{Cvoid}, (Cstring,), title)
 	h == C_NULL && error("iview_image_obj: could not open the window")
 	ir   = I.range
-	geog = _isgeog(I)
+	geog = _isgeographic(I)
 	zblank = zeros(Float32, 2, 2)
 	# Hidden scaffold: image_only=1 (last Cint) so rebuildSceneObjects skips a row for it; img=NULL.
 	ccall(_fn(:gmtvtk_promote_surface_h), Cint,

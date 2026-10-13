@@ -67,6 +67,18 @@ function _find_object_named(scene::Ptr{Cvoid}, kind::Symbol)
 	return "", nothing
 end
 
+# THE grid a Grid Tool works on: the layer ON DISPLAY — the C++ side's activeGridName (the resolver the
+# colour bar, the Z axis and the hover readout go through), "" = the base surface. A NAMED layer
+# resolves exactly or not at all: falling back to the base would run the tool on a grid that is not on
+# screen (contours traced the bathymetry under a travel-time layer — SACRED_LAW.md). Never ask
+# `_find_object(scene, :grid, "")` for "the window's grid" in a tool: that is the BASE, not this.
+_active_grid_name(scene::Ptr{Cvoid}) =
+	unsafe_string(ccall(_fn(:gmtvtk_active_grid_name_h), Cstring, (Ptr{Cvoid},), scene))
+# `name`: a layer resolved EARLIER through this same function (a tool re-reading the grid it ran on).
+function _active_grid(scene::Ptr{Cvoid}, name::AbstractString = _active_grid_name(scene))
+	return isempty(name) ? _find_object(scene, :grid, "") : _find_object_exact(scene, :grid, name)
+end
+
 function _find_object(scene::Ptr{Cvoid}, kind::Symbol, name::AbstractString)
 	v = get(_SCENE_OBJS, scene, nothing)
 	if v !== nothing

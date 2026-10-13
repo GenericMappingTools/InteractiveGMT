@@ -11775,12 +11775,151 @@ public:
 // for the arrival-times run the user first ticks the travel-time grid the run before produced, and
 // the label it carries goes over unchanged.
 // ============================================================================================
+class TttDialog;
+static std::map<Scene *, TttDialog *> g_tttDlgs;   // one per window, alive while parked
+
 class TttDialog {
 public:
 	QDialog *dlg = nullptr;
 	Scene *scn = nullptr;
+	bool parked = false;
+	bool reallyClose = false;          // set by the parked row's "Delete": lets the next close through
+
+	// The X, the Close button, minimise and Esc PARK the dialog as a Scene Objects row — the shared
+	// parkTool/unparkTool pair every other tool uses (GrdLandmaskDialog is the model). Only the row's
+	// "Delete" ends it.
+	void unpark() {
+		if (!dlg) return;
+		parked = false;
+		unparkTool(scn, dlg);
+		dlg->setWindowState(dlg->windowState() & ~Qt::WindowMinimized);
+		dlg->showNormal();
+		dlg->raise();
+		dlg->activateWindow();
+	}
+	std::function<void(const QPoint &)> parkedMenu() {
+		return [this](const QPoint &g) {
+			QMenu m;
+			QAction *aShow = m.addAction("Show");
+			m.addSeparator();
+			QAction *aDel  = m.addAction("Delete");
+			QAction *pick  = m.exec(g);
+			if (pick == aShow) unpark();
+			else if (pick == aDel) {
+				reallyClose = true;
+				unparkTool(scn, dlg);
+				forget();
+				dlg->deleteLater();          // destroyed -> this wrapper goes with it
+			}
+		};
+	}
+	// Every way out lands here; idempotent, so parking twice leaves one row.
+	bool parkNow() {
+		if (reallyClose || !dlg || !sceneAlive(scn)) return false;
+		if (parked) { dlg->hide(); return true; }
+		parked = true;
+		dlg->setWindowState(dlg->windowState() & ~Qt::WindowMinimized);
+		dlg->hide();
+		parkTool(scn, dlg, "Tsunami travel times", IC_Rect,
+		         "Closed Tsunami travel times — double-click to bring it back, click for Show / Delete",
+		         [this]() { unpark(); }, parkedMenu());
+		unfoldSceneObjects(scn);
+		return true;
+	}
+	// Drop the registry entry by VALUE: the Scene may already be gone when the window is torn down.
+	void forget() {
+		for (auto it = g_tttDlgs.begin(); it != g_tttDlgs.end(); )
+			it = (it->second == this) ? g_tttDlgs.erase(it) : std::next(it);
+	}
+	~TttDialog() { forget(); }
 	QRadioButton *rbTtt = nullptr, *rbMirone = nullptr;
-	QLineEdit *lonEdit = nullptr, *latEdit = nullptr, *srcEdit = nullptr;
+	QMetaObject::Connection armConn;   // the draw tool's "done" signal while a source is being placed
+
+	// THE SOURCE, as Mirone has it (tsu_funs.m TTT): "Plot point source" drops ONE point, "Draw Fault
+	// source" draws a line whose every vertex is a point source. Both are placed with the window's OWN
+	// draw tools, untouched — the one-click Circle symbol and the Polyline — armed through their own
+	// toolbar actions, so the source is an ordinary scene element: it has its Scene Objects row, it
+	// drags, it is edited and removed like any other. This name is its tag (Mirone's 'Tag','TTT').
+	static constexpr const char *kSrcName = "TTT source";
+
+	QAction *drawTool(bool fault) const {
+		for (QAction *a : scn->shapeActs) {
+			if (fault ? (a->text() == "Polyline")
+			          : a->toolTip().startsWith("Place a circle symbol")) return a;
+		}
+		return nullptr;
+	}
+	void armSource(bool fault) {
+		if (!sceneAlive(scn)) return;
+		QAction *act = drawTool(fault);
+		if (!act) {
+			QMessageBox::warning(dlg, "Tsunami travel times", "This window has no draw tools to place a source with.");
+			return;
+		}
+		QObject::disconnect(armConn);
+		if (act->isChecked()) act->setChecked(false);
+		const size_t n0 = fault ? scn->polys.size() : scn->symbols.size();
+		// The tool switches itself off when the element is placed (polyFinalize / the one-click symbol);
+		// that is the moment the new element becomes the source. Switched off with nothing placed = no-op.
+		armConn = QObject::connect(act, &QAction::toggled, dlg, [this, fault, n0](bool on) {
+			if (on) return;
+			QObject::disconnect(armConn);
+			adoptSource(fault, n0);
+		});
+		act->setChecked(true);
+		if (scn->win)
+			scn->win->statusBar()->showMessage(fault ? "Draw the fault source: click the vertices, double-click to end."
+			                                         : "Click the point source.", 6000);
+	}
+	void adoptSource(bool fault, size_t n0) {
+		if (!sceneAlive(scn)) return;
+		if (fault) {
+			if (scn->polys.size() <= n0 || scn->polys.back().closed) return;
+			scn->polys.back().name = kSrcName;
+		}
+		else {
+			if (scn->symbols.size() <= n0) return;
+			// ONLY the name. The look stays the Circle tool's own: repainting it (Mirone's yellow) hid
+			// the yellow selection handle a double-click shows on every other circle.
+			scn->symbols.back().name = kSrcName;
+		}
+		rebuildSceneObjects(scn);
+		if (scn->widget && scn->widget->renderWindow()) scn->widget->renderWindow()->Render();
+	}
+	// Mirone's Compute: the source tagged TTT, else a fault trace. More than one is refused, as there.
+	// Read where the elements are NOW (a dragged point, an edited line). Nothing placed = nothing
+	// to compute ("Yes I compute, but ... WHAT?"). "x,y;x,y;…" in true coordinates; empty + `err` on refusal.
+	QString sourceXY(QString &err) const {
+		std::vector<QStringList> found;
+		auto xy = [](double x, double y) { return QString::number(x, 'g', 17) + "," + QString::number(y, 'g', 17); };
+		for (const SymbolLayer &sl : scn->symbols) {
+			if (sl.name != kSrcName || !sl.actor) continue;
+			double p[3];
+			symbolGetPointTrue(scn, sl, 0, p);
+			found.push_back({ xy(p[0], p[1]) });
+		}
+		for (const Polygon &p : scn->polys) {
+			if (p.name != kSrcName) continue;
+			QStringList L;
+			for (const auto &v : p.v) L << xy(v[0], v[1]);
+			found.push_back(L);
+		}
+		if (found.empty()) {
+			for (const Polygon &p : scn->polys) {
+				if (!p.isFault) continue;
+				QStringList L;
+				for (const auto &v : p.v) L << xy(v[0], v[1]);
+				found.push_back(L);
+			}
+		}
+		if (found.size() > 1) {
+			err = "More than one source found. This is not allowed neither in single source or Ray tracing modes. Be modest.";
+			return QString();
+		}
+		if (found.size() == 1) return found[0].join(";");
+		err = "Yes I compute, but ... WHAT?";
+		return QString();
+	}
 	QComboBox *nodesCb = nullptr;
 	QCheckBox *searchChk = nullptr, *biasChk = nullptr, *voidsChk = nullptr, *utcChk = nullptr;
 	QLineEdit *radiusEdit = nullptr, *srcDepthEdit = nullptr, *minDepthEdit = nullptr;
@@ -11797,16 +11936,29 @@ public:
 		dlg = qobject_cast<QDialog *>(loader.load(&f, parent));
 		f.close();
 		if (!dlg) { qWarning("TttDialog: QUiLoader failed to load the .ui"); return; }
-		dlg->setAttribute(Qt::WA_DeleteOnClose);
-		dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint);
+		// No WA_DeleteOnClose: a parked dialog has to survive its close. The MINIMISE button is what
+		// parks it as a Scene Objects handle.
+		dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint | Qt::WindowMinimizeButtonHint);
 		dlg->setWindowModality(Qt::NonModal);
 		QDialog *d = dlg;
+		g_tttDlgs[scn] = this;
+		struct CloseParks : QObject {
+			TttDialog *td;
+			CloseParks(QObject *p, TttDialog *t) : QObject(p), td(t) {}
+			bool eventFilter(QObject *o, QEvent *e) override {
+				if (td && e->type() == QEvent::Close && td->parkNow()) {
+					e->ignore();
+					return true;
+				}
+				return QObject::eventFilter(o, e);
+			}
+		};
+		d->installEventFilter(new CloseParks(d, this));
+		parkOnMinimise(d, [this]() { parkNow(); });               // the shared handler (50_scene.cpp)
+		QObject::connect(d, &QDialog::rejected, d, [this]() { parkNow(); });   // Esc
 
 		rbTtt    = d->findChild<QRadioButton *>("rb_ttt");
 		rbMirone = d->findChild<QRadioButton *>("rb_mirone");
-		lonEdit  = d->findChild<QLineEdit *>("edit_lon");
-		latEdit  = d->findChild<QLineEdit *>("edit_lat");
-		srcEdit  = d->findChild<QLineEdit *>("edit_srcfile");
 		nodesCb  = d->findChild<QComboBox *>("cb_nodes");
 		searchChk = d->findChild<QCheckBox *>("chk_search");
 		biasChk   = d->findChild<QCheckBox *>("chk_bias");
@@ -11827,23 +11979,7 @@ public:
 		if (radiusEdit)   radiusEdit->setText("0");
 		if (srcDepthEdit) srcDepthEdit->setText("0");
 		if (minDepthEdit) minDepthEdit->setText("0");
-
-		// The source starts at the CENTRE OF WHAT IS ON SCREEN — the region the user is looking at is
-		// the region they mean, and a pair of empty boxes on a window that already knows where it is
-		// is the tool asking for something it could have answered itself.
-		if (scene) {
-			double cx = 0, cy = 0;  bool have = false;
-			if (scene->gx1 > scene->gx0 && scene->gy1 > scene->gy0) {
-				cx = 0.5 * (scene->gx0 + scene->gx1);  cy = 0.5 * (scene->gy0 + scene->gy1);  have = true;
-			}
-			else if (scene->x1 > scene->x0 && scene->y1 > scene->y0) {
-				cx = 0.5 * (scene->x0 + scene->x1);  cy = 0.5 * (scene->y0 + scene->y1);  have = true;
-			}
-			if (have) {
-				if (lonEdit) lonEdit->setText(QString::number(cx, 'g', 10));
-				if (latEdit) latEdit->setText(QString::number(cy, 'g', 10));
-			}
-		}
+		// NO default source: the source is what the user places (the two buttons below) or types.
 
 		// A method is a choice between two ways of computing ONE quantity, so what the other one owns
 		// is disabled, not removed: the user can see the knob exists and why it is not theirs to set.
@@ -11867,8 +12003,6 @@ public:
 			});
 			fileBoxDoubleClick(edit, btn);        // double-click in the box opens the chooser
 		};
-		browseIn(srcEdit, d->findChild<QToolButton *>("btn_srcfile"),
-		         "Select a file of source points", "Tables (*.dat *.txt *.xy);;All files (*)");
 		browseIn(stationsEdit, d->findChild<QToolButton *>("btn_stations"),
 		         "Select a stations file", "Tables (*.dat *.txt *.xy);;All files (*)");
 		if (auto *ob = d->findChild<QToolButton *>("btn_outfile")) {
@@ -11887,8 +12021,10 @@ public:
 			QObject::connect(b, &QPushButton::clicked, d, [this, d]() { run(d, false); });
 		if (auto *b = d->findChild<QPushButton *>("push_eta"))
 			QObject::connect(b, &QPushButton::clicked, d, [this, d]() { run(d, true); });
-		if (auto *b = d->findChild<QPushButton *>("push_close"))
-			QObject::connect(b, &QPushButton::clicked, d, [d]() { d->close(); });
+		if (auto *b = d->findChild<QPushButton *>("push_pointsrc"))
+			QObject::connect(b, &QPushButton::clicked, d, [this]() { armSource(false); });
+		if (auto *b = d->findChild<QPushButton *>("push_faultsrc"))
+			QObject::connect(b, &QPushButton::clicked, d, [this]() { armSource(true); });
 
 		QObject::connect(d, &QObject::destroyed, d, [this]() { delete this; });
 	}
@@ -11918,19 +12054,13 @@ public:
 		else {
 			const bool mirone = rbMirone && rbMirone->isChecked();
 			kv << QString("method=%1").arg(mirone ? "mirone" : "ttt");
-			const QString sf = srcEdit ? srcEdit->text().trimmed() : QString();
-			if (!sf.isEmpty()) kv << "srcfile=" + sf;
-			else {
-				bool okLon = false, okLat = false;
-				const double lon = lonEdit ? lonEdit->text().toDouble(&okLon) : 0.0;
-				const double lat = latEdit ? latEdit->text().toDouble(&okLat) : 0.0;
-				if (!okLon || !okLat) {
-					QMessageBox::warning(d, "Tsunami travel times",
-						"Give me the source longitude and latitude (or a file of source points).");
-					return;
-				}
-				kv << QString("lon=%1").arg(lon, 0, 'g', 12) << QString("lat=%1").arg(lat, 0, 'g', 12);
+			QString err;
+			const QString src = sourceXY(err);
+			if (src.isEmpty()) {
+				QMessageBox::warning(d, "Tsunami travel times", err);
+				return;
 			}
+			kv << "srcxy=" + src;
 			if (mirone)
 				kv << QString("fillvoids=%1").arg(voidsChk && voidsChk->isChecked() ? 1 : 0);
 			else {
@@ -11956,6 +12086,17 @@ public:
 				"Done — the travel-time grid (hours) is in Scene Objects as \"Travel time (h)\".");
 	}
 };
+
+// Geophysics > Tsunamis > Tsunami travel times: the window's OWN dialog — a parked one comes back
+// with its settings intact, never a second copy. 1 = on screen.
+static int openTttDialog(QWidget *win, Scene *s) {
+	auto it = g_tttDlgs.find(s);
+	if (it != g_tttDlgs.end() && it->second && it->second->dlg) { it->second->unpark(); return 1; }
+	auto *w = new TttDialog(win, s);
+	if (!w->dlg) { delete w; return 0; }
+	w->dlg->show();
+	return 1;
+}
 
 class EcmwfDialog;
 // One dialog per window, alive while parked — so re-picking the menu entry brings THAT one back,
@@ -30200,10 +30341,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		// GMT.jl's travel-time API (ttt / wave_travel_time / tttimes) — see TttDialog above. Non-modal
 		// like every other tool dialog here: the 3-D view stays live while a source is picked, and the
 		// dialog survives any number of runs.
-		mGphy->addAction("Tsunami travel times…", [win, s]() {
-			auto *w = new TttDialog(win, s);
-			if (w->dlg) w->dlg->show();
-		});
+		mGphy->addAction("Tsunami travel times…", [win, s]() { openTttDialog(win, s); });
 		mGphy->addAction("Aquamoto viewer…", [win, s]() {
 			// Non-modal, own top-level window (aquamoto.ui roots at QMainWindow, loaded verbatim --
 			// no resize/rescale of its own geometry). Closing only HIDES it (AquamotoHideOnClose); this

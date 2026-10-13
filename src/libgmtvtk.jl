@@ -107,7 +107,7 @@ const _LIB_FNS = Dict{Symbol,Ptr{Cvoid}}()
 # geostationary satellite is 6.6 Earth radii out) is not drawn outside the camera's field.
 # Generation 16 = gmtvtk_capture_view_rgb -> gmtvtk_capture_view_rgba: the globe/cube whole-view
 # capture the script export plots now returns FOUR bands, with the window background transparent.
-const _ABI_REQUIRED = 16
+const _ABI_REQUIRED = 17
 # What the library that ACTUALLY loaded reports (1 = the export is absent, i.e. it predates the grid
 # layout code). Read by `_grid_zbuf` (drop.jl): a library that cannot be told a buffer's layout is
 # never handed a row-major one.
@@ -150,7 +150,7 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_grow_z_frame_h,
 	:gmtvtk_reframe_named_h,
 	:gmtvtk_swipe_select_mode_h,
-	:gmtvtk_has_surface, :gmtvtk_has_element_h, :gmtvtk_close, :gmtvtk_add_recent,
+	:gmtvtk_has_surface, :gmtvtk_has_element_h, :gmtvtk_active_grid_name_h, :gmtvtk_close, :gmtvtk_add_recent,
 	:gmtvtk_set_cpt, :gmtvtk_set_cpt_grid, :gmtvtk_grid_rgb_at, :gmtvtk_raise, :gmtvtk_set_crs,
 	:gmtvtk_set_palette_callback, :gmtvtk_set_bands_callback,
 	:gmtvtk_set_title_h, :gmtvtk_set_surface_name_h,

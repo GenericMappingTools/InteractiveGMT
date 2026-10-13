@@ -1079,13 +1079,16 @@ GMTVTK_API int gmtvtk_add_curtain_file_h(void *handle, const double *px, const d
 // `headers`, if non-null/non-empty, is the column names joined by TAB ('\t'), one per column
 // (missing/empty -> "C1, C2, ..."). `name` (or null) titles the window. Returns 1 if shown, 0 if the
 // handle is dead. The data is COPIED (the caller's pointer is only valid during this call).
+// `text`, if non-null/non-empty, is the dataset's TEXT column, one string per row joined by '\n':
+// it becomes the table's last column, named by `headers`' entry after the numeric ones (or "Text").
+// No text -> no column, never an empty one.
 //
 // SACRED_LAW: this pops THE shared table dialog (buildDataTableDialog, 55_lineprops.cpp) — the same
 // one the per-line "Show data table…" and the X,Y tool's "Show in Data Table" use, Save button and
 // all. There is exactly ONE "show a table of numbers" implementation in the app; the old bottom-dock
 // "Data Viewer" spreadsheet tab was a second one, and is gone.
 GMTVTK_API int gmtvtk_set_table(void *handle, const char *name, const double *data,
-								int nrows, int ncols, const char *headers) {
+								int nrows, int ncols, const char *headers, const char *text) {
 	Scene *s = static_cast<Scene*>(handle);
 	if (!sceneAlive(s))
 		return 0;
@@ -1098,6 +1101,13 @@ GMTVTK_API int gmtvtk_set_table(void *handle, const char *name, const double *da
 	QStringList hdr;  hdr << "#";                       // the builder numbers the rows in column 0
 	for (int c = 0; c < ncols; ++c)
 		hdr << ((c < cols.size() && !cols[c].isEmpty()) ? cols[c] : QString("C%1").arg(c + 1));
+	QStringList txt;                                     // the text column, only when there is one
+	if (text && text[0]) {
+		txt = QString::fromUtf8(text).split('\n');
+		while (txt.size() < nrows) txt << QString();
+		hdr << ((ncols < cols.size() && !cols[ncols].isEmpty()) ? cols[ncols] : QString("Text"));
+	}
+	const bool hasTxt = !txt.isEmpty();
 
 	std::vector<double> vals;                            // own the numbers: the caller's buffer dies now
 	vals.reserve((size_t)nrows * (size_t)ncols);
@@ -1108,7 +1118,7 @@ GMTVTK_API int gmtvtk_set_table(void *handle, const char *name, const double *da
 	const QString title = (name && name[0]) ? QString::fromUtf8(name) : QString("Data");
 	// Save…: the table as it stands, tab-separated with its header line — the plain text every other
 	// tool in this app can read straight back.
-	auto onSave = [vals, hdr, nrows, ncols, title]() {
+	auto onSave = [vals, hdr, txt, hasTxt, nrows, ncols, title]() {
 		QString fn = QFileDialog::getSaveFileName(nullptr, "Save table", prefStartDir("table.txt"),
 		                                          "Text (*.txt *.dat *.csv);;All files (*)");
 		if (fn.isEmpty()) return;
@@ -1118,16 +1128,20 @@ GMTVTK_API int gmtvtk_set_table(void *handle, const char *name, const double *da
 		QTextStream out(&f);
 		out << "#";
 		for (int c = 0; c < ncols; ++c) out << '\t' << hdr[c + 1];
+		if (hasTxt) out << '\t' << hdr[ncols + 1];
 		out << '\n';
 		for (int r = 0; r < nrows; ++r) {
 			for (int c = 0; c < ncols; ++c)
 				out << (c ? "\t" : "") << QString::number(vals[(size_t)c * nrows + r], 'g', 10);
+			if (hasTxt) out << '\t' << txt[r];
 			out << '\n';
 		}
 		f.close();
 	};
 	QTableWidget *tbl = buildDataTableDialog(title, nrows, hdr,
-		[vals, nrows](int row, int col) { return QString::number(vals[(size_t)col * nrows + row], 'g', 10); },
+		[vals, txt, nrows, ncols](int row, int col) {
+			return (col >= ncols) ? txt[row] : QString::number(vals[(size_t)col * nrows + row], 'g', 10);
+		},
 		/*editable=*/false, onSave);
 	// Remember the last table popped for this window, ONLY so gmtvtk_scene_state can report its row
 	// count (n_table). It is parentless and self-deleting, so drop the pointer when it goes.
@@ -1424,7 +1438,11 @@ GMTVTK_API void gmtvtk_unfold_scene_objects_h(void *handle) {
 //       background transparent. Both the name and the band count changed, so a mismatched pair
 //       fails at the symbol lookup rather than reading a 4-band buffer as 3 (which would shear
 //       the picture into diagonal garbage and tint it).
-GMTVTK_API int gmtvtk_abi_version(void) { return 16; }
+//  17 = gmtvtk_set_table gained a trailing `text` argument (one string per row, '\n'-joined; null or
+//       empty = no text column): a GMTdataset's text column (tttimes' station names) is shown as the
+//       table's last column. A generation-16 library ignores it; a generation-16 host passes none
+//       and a generation-17 library reads garbage off the missing argument.
+GMTVTK_API int gmtvtk_abi_version(void) { return 17; }
 
 GMTVTK_API int gmtvtk_scene_state(void *handle, char *buf, int cap) {
 	Scene *s = static_cast<Scene*>(handle);
@@ -7307,6 +7325,17 @@ GMTVTK_API int gmtvtk_scene_child_row_click_h(void *handle, const char *group, c
 	return 0;
 }
 
+// The Scene Objects name of the grid ON DISPLAY in window `handle` ("" = the base surface):
+// activeGridName, the resolver the colour bar, the Z axis and the hover readout use. THE answer to
+// "which grid does a Grid Tool work on" for the host (InteractiveGMT._active_grid) — a tool that took
+// the base grid instead contoured the bathymetry under a travel-time layer.
+GMTVTK_API const char *gmtvtk_active_grid_name_h(void *handle) {
+	static std::string out;
+	Scene *s = static_cast<Scene *>(handle);
+	out = sceneAlive(s) ? activeGridName(s) : std::string();
+	return out.c_str();
+}
+
 // --- test-only hooks for the fault-trace endpoint logic (exercised by the Julia test suite) -------
 // Compiled ONLY into gmtvtk_test.dll (GMTVTK_TEST_API, set by the gmtvtk_test CMake target).
 // The production gmtvtk.dll never sees these symbols at all — not hidden, not exported.
@@ -9369,6 +9398,83 @@ GMTVTK_API int gmtvtk_landmask_delete_dialog_test(void *handle) {
 	return landmaskTestDlg(handle) == nullptr ? 1 : 0;
 }
 
+// Tsunami travel times (Geophysics > Tsunamis): the same park contract. `how`: 0 = the X, 1 =
+// minimise, 2 = Esc, 3 = the dialog's own Close button.
+static TttDialog *tttTestDlg(void *handle) {
+	auto it = g_tttDlgs.find(static_cast<Scene *>(handle));
+	return (it == g_tttDlgs.end()) ? nullptr : it->second;
+}
+GMTVTK_API int gmtvtk_ttt_open_dialog_test(void *handle) {
+	ensureApp();
+	Scene *s = static_cast<Scene *>(handle);
+	if (!s || !s->win) return 0;
+	testBorrowScene(s);
+	const int ok = openTttDialog(s->win, s);
+	QApplication::processEvents();
+	return ok;
+}
+GMTVTK_API void gmtvtk_ttt_leave_dialog_test(void *handle, int how) {
+	TttDialog *t = tttTestDlg(handle);
+	if (!t || !t->dlg) return;
+	if (how == 1)      t->dlg->setWindowState(t->dlg->windowState() | Qt::WindowMinimized);
+	else if (how == 2) t->dlg->reject();
+	else               t->dlg->close();
+	QApplication::processEvents();
+}
+// Place the source the way the user does: press the dialog's OWN button ("Plot point source" /
+// "Draw Fault source"), then click the map at each (x,y) through the viewer's own press handler (the
+// fault line ends with a double-click on its last vertex, as a drawn line does). Returns what Compute
+// would send as `srcxy` — "x,y;x,y;…" — or "!" + the refusal Compute would pop up.
+GMTVTK_API const char *gmtvtk_ttt_place_source_test(void *handle, int fault, const double *xy, int n) {
+	static std::string out;
+	out.clear();
+	Scene *s = static_cast<Scene *>(handle);
+	TttDialog *t = tttTestDlg(handle);
+	if (!t || !t->dlg || !sceneAlive(s)) return "!no dialog";
+	if (auto *b = t->dlg->findChild<QPushButton *>(fault ? "push_faultsrc" : "push_pointsrc")) b->click();
+	QApplication::processEvents();
+	for (int i = 0; i < n; ++i) {
+		double d[2];
+		polyToDisplay(s, { xy[2 * i], xy[2 * i + 1], 0.0 }, d);
+		polygonHandlePress(s, 0, (int)std::lround(d[0]), (int)std::lround(d[1]), false);
+		if (fault && i == n - 1) polygonHandleDblClick(s, (int)std::lround(d[0]), (int)std::lround(d[1]));
+	}
+	QApplication::processEvents();
+	QString err;
+	const QString src = t->sourceXY(err);
+	out = src.isEmpty() ? ("!" + err.toStdString()) : src.toStdString();
+	return out.c_str();
+}
+// The fill colour of the placed "TTT source" point (rgb into out3). 1 = found.
+GMTVTK_API int gmtvtk_ttt_src_fill_test(void *handle, double *out3) {
+	Scene *s = static_cast<Scene *>(handle);
+	if (!sceneAlive(s) || !out3) return 0;
+	for (const SymbolLayer &sl : s->symbols) {
+		if (sl.name != TttDialog::kSrcName || !sl.actor) continue;
+		const double *c = sl.actor->GetProperty()->GetColor();
+		out3[0] = c[0];  out3[1] = c[1];  out3[2] = c[2];
+		return 1;
+	}
+	return 0;
+}
+// 1 = parked (hidden + a Scene Objects row), 0 = on screen, -1 = no dialog.
+GMTVTK_API int gmtvtk_ttt_parked_test(void *handle) {
+	Scene *s = static_cast<Scene *>(handle);
+	TttDialog *t = tttTestDlg(handle);
+	if (!t || !t->dlg) return -1;
+	const bool hidden = !t->dlg->isVisible();
+	bool row = false;
+	if (s) for (auto &pt : s->parkedTools) if (pt.win == t->dlg) row = true;
+	return (hidden && row) ? 1 : 0;
+}
+// The parked row's own "Delete". 1 = it is gone.
+GMTVTK_API int gmtvtk_ttt_delete_dialog_test(void *handle) {
+	TttDialog *t = tttTestDlg(handle);
+	if (!t) return 0;
+	testDeleteParkedDialog(&t);
+	return tttTestDlg(handle) == nullptr ? 1 : 0;
+}
+
 // grdblend (GMT menu): the same park contract (`how`: 0 = the X, 1 = minimise, 2 = Esc), plus the
 // footprint map's edit of the list, driven through the dialog's own pick().
 static GrdBlendDialog *blendTestDlg(void *handle) {
@@ -10957,6 +11063,37 @@ GMTVTK_API int gmtvtk_toplevel_grab_test(const char *title, const char *path) {
 	for (QWidget *w : QApplication::topLevelWidgets())
 		if (w->isVisible() && w->windowTitle().contains(want, Qt::CaseInsensitive))
 			return w->grab().save(QString::fromUtf8(path), "PNG") ? 1 : 0;
+	return 0;
+}
+
+// Drive one widget of a visible top-level window (docs screenshots of filled-in tool dialogs).
+// `what`: 0 = setText on the QLineEdit `objName`, 1 = click the button `objName`, 2 = check the
+// radio/check button `objName`, 3 = resize the window itself to `text` = "w,h" (objName unused).
+// 1 = done, 0 = no such window/widget.
+GMTVTK_API int gmtvtk_toplevel_widget_test(const char *title, const char *objName, int what, const char *text) {
+	if (!title || !objName) return 0;
+	const QString want = QString::fromUtf8(title);
+	for (QWidget *w : QApplication::topLevelWidgets()) {
+		if (!w->isVisible() || !w->windowTitle().contains(want, Qt::CaseInsensitive)) continue;
+		if (what == 3) {
+			const QStringList wh = QString::fromUtf8(text ? text : "").split(',');
+			if (wh.size() != 2) return 0;
+			w->resize(wh[0].toInt(), wh[1].toInt());
+		}
+		else if (what == 0) {
+			auto *e = w->findChild<QLineEdit *>(QString::fromUtf8(objName));
+			if (!e) return 0;
+			e->setText(QString::fromUtf8(text ? text : ""));
+		}
+		else {
+			auto *b = w->findChild<QAbstractButton *>(QString::fromUtf8(objName));
+			if (!b) return 0;
+			if (what == 1) b->click();
+			else           b->setChecked(true);
+		}
+		QApplication::processEvents();
+		return 1;
+	}
 	return 0;
 }
 #endif // GMTVTK_TEST_API

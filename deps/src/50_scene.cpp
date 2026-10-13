@@ -3709,8 +3709,12 @@ static void rebuildSceneObjects(Scene *s) {
 		const std::string gn = tl.groupName;
 		// A batch that BELONGS to an overlay ("Show point labels") already has its row, nested as that
 		// overlay's "Labels" sub-handle — it must not also appear here as a top-level sibling.
+		// Same for a batch tagged with an overlay GROUP's own tag (a contour set's level annotations,
+		// tagged "Contours" like its lines): that group already owns it — its checkbox sweeps it by tag,
+		// its Remove (overlayDeleteGroup) and Rename (lineGroupRename) take it along — so a second,
+		// empty top-level row of the same name is a duplicate handle.
 		bool ownedByOverlay = false;
-		for (auto &ov : s->overlays) if (ov.labelsGroup == gn) ownedByOverlay = true;
+		for (auto &ov : s->overlays) if (ov.labelsGroup == gn || ov.groupName == gn) ownedByOverlay = true;
 		if (ownedByOverlay) continue;
 		const QString gname = QString::fromStdString(gn);
 		bool anyVis = false;

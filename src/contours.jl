@@ -22,6 +22,9 @@ const _CONTOUR_GROUP = "Contours"
 # "Color by grid colormap" needs to know which level each line stands for, and a level is a NUMBER —
 # recovering it by parsing the row's name back out of a string would be a second, fragile source.
 const _CONTOUR_DRAWN = Dict{Ptr{Cvoid}, Vector{Float64}}()
+# ...and the Scene Objects name of the grid they were traced from, so the recolour reads THAT grid's
+# colormap — not whatever layer happens to be active when the user opens the group's menu later.
+const _CONTOUR_SRC = Dict{Ptr{Cvoid}, String}()
 
 # A contour is annotated only if it is at least this many times longer than the label it would
 # carry — an annotation as long as (or longer than) its own contour is noise, not information.
@@ -188,11 +191,13 @@ function _contour_cumlen(xyz::Vector{Float64}, i0::Int, i1::Int, xfac::Float64)
 	return cum
 end
 
-# The grid the tool contours: the window's primary/base grid (same `_find_object` resolution every
-# other Grid Tools entry uses). ONE resolver for both entry points below, so the Min/Max the dialog
-# shows can never describe a different grid than the one Apply traces.
-function _contour_grid(scene::Ptr{Cvoid})
-	G = _find_object(scene, :grid, "")
+# The grid the tool contours: the layer ON DISPLAY, through `_active_grid` (savefile.jl) — THE Grid
+# Tools resolver — so a travel-time grid shown over its bathymetry is contoured in hours, never the
+# bathymetry underneath. `name` = a layer resolved earlier by that same function (the recolour reads
+# the grid the contours were traced from). ONE resolver for both entry points below, so the Min/Max
+# the dialog shows can never describe a different grid than the one Apply traces.
+function _contour_grid(scene::Ptr{Cvoid}, name::AbstractString = _active_grid_name(scene))
+	G = _active_grid(scene, name)
 	(G isa GMTgrid) || error("No grid loaded in this window")
 	return G
 end
@@ -295,7 +300,7 @@ _contour_fmt(l::Float64) = (isfinite(l) && l == round(l) && abs(l) < 1e15) ? str
 # Drop everything a previous Apply put in the window (overlays AND their labels, both tagged with
 # _CONTOUR_GROUP). Apply always redraws the WHOLE list, so a re-Apply replaces rather than piles up.
 function _contour_clear(scene::Ptr{Cvoid})
-	delete!(_CONTOUR_DRAWN, scene)
+	delete!(_CONTOUR_DRAWN, scene);  delete!(_CONTOUR_SRC, scene)
 	return ccall(_fn(:gmtvtk_remove_overlay_group_h), Cint, (Ptr{Cvoid}, Cstring), scene, _CONTOUR_GROUP)
 end
 
@@ -309,7 +314,7 @@ function _contour_color_by_cpt(scene::Ptr{Cvoid}, on::Integer)
 	isempty(levels) && return nothing
 	rgb = nothing
 	if on != 0
-		G = _contour_grid(scene)
+		G = _contour_grid(scene, get(_CONTOUR_SRC, scene, ""))
 		cz, crgb, n = _cpt_nodes(G, _default_cmap(G))
 		n < 2 && error("Contours: no colormap to colour by")
 		rgb = (cz, crgb, n)
@@ -362,7 +367,8 @@ function _on_contours(scene::Ptr{Cvoid}, params::AbstractString)
 
 	_contour_clear(scene)
 	isempty(levels) && return nothing
-	G = _contour_grid(scene)
+	gridname = _active_grid_name(scene)
+	G = _contour_grid(scene, gridname)
 	sets = _contour_gdal(G, levels, max(minpts, 0))
 	isempty(sets) && error("No contour crossed the grid at any of those elevations")
 
@@ -448,7 +454,7 @@ function _on_contours(scene::Ptr{Cvoid}, params::AbstractString)
 			isempty(anchors) ? C_NULL : anchors, Cint(length(anchors)), halfpx, Cint(1))
 		push!(drawn, lev)
 	end
-	_CONTOUR_DRAWN[scene] = drawn
+	_CONTOUR_DRAWN[scene] = drawn;  _CONTOUR_SRC[scene] = String(gridname)
 	if !isempty(txts)
 		blob = join(txts, '\x1e')
 		# vcenter=1: batch-owned labels are bottom-justified by default (a focal-mechanism date must

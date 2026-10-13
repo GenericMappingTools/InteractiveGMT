@@ -692,7 +692,7 @@ function _earthtide_grid(scene, start, comp, inc=0.5)
 	title = "earth tide $short"
 	z, nx, ny, zlay = _grid_zbuf(G)   # buffer as it lies + layout code -- NO transposition
 	r = G.range
-	geog = _isgeog(G)
+	geog = _isgeographic(G)           # THE grid geographic test (cpt.jl) -- the one the window uses
 	cz, crgb, ncolor = _cpt_nodes(G, :turbo)
 	ccall(_fn(:gmtvtk_remove_grid_h), Cint, (Ptr{Cvoid}, Cstring), scene, title)
 	_forget_object!(scene, :grid, title)

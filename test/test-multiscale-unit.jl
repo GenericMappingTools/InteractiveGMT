@@ -86,7 +86,7 @@ end
 	# Slope of that plane: atan(|grad|) in degrees, whatever the window size.
 	want = atand(hypot(3.0, 2.0))
 	for w in (3, 5)
-		S = IG.mirblock(G; method = 6, win = w).z
+		S = IG.mirblock(G; method = 6, win = w, geog = false).z   # Cartesian on purpose: this box would pass guessgeog
 		@test all(≈(want; atol = 1e-3), S[3:(end - 2), 3:(end - 2)])
 	end
 end

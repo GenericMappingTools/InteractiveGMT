@@ -1267,7 +1267,7 @@ function _lop_do_thicken(scene, targets, rest)
 		v === nothing && error("the thicken argument is nonsense")
 		N = max(round(Int, abs(v)), 1)
 	end
-	G = _find_object(scene, :grid, "")
+	G = _active_grid(scene)                  # the grid ON DISPLAY (savefile.jl)
 	G === nothing && error("thicken measures the thickness in GRID CELLS — this window has no grid")
 	thick = N * (abs(G.inc[1]) + abs(G.inc[2])) / 2
 	geog = _lop_isgeog(scene)
@@ -1298,7 +1298,7 @@ function _lop_do_toridge(scene, targets, rest)
 		v === nothing && error("the N argument is nonsense")
 		N = max(round(Int, abs(v)), 1)
 	end
-	G = _find_object(scene, :grid, "")
+	G = _active_grid(scene)                  # the grid ON DISPLAY (savefile.jl)
 	G === nothing && error("this operation is only possible with grids, not images")
 	dx = abs(G.inc[1]);  dy = abs(G.inc[2])
 	nm = targets[1]

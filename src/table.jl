@@ -16,6 +16,17 @@ function _table_matrix(D::AbstractVector{<:GMTdataset})
 	return M, cn, "GMTdataset"
 end
 
+# The TEXT column of the input, one string per row joined by '\n' — or "" when there is none, so
+# the table gets no text column at all. Only a GMTdataset carries text; a multi-segment one has it
+# only when EVERY segment does (rows from a text-less segment would have nothing to show).
+_table_text(::Any) = ""
+_has_text(D::GMTdataset) = !isempty(D.text) && length(D.text) == size(D.data, 1)
+_table_text(D::GMTdataset) = _has_text(D) ? join(replace.(D.text, '\n' => ' '), '\n') : ""
+function _table_text(D::AbstractVector{<:GMTdataset})
+	(isempty(D) || !all(_has_text, D)) && return ""
+	return join((replace(t, '\n' => ' ') for d in D for t in d.text), '\n')
+end
+
 """
 	show_table(fig, data; name="")
 
@@ -31,8 +42,8 @@ function show_table(fig, data; name::AbstractString="")
 	isempty(name) && (name = nm)
 	hdr = isempty(headers) ? "" : join(headers, '\t')
 	ok = GC.@preserve Mc ccall(_fn(:gmtvtk_set_table), Cint,
-		(Ptr{Cvoid}, Cstring, Ptr{Cdouble}, Cint, Cint, Cstring),
-		_fig_handle(fig), String(name), Mc, Cint(nrows), Cint(ncols), hdr)
+		(Ptr{Cvoid}, Cstring, Ptr{Cdouble}, Cint, Cint, Cstring, Cstring),
+		_fig_handle(fig), String(name), Mc, Cint(nrows), Cint(ncols), hdr, _table_text(data))
 	ok == 0 && @warn "figure window is closed; table not shown"
 	return fig
 end

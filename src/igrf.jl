@@ -66,7 +66,7 @@ function _on_igrf_grid(scene::Ptr{Cvoid}, cparams::Cstring)::Cvoid
 		# Add to the existing scene (dialog's parent window), named after the field selection.
 		z, nx, ny, zlay = _grid_zbuf(G)   # buffer as it lies + layout code -- NO transposition
 		r = G.range
-		geog = _isgeog(G)
+		geog = _isgeographic(G)           # THE grid geographic test (cpt.jl) -- the one the window uses
 		cmap = :turbo
 		cz, crgb, ncolor = _cpt_nodes(G, cmap)
 		title = "IGRF $fieldname"

@@ -183,12 +183,12 @@ Show a bare `GMTimage` (no elevation) in the viewer: a flat plane textured with 
 opened maximized in a top-down orthographic map. Returns a `QtImage` handle immediately (the
 window stays live while you use the REPL). The status-bar readout shows the pixel **colour**
 (`rgb = R G B`) under the cursor instead of a z value. `geographic` is auto-detected
-(`GMT.isgeog`); override with `true`/`false`. Also reachable as `iview(I)`.
+(`_isgeographic`: the CRS, else GMT.guessgeog's lon/lat range test); override with `true`/`false`. Also reachable as `iview(I)`.
 """
 function view_image(I::GMTimage; title::String="i'GMT",
 					geographic::Union{Bool,Nothing}=nothing, axes::Union{Bool,Nothing}=nothing)
 	ir = I.range
-	geog = geographic === nothing ? GMT.isgeog(I) : geographic
+	geog = geographic === nothing ? _isgeographic(I) : geographic   # THE geographic test (cpt.jl), as every adder
 	# Referenced image -> show the lon/lat (X/Y) axes; plain (un-georeferenced) image -> no axes.
 	# Auto: geographic, or carrying a projection (proj4/wkt/epsg). Override with `axes=true/false`.
 	referenced = axes === nothing ? _is_referenced(I) : axes

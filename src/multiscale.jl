@@ -233,7 +233,7 @@ function mirblock(G::GMTgrid; method::Int=0, win::Int=3, geog=nothing)
 	z = Matrix{Float32}(_zmat(G))   # (ny,nx), row 1 = south, for ANY layout the grid was read in
 	ny, nx = size(z)
 	P = _mb_pad(z, h)
-	isgeog = geog === nothing ? (_isgeog(G) != 0) : Bool(geog)
+	isgeog = geog === nothing ? _isgeographic(G) : Bool(geog)   # THE grid geographic test (cpt.jl)
 	y0 = Float64(G.range[3]);  yinc = Float64(G.inc[2]);  xinc = Float64(G.inc[1])
 	fit(kind) = _mb_surface_fit(P, ny, nx, h, kind, y0, yinc, xinc, isgeog)
 
@@ -301,7 +301,7 @@ end
 # the method, so two different methods coexist and re-running one replaces its own result.
 function _on_multiscale(scene::Ptr{Cvoid}, method::Int, win::Int)
 	try
-		G = _find_object(scene, :grid, "")
+		G = _active_grid(scene)                  # the grid ON DISPLAY (savefile.jl)
 		(G isa GMTgrid) || error("No grid loaded in this window")
 		R = mirblock(G; method=method, win=win)
 		name = MIRBLOCK_METHODS[method + 1]

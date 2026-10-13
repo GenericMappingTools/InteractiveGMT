@@ -9,6 +9,12 @@ const _GEOG_VFRAC = 0.135       # geog auto: displayed z-range / horizontal exte
 # still taken as geographic. Crudeness (a small cartesian grid in that box reads as geographic) is
 # inherent and accepted — the user asked for this guess when no CRS is present.
 _isgeographic(G::GMTgrid)::Bool = GMT.guessgeog(G)
+# Same rule for an image. guessgeog can throw on an image whose header it cannot read; the CRS test
+# is then all there is.
+_isgeographic(I::GMTimage)::Bool = try GMT.guessgeog(I) catch; GMT.isgeog(I) end
+# ONE test, every tool: a grid tool that asks GMT.isgeog / `_isgeog` instead disagrees with the window
+# on any lon/lat grid without a CRS. Tsunami travel times then ran the Mirone method in Cartesian
+# metres-over-degrees and returned ~0 h everywhere (2026-10-13).
 
 # Default colormap for a grid. GMT tags topo/bathymetry remote grids (earth_relief / gebco /
 # gebcosi / synbath) with cpt == "geo"; only those get the elevation `geo` ramp. Every other grid

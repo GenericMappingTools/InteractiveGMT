@@ -191,7 +191,7 @@ function _on_clipgrid(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		# The clip is element-wise, so G2 keeps G's memory layout: hand the buffer over as it lies
 		# with its layout code (NO transposition), whatever layout the source grid was read in.
 		zbuf, nx, ny, zlay = _grid_zbuf(G2)
-		geog = _isgeog(G2)
+		geog = _isgeographic(G2)          # THE grid geographic test (cpt.jl) -- the one the window uses
 		cz, crgb, ncolor = _cpt_nodes(G2, :turbo)
 		has_surface = ccall(_fn(:gmtvtk_has_surface), Cint, (Ptr{Cvoid},), scene)
 		promote = (has_surface == 0)

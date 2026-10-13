@@ -19,6 +19,7 @@ const titles = Dict(
     "64-nested-grids.md" => "Tutorial: Nested Grids",
     "66-nswing.md" => "Tutorial: Running NSWING",
     "66b-tide-gauges.md" => "Tutorial: Virtual Tide Gauges",
+    "66c-travel-times.md" => "Tutorial: Tsunami Travel Times",
     "67-moho-spada.md" => "Tutorial: Moho Topography",
     "68-gps-sanchez.md" => "Tutorial: GPS Velocities of the Alps",
     "69-jura.md" => "Tutorial: Jura Mountains 3-D Model",

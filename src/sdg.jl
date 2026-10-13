@@ -304,7 +304,7 @@ end
 # `csaps({Y(1:5),X(1:5)}, Z(1:5,1:5))` and offer the Y one — p depends on the node spacing alone, so
 # 5 nodes are as good as all of them, and it stays this cheap on a huge grid.
 function _csaps_default_p(scene::Ptr{Cvoid})
-	G = _find_object(scene, :grid, "")
+	G = _active_grid(scene)                  # the grid ON DISPLAY (savefile.jl)
 	(G isa GMTgrid) || error("No grid loaded in this window")
 	yv = Float64.(collect(G.y))
 	(length(yv) >= 3) || error("Grid has too few rows for a smoothing spline")
@@ -318,7 +318,7 @@ end
 # previous result instead of piling a second one up (same convention as SDG's "SDG field").
 function _on_spline_smooth(scene::Ptr{Cvoid}, p::Float64)
 	try
-		G = _find_object(scene, :grid, "")
+		G = _active_grid(scene)              # the grid ON DISPLAY (savefile.jl)
 		(G isa GMTgrid) || error("No grid loaded in this window")
 		S = spline_smooth(G; p=p)
 		_grid_command!(S, "InteractiveGMT spline smooth csaps_p=$p")
@@ -335,7 +335,7 @@ end
 # unfolded, axes re-framed (SACRED_LAW.md derived-variable laws).
 function _on_sdg(scene::Ptr{Cvoid}, opt::String, p::Float64)
 	try
-		G = _find_object(scene, :grid, "")
+		G = _active_grid(scene)              # the grid ON DISPLAY (savefile.jl)
 		(G isa GMTgrid) || error("No grid loaded in this window")
 		sgn = opt == "positive" ? :positive : opt == "negative" ? :negative : :both
 		R = sdg(G; p=p, sign=sgn)

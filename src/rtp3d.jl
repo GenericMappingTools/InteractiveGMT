@@ -277,7 +277,7 @@ function _on_rtp3d(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		_grid_command!(G2, "InteractiveGMT.rtp3d(field, $fieldDip, $fieldDec, $magDip, $magDec; component=$component)")
 		r = G2.range
 		zbuf, znx, zny, zlay = _grid_zbuf(G2)   # buffer as it lies + its layout code -- NO transposition
-		geog = _isgeog(G2)
+		geog = _isgeographic(G2)          # THE grid geographic test (cpt.jl) -- the one the window uses
 		cz, crgb, ncolor = _cpt_nodes(G2, :turbo)
 		has_surface = ccall(_fn(:gmtvtk_has_surface), Cint, (Ptr{Cvoid},), scene)
 		promote = (has_surface == 0)

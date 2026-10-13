@@ -7,7 +7,7 @@
     <x>0</x>
     <y>0</y>
     <width>470</width>
-    <height>560</height>
+    <height>100</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -15,53 +15,28 @@
   </property>
   <layout class="QVBoxLayout" name="verticalLayout_main">
    <item>
-    <widget class="QGroupBox" name="group_source">
-     <property name="title">
-      <string>Source</string>
-     </property>
-     <layout class="QGridLayout" name="gridLayout_source">
-      <item row="0" column="0">
-       <widget class="QLabel" name="lbl_lon">
-        <property name="text">
-         <string>Longitude</string>
-        </property>
-       </widget>
-      </item>
-      <item row="0" column="1">
-       <widget class="QLineEdit" name="edit_lon"/>
-      </item>
-      <item row="0" column="2">
-       <widget class="QLabel" name="lbl_lat">
-        <property name="text">
-         <string>Latitude</string>
-        </property>
-       </widget>
-      </item>
-      <item row="0" column="3">
-       <widget class="QLineEdit" name="edit_lat"/>
-      </item>
-      <item row="1" column="0">
-       <widget class="QLabel" name="lbl_srcfile">
-        <property name="text">
-         <string>…or file</string>
-        </property>
-        <property name="toolTip">
-         <string>A table of source points (lon lat, one per line). Overrides the boxes above.</string>
-        </property>
-       </widget>
-      </item>
-      <item row="1" column="1" colspan="2">
-       <widget class="QLineEdit" name="edit_srcfile"/>
-      </item>
-      <item row="1" column="3">
-       <widget class="QToolButton" name="btn_srcfile">
-        <property name="text">
-         <string>…</string>
-        </property>
-       </widget>
-      </item>
-     </layout>
-    </widget>
+    <layout class="QHBoxLayout" name="horizontalLayout_source">
+     <item>
+      <widget class="QPushButton" name="push_pointsrc">
+       <property name="text">
+        <string>Plot point source</string>
+       </property>
+       <property name="toolTip">
+        <string>Click a point on the map: that is the source.</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="push_faultsrc">
+       <property name="text">
+        <string>Draw Fault source</string>
+       </property>
+       <property name="toolTip">
+        <string>Draw a line on the map (double-click ends it). Each vertex is a point source.</string>
+       </property>
+      </widget>
+     </item>
+    </layout>
    </item>
    <item>
     <widget class="QGroupBox" name="group_method">
@@ -262,30 +237,6 @@
       </item>
      </layout>
     </widget>
-   </item>
-   <item>
-    <layout class="QHBoxLayout" name="horizontalLayout_buttons">
-     <item>
-      <spacer name="spacer_buttons">
-       <property name="orientation">
-        <enum>Qt::Horizontal</enum>
-       </property>
-       <property name="sizeHint" stdset="0">
-        <size>
-         <width>40</width>
-         <height>20</height>
-        </size>
-       </property>
-      </spacer>
-     </item>
-     <item>
-      <widget class="QPushButton" name="push_close">
-       <property name="text">
-        <string>Close</string>
-       </property>
-      </widget>
-     </item>
-    </layout>
    </item>
   </layout>
  </widget>

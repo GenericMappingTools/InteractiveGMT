@@ -92,4 +92,39 @@
 	                hits(jl, r"\b(ny|nx)\s*,\s*(nx|ny)\s*=\s*size\(G\.z\)"; strip = code_jl)))
 	report("Grid memory-layout law (2-D indexing of G.z / nx,ny from size(G.z))", h)
 	@test isempty(h)
+
+	# --- One quantity, one function: "is this grid/image geographic?" is `_isgeographic` (cpt.jl), the
+	#     test the window's own adders use. The CRS-only `_isgeog` / `GMT.isgeog` on a grid or image
+	#     disagrees on every lon/lat file without a CRS (Tsunami travel times' Mirone run came back ~0 h).
+	#     Exempt: the two definitions themselves, and `_is_referenced` (a different question: "does it
+	#     carry ANY georeference", where only a real CRS counts).
+	h = filter(x -> !occursin(r"^(function _isgeog\(|_isgeographic\(|function _is_referenced\()", x[3]) &&
+	                !startswith(x[2], "_isgeographic("),
+	           hits(jl, r"\b(_isgeog|GMT\.isgeog)\((G\w*|I\w*|bat\w*)\)"; strip = code_jl))
+	report("Geographic test: _isgeog / GMT.isgeog on a grid or image (use _isgeographic)", h)
+	@test isempty(h)
+
+	# --- One question, one function: "which grid does this tool work on?" is `_active_grid` (savefile.jl)
+	#     -- the layer ON DISPLAY, through the C++ activeGridName the colour bar, Z axis and readout use.
+	#     `_find_object(scene, :grid, "")` is the BASE grid: Contours traced the bathymetry under a
+	#     travel-time layer, and Multiscale / Spline Smooth / SDG / Thicken did the same (2026-10-13).
+	#     Exempt, because there the base IS what is meant: _active_grid itself (its "" = base branch);
+	#     NSWING and Nested grids (layer0 = the base bathymetry by definition); drop.jl's z-unit share
+	#     with the base; transplant.jl (user-protected tsunami code, never edited to satisfy a scan).
+	ok_base = r"^function (_active_grid|_on_nswing_run|_nswing_\w+|_on_nested\w*|_nested_\w+|_add_grid_to_scene)\("
+	h = filter(x -> !occursin(ok_base, x[3]) &&
+	                !startswith(x[1], joinpath("src", "transplant.jl")) &&
+	                !startswith(x[1], joinpath("src", "nswing.jl")) && !startswith(x[1], joinpath("src", "nested.jl")),
+	           hits(jl, r"_find_object\(\s*\w+\s*,\s*:grid\s*,\s*\"\"\s*\)"; strip = code_jl))
+	report("Grid Tool on the BASE grid: _find_object(scene, :grid, \"\") (use _active_grid)", h)
+	@test isempty(h)
+
+	# --- A symbol's look is the symbol code's (50_scene.cpp: addSymbols, its kind rebuild, its own
+	#     properties menu). A tool that places a symbol through a shared draw tool and then repaints it
+	#     makes that one symbol behave differently: the TTT source painted yellow hid the yellow
+	#     selection handle a double-click shows on every other circle (2026-10-13).
+	h = filter(x -> !startswith(x[1], joinpath("deps", "src", "50_scene.cpp")),
+	           hits(cpp, r"(\.|->)fillRGB\s*\[\s*\d\s*\]\s*="))   # a WRITE through an object, not the struct default
+	report("Symbol repainted outside the symbol code (fillRGB written outside 50_scene.cpp)", h)
+	@test isempty(h)
 end
