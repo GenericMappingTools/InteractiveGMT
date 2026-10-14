@@ -25014,18 +25014,18 @@ public:
 		levelCombo = new QComboBox(gIn);
 		levelCombo->addItems({"0 -- level ready to use", "1", "2", "3", "4", "5"});
 		levelCombo->setToolTip("Nesting level of the Nest grid (0 = no nesting / ready to use)");
-		iv->addWidget(levelCombo);
 		// How DEEP the run goes. The chain above says which grids EXIST; this says how many of them a
 		// RUN is allowed to use — "level 1" runs level 0 + level 1 and ignores everything below, so a
 		// deep chain can be tried out cheaply without dismantling it. Default stays "all available".
+		// Same row as the nesting-level list, so the dialog stays short enough for small screens.
 		auto *mlrow = new QHBoxLayout();
+		mlrow->addWidget(levelCombo, 1);
 		mlrow->addWidget(new QLabel("Max level to use", gIn));
 		maxLevelCombo = new QComboBox(gIn);
 		maxLevelCombo->addItems({"All available", "level 0", "level 1", "level 2", "level 3", "level 4", "level 5"});
 		maxLevelCombo->setToolTip("Deepest nesting level this run may use — \"level 1\" simulates with\n"
 		                          "levels 0 and 1 only. \"All available\" (default) uses the whole chain.");
 		mlrow->addWidget(maxLevelCombo);
-		mlrow->addStretch();
 		iv->addLayout(mlrow);
 		v->addWidget(gIn);
 
