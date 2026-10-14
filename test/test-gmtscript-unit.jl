@@ -161,6 +161,29 @@ end
 	@test M._script_ptstr_w(9.0, ctx) == "4.0p"
 end
 
+@testitem "gmtscript: every pen is a variable declared just above its call" tags=[:unit, :fast, :gmtscript] begin
+	M = InteractiveGMT
+	@test M._script_pen("0.5p", "0/0/0") == "0.5p,0/0/0"
+	@test M._script_pen("1.0p", "255/0/0", :dash) == "1.0p,255/0/0,-"
+	ctx = M.ScriptCtx(C_NULL, (-3.0, 3.0, -3.0, 3.0), true, :merc, 15.0, nothing, nothing,
+	                  false, Dict{String,Int}(), String[], false, 0, 162.0)
+	st1 = M.ScriptStep("coast", M.DataBind[], :coast, nothing,
+	                   Pair{Symbol,Any}[:res => :i, :shore => "0.44p,0/0/0",
+	                                    :borders => (type=1, pen="0.25p,90/90/90")], true)
+	st2 = M.ScriptStep("track", M.DataBind[], :plot, nothing,
+	                   Pair{Symbol,Any}[:pen => "1.0p,255/0/0,-"], true)
+	txt = M._script_render_text([st1, st2], ctx)
+	@test occursin("pen1 = \"0.44p,0/0/0\"", txt)
+	@test occursin("pen2 = \"0.25p,90/90/90\"", txt)
+	@test occursin("coast!(res=:i, shore=pen1, borders=(type=1, pen=pen2))", txt)
+	@test occursin("pen3 = \"1.0p,255/0/0,-\"", txt)
+	@test occursin("plot!(pen=pen3)", txt)
+	# declared on the line(s) just above the call that uses it
+	ls = split(txt, '\n')
+	i = findfirst(l -> startswith(l, "plot!("), ls)
+	@test startswith(ls[i - 1], "pen3 = ")
+end
+
 @testitem "gmtscript: text blob parser (one function, groups included)" tags=[:unit, :fast, :gmtscript] begin
 	M = InteractiveGMT
 	blob = "0;0;0;0;0;24;;Single\n-2;-2;1;0;0;12;cityLabels;Batch1\n1.5;2;1;0;0;12;cityLabels;Batch2\n"

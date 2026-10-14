@@ -922,6 +922,11 @@ end
 # GMT pen style for the viewer's lineStyle code (0 solid / 1 dashed / 2 dotted).
 _script_linestyle(ls::Int) = ls == 1 ? :dash : ls == 2 ? :dot : nothing
 
+# ONE GMT pen string "width,colour[,style]" — every line an emitter draws carries its pen in this one
+# form, so the text sink can hoist it into a `penN = "..."` variable just above the call that uses it.
+_script_pen(w::String, rgb::String, st::Union{Nothing,Symbol}=nothing) =
+	w * "," * rgb * (st === :dash ? ",-" : st === :dot ? ",." : "")
+
 # One line/point overlay -> plot! / plot3!. Lines carry a pen, points a marker; both keep the
 # layer's own colour, width/size and dash pattern as the user last left them (the serializer reads
 # those off the actor, which is where the context menu writes them).
@@ -941,11 +946,8 @@ function _script_emit_overlay!(ctx::ScriptCtx, ov::OverlayRow)
 	kw = Pair{Symbol,Any}[]
 	if mode == 1
 		# The actor's line width is in screen PIXELS -> points, or the pen comes out a different weight.
-		push!(kw, :lw => _script_ptstr_w(lw, ctx))
-		push!(kw, :lc => _script_rgb(r, g, b))
+		push!(kw, :pen => _script_pen(_script_ptstr_w(lw, ctx), _script_rgb(r, g, b), _script_linestyle(lstyle)))
 		ov.filled && push!(kw, :fill => _script_rgb(r, g, b))   # filled overlay: area in the line colour
-		st = _script_linestyle(lstyle)
-		st === nothing || push!(kw, :ls => st)
 	else
 		push!(kw, :marker => :point)
 		push!(kw, :ms => _script_ptstr_sym(ps))
@@ -975,7 +977,7 @@ function _script_emit_symbols!(ctx::ScriptCtx, sl::SymbolRow, segs::Vector{Matri
 	# Fill and outline are two different colours (the viewer's yellow triangle has a black edge);
 	# an unfilled layer is the outline alone.
 	filled ? push!(kw, :mc => _script_rgb(r, g, b)) : push!(kw, :mc => :none)
-	evis && push!(kw, :ml => (_script_ptstr_w(ew, ctx), _script_rgb(er, eg, eb)))
+	evis && push!(kw, :ml => _script_pen(_script_ptstr_w(ew, ctx), _script_rgb(er, eg, eb)))
 	return ScriptStep("$(isempty(name) ? "symbols" : name)  (symbols, $sym)", DataBind[bind],
 	                  want3d ? :plot3 : :plot, bind.var, kw, true)
 end
@@ -1019,7 +1021,7 @@ function _script_emit_poly!(ctx::ScriptCtx, line::String)
 	isempty(M) && return nothing
 	want3d = ctx.view !== nothing && any(!iszero, view(M, :, 3))
 	bind = _script_bind_live_vector!(ctx, "_poly_layer", name, want3d, [GMT.mat2ds(want3d ? M : M[:, 1:2])])
-	kw = Pair{Symbol,Any}[:lw => _script_ptstr_w(lw, ctx), :lc => _script_rgb(lr, lg, lb)]
+	kw = Pair{Symbol,Any}[:pen => _script_pen(_script_ptstr_w(lw, ctx), _script_rgb(lr, lg, lb))]
 	if closed && fop > 0
 		push!(kw, :fill => _script_rgb(fr, fg, fb))
 		# GMT expresses this as -t TRANSPARENCY (percent), the complement of the viewer's fill opacity.
@@ -1070,10 +1072,15 @@ function _script_emit_geography(ctx::ScriptCtx, r::ElementRecipe)
 	kind, cls = occursin(':', full) ? String.(split(full, ':'; limit = 2)) : (full, "1")
 	kind in ("coast", "borders", "rivers") || return nothing     # point layers land as symbol layers
 	typ = something(tryparse(Int, cls), cls)
-	# Line-properties edits are captured into the recipe at save time by the session's own pen
-	# capture; use them when present so an edited coastline exports as edited.
+	# The pen the layer has ON SCREEN NOW, read by the session's own pen capture (a Line-properties
+	# edit included); a reloaded recipe's saved pen when the overlay is not live. `pen_w` is the actor's
+	# width in screen PIXELS — it goes through the line-width px->pt relation like every other line, or
+	# a 1 pt coastline comes out dpi/72 times too thick on paper.
+	r = _session_capture_overlay_pen(ctx.scene, r)
 	getp(k, d) = (v = get(r.params, k, nothing); v === nothing ? d : parse(Float64, string(v)))
-	pen = (round(getp("pen_w", 1.0); sigdigits=3), _script_rgb(getp("pen_r", 0.0), getp("pen_g", 0.0), getp("pen_b", 0.0)))
+	pen = _script_pen(_script_ptstr_w(getp("pen_w", 1.0), ctx),
+	                  _script_rgb(getp("pen_r", 0.0), getp("pen_g", 0.0), getp("pen_b", 0.0)),
+	                  _script_linestyle(round(Int, getp("pen_style", 0.0))))
 	kw = Pair{Symbol,Any}[:res => res]
 	kind == "coast"   && push!(kw, :shore => pen)
 	kind == "borders" && push!(kw, :borders => (type=typ, pen=pen))
@@ -1099,7 +1106,7 @@ function _script_emit_faults!(ctx::ScriptCtx, h::Ptr{Cvoid})
 			size(M, 1) < 2 && continue
 			bind = _script_bind_live_vector!(ctx, "_fault_layer", name, false, [GMT.mat2ds(M)])
 			push!(steps, ScriptStep("$(isempty(name) ? "fault" : name)  (fault trace)", DataBind[bind],
-			                        :plot, bind.var, Pair{Symbol,Any}[:lw => 1.5, :lc => "255/0/0"], true))
+			                        :plot, bind.var, Pair{Symbol,Any}[:pen => "1.5p,255/0/0"], true))
 		elseif startswith(line, "P;")
 			p = split(line, ';'; limit=3)
 			length(p) < 3 && continue
@@ -1114,7 +1121,7 @@ function _script_emit_faults!(ctx::ScriptCtx, h::Ptr{Cvoid})
 			push!(steps, ScriptStep("$(isempty(name) ? "fault" : name)  (fault plane, 3-D)", DataBind[bind],
 			                        :plot3, bind.var,
 			                        Pair{Symbol,Any}[:fill => "160/160/160", :alpha => 30.0,
-			                                         :lw => 0.5, :lc => "60/60/60"], true))
+			                                         :pen => "0.5p,60/60/60"], true))
 		elseif startswith(line, "S;")
 			p = split(line, ';'; limit=12)
 			length(p) < 12 && continue
@@ -1140,7 +1147,7 @@ function _script_emit_faults!(ctx::ScriptCtx, h::Ptr{Cvoid})
 		bind = _script_bind_live_vector!(ctx, "_slip_layer", g, false, ds)
 		push!(steps, ScriptStep("$(isempty(g) ? "slip model" : g)  (slip patches, $(length(ds)))",
 		                        DataBind[bind], :plot, bind.var,
-		                        Pair{Symbol,Any}[:lw => 0.25, :lc => "0/0/0"], true))
+		                        Pair{Symbol,Any}[:pen => "0.25p,0/0/0"], true))
 	end
 	return steps
 end
@@ -1187,7 +1194,7 @@ function _script_emit_curtain!(ctx::ScriptCtx, r::ElementRecipe)
 	ctx.ncurtain += 1
 	bind = _script_bind_live_curtain!(ctx, ctx.ncurtain, [GMT.mat2ds(M)])
 	return ScriptStep("curtain outline (texture not exported)", DataBind[bind], :plot3, bind.var,
-	                  Pair{Symbol,Any}[:lw => 0.75, :lc => "80/80/80"], true)
+	                  Pair{Symbol,Any}[:pen => "0.75p,80/80/80"], true)
 end
 
 # Focal mechanisms -> a real `meca!`. The stashed table is GMT's own Aki & Richards column order
@@ -1233,9 +1240,7 @@ function _script_emit_contours!(ctx::ScriptCtx, h::Ptr{Cvoid}, ovs::Vector{Overl
 	for lev in levels
 		ov = get(byname, "Contour " * _contour_fmt(lev), nothing)
 		(ov === nothing || !ov.visible) && continue
-		pen = _script_ptstr_w(ov.lw, ctx) * "," * _script_rgb(ov.r, ov.g, ov.b)
-		st = _script_linestyle(ov.lstyle)
-		st === nothing || (pen *= st === :dash ? ",-" : ",.")
+		pen = _script_pen(_script_ptstr_w(ov.lw, ctx), _script_rgb(ov.r, ov.g, ov.b), _script_linestyle(ov.lstyle))
 		haskey(pens, pen) || push!(order, pen)
 		push!(get!(() -> Float64[], pens, pen), lev)
 		rank = min(rank, ov.stack)
@@ -1545,6 +1550,26 @@ function _script_render_call(s::ScriptStep)
 	return name * "(" * join(args, ", ") * ")"
 end
 
+# Every pen of a call -> its own `penN` variable, declared on the line just above it, so a user changes
+# a line's width/colour where it is used. Text sink only: the live sink keeps the literal strings.
+# Pen-carrying kwargs: `pen` (plot/grdcontour), `shore` (coast), `ml` (symbol outline), and the `pen`
+# field of coast's `borders`/`rivers` NamedTuples.
+const _SCRIPT_PEN_KEYS = (:pen, :shore, :ml)
+function _script_hoist_pens(s::ScriptStep, n0::Int)
+	pens = Pair{String,String}[]
+	newvar(p) = (v = "pen$(n0 + length(pens) + 1)"; push!(pens, v => p); ScriptVar(Symbol(v), p))
+	kw = Pair{Symbol,Any}[]
+	for (k, v) in s.kw
+		if k in _SCRIPT_PEN_KEYS && v isa String
+			v = newvar(v)
+		elseif v isa NamedTuple && haskey(v, :pen) && v.pen isa String
+			v = merge(v, (pen = newvar(v.pen),))
+		end
+		push!(kw, k => v)
+	end
+	return ScriptStep(s.comment, s.binds, s.mod, s.pos, kw, s.bang), pens
+end
+
 # The header: what produced this, and — just as important — what it does NOT reproduce. Every
 # fidelity limit is stated in the file itself, so a script that came out of a shaded, curtained
 # window can never be mistaken for a faithful copy of it.
@@ -1588,6 +1613,7 @@ exists only in memory is fetched by the script from the live window, never from 
 function _script_render_text(steps::Vector{ScriptStep}, ctx::ScriptCtx)
 	io = IOBuffer()
 	print(io, _script_header(ctx))
+	npen = 0
 	for s in steps
 		println(io, "# ── ", s.comment)
 		for b in s.binds
@@ -1599,6 +1625,11 @@ function _script_render_text(steps::Vector{ScriptStep}, ctx::ScriptCtx)
 				        "the live window")
 			println(io, String(b.var.name), " = ", b.expr)
 		end
+		s, pens = _script_hoist_pens(s, npen)
+		for (v, p) in pens
+			println(io, v, " = ", _lit(p), "    # pen: width,colour[,style] — edit here")
+		end
+		npen += length(pens)
 		println(io, _script_render_call(s))
 	end
 	println(io)
