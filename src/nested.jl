@@ -45,6 +45,11 @@ function _nested_blank_grid(scene::Ptr{Cvoid}, x0, x1, y0, y1, xi, yi, geog::Boo
 	return nothing
 end
 
+# LEVEL 0 of the nesting chain: the window's base bathymetry, never a nested "layerN" grid nor any
+# other layer that happens to be on display. Computations defined on level 0 only (Tsunami travel
+# times) ask here.
+_nested_level0(scene::Ptr{Cvoid}) = _find_object(scene, :grid, "")
+
 # ── ONE registration for the whole nesting chain ─────────────────────────────────────────────────
 # The chain is GRIDLINE-registered end to end: the rectangle snap (85_polygon.cpp `nestBaseGrid`), the
 # corner rule (`_nest_binning`) and nswing itself all read a grid's nodes as range[1]:inc:range[2]. A

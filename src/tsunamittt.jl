@@ -20,11 +20,6 @@ const _TTT_NODES = (8, 16, 32, 48, 64, 120)
 
 # The ONE name every travel-time result carries in Scene Objects (see the delivery below).
 const _TTT_NAME = "Travel time (h)"
-# Per window: the Scene Objects name of the bathymetry the current travel-time grid was computed
-# over. The dialog sends the layer ON DISPLAY, and right after a run that is the travel-time grid
-# itself — a second Compute (new source, finer stencil) must still propagate over the BATHYMETRY,
-# never over hours read as depths (all "land" -> a grid of zeros).
-const _TTT_BATHY = Dict{Ptr{Cvoid}, String}()
 
 # The source the dialog placed (TttDialog::sourceXY): "x,y;x,y;…" — ONE point ("Plot point source"),
 # or the vertices of a fault line ("Draw Fault source"), each vertex a point source. Returned as an
@@ -86,13 +81,12 @@ function _on_ttt(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 	try
 		d = _nswing_parse(unsafe_string(cparams))
 		what = _get(d, "what", "grid")
-		# The grid to work on is the one ON DISPLAY (the dialog sends the active layer's label) — for a
-		# travel-time run that is the bathymetry, for an arrival-time run the travel-time grid itself.
-		gname = _get(d, "grid")
-		if what != "eta" && gname == _TTT_NAME
-			gname = get(_TTT_BATHY, scene, "")      # the travel times on display -> the bathymetry under them
-		end
-		G = _active_grid(scene, gname)          # THE Grid Tools resolver (savefile.jl), named exactly
+		# An arrival-time run reads the travel-time grid ON DISPLAY (the dialog sends the active layer's
+		# label). A travel-time run is computed on LEVEL 0 ONLY — the window's base bathymetry, the grid
+		# NSWING calls layer0 (`_nswing_validate`) — whatever is on display: a nested grid (layerN), the
+		# previous travel-time grid (hours read as depths -> all "land"), or any other layer.
+		G = what == "eta" ? _active_grid(scene, _get(d, "grid")) :   # THE Grid Tools resolver (savefile.jl)
+		                    _nested_level0(scene)
 		G === nothing && error("no grid in this window")
 
 		if what == "eta"
@@ -149,9 +143,7 @@ function _on_ttt(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		# ONE name for the quantity, whichever method produced it: recomputing REPLACES the previous
 		# result (that is what _gm3d_deliver's remove+forget does) instead of piling up near-identical
 		# layers the user then has to tell apart.
-		ok = _gm3d_deliver(scene, R, _TTT_NAME, _get(d, "outfile"), false, recipe)
-		ok == 1 && (_TTT_BATHY[scene] = gname)
-		return ok
+		return _gm3d_deliver(scene, R, _TTT_NAME, _get(d, "outfile"), false, recipe)
 	catch e
 		_tool_failed(scene, "Tsunami travel times", e)
 		return Cint(0)

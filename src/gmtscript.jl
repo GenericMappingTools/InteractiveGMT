@@ -762,7 +762,8 @@ function _overlay_layer(scene::Ptr{Cvoid}, name::String, want3d::Bool=false)
 end
 
 # Bind a plotted vector layer: the live dataset for `gmtreplay`, and for the script a CALL that fetches
-# the same thing from the window. No file, ever.
+# the same thing from the window. No file, ever. The emitted call is ALWAYS `fn(scene, name, want3d)`,
+# so every fetcher bound here takes that third argument, even one whose geometry has no 2-D/3-D choice.
 function _script_bind_live_vector!(ctx::ScriptCtx, fn::String, name::String, want3d::Bool,
                                    ds::Vector{<:GMTdataset})
 	var = _script_var!(ctx, "D", length(ds) == 1 ? ds[1] : ds)
@@ -774,11 +775,12 @@ end
 
 # Same, for the two fetches whose key is not (name, want3d): text labels are keyed by their STYLE and
 # a curtain by its index in the window's provenance log.
-function _script_bind_live_text!(ctx::ScriptCtx, szpx::Int, rgb::String, ds::Vector{<:GMTdataset})
+function _script_bind_live_text!(ctx::ScriptCtx, szpx::Int, rgb::String, ds::Vector{<:GMTdataset},
+                                 skip::String = "")
 	var = _script_var!(ctx, "D", length(ds) == 1 ? ds[1] : ds)
 	ctx.needs_base64 = true
 	expr = "InteractiveGMT._text_labels(Ptr{Nothing}(UInt(" * string(UInt(ctx.scene)) * ")), " *
-	       "$(szpx), $(_lit(rgb)))"
+	       "$(szpx), $(_lit(rgb))" * (isempty(skip) ? "" : ", $(_lit(skip))") * ")"
 	return DataBind(var, :live, expr)
 end
 function _script_bind_live_curtain!(ctx::ScriptCtx, which::Int, ds::Vector{<:GMTdataset})
@@ -802,17 +804,19 @@ function _poly_layer(scene::Ptr{Cvoid}, name::String, want3d::Bool=false)
 end
 
 """
-	_text_labels(scene, szpt, rgb)
+	_text_labels(scene, szpt, rgb, skip="")
 
 The window's text labels of ONE style (`szpt` = the size as SET, in points, + `r/g/b` colour), with
-their strings — read live out of the window, never off disk. BATCH labels are included (contour
-annotations, city names, focal-mechanism dates): they are grouped by style like any other label, and
-they have to be here because `gmtvtk_capture_rect_rgb` hides text before grabbing the pixels, so a
-label this fetch drops is a label the figure loses.
+their strings — read live out of the window, never off disk. BATCH labels are included (city names,
+focal-mechanism dates): they are grouped by style like any other label, and they have to be here
+because `gmtvtk_capture_rect_rgb` hides text before grabbing the pixels, so a label this fetch drops
+is a label the figure loses. `skip` names a group whose labels some other call draws itself — the
+contour annotations, which `grdcontour` places (see `_script_emit_contours!`).
 """
-function _text_labels(scene::Ptr{Cvoid}, szpt::Int, rgb::String)
+function _text_labels(scene::Ptr{Cvoid}, szpt::Int, rgb::String, skip::String = "")
 	xs = Float64[]; ys = Float64[]; txt = String[]
 	for t in _parse_texts_blob(_serialize_texts_raw(scene; groups=true))
+		(isempty(skip) || t.group != skip) || continue
 		(t.size == szpt && _script_rgb(t.r, t.g, t.b) == rgb) || continue
 		push!(xs, t.x); push!(ys, t.y); push!(txt, t.text)
 	end
@@ -821,7 +825,7 @@ function _text_labels(scene::Ptr{Cvoid}, szpt::Int, rgb::String)
 end
 
 "One fault's TRACE, by name."
-function _fault_layer(scene::Ptr{Cvoid}, name::String)
+function _fault_layer(scene::Ptr{Cvoid}, name::String, want3d::Bool=false)
 	for line in split(_serialize_faults_raw(scene), '\n'; keepempty=false)
 		startswith(line, "F;") || continue
 		p = split(line, ';'; limit=10)
@@ -835,7 +839,7 @@ function _fault_layer(scene::Ptr{Cvoid}, name::String)
 end
 
 "One fault's 3-D dipping PLANE, by name (the `P` record — geometry read off the actor)."
-function _fault_plane(scene::Ptr{Cvoid}, name::String)
+function _fault_plane(scene::Ptr{Cvoid}, name::String, want3d::Bool=false)
 	for line in split(_serialize_faults_raw(scene), '\n'; keepempty=false)
 		startswith(line, "P;") || continue
 		p = split(line, ';'; limit=3)
@@ -849,7 +853,7 @@ function _fault_plane(scene::Ptr{Cvoid}, name::String)
 end
 
 "One slip MODEL's patches, by group name — each patch a segment carrying its own -G fill header."
-function _slip_layer(scene::Ptr{Cvoid}, group::String)
+function _slip_layer(scene::Ptr{Cvoid}, group::String, want3d::Bool=false)
 	ds = GMTdataset[]
 	for line in split(_serialize_faults_raw(scene), '\n'; keepempty=false)
 		startswith(line, "S;") || continue
@@ -901,7 +905,7 @@ function _curtain_outline_ds(r::ElementRecipe)
 end
 
 "One focal-mechanism catalog, by group name, in GMT's Aki & Richards column order."
-function _meca_layer(scene::Ptr{Cvoid}, name::String)
+function _meca_layer(scene::Ptr{Cvoid}, name::String, want3d::Bool=false)
 	for (nm, M) in get(_MECA_TABLE, scene, Tuple{String,Matrix{Float64}}[])
 		nm == name || continue
 		isempty(M) && break
@@ -1028,10 +1032,11 @@ end
 
 # The window's text labels -> text! calls, GROUPED by (size, colour): a batch of fifty city names is
 # one call per style, not fifty calls. Same blob Save Session rebuilds its labels from.
-function _script_emit_texts!(ctx::ScriptCtx, blob::String)
+function _script_emit_texts!(ctx::ScriptCtx, blob::String, skip::String = "")
 	groups = Dict{Tuple{Int,String},Vector{Tuple{Float64,Float64,String}}}()
 	order = Tuple{Int,String}[]
 	for t in _parse_texts_blob(blob)
+		(isempty(skip) || t.group != skip) || continue     # labels another call draws (contours)
 		key = (t.size, _script_rgb(t.r, t.g, t.b))
 		haskey(groups, key) || push!(order, key)
 		push!(get!(() -> Tuple{Float64,Float64,String}[], groups, key), (t.x, t.y, t.text))
@@ -1045,7 +1050,7 @@ function _script_emit_texts!(ctx::ScriptCtx, blob::String)
 			M[i, 1] = it[1]; M[i, 2] = it[2]; txt[i] = it[3]
 		end
 		D = GMT.mat2ds(M; text=txt)
-		bind = _script_bind_live_text!(ctx, key[1], key[2], [D])
+		bind = _script_bind_live_text!(ctx, key[1], key[2], [D], skip)
 		kw = Pair{Symbol,Any}[:font => (key[1], "Helvetica", key[2])]
 		push!(steps, ScriptStep("text labels ($(key[1]) pt)", DataBind[bind], :text, bind.var, kw, true))
 	end
@@ -1204,6 +1209,67 @@ function _script_emit_meca!(ctx::ScriptCtx, h::Ptr{Cvoid})
 	return steps
 end
 
+# ── contours: ONE grdcontour on the grid they were traced from ───────────────────────────────
+# The Contours tool (contours.jl) traces with GDAL and draws each level as a line, with flat labels
+# sitting in gaps the viewer cuts. Replaying those pieces (a plot! per level + text!) loses what GMT
+# does itself: labels turned along the line and the line broken under each one. So the script hands
+# the SOURCE GRID — the in-memory object, bound like any other layer — to `grdcontour` with the same
+# levels, labels and Min pts, and the traced lines and their labels are not replayed. Levels whose row
+# is unchecked are left out; one call per distinct pen (a set coloured by the grid's colormap has one
+# per level, an ordinary set one in all).
+# Returns (steps, rank) — `rank` places the calls in the vector pile where the lines sat — or
+# `nothing` when the window has no contour request on record; its contour rows are then replayed as
+# plain overlays and labels.
+function _script_emit_contours!(ctx::ScriptCtx, h::Ptr{Cvoid}, ovs::Vector{OverlayRow},
+                                texts::Vector{TextRow}, recipes::Vector{ElementRecipe})
+	levels = get(_CONTOUR_DRAWN, h, nothing)
+	(levels === nothing || isempty(levels)) && return nothing
+	src  = get(_CONTOUR_SRC, h, "")
+	opts = get(_CONTOUR_OPTS, h, (labels = false, minpts = 0))
+	G = try _contour_grid(h, src) catch; nothing end
+	G === nothing && return nothing
+	byname = Dict(ov.name => ov for ov in ovs if ov.group == _CONTOUR_GROUP)
+	pens = Dict{String,Vector{Float64}}();  order = String[];  rank = typemax(Int)
+	for lev in levels
+		ov = get(byname, "Contour " * _contour_fmt(lev), nothing)
+		(ov === nothing || !ov.visible) && continue
+		pen = _script_ptstr_w(ov.lw, ctx) * "," * _script_rgb(ov.r, ov.g, ov.b)
+		st = _script_linestyle(ov.lstyle)
+		st === nothing || (pen *= st === :dash ? ",-" : ",.")
+		haskey(pens, pen) || push!(order, pen)
+		push!(get!(() -> Float64[], pens, pen), lev)
+		rank = min(rank, ov.stack)
+	end
+	isempty(order) && return (ScriptStep[], 0)          # every level unchecked: nothing to draw
+	# The grid: the recipe that put it in the window when there is one (so a file-backed grid is read
+	# from its file), else the live object, fetched by the very resolver the tool traced it through.
+	gbind = nothing
+	for r in recipes
+		_script_israster(r) || continue
+		_find_object(h, _script_obj_kind(r), r.name) === G || continue
+		gbind = _script_bind!(ctx, r, G);  break
+	end
+	if gbind === nothing
+		ctx.needs_base64 = true
+		gbind = DataBind(_script_var!(ctx, "G", G), :live,
+		                 "InteractiveGMT._contour_grid(Ptr{Nothing}(UInt(" * string(UInt(ctx.scene)) * ")), $(_lit(src)))")
+	end
+	# The labels' own style, as the viewer drew them.
+	lab = findfirst(t -> t.group == _CONTOUR_GROUP, texts)
+	labels = opts.labels && lab !== nothing
+	font = labels ? "$(texts[lab].size)p,Helvetica,$(_script_rgb(texts[lab].r, texts[lab].g, texts[lab].b))" : ""
+	steps = ScriptStep[]
+	for pen in order
+		lv = pens[pen]
+		lst = join(_contour_fmt.(lv), ",") * (length(lv) == 1 ? "," : "")   # a single level needs the ","
+		kw = Pair{Symbol,Any}[:cont => lst, :annot => labels ? lst * "+f" * font : "-", :pen => pen]
+		opts.minpts > 0 && push!(kw, :cut => opts.minpts)
+		push!(steps, ScriptStep("contours $(join(_contour_fmt.(lv), " "))  (grdcontour on the grid they were traced from)",
+		                        isempty(steps) ? DataBind[gbind] : DataBind[], :grdcontour, gbind.var, kw, true))
+	end
+	return steps, rank
+end
+
 # Every vector element of the window, in the shared draw-order pile's order. GMT has NO depth buffer:
 # under -p the call order IS the occlusion, so this sorts by the `stack` rank the viewer itself
 # assigns rather than by whatever order the serializers happened to walk. Elements without a rank
@@ -1219,8 +1285,19 @@ function _script_vector_steps!(ctx::ScriptCtx, h::Ptr{Cvoid}, recipes::Vector{El
 		skip[r.name] = 0
 		push!(geosteps, (r.name, st))
 	end
-	for ov in _parse_overlays_blob(_script_blob(:gmtvtk_serialize_overlays, h))
+	ovs   = _parse_overlays_blob(_script_blob(:gmtvtk_serialize_overlays, h))
+	tblob = _serialize_texts_raw(h; groups=true)
+	# Contours go to grdcontour as ONE request; their traced lines and labels are then not replayed.
+	cont  = _script_emit_contours!(ctx, h, ovs, _parse_texts_blob(tblob), recipes)
+	cskip = cont === nothing ? "" : _CONTOUR_GROUP
+	if cont !== nothing
+		for st in cont[1]
+			push!(ranked, (cont[2], st))
+		end
+	end
+	for ov in ovs
 		ov.visible || continue                       # unchecked row: not on screen, not in the script
+		(!isempty(cskip) && ov.group == cskip) && continue
 		if haskey(skip, ov.name)                     # a coastline GMT will redraw itself
 			skip[ov.name] = ov.stack
 			continue
@@ -1254,11 +1331,86 @@ function _script_vector_steps!(ctx::ScriptCtx, h::Ptr{Cvoid}, recipes::Vector{El
 	end
 	append!(steps, _script_emit_meca!(ctx, h))
 	# `groups=true`: EVERY label on screen, batch ones included — see `_text_labels`.
-	append!(steps, _script_emit_texts!(ctx, _serialize_texts_raw(h; groups=true)))
+	append!(steps, _script_emit_texts!(ctx, tblob, cskip))
 	return steps
 end
 
 # ── the emitter ──────────────────────────────────────────────────────────────────────────────
+# ── which raster layers are actually SEEN ────────────────────────────────────────────────────
+# A raster recipe is only worth a GMT call if the window shows it. Two ways it does not: its row is
+# unchecked, or — looking straight down — a layer higher in the pile covers its whole extent with
+# opaque data. A nested grid on top of layer 0, or a grid of the same limits on top, IS seen and stays;
+# what a covering layer buries is left out. The layer list is the viewer's own (`swipeLayers`, through
+# `gmtvtk_raster_layers_h`): pile rank, checkbox, opacity and true extent, never a guess from here.
+struct _ScriptLayer
+	base::Bool
+	rank::Int
+	vis::Bool
+	opacity::Float64
+	box::NTuple{4,Float64}
+	name::String
+end
+
+function _script_raster_layers(h::Ptr{Cvoid})::Vector{_ScriptLayer}
+	n = ccall(_fn(:gmtvtk_raster_layers_h), Cint, (Ptr{Cvoid}, Ptr{UInt8}, Cint), h, C_NULL, Cint(0))
+	n <= 0 && return _ScriptLayer[]
+	buf = Vector{UInt8}(undef, n + 1)
+	ccall(_fn(:gmtvtk_raster_layers_h), Cint, (Ptr{Cvoid}, Ptr{UInt8}, Cint), h, buf, Cint(n + 1))
+	out = _ScriptLayer[]
+	for line in split(String(buf[1:n]), '\n'; keepempty=false)
+		p = split(line, '\t'; limit=9)
+		length(p) < 9 && continue
+		b = parse.(Float64, p[5:8])
+		push!(out, _ScriptLayer(p[1] == "1", parse(Int, p[2]), p[3] == "1", parse(Float64, p[4]),
+		                        (b[1], b[2], b[3], b[4]), String(p[9])))
+	end
+	return out
+end
+
+# The layer a recipe drew: an extra by its own name; the window's base for a base recipe. `nothing`
+# when the window has no such layer — the recipe is then emitted as before, never dropped on a guess.
+function _script_layer_of(layers::Vector{_ScriptLayer}, r::ElementRecipe)
+	k = findfirst(L -> !L.base && L.name == r.name, layers)
+	k === nothing && r.kind in (:basegrid, :image) && (k = findfirst(L -> L.base, layers))
+	return k
+end
+
+# Does layer T's own data leave no gap anywhere over `box`? A grid's NaN nodes are holes in its mesh
+# (the layer below shows through them), so ONE NaN within a cell of `box` means "not opaque". An
+# image is opaque unless it carries alpha. Anything not found or of another kind: not opaque.
+function _script_opaque_over(h::Ptr{Cvoid}, T::_ScriptLayer, box::NTuple{4,Float64})::Bool
+	T.opacity < 1.0 && return false
+	if (G = _find_object_exact(h, :grid, T.name)) isa GMTgrid
+		nx, ny = _grid_dims(G)
+		half = G.registration == 1 ? 0.5 : 0.0
+		dx, dy = G.inc[1], G.inc[2]
+		ix = [i for i in 1:nx if box[1] - dx <= G.range[1] + (i - 1 + half) * dx <= box[2] + dx]
+		iy = [j for j in 1:ny if box[3] - dy <= G.range[3] + (j - 1 + half) * dy <= box[4] + dy]
+		(isempty(ix) || isempty(iy)) && return false
+		Z = _zmat(G)                                  # (ny,nx), row 1 = south
+		return !any(isnan, view(Z, iy, ix))
+	end
+	if (I = _find_object_exact(h, :image, T.name)) isa GMTimage
+		return size(I.image, 3) in (1, 3) && isempty(I.alpha)
+	end
+	return false
+end
+
+# Is layer k entirely buried under a visible layer above it in the pile? Pile ties go to the later
+# layer, the viewer's own rule (swipeCurrentIndex / resolveActiveGrid).
+function _script_layer_covered(h::Ptr{Cvoid}, layers::Vector{_ScriptLayer}, k::Int)::Bool
+	L = layers[k]
+	tol = 1e-6 * max(L.box[2] - L.box[1], L.box[4] - L.box[3], 1e-12)
+	for (j, T) in enumerate(layers)
+		j == k && continue
+		(T.vis && (T.rank > L.rank || (T.rank == L.rank && j > k))) || continue
+		(T.box[1] <= L.box[1] + tol && T.box[2] >= L.box[2] - tol &&
+		 T.box[3] <= L.box[3] + tol && T.box[4] >= L.box[4] - tol) || continue
+		_script_opaque_over(h, T, L.box) && return true
+	end
+	return false
+end
+
 """
 	_script_emit(h; figsize=15.0, recompute=false)
 
@@ -1307,12 +1459,21 @@ function _script_emit(h::Ptr{Cvoid}; figsize::Real=15.0, recompute::Bool=false, 
 	seen = Set{Tuple{Symbol,String}}()
 	lastcpt = nothing
 	recipes = get(_SESSION_LOG, h, ElementRecipe[])
+	layers  = _script_raster_layers(h)
+	# Covering only proves anything looking STRAIGHT DOWN: under a tilted view a buried layer's relief
+	# can stand above the one stacked over it.
+	topdown = ctx.view === nothing || ctx.view[2] >= 90.0
 	for r in recipes
+		if _script_israster(r)
+			k = _script_layer_of(layers, r)
+			k === nothing || (layers[k].vis && !(topdown && _script_layer_covered(h, layers, k))) || continue
+		end
 		if !_script_israster(r)
 			# These are all emitted by the vector pass below — :geography as a `coast!` call (its point
 			# layers as the symbol layers they became), :curtain as its 3-D outline, :focal as a real
 			# `meca!` from the stashed catalog — so none of them is a gap.
-			r.kind in (:geography, :curtain, :focal) ||
+			# :contour is `grdcontour` on its grid (`_script_emit_contours!`).
+			r.kind in (:geography, :curtain, :focal, :contour) ||
 				push!(ctx.notes, "NOT EXPORTED: $(r.kind)$(isempty(r.name) ? "" : " '" * r.name * "'")")
 			continue
 		end

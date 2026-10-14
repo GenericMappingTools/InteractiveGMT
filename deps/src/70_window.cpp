@@ -6599,6 +6599,14 @@ public:
 		// describe how the window was FIRST built, so a window opened on an image with a grid dropped on
 		// top of it (an Ocean Color browse image, then its L3 grid) is still `imageOnly` and was refused
 		// even though a grid was plainly on screen.
+		// …BUT FIRST put the source back if this tool's own product is on screen. Models 8/9 leave a
+		// derived product displayed with the source hidden; the false-colour IMAGE leaves no visible grid
+		// at all, so every method was refused, and 1/5/6/7 would light the product instead of the grid.
+		// The host knows which grid the product came from; it is a no-op when no product is showing.
+		if (g_juliaHillshade && sceneAlive(scn)) {
+			const QByteArray rq = ("restore=1\ngrid=" + QString::fromStdString(activeGridName(scn))).toUtf8();
+			g_juliaHillshade(scn, rq.constData());
+		}
 		const std::string gname = sceneAlive(scn) ? activeGridName(scn) : std::string();
 		if (gname.empty()) {
 			QMessageBox::warning(dlg, "Error", "Illumination works on a grid, and this window is not "
@@ -11211,6 +11219,18 @@ public:
 		};
 	}
 
+	// Hide and leave the handle — the ONE way out for the X, minimise and Esc. Idempotent (parkTool
+	// updates an existing row).
+	void park() {
+		if (!dlg || reallyClose || !sceneAlive(scn)) return;
+		dlg->hide();
+		ContourDialog *c = this;
+		parkTool(scn, dlg, "Contours", IC_Line,
+		         "Parked Contours dialog — double-click to bring it back, click for Show / Delete",
+		         [c]() { c->unpark(); }, parkedMenu());
+		unfoldSceneObjects(scn);             // a handle the user cannot see is no handle at all
+	}
+
 	// Drop the registry entry by VALUE, not by `scn`: when the owning viewer window is torn down the
 	// dialog dies with it and the Scene may already be gone, so the key cannot be trusted.
 	~ContourDialog() {
@@ -11259,7 +11279,8 @@ public:
 		dlg = qobject_cast<QDialog *>(loader.load(&f, parent));
 		f.close();
 		if (!dlg) { qWarning("ContourDialog: QUiLoader failed to load the .ui"); return; }
-		dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint);
+		// WindowMinimizeButtonHint puts the MINIMISE button in the title bar; minimise parks (below).
+		dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint | Qt::WindowMinimizeButtonHint);
 		dlg->setWindowModality(Qt::NonModal);
 		dlg->setWindowTitle("Contours");
 		QDialog *d = dlg;
@@ -11275,19 +11296,21 @@ public:
 			bool eventFilter(QObject *o, QEvent *e) override {
 				if (e->type() == QEvent::Close && cd && !cd->reallyClose && sceneAlive(cd->scn)) {
 					e->ignore();
-					cd->dlg->hide();
-					ContourDialog *c = cd;       // a lambda cannot capture a member of the enclosing class
-					parkTool(c->scn, c->dlg, "Contours", IC_Line,
-					         "Closed Contours dialog — double-click to bring it back, click for Show / Delete",
-					         [c]() { c->unpark(); }, c->parkedMenu());
-					// A handle the user cannot see is the same as no handle at all: reveal + unfold.
-					unfoldSceneObjects(cd->scn);
+					cd->park();
+					return true;
+				}
+				// Esc parks too, and is consumed: left to QDialog it runs reject(), which hides the
+				// dialog with no Close event — gone from the screen and from Scene Objects alike.
+				if (e->type() == QEvent::KeyPress && cd &&
+				    static_cast<QKeyEvent *>(e)->key() == Qt::Key_Escape) {
+					cd->park();
 					return true;
 				}
 				return QObject::eventFilter(o, e);
 			}
 		};
 		dlg->installEventFilter(new CloseParks(dlg, this));
+		parkOnMinimise(dlg, [this]() { park(); });   // the minimise button lands in the same place
 
 		list       = d->findChild<QListWidget *>("listbox_ElevValues");
 		zminEdit   = d->findChild<QLineEdit *>("edit_Zmin");
@@ -13726,6 +13749,13 @@ public:
 					e->ignore();
 					return true;
 				}
+				// Esc parks HERE and is consumed. Left to QDialog it runs reject(), which in Qt 6 closes with
+				// no Close event and, this dialog being WA_DeleteOnClose, DELETES it — a park from
+				// `rejected` then left a row pointing at a dead dialog.
+				if (e->type() == QEvent::KeyPress && static_cast<QKeyEvent *>(e)->key() == Qt::Key_Escape) {
+					sd->parkNow();
+					return true;
+				}
 				// MINIMISE parks too, so the title-bar button and the Close button land in the same
 				// place instead of the dialog vanishing to the taskbar. Qt reports the state change
 				// AFTER the window manager has minimised, so the restore+hide+park is deferred one
@@ -13744,11 +13774,8 @@ public:
 			}
 		};
 		d->installEventFilter(new CloseParks(d, this));
-		// …and the OTHER way out, which that filter never sees: QDialog::reject() — Esc, and the title-bar
-		// X wherever the platform routes it through reject rather than a QEvent::Close. It runs done() →
-		// hide() with no Close event at all, so the dialog vanished leaving NO row in the dock and no way
-		// back to it. Same parkNow (idempotent), so whichever path fires first is the one that parks.
-		QObject::connect(d, &QDialog::rejected, d, [this]() { parkNow(); });
+		// (There used to be a `rejected -> parkNow` here for Esc. reject() DELETES this WA_DeleteOnClose
+		// dialog right after, so the row it parked pointed at nothing; Esc is now caught in the filter.)
 	}
 
 	// Read the source and fill the list. The INDEX of each row is what `plot` sends back, so the
@@ -14381,13 +14408,16 @@ public:
 				if (e->type() == QEvent::KeyPress) {
 					const int k = static_cast<QKeyEvent *>(e)->key();
 					if (k == Qt::Key_Return || k == Qt::Key_Enter) { e->accept(); return true; }
+					// Esc parks HERE and is consumed. Left to QDialog it runs reject(), which in Qt 6 closes
+					// with no Close event and, this dialog being WA_DeleteOnClose, DELETES it — a park from
+					// `rejected` then left a row pointing at a dead dialog.
+					if (k == Qt::Key_Escape && rd) { rd->parkNow(); return true; }
 				}
 				return QObject::eventFilter(o, e);
 			}
 		};
 		d->installEventFilter(new CloseParks(d, this));
 		parkOnMinimise(d, [this]() { parkNow(); });
-		QObject::connect(d, &QDialog::rejected, d, [this]() { parkNow(); });
 
 		// A links panel (p_found) with its "open in MODIS L2 swath to grid" box (p_l2open): the dialog
 		// handles every click. Box off -> the web browser, as before. Box on -> ask where to save, let
@@ -29125,26 +29155,47 @@ static std::function<void(const QPoint &)> scriptEditorParkedMenu(Scene *s) {
 	};
 }
 
+// Hide the editor and leave its handle in Scene Objects — the ONE way the editor leaves the screen,
+// whichever exit was taken (X, minimise, Esc). Idempotent: parkTool updates an existing row.
+static void scriptEditorPark(Scene *s, QWidget *w) {
+	if (!s || !w || !sceneAlive(s)) return;
+	w->hide();                                                  // hidden, NOT destroyed
+	parkTool(s, w, "GMT.jl script", IC_Text,
+	         "Parked GMT.jl script editor — double-click to bring it back, click for its menu",
+	         [s]() { scriptEditorUnpark(s); }, scriptEditorParkedMenu(s));
+	unfoldSceneObjects(s);                                      // a handle nobody can see is no handle
+}
+
 // The X does not destroy the editor: it hides and parks as a handle in Scene Objects, so an edited
-// script survives. Only the parked row's "Delete" lets a close through.
+// script survives. Only the parked row's "Delete" lets a close through. MINIMISE parks too, so the
+// title-bar button lands in the same place instead of the editor vanishing to the taskbar; Qt reports
+// the state change AFTER the window manager has minimised, so the restore + park is deferred one
+// event-loop turn (same as the Satellite dialog).
 class ScriptEditorParkOnClose : public QObject {
 public:
 	Scene *scene_;
 	ScriptEditorParkOnClose(QObject *parent, Scene *scene) : QObject(parent), scene_(scene) {}
 	bool eventFilter(QObject *obj, QEvent *ev) override {
+		QWidget *w = qobject_cast<QWidget *>(obj);
 		if (ev->type() == QEvent::Close) {
-			QWidget *w = qobject_cast<QWidget *>(obj);
 			if (w && w->property("igmtReallyClose").toBool()) return QObject::eventFilter(obj, ev);
 			ev->ignore();
-			if (w) w->hide();                                   // hidden, NOT destroyed
-			if (scene_ && w) {
-				Scene *sc = scene_;
-				parkTool(sc, w, "GMT.jl script", IC_Text,
-				         "Closed GMT.jl script editor — double-click to bring it back, click for its menu",
-				         [sc]() { scriptEditorUnpark(sc); }, scriptEditorParkedMenu(sc));
-				unfoldSceneObjects(sc);                          // a handle nobody can see is no handle
-			}
+			scriptEditorPark(scene_, w);
 			return true;
+		}
+		// Esc parks as well, and is CONSUMED here. Left to QDialog it runs reject(), which in Qt 6 closes
+		// with NO Close event and, the editor being WA_DeleteOnClose, deletes it — the handle parked from
+		// `rejected` then pointed at a dead dialog (measured: window gone, row still there).
+		if (ev->type() == QEvent::KeyPress && static_cast<QKeyEvent *>(ev)->key() == Qt::Key_Escape) {
+			scriptEditorPark(scene_, w);
+			return true;
+		}
+		if (ev->type() == QEvent::WindowStateChange && w && w->windowState().testFlag(Qt::WindowMinimized)) {
+			Scene *sc = scene_;
+			QTimer::singleShot(0, w, [sc, w]() {
+				w->setWindowState(w->windowState() & ~Qt::WindowMinimized);
+				scriptEditorPark(sc, w);
+			});
 		}
 		return QObject::eventFilter(obj, ev);
 	}
@@ -29186,8 +29237,10 @@ static void buildScriptEditor(Scene *s, const QString &text) {
 	QDialog *dlg = new QDialog(s->win);
 	dlg->setWindowTitle("Plot with GMT.jl");
 	dlg->setAttribute(Qt::WA_DeleteOnClose);
+	// WindowMinimizeButtonHint is what puts the MINIMISE button in the title bar (a QDialog has none).
+	dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint | Qt::WindowMinimizeButtonHint);
 	scriptEditorRegistry().insert(s, dlg);
-	dlg->installEventFilter(new ScriptEditorParkOnClose(dlg, s));   // X -> park, never destroy
+	dlg->installEventFilter(new ScriptEditorParkOnClose(dlg, s));   // X / minimise / Esc -> park, never destroy
 	QObject::connect(dlg, &QObject::destroyed, [s]() { scriptEditorRegistry().remove(s); });
 	QVBoxLayout *lay = new QVBoxLayout(dlg);
 	QPlainTextEdit *ed = new QPlainTextEdit(text, dlg);

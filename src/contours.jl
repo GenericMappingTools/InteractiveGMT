@@ -25,6 +25,9 @@ const _CONTOUR_DRAWN = Dict{Ptr{Cvoid}, Vector{Float64}}()
 # ...and the Scene Objects name of the grid they were traced from, so the recolour reads THAT grid's
 # colormap — not whatever layer happens to be active when the user opens the group's menu later.
 const _CONTOUR_SRC = Dict{Ptr{Cvoid}, String}()
+# ...and the rest of the request (labels on/off, Min pts), so File > Plot with GMT.jl can hand THE
+# SAME request to `grdcontour` on that grid instead of replaying the traced lines (gmtscript.jl).
+const _CONTOUR_OPTS = Dict{Ptr{Cvoid}, @NamedTuple{labels::Bool, minpts::Int}}()
 
 # A contour is annotated only if it is at least this many times longer than the label it would
 # carry — an annotation as long as (or longer than) its own contour is noise, not information.
@@ -300,7 +303,7 @@ _contour_fmt(l::Float64) = (isfinite(l) && l == round(l) && abs(l) < 1e15) ? str
 # Drop everything a previous Apply put in the window (overlays AND their labels, both tagged with
 # _CONTOUR_GROUP). Apply always redraws the WHOLE list, so a re-Apply replaces rather than piles up.
 function _contour_clear(scene::Ptr{Cvoid})
-	delete!(_CONTOUR_DRAWN, scene);  delete!(_CONTOUR_SRC, scene)
+	delete!(_CONTOUR_DRAWN, scene);  delete!(_CONTOUR_SRC, scene);  delete!(_CONTOUR_OPTS, scene)
 	return ccall(_fn(:gmtvtk_remove_overlay_group_h), Cint, (Ptr{Cvoid}, Cstring), scene, _CONTOUR_GROUP)
 end
 
@@ -352,7 +355,15 @@ end
 # C++ dialog entry point (Apply, and the two Delete buttons, which re-draw the pruned list — ONE
 # function draws contours, never a second path). `params` = "minpts;labels;lev1,lev2,…"; an EMPTY
 # level list just clears the window's contours. Prints nothing; errors go to the Errors tab.
-function _on_contours(scene::Ptr{Cvoid}, params::AbstractString)
+# `grid` = the layer to trace: the one ON DISPLAY for the dialog; Load Session passes the name the
+# request was recorded with, because the layer on display then is whatever the replay left on top.
+#
+# SAVE SESSION KEEPS THE REQUEST, NEVER THE CONTOURS. Every successful run records itself as the
+# window's one `:contour` recipe (a :menu recipe named `_CONTOUR_GROUP`, which also strips the traced
+# lines and their labels out of the session's vector snapshot); Load replays it through this same
+# function on the same grid.
+function _on_contours(scene::Ptr{Cvoid}, params::AbstractString;
+                      grid::AbstractString = _active_grid_name(scene))
 	p = split(params, ';')
 	minpts = length(p) >= 1 ? something(tryparse(Int, strip(p[1])), 0) : 0
 	labels = length(p) >= 2 && strip(p[2]) == "1"
@@ -366,8 +377,9 @@ function _on_contours(scene::Ptr{Cvoid}, params::AbstractString)
 	unique!(levels)
 
 	_contour_clear(scene)
+	_session_forget!(scene, :contour)              # the previous request goes with the contours it drew
 	isempty(levels) && return nothing
-	gridname = _active_grid_name(scene)
+	gridname = String(grid)
 	G = _contour_grid(scene, gridname)
 	sets = _contour_gdal(G, levels, max(minpts, 0))
 	isempty(sets) && error("No contour crossed the grid at any of those elevations")
@@ -455,6 +467,9 @@ function _on_contours(scene::Ptr{Cvoid}, params::AbstractString)
 		push!(drawn, lev)
 	end
 	_CONTOUR_DRAWN[scene] = drawn;  _CONTOUR_SRC[scene] = String(gridname)
+	_CONTOUR_OPTS[scene] = (labels = labels, minpts = max(minpts, 0))
+	_session_record!(scene, :contour, :menu; name = _CONTOUR_GROUP,
+	                 params = Dict{String,Any}("cparams" => String(params), "grid" => gridname))
 	if !isempty(txts)
 		blob = join(txts, '\x1e')
 		# vcenter=1: batch-owned labels are bottom-justified by default (a focal-mechanism date must
@@ -470,6 +485,44 @@ function _on_contours(scene::Ptr{Cvoid}, params::AbstractString)
 			scene, txy, blob, Cint(length(txts)), cr, cg, cb, Cint(_CONTOUR_LABEL_SIZE),
 			_CONTOUR_LABEL_FONT, Cint(0), Cint(0), _CONTOUR_GROUP, C_NULL, Cint(1),
 			tz, tang, Cint(1))
+	end
+	return nothing
+end
+
+# ── Save / Load Session ──────────────────────────────────────────────────────────────────────
+# Save-time: the `:contour` recipe is the REQUEST. What the user changed on the drawn lines afterwards
+# is an order too — a level's pen (Line Properties, "Color by grid colormap") and its checkbox — so it
+# is read off the live rows and stored with the request: "lev=r,g,b,w,style,op,vis" joined by '|'.
+# `nothing` when no contour of that request is left in the window (the group was removed): then there
+# is nothing to recreate and the recipe is not saved.
+function _contour_session_capture(scene::Ptr{Cvoid}, r::ElementRecipe)::Union{Nothing,ElementRecipe}
+	vis = Dict(ov.name => ov.visible for ov in _parse_overlays_blob(_serialize_overlays_raw(scene))
+	           if ov.group == _CONTOUR_GROUP)
+	cur = zeros(Float64, 6)
+	parts = String[]
+	for lev in get(_CONTOUR_DRAWN, scene, Float64[])
+		nm = "Contour " * _contour_fmt(lev)
+		ccall(_fn(:gmtvtk_overlay_style_h), Cint, (Ptr{Cvoid}, Cstring, Ptr{Cdouble}), scene, nm, cur) == 0 && continue
+		push!(parts, string(lev, "=", join(cur, ","), ",", get(vis, nm, true) ? 1 : 0))
+	end
+	isempty(parts) && return nothing
+	p = copy(r.params);  p["pens"] = join(parts, '|')
+	return ElementRecipe(r.kind, r.origin, r.source; name = r.name, params = p)
+end
+
+# Load-time: run the saved request through `_on_contours` — the one function that draws contours — on
+# the grid it was recorded for, then put each level's pen and checkbox back as they were saved.
+function _contour_session_replay!(scene::Ptr{Cvoid}, r::ElementRecipe)
+	_on_contours(scene, string(get(r.params, "cparams", "")); grid = string(get(r.params, "grid", "")))
+	for item in split(string(get(r.params, "pens", "")), '|'; keepempty = false)
+		lev, vals = split(item, '='; limit = 2)
+		v = parse.(Float64, split(vals, ','))
+		length(v) == 7 || continue
+		nm = "Contour " * _contour_fmt(parse(Float64, lev))
+		ccall(_fn(:gmtvtk_set_overlay_style_h), Cint,
+		      (Ptr{Cvoid}, Cstring, Cdouble, Cdouble, Cdouble, Cdouble, Cint, Cdouble),
+		      scene, nm, v[1], v[2], v[3], v[4], Cint(round(Int, v[5])), v[6])
+		v[7] == 0 && _set_vector_visible(scene, nm, false)
 	end
 	return nothing
 end

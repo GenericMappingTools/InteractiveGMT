@@ -11313,6 +11313,29 @@ GMTVTK_API int gmtvtk_restack_grid_h(void *handle, const char *name, int op) {
 	return 1;
 }
 
+// The window's raster layers, read-only, from `swipeLayers` (57_swipe.cpp) — the ONE list of rasters
+// with their pile rank, visibility and true extent. One line per layer, tab-separated, name LAST:
+//   base \t rank \t visible \t opacity \t x0 \t x1 \t y0 \t y1 \t name
+// `base` = 1 for the window's own surface/image (its name may be a display fallback), 0 for an extra.
+// File > Plot with GMT.jl asks this to leave out a layer that is unchecked or entirely covered.
+// Two-phase like the other blob exports: returns the full length; writes when `cap` is large enough.
+GMTVTK_API int gmtvtk_raster_layers_h(void *handle, char *buf, int cap) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s)) return -1;
+	std::string r;
+	char num[256];
+	for (const SwipeLayer &L : swipeLayers(s)) {
+		bool extra = false;
+		for (auto &ex : s->extras) if (ex.actor.Get() == L.prop) { extra = true; break; }
+		const double op = (!L.actors.empty() && L.actors[0]) ? L.actors[0]->GetProperty()->GetOpacity() : 1.0;
+		std::snprintf(num, sizeof(num), "%d\t%d\t%d\t%.6g\t%.17g\t%.17g\t%.17g\t%.17g\t",
+		              extra ? 0 : 1, L.rank, L.visible ? 1 : 0, op, L.x0, L.x1, L.y0, L.y1);
+		r += num;  r += L.name;  r += '\n';
+	}
+	if (buf && cap > (int)r.size()) std::memcpy(buf, r.c_str(), r.size() + 1);
+	return (int)r.size();
+}
+
 // Re-fit the camera to what the window now holds, in the mode it is already in — the same fit the
 // 2-D/3-D switch performs, without the switch.
 //

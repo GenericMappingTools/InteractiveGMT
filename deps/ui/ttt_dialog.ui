@@ -151,38 +151,6 @@
     </widget>
    </item>
    <item>
-    <layout class="QHBoxLayout" name="horizontalLayout_out">
-     <item>
-      <widget class="QLabel" name="lbl_outfile">
-       <property name="text">
-        <string>Save grid</string>
-       </property>
-      </widget>
-     </item>
-     <item>
-      <widget class="QLineEdit" name="edit_outfile">
-       <property name="toolTip">
-        <string>&lt;html&gt;Optional. The result is always added to Scene Objects; this&lt;br&gt;also writes it to disk.&lt;/html&gt;</string>
-       </property>
-      </widget>
-     </item>
-     <item>
-      <widget class="QToolButton" name="btn_outfile">
-       <property name="text">
-        <string>…</string>
-       </property>
-      </widget>
-     </item>
-     <item>
-      <widget class="QPushButton" name="push_compute">
-       <property name="text">
-        <string>Compute travel times</string>
-       </property>
-      </widget>
-     </item>
-    </layout>
-   </item>
-   <item>
     <widget class="QGroupBox" name="group_stations">
      <property name="title">
       <string>Arrival times at stations (reads the travel-time grid)</string>
@@ -237,6 +205,38 @@
       </item>
      </layout>
     </widget>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="horizontalLayout_out">
+     <item>
+      <widget class="QLabel" name="lbl_outfile">
+       <property name="text">
+        <string>Save grid</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QLineEdit" name="edit_outfile">
+       <property name="toolTip">
+        <string>&lt;html&gt;Optional. The result is always added to Scene Objects; this&lt;br&gt;also writes it to disk.&lt;/html&gt;</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QToolButton" name="btn_outfile">
+       <property name="text">
+        <string>…</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="push_compute">
+       <property name="text">
+        <string>Compute</string>
+       </property>
+      </widget>
+     </item>
+    </layout>
    </item>
   </layout>
  </widget>

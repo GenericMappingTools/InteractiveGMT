@@ -12,8 +12,9 @@ the tool offers.
 
 ## 1. Load the bathymetry
 
-The travel times are computed **on the grid in the window**. They come back on exactly the same
-nodes. The grid must be in **geographic** coordinates (longitude/latitude), with ocean depths
+The travel times are computed **on the window's bathymetry**, the level 0 grid. They come back on
+exactly the same nodes. Any other grid in the window is ignored, even when it is the one on display:
+a nested grid (*layer1*, *layer2*, …) is never used. The grid must be in **geographic** coordinates (longitude/latitude), with ocean depths
 **negative** (metres below sea level), like the GMT `@earth_relief` grids.
 
 Here the grid is `@earth_relief_02m` cut to `-20/-4/30/44`: a 481 × 421 grid at 2 arc-minutes,
@@ -77,7 +78,7 @@ also writes the result to a file. The result always goes to Scene Objects, with 
 
 ## 5. Compute
 
-Press **Compute travel times**. A busy notice stays up while it runs. On this grid, the Wessel
+Press **Compute**. A busy notice stays up while it runs. On this grid, the Wessel
 method with 120 stencil nodes took about 4 seconds.
 
 ![The travel-time grid, in hours](assets/ttt_result.png)
@@ -91,7 +92,7 @@ to green) than on the shelf. It crosses the whole region westward in less than 2
 almost 3 hours to go around Cape Finisterre into the Bay of Biscay (orange, top right).
 
 !!! tip "Computing again"
-    You can move the source, change the method or the stencil, and press **Compute travel times**
+    You can move the source, change the method or the stencil, and press **Compute**
     again. The dialog stays open. The new result **replaces** **Travel time (h)**, and it is always
     computed over the bathymetry, even while the travel times are on display.
 
@@ -176,8 +177,7 @@ belongs to this method. Leave it ticked: it fills the few water nodes the expans
 
 ![The dialog set for the Mirone method](assets/ttt_dialog_mirone.png)
 
-The source does not need to be placed again: it is still on the map. Press **Compute travel
-times**. The new grid **replaces** *Travel time (h)*. The isochrones do not follow by themselves:
+The source does not need to be placed again: it is still on the map. Press **Compute**. The new grid **replaces** *Travel time (h)*. The isochrones do not follow by themselves:
 press **Compute** in the Contour Tool again (its list of 0.25 h levels is still there) to trace
 them on the new grid.
 

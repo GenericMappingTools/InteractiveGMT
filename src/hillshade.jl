@@ -242,13 +242,20 @@ function _hs_false_color(G::GMTgrid, azR::Float64, azG::Float64, azB::Float64;
 	rgb = Array{UInt8,3}(undef, ny, nx, 3)
 	for (b, az) in enumerate((azR, azG, azB))
 		# mirone.m calls it as shade_manip_raster((azim-90)*D2R, elev*D2R, Z, size_amp)
-		R = oldalgo ? _hs_manip_raster(Z, az - 90.0, elev, amp) : _hs_f32(_hs_classic(G, az))
-		@inbounds for k in eachindex(R)
-			v = 254.0f0 * R[k] + 1.0f0
-			rgb[k + (b-1)*ny*nx] = isnan(v) ? UInt8(0) : (v <= 0.0f0 ? UInt8(0) : (v >= 255.0f0 ? UInt8(255) : round(UInt8, v)))
+		# The grdgradient branch is read through `_zmat` too, like Z: (ny,nx), row 1 = south, whatever
+		# layout the module handed back — never by raw linear index into its buffer.
+		R = oldalgo ? _hs_manip_raster(Z, az - 90.0, elev, amp) : _zmat(_hs_classic(G, az))
+		@inbounds for i in 1:nx, j in 1:ny
+			v = 254.0f0 * Float32(R[j, i]) + 1.0f0
+			rgb[j, i, b] = isnan(v) ? UInt8(0) : (v <= 0.0f0 ? UInt8(0) : (v >= 255.0f0 ? UInt8(255) : round(UInt8, v)))
 		end
 	end
-	return GMT.mat2img(rgb, G)
+	I = GMT.mat2img(rgb, G)
+	# `mat2img(mat, G)` stamps the SOURCE grid's layout on the image ("TRB" -> "TRBa"), but `rgb` was
+	# built here: column-major, row 1 = south. A "TRBa" label makes the drape read it row-major, i.e.
+	# TRANSPOSED. Label the buffer that actually exists.
+	I.layout = "BCBa"
+	return I
 end
 
 # ---------------------------------------------------------------------------------------------
@@ -259,6 +266,15 @@ end
 # string at the call site is a silent way for Remove to stop finding them.
 const _HS_FALSECOLOR = "False colour illumination"
 const _HS_PPDRC      = "Dynamic range compressed"
+
+# THE GRID a product was made FROM, per window. While a product is on screen the source is hidden, so
+# the dialog's "displayed layer" is the product (or, for the false-colour IMAGE, no grid at all) — and
+# the next method must go back to the grid the product came from, which is not necessarily the window's
+# first grid (a travel-time grid is an extra over its bathymetry).
+const _HS_SOURCE = Dict{Ptr{Cvoid},String}()
+_hs_source(scene::Ptr{Cvoid}, gname::AbstractString) =
+	(isempty(gname) || gname == _HS_FALSECOLOR || gname == _HS_PPDRC) ?
+		get(_HS_SOURCE, scene, "") : String(gname)
 
 # Model 10 (Mirone's 9) IS `ImageResetOrigImg_CB` — RESTORE THE ORIGINAL IMAGE, not merely "drop the
 # reflectance". That distinction is the whole bug: models 8 and 9 do not modulate anything, they put
@@ -338,6 +354,17 @@ function _on_hillshade(scene::Ptr{Cvoid}, raw::String)::Cint
 		# number leaving the dialog apart from a wrong dispatch after it.
 		println("Illumination <- ", replace(raw, "\n" => " | "))
 		d = _nswing_parse(raw)
+		# The dialog's first act on every method: put the source back if a product of this tool is what
+		# is on screen. Its C++ looks (1/5/6/7) light the DISPLAYED grid, and with the false-colour image
+		# up there is none. Only when the displayed layer IS a product (or no grid is displayed at all):
+		# with the source already on screen there is nothing to put back, and re-framing to it on every
+		# click would yank the camera.
+		if _get(d, "restore") == "1"
+			g = _get(d, "grid")
+			(isempty(g) || g == _HS_FALSECOLOR || g == _HS_PPDRC) &&
+				_hs_restore_original(scene, _hs_source(scene, g))
+			return Cint(1)
+		end
 		model = parse(Int, _get(d, "model"))
 		num(key, dflt) = (v = _get(d, key); isempty(v) ? dflt : parse(Float64, v))
 		# WHICH SIDE the dialog was aimed at: -1 (absent) = the whole window, which is every ordinary
@@ -353,8 +380,8 @@ function _on_hillshade(scene::Ptr{Cvoid}, raw::String)::Cint
 		gname = _get(d, "grid")
 		# ... unless what is on screen is one of THIS TOOL's own derived products from a previous run.
 		# Those are not a source to illuminate: the models are alternatives, never a pipeline, so the
-		# name is dropped and the source grid resolves normally below.
-		(gname == _HS_FALSECOLOR || gname == _HS_PPDRC) && (gname = "")
+		# name is swapped for the grid that product was made from (`_hs_source`).
+		gname = _hs_source(scene, gname)
 		# IS THIS AIMED AT THE TSUNAMI TANK? In an Aquamoto window the tank is one layer among others: a
 		# grid dropped in beside it (layer0.grd) is lit as the plain grid it is. Every Aquamoto branch
 		# below used to fire on the WINDOW (`haskey(_AQUA, scene)`), so a request aimed at that grid lit
@@ -445,6 +472,8 @@ function _on_hillshade(scene::Ptr{Cvoid}, raw::String)::Cint
 
 		elev = num("elev", 30.0)                   # the false colour's own input; the reflectance models
 		                                           # read azim/elev inside `_hs_reflectance`
+
+		model in (8, 9) && (_HS_SOURCE[scene] = gname)    # the grid the product is made from
 
 		if model == 8                              # false colour -> a NEW IMAGE, not a modulation
 			I = _hs_false_color(G, mod(num("azimR", 0.0), 360.0), mod(num("azimG", 120.0), 360.0),

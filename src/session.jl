@@ -866,6 +866,8 @@ function _on_save_session(scene::Ptr{Cvoid}, path::String)
 			# Menu vector layers (coastlines/borders/rivers) replay with the default pen; capture the
 			# live overlay's current pen so Line-properties edits (colour/width/style/opacity) survive.
 			r.kind === :geography && !isempty(r.name) && (r = _session_capture_overlay_pen(scene, r))
+			# Contours: the request plus each level's pen and checkbox; dropped when they are gone.
+			r.kind === :contour && (r = _contour_session_capture(scene, r);  r === nothing && continue)
 			push!(out, r)
 		end
 	end
@@ -1039,6 +1041,11 @@ function _session_replay!(fig, r::ElementRecipe, obj, display, target::Ptr{Cvoid
 		# with it lands afterwards, in _session_apply_display! -- which keeps this reflectance
 		# (gmtvtk_apply_scene_state restores the look with keepExternShade).
 		_on_hillshade(h, replace(get(r.params, "cparams", ""), '\x1e' => '\n'))
+		return fig
+	elseif r.kind === :contour                           # re-run the contour request on its grid
+		# The traced lines and labels are never in the session (the recipe owns the "Contours" group,
+		# so the vector snapshot leaves them out): the request recreates them, after every raster.
+		_contour_session_replay!(h, r)
 		return fig
 	end
 	obj === nothing && return fig                        # data-backed layers: skip on missing source
