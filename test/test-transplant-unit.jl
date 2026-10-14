@@ -88,6 +88,29 @@ end
 	@test !any(isnan, Gout.z)
 end
 
+# 2026-10-14: LIDAR2011 "Mosaic in geogs" as the host failed with "size of x,y vectors incompatible
+# with 2D array size". gdalwarp hands back a TRB grid whose z is (nx,ny), and the result used to be
+# re-wrapped with mat2grid, which guesses nx,ny from size(z). The result must keep the host's geometry.
+@testitem "transplant: gdalwarp (LIDAR geog) host keeps its geometry" tags=[:unit, :fast] begin
+	IG = InteractiveGMT; GMT = IG.GMT
+	nx, ny = 301, 201
+	Z = Float32[(i + j) % 50 + 0.5f0 for j in 1:ny, i in 1:nx]
+	G = GMT.mat2grid(Z; x = collect(range(-60000.0, -54000.0; length = nx)),
+	                    y = collect(range(-110000.0, -106000.0; length = ny)))
+	G.wkt = IG._LIDAR_WKT;  G.command = "test mosaic"
+	H = IG._lidar_to_geog(G)
+	@test IG._grid_dims(H)[1] != IG._grid_dims(H)[2]          # non-square, or the bug cannot show
+	r = H.range
+	I = GMT.grdmath("-R$(r[1]+0.01)/$(r[1]+0.03)/$(r[3]+0.01)/$(r[3]+0.025) -I0.0005 X Y ADD")
+	for keep in (true, false)
+		Gout, blk = IG._transplant_grid(H, I; keepres = keep)
+		@test IG._grid_dims(Gout) == (keep ? IG._grid_dims(H) : IG._grid_dims(Gout))
+		@test Gout.layout == (keep ? H.layout : Gout.layout)
+		keep || continue
+		@test Gout.x == H.x && Gout.y == H.y && Gout.registration == H.registration
+	end
+end
+
 @testitem "nested fill: samples implant in place, blank nodes preserved" tags=[:unit, :fast] begin
 	IG = InteractiveGMT; GMT = IG.GMT
 	xs = collect(0.0:1.0:10.0)

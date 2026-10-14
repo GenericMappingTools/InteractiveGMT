@@ -221,16 +221,14 @@ function _transplant_grid(H::GMTgrid, I::GMTgrid; keepres::Bool=true, pad::Int=6
 	# get_the_output: Z(r_c) = Z_rect — into the WORK copy; the host the window shows stays as it was.
 	@views Zh[r0:r1, c0:c1] .= Zr
 
-	# The new grid wraps Hwork's buffer AS IT LIES, so it carries that buffer's layout label too.
-	hreg = Hwork.registration      # mat2grid wants nx+1 cell EDGES for a pixel grid, nx nodes otherwise
-	Gout = hreg == 0 ? mat2grid(Hwork.z; x=hxv, y=hyv) :
-	       mat2grid(Hwork.z; x=collect(range(hxv[1] - hdx / 2; step=hdx, length=hnx + 1)),
-	                         y=collect(range(hyv[1] - hdy / 2; step=hdy, length=hny + 1)), reg=1)
-	Gout.layout = Hwork.layout
+	# Hwork IS the new grid (a deepcopy, or grdsample's output): its x/y, registration, layout and
+	# array shape are kept exactly as they are. Never re-wrap its z with mat2grid — that guesses nx,ny
+	# from size(z), and a GDAL-made TRB grid (gdalwarp: "Mosaic in geogs") holds its z as (nx,ny).
+	Gout = Hwork
+	Gout.range[5], Gout.range[6] = _finite_extrema(Gout.z)
 	_grid_command!(Gout, "iGMT Transplant 2nd grid (Mirone transplants.m IMPLANTGRID, gmtmbgrid)")
 	isdefined(H, :proj4)   && !isempty(H.proj4)   && (Gout.proj4   = H.proj4)
 	isdefined(H, :wkt)     && !isempty(H.wkt)     && (Gout.wkt     = H.wkt)
-	Gout.registration = Hwork.registration
 	# `block` = the node rectangle Mirone's job rewrote (r_c); `warn` = its warndlg text, if any.
 	return Gout, (r0 = r0, r1 = r1, c0 = c0, c1 = c1, warn = warn)
 end
