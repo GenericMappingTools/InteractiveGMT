@@ -193,6 +193,7 @@ function _start_pump()
 			close(t); _PUMP[] = nothing
 		end
 	end
+	_gmtcli_schedule()                               # the window is up: write the `gmtjl` launcher (gmtcli.jl)
 	return
 end
 

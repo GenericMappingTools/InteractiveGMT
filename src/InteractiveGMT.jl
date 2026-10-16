@@ -160,6 +160,7 @@ include("gmtedit.jl")    # Geophysics > Magnetics > gmtedit: the MGD77 track edi
 # deps/CMakeLists.txt; its exports are optional (_LIB_OPTIONAL), so either side may be off alone.
 isfile(joinpath(@__DIR__, "mbedit.jl")) && include("mbedit.jl")
 include("mbplugin.jl")   # Geophysics > MB-System > Install as plugin: MB-System's GMT supplement from GitHub
+include("gmtcli.jl")     # the `gmtjl` command line launcher (GMT.gmt_cli), written once the first window is up
 include("mbprocess.jl")  # Geophysics > MB-System > Process swath data: mbset + mbprocess behind a dialog
 # EXPERIMENTAL sound velocity tool (MB-System's mbvelocitytool, deps/src/mbvelocitytool/), switched the
 # same way: this line for the Julia side (`mbvelocitytool`), IGMT_WITH_MBVELOCITYTOOL for the C side.
