@@ -75,9 +75,8 @@ fig = view_grid(G)
 # With options
 fig = view_grid(G;
     cmap="relief",      # Colormap
-    ve=5,               # Vertical exaggeration
     drape=image,        # Drape an image
-    name="My Grid"      # Name in Scene Objects
+    title="My Grid"     # Window title
 )
 ```
 
@@ -139,7 +138,7 @@ Add lines or points to a live grid:
 ```julia
 # Line overlay
 coast = gmtread("coastline.gmt")
-add!(fig, coast; mode=:lines, color="black", width=1.5)
+add!(fig, coast; mode=:lines, color="black", size=1.5)
 
 # Point overlay
 stations = gmtread("stations.txt")
@@ -156,14 +155,8 @@ Drape a georeferenced image over the terrain:
 # View grid
 fig = view_grid(GMT.peaks())
 
-# Drape image
+# Drape image (given when the grid is opened)
 I = gmtread("satellite.tif")
-add!(fig, I; drape=true)
-```
-
-Or drape on open:
-
-```julia
 fig = view_grid(G; drape=I)
 ```
 
@@ -172,9 +165,9 @@ fig = view_grid(G; drape=I)
 Hang a seismic profile vertically:
 
 ```julia
-add_curtain!(fig, "seismic.nc"; 
-    x=0,          # X position
-    rotation=45   # Azimuth (degrees)
+add_curtain!(fig, [x0 y0; x1 y1];   # Track, in the grid's XY
+    image="seismic.png",            # GMTimage or image file
+    zrange=(-4000, 0)               # Vertical extent, in grid z units
 )
 ```
 
@@ -187,9 +180,8 @@ add_curtain!(fig, "seismic.nc";
 ```julia
 D = gmtread("points.xyz")
 fig = view_points(D;
-    color="blue",   # Colour
-    size=5,         # Point size
-    name="Stations"
+    color="blue",   # One colour (default: coloured by z through cmap)
+    size=5          # Point size
 )
 ```
 
@@ -258,7 +250,8 @@ fig = xyplot(D)
 ### Adding Series
 
 ```julia
-add!(fig, more_data; label="Series 2", linestyle="--")
+add!(fig, more_data)                                # a GMTdataset or matrix: col 1 = X
+add!(fig, x, y; name="Series 2", linestyle=:dash)  # or one series by hand
 ```
 
 ### Multiple Pages
@@ -655,14 +648,14 @@ using InteractiveGMT, GMT
 G = gmtread("dem.nc")
 
 # View with hillshade
-fig = view_grid(G; cmap="geo", ve=5)
+fig = view_grid(G; cmap="geo")    # vertical exaggeration: the gizmo's blue ring
 
 # Turn on hillshade
 # (In window: View → Hillshade Lambert)
 
 # Add coastlines
 coast = gmtread("coastline.gmt")
-add!(fig, coast; mode=:lines, color="black", width=1)
+add!(fig, coast; mode=:lines, color="black", size=1)
 ```
 
 ### Plot a time series with spectrum
@@ -710,8 +703,9 @@ add!(fig, G2)
 Or blend them instead of swiping:
 
 ```julia
-# Add second as image overlay (for transparency)
-add!(fig, G2; drape=true, opacity=0.5)
+# Add the second as a named layer and make it half transparent
+add!(fig, G2; name="observation")
+setopacity!(fig, 0.5; layer="observation")
 ```
 
 ---

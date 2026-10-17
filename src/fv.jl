@@ -85,6 +85,7 @@ using the REPL.
   - `false` — smooth per-vertex z colouring through `cmap` (also matches the bar).
   - `:explicit` — honour the solid's own baked per-face colours (e.g. a hand-coloured cube);
 	these are categorical, so NO colorbar is drawn.
+  - a colour (`:orange`, `"red"`, an `(r,g,b)`, a grey number) — every face that one colour.
   (`cmap` is any GMT name; `nothing` = the viewer's built-in ramp.)
 - `edges` shows the mesh cell wires (toggle live with **`e`** in the viewer).
 - `geographic` is auto-detected (override with `true`/`false`) — only affects the axis titles.
@@ -107,7 +108,10 @@ function _fv_resolve(fv::GMTfv; cmap=:turbo, color=true, geographic::Union{Bool,
 	facergb = UInt8[];  facez = Float64[];  cz = Float64[];  crgb = Float64[];  ncolor = 0
 	(color === :explicit) && (facergb = _fv_facecolors(fv))
 	if isempty(facergb)                                        # z-mapped colouring (matches the bar)
-		cz, crgb, ncolor = _cpt_nodes_range(bb[5], bb[6], cmap)
+		# A colour VALUE (:orange, "red", (r,g,b), grey) paints every face that one colour, through the
+		# same z-mapped path as `view_points(D; color=…)`: a palette of that single colour.
+		cz, crgb, ncolor = (color isa Bool || color === :explicit) ? _cpt_nodes_range(bb[5], bb[6], cmap) :
+		                   _flat_cpt_nodes(bb[5], bb[6], color)
 		(color === false) || (facez = _fv_facez(fv))          # true -> faceted per-face z; false -> smooth per-vertex
 	end
 	zscale = fv.zscale > 0 ? Float64(fv.zscale) : 1.0
@@ -265,6 +269,8 @@ Fold a vector of **closed 3-D polygons** into a single coloured `GMTfv` ready fo
 closing vertex is dropped. Faces are coloured by their mean *z* through the GMT colormap `cmap`.
 Pass `triangulate=true` to fan-split every polygon into triangles (concave / non-planar polys).
 """
+poly2fv(D::GMTdataset; kwargs...) = poly2fv([D]; kwargs...)   # one polygon = a one-element set
+
 function poly2fv(D::Vector{<:GMTdataset}; cmap=:turbo, zscale=:auto, vfrac=0.2, vexag=:auto,
 				 isgeog::Bool=false, ncolor::Int=256, triangulate::Bool=false)
 	isempty(D) && error("no polygons to render")

@@ -58,6 +58,11 @@ isalive(f::QtImage)::Bool  = ccall(_fn(:gmtvtk_is_alive), Cint, (Ptr{Cvoid},), f
 isalive(f::QtEmpty)::Bool  = ccall(_fn(:gmtvtk_is_alive), Cint, (Ptr{Cvoid},), f.h) != 0
 isalive(f::QtXYPlot)::Bool = ccall(_fn(:gmtvtk_xyplot_is_alive), Cint, (Ptr{Cvoid},), f.h) != 0
 
+# `close(fig)` closes the window, exactly as its title-bar X does (the window's own close path runs).
+Base.close(f::Union{QtFigure,QtPoints,QtFV,QtImage,QtEmpty}) =
+	(isalive(f) && ccall(_fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), f.h); nothing)
+Base.close(f::QtXYPlot) = (isalive(f) && ccall(_fn(:gmtvtk_xyplot_close), Cvoid, (Ptr{Cvoid},), f.h); nothing)
+
 # Opaque C handle of any figure type (QtFigure / QtPoints / QtFV).
 _fig_handle(fig)::Ptr{Cvoid} = getfield(fig, :h)
 # ...and the identity for code that already holds the raw `Scene*` (the dialog callbacks are handed

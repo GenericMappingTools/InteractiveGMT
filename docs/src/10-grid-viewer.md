@@ -32,9 +32,6 @@ fig = iview(G)
 # With colormap
 fig = iview(G; cmap="relief")
 
-# With vertical exaggeration
-fig = iview(G; ve=5)
-
 # With image drape
 I = gmtread("satellite.tif")
 fig = iview(G; drape=I)
@@ -70,11 +67,7 @@ Illuminate relief like a shaded map:
 
 ## Vertical Exaggeration
 
-```julia
-fig = iview(G; ve=5)  # 5x vertical exaggeration
-```
-
-**Interactively:** Drag the blue ring on the gizmo, or use **View → Vertical Scale…**
+Drag the blue ring on the gizmo, or use **View → Vertical Scale…**
 
 ## Adding Overlays
 
@@ -85,7 +78,7 @@ Add line or point overlays to a live grid:
 ```julia
 # Add coastline
 coast = gmtread("coastline.gmt")
-add!(fig, coast; mode=:lines, color="black", width=1.5)
+add!(fig, coast; mode=:lines, color="black", size=1.5)
 ```
 
 ### Point Overlays
@@ -101,11 +94,7 @@ add!(fig, stations; mode=:points, color="red", size=10)
 Drape a georeferenced image over the terrain:
 
 ```julia
-# View grid with drape
 fig = iview(G; drape=I)
-
-# Or add to existing window
-add!(fig, I; drape=true)
 ```
 
 ## Curtains
@@ -113,7 +102,8 @@ add!(fig, I; drape=true)
 Hang a vertical seismic profile:
 
 ```julia
-add_curtain!(fig, "seismic.nc"; x=0, rotation=45)
+# path: the track (N×2, the grid's XY), image: a GMTimage or file, zrange: its vertical extent
+add_curtain!(fig, [x0 y0; x1 y1]; image="seismic.png", zrange=(-4000, 0))
 ```
 
 ## Saving

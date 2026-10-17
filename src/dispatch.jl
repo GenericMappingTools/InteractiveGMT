@@ -35,6 +35,7 @@ Front-door dispatcher over the Qt + VTK viewers. `x` may be:
 - a `GMTimage`          -> [`view_image`](@ref) (bare image: flat plane, top-down map)
 - a `GMTfv`             -> [`view_fv`](@ref) (faceted z-colour + matching colorbar; `color=:explicit` for baked colours)
 - a `GMTdataset` / `Vector{GMTdataset}` -> points -> [`view_points`](@ref); polygons -> `view_fv(poly2fv(...))`
+- an `N×≥3` matrix      -> `x y z` point cloud -> [`view_points`](@ref)
 - a `String`            -> `"grid"`/`"peaks"` demo or a grid file -> `view_grid`; else a named
   solid from SOLIDS -> [`view_fv`](@ref)
 
@@ -73,6 +74,9 @@ function iview(D::Vector{<:GMTdataset}; xy=nothing, kwargs...)
 	vk = filter(p -> !(p.first in _POLY2FV_KW), kwargs)
 	return view_fv(poly2fv(D; pk...); vk...)
 end
+
+# A bare N×≥3 numeric matrix is an `x y z [...]` point cloud.
+iview(M::AbstractMatrix{<:Real}; kwargs...) = view_points(M; kwargs...)
 
 function iview(name::AbstractString; kwargs...)
 	lname = lowercase(String(name))

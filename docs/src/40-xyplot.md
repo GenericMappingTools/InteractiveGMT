@@ -27,7 +27,8 @@ fig = xyplot([D1, D2])
 ## Adding Series
 
 ```julia
-add!(fig, more_data; label="Series 2", linestyle="--")
+add!(fig, more_data)                                    # a GMTdataset or matrix: col 1 = X
+add!(fig, x, y; name="Series 2", linestyle=:dash)      # or one series by hand
 ```
 
 ## Clearing

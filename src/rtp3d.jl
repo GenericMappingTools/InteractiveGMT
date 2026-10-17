@@ -21,7 +21,7 @@ Returns the transformed grid `fout` and the wavenumber array `k`. `fout` comes b
 memory order as `f3d`'s own buffer — row-major (nx,ny) for a grid read in "TRB", column-major
 (ny,nx) for a "BCB" one. Nothing is transposed anywhere along the way.
 """
-function rtp3d(f3d::GMTgrid{Float32,2}, incl_fld::Real, decl_fld::Real, incl_mag::Real, decl_mag::Real; component::Int=0)
+function rtp3d(f3d::GMTgrid{<:Real,2}, incl_fld::Real, decl_fld::Real, incl_mag::Real, decl_mag::Real; component::Int=0)
 	f3d, nanmask = _rtp_fill(f3d)
 	z, rowmaj, northf = _rtp_buf(f3d)
 	fout, k = _rtp3d(z, Float64(incl_fld), Float64(decl_fld), Float64(incl_mag), Float64(decl_mag),
@@ -45,7 +45,7 @@ end
 # relabelling as `_rtp_buf`) so it can index the result directly — never `fillgaps`' mask image,
 # whose own memory order would have to be re-derived first.
 # hasnans: 0 = "don't know" (check for real), 1 = confirmed clean, 2 = confirmed has NaNs.
-function _rtp_fill(f3d::GMTgrid{Float32,2})
+function _rtp_fill(f3d::GMTgrid{<:Real,2})
 	has_nans = (f3d.hasnans == 2) || (f3d.hasnans == 0 && any(isnan, f3d.z))
 	has_nans || return f3d, nothing
 	nx, ny = _grid_dims(f3d)

@@ -42,7 +42,7 @@ add!(p, t, cos.(t); name="cos", color=:blue)
 function xyplot(x::AbstractVector, y::AbstractVecOrMat; name::AbstractString="", color=nothing,
                 linewidth::Real=0, linestyle=nothing, marker=nothing, markersize::Real=0,
                 title::AbstractString="",
-                xlabel::AbstractString="X", ylabel::AbstractString="Y", xtime::Symbol=:linear,
+                xlabel::AbstractString="X", ylabel::AbstractString="Y", xtime::Union{Symbol,Bool}=:linear,
                 xscale::Symbol=:linear, yscale::Symbol=:linear)
 	local p::QtXYPlot
 	if _XY_CURRENT[] != C_NULL &&
@@ -60,7 +60,8 @@ function xyplot(x::AbstractVector, y::AbstractVecOrMat; name::AbstractString="",
 		_XY_CURRENT[] = h
 	end
 	_xy_set_labels(p, xlabel, ylabel)
-	xtime === :linear || xtime!(p, xtime)
+	xt = xtime === true ? :date : xtime === false ? :linear : xtime   # true = "X is epoch seconds"
+	xt === :linear || xtime!(p, xt)
 	_xy_add(p, x, y; name, color, linewidth, linestyle, marker, markersize)
 	xscale === :log && logscale!(p; x=true)
 	yscale === :log && logscale!(p; y=true)
@@ -107,6 +108,24 @@ function _ds_colnames(seg, ncol::Integer)
 	cn = (seg isa GMTdataset && !isempty(seg.colnames)) ? seg.colnames : String[]
 	return [ (i <= length(cn) && !isempty(strip(cn[i]))) ? String(cn[i]) :
 	         (i == 1 ? "X" : "col $i") for i in 1:ncol ]
+end
+
+"""
+    xyplot(y::Vector; kwargs...) -> QtXYPlot
+
+A single series against its sample number: X = 1:length(y).
+"""
+xyplot(y::AbstractVector{<:Real}; kwargs...) = xyplot(collect(1.0:length(y)), y; kwargs...)
+
+"""
+    xyplot(M::Matrix; kwargs...) -> QtXYPlot
+
+A plain numeric matrix: column 1 is X, columns 2…n are Y series sharing it, e.g.
+`xyplot([t sin.(t)])`. Same keywords as the vector form.
+"""
+function xyplot(M::AbstractMatrix{<:Real}; kwargs...)
+	size(M, 2) < 2 && error("xyplot: matrix needs at least 2 columns (x, y)")
+	return xyplot(Float64.(@view M[:, 1]), Float64.(@view M[:, 2:end]); kwargs...)
 end
 
 function xyplot(D::GMTdataset; xlabel=nothing, name=nothing, kwargs...)
@@ -158,6 +177,18 @@ function add!(p::QtXYPlot, x::AbstractVector, y::AbstractVecOrMat; name::Abstrac
               kind::Symbol=:line, barwidth::Real=0)
 	isalive(p) || error("add!: the X,Y plot window is closed")
 	_xy_add(p, x, y; name, color, linewidth, linestyle, marker, markersize, kind, barwidth)
+	return p
+end
+
+"""
+    add!(p::QtXYPlot, D) -> QtXYPlot
+
+Add a `GMTdataset`, a vector of them, or a numeric matrix to an open X,Y plot: column 1 is X,
+every other column a new series (named by the dataset's column names). Same reading as `xyplot(D)`.
+"""
+function add!(p::QtXYPlot, D::Union{GMTdataset, AbstractVector{<:GMTdataset}, AbstractMatrix{<:Real}})
+	isalive(p) || error("add!: the X,Y plot window is closed")
+	_xy_add_dataset(p, D)
 	return p
 end
 

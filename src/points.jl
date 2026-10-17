@@ -3,7 +3,7 @@
 # self-contained Qt+VTK viewer.
 
 """
-	view_points(D; cmap=:turbo, pointsize=4, pickcolor=(0.83,0.83,0.83),
+	view_points(D; cmap=:turbo, color=nothing, pointsize=4, pickcolor=(0.83,0.83,0.83),
 				geographic=nothing, title=...)
 
 Show a point cloud — a `GMTdataset` or an `N×≥3` matrix of `x y z [...]` rows — in the
@@ -16,18 +16,20 @@ box deselects; **Ctrl+Z** undoes the last change). Plain right-drag stays the do
 selected points are highlighted in `pickcolor` and kept for you — read them back with
 [`selection`](@ref), which returns a copy of the picked `x y z [...]` rows (or `nothing`).
 
-- `pointsize` — point size in px.
+- `color` — paint every point one colour instead (`:red`, `"blue"`, an `(r,g,b)` of 0-255 ints or
+  0-1 floats, or a grey number); `nothing` (default) colours by z through `cmap`.
+- `pointsize` (or `size`, as `add!` calls it) — point size in px.
 - `pickcolor` — highlight colour for selected points: an `(r,g,b)` (0-255 ints or 0-1
   floats) or a grey number.
 - `geographic` — auto-detected for a `GMTdataset` (override with `true`/`false`); treats
   x,y as degrees and z as metres for a physically-true vertical scale.
 """
-function view_points(D; cmap=:turbo, pointsize::Real=4, pickcolor=(0.83, 0.83, 0.83),
+function view_points(D; cmap=:turbo, color=nothing, pointsize::Real=4, size::Union{Real,Nothing}=nothing, pickcolor=(0.83, 0.83, 0.83),
 					 geographic::Union{Bool,Nothing}=nothing,
 					 title::AbstractString="GMT 3-D Point Cloud  (Qt + VTK)")
 	A = D isa GMTdataset ? Float64.(D.data) : Float64.(Matrix(D))
-	size(A, 2) >= 3 || error("a point cloud needs at least 3 columns (x y z); got $(size(A,2))")
-	N = size(A, 1);  N > 0 || error("dataset has no points")
+	Base.size(A, 2) >= 3 || error("a point cloud needs at least 3 columns (x y z); got $(Base.size(A,2))")
+	N = Base.size(A, 1);  N > 0 || error("dataset has no points")
 	xyz = Vector{Float64}(undef, 3N)
 	@inbounds for i in 1:N
 		xyz[3i-2] = A[i, 1];  xyz[3i-1] = A[i, 2];  xyz[3i] = A[i, 3]
@@ -35,19 +37,27 @@ function view_points(D; cmap=:turbo, pointsize::Real=4, pickcolor=(0.83, 0.83, 0
 	xmn, xmx = extrema(@view A[:, 1]);  ymn, ymx = extrema(@view A[:, 2])
 	zmn, zmx = extrema(@view A[:, 3])
 	geog = geographic === nothing ? (D isa GMTdataset ? GMT.isgeog(D) : false) : geographic
-	cz, crgb, ncolor = _cpt_nodes_range(zmn, zmx, cmap)
+	cz, crgb, ncolor = color === nothing ? _cpt_nodes_range(zmn, zmx, cmap) : _flat_cpt_nodes(zmn, zmx, color)
 	pr, pg, pb = _ovl_color(pickcolor, :points)   # name (:red), grey int, (r,g,b), or 0-1 floats
 	h = ccall(_fn(:gmtvtk_view_points), Ptr{Cvoid},
 		  (Ptr{Cdouble}, Cint, Ptr{Cdouble}, Ptr{Cdouble}, Cint,
 		   Cdouble, Cdouble, Cdouble, Cdouble, Cint, Cdouble,
 		   Cdouble, Cdouble, Cdouble, Cstring),
 		  xyz, Cint(N), cz, crgb, Cint(ncolor),
-		  xmn, xmx, ymn, ymx, Cint(geog), Float64(pointsize),
+		  xmn, xmx, ymn, ymx, Cint(geog), Float64(size === nothing ? pointsize : size),
 		  pr, pg, pb, title)
 	fig = _register_fig!(QtPoints(h, A))
 	_apply_crs!(fig, crs_from(D; geographic=geog))    # store the CRS + reveal the Geography menu if referenced
 	_start_pump()
 	return fig
+end
+
+# One colour for every point: a two-node palette of that colour over [zmn,zmx], so the cloud goes
+# through the same z-coloured builder (a flat-z cloud gets a unit span, a palette needs zmx > zmn).
+function _flat_cpt_nodes(zmn, zmx, color)
+	r, g, b = _ovl_color(color, :points)
+	z1 = zmx > zmn ? zmx : zmn + 1
+	return ([Float64(zmn), Float64(z1)], [r, g, b, r, g, b], 2)
 end
 
 """
