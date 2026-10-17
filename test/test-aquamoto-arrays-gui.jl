@@ -148,3 +148,49 @@ end
 		end
 	end
 end
+
+# The toolbar "i" button on a tsunami window reports THE LAYER ON SCREEN. It used to answer "No grid
+# or image in this window." because it asked the figure for its grid (`fig.G`) and an Aquamoto window's
+# figure carries none; every Grid Tool meanwhile found the layer through `_active_grid`. Driven through
+# the SAME door the button uses: its exact command string, evaluated by the console bridge with `fig`
+# bound to this window. Then a different slice, so a report frozen on the first layer fails too.
+@testitem "Aquamoto arrays D: the toolbar Info button reports the layer on screen" tags=[:gui, :aquamoto] begin
+	IG = InteractiveGMT
+	include(joinpath(@__DIR__, "aquamoto_fixture.jl"))
+	function info_via_button(h, mode)
+		cmd = "InteractiveGMT._info_text(fig, \"$mode\")"           # what the 'i' button sends
+		buf = Vector{UInt8}(undef, 1 << 16)
+		n = GC.@preserve cmd buf IG._console_eval(h, Base.unsafe_convert(Cstring, cmd), pointer(buf), Cint(length(buf)))
+		return String(buf[1:abs(n)]), n
+	end
+	mktempdir() do dir
+		nc = aqf_make_tsunami_nc(joinpath(dir, "tsu_fixture.nc"); coast = true)   # land elevation stored in z, like NSWING
+		f = iview()
+		try
+			IG._on_drop(f.h, nc);  aqf_pump(40)
+			for k in (0, 2)
+				IG._aquamoto_slice(f.h, k, true, false, 0.0, true, true);  aqf_pump(5)
+				st = IG._AQUA[f.h]
+				G = IG._aqua_layer(st, k)
+				txt, n = info_via_button(f.h, "grdinfo")
+				@test n > 0
+				@test !occursin("No grid", txt)
+				# The z range printed is THE WATER's of this slice — the span its colour bar shows — never
+				# the raw layer's, whose dry nodes hold the land elevation (v_max = the highest hill).
+				wlo, whi = IG._aqua_layer_water_range(st, k, true, false)
+				@test G.range[6] > whi + 1             # the fixture really has land in `z` (else vacuous)
+				m = match(r"v_min: (\S+) v_max: (\S+)", txt)
+				@test m !== nothing
+				if m !== nothing
+					lo, hi = parse(Float64, m[1]), parse(Float64, m[2])
+					@test isapprox(lo, wlo; rtol = 1e-5, atol = 1e-6)
+					@test isapprox(hi, whi; rtol = 1e-5, atol = 1e-6)
+				end
+			end
+			txt, n = info_via_button(f.h, "gdalinfo")
+			@test n > 0 && !occursin("No grid", txt) && occursin("Size is", txt)
+		finally
+			aqf_close(f.h)
+		end
+	end
+end

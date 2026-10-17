@@ -60,15 +60,46 @@ _info_to_string(x) = sprint(show, MIME("text/plain"), x)
 
 # Print the grdinfo / gdalinfo report for the window's active grid/image. `mode` is "grdinfo"
 # (default) or "gdalinfo". Returns nothing — the printed text is what the viewer captures & shows.
+# The grid is THE grid every Grid Tool works on — `_active_grid`, the layer ON DISPLAY — never the
+# figure's own `fig.G`. A window whose grid did not come in through `view_grid` (an Aquamoto tsunami
+# above all: its figure carries no grid, the slice on screen is registered under the window's
+# surface name) answered "No grid" here while every tool found the layer. The figure's own object is
+# only the fallback for a window with no grid layer at all (an image).
 function _info_text(fig, mode::AbstractString)::Nothing
-	obj = _info_object(fig)
+	h = try _fig_handle(fig) catch; C_NULL end
+	name = h == C_NULL ? "" : _active_grid_name(h)
+	G = h == C_NULL ? nothing : _active_grid(h, name)
+	obj = G === nothing ? _info_object(fig) : G
 	if obj === nothing
 		print("No grid or image in this window.")
 		return nothing
 	end
-	h = try _fig_handle(fig) catch; C_NULL end
-	return _info_report(obj, _info_source_file(h), mode)
+	G === nothing && return _info_report(obj, _info_source_file(h), mode)
+	return _info_report(_info_grid(h, name, G), _info_source(h, name), mode)
 end
+
+# What a named grid element is described from. An Aquamoto tank's element is ONE LAYER of a cube, and
+# no file spec describes one: grdinfo on "file?var[k]" prints the header's `actual_range`, which is
+# the WHOLE variable's (all timesteps), and GDAL has no layer syntax at all. So the layer is described
+# as the object it is (`_info_grid`). Anything else: the plain file-or-nothing rule of
+# `_info_source_file`.
+_info_is_tank(h::Ptr{Cvoid}, name::AbstractString) =
+	h != C_NULL && (st = get(_AQUA, h, nothing); st !== nothing && name == basename(st.path))
+function _info_source(h::Ptr{Cvoid}, name::AbstractString)::String
+	_info_is_tank(h, name) && return ""
+	return _info_source_file(h, name)
+end
+
+# The grid a named element's report describes. A tsunami layer is the WATER: its `z` stores the land
+# elevation on every dry node, so the raw layer's range is the land's (v_max = the highest hill), not
+# the sea's. It is described as `_aqua_split` cuts it — THE water half, dry nodes NaN, exactly the
+# cells the layer colours as water and its colour bar spans (whole layer when Split Dry/Wet is off).
+function _info_grid(h::Ptr{Cvoid}, name::AbstractString, G::GMTgrid)::GMTgrid
+	_info_is_tank(h, name) || return G
+	st = _AQUA[h]
+	return first(_aqua_split(st, G, st.bat.z, G.z, st.split))
+end
+_info_grid(h::Ptr{Cvoid}, name::AbstractString, G) = G
 
 # Same report, but for a NAMED Scene Objects grid handle (base surface or an extra/nested grid) rather
 # than "the window's active fig" — the grid handle's own "Info (grdinfo)…" menu entry (50_scene.cpp
@@ -82,5 +113,5 @@ function _info_text_named(scene::Ptr{Cvoid}, name::AbstractString, mode::Abstrac
 	end
 	# The file only when THIS element came out of it — a derived grid sharing the window with a
 	# file-opened one is described by itself, not by that file.
-	return _info_report(G, _info_source_file(scene, name), mode)
+	return _info_report(_info_grid(scene, name, G), _info_source(scene, name), mode)
 end
