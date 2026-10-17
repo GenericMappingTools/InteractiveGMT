@@ -29633,7 +29633,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		const bool wasFlat = s->flat2d;
 		if (!wasFlat) sceneSetFlat2D(s, true);
 		fitSnapView(s, /*topMode=*/true);        // guarantee the data fills edge-to-edge, no stale pan/zoom
-		const bool axesVis = sceneAxesShown(s);
+		const AxesShownSnap axesVis = sceneAxesSnapshot(s);   // per raster, never one OR for all of them
 		const bool barVis  = colorbarVisible(s);
 		sceneAxesSetShown(s, false);             // decoration only — never part of the georeferenced pixels
 		if (s->bar)  setColorbarVisible(s, false);
@@ -29678,7 +29678,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 			}
 		}
 
-		sceneAxesSetShown(s, axesVis);
+		sceneAxesRestore(s, axesVis);
 		if (s->bar)  setColorbarVisible(s, barVis);
 		if (!wasFlat) sceneSetFlat2D(s, false);
 		s->widget->renderWindow()->Render();
@@ -30286,6 +30286,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	auto *fGrav   = new std::function<void()>();    // show Gravity
 	auto *fPlates = new std::function<void()>();    // show Plates
 	auto *fMBSys  = new std::function<void()>();    // show MB-System
+	auto *fSar    = new std::function<void()>();    // show GMTSAR
 	// Copernicus and Ocean Color used to be here as a seventh discipline and a tool below it. They
 	// are satellite data services, and they live in the Satellite menu now (built further down).
 
@@ -30298,7 +30299,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		});
 	};
 
-	*fGroup = [mGphy, s, fTsu, fSeis, fMag, fGrav, fPlates, fMBSys]() {
+	*fGroup = [mGphy, s, fTsu, fSeis, fMag, fGrav, fPlates, fMBSys, fSar]() {
 		mGphy->clear();
 		mGphy->setTitle("Geophysics ▾");
 		s->gphyPage = 0;                        // back at the discipline chooser
@@ -30308,6 +30309,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		mGphy->addAction("Gravity",    [fGrav]()   { (*fGrav)(); });
 		mGphy->addAction("Plates",     [fPlates]() { (*fPlates)(); });
 		mGphy->addAction("MB-System",  [fMBSys]()  { (*fMBSys)(); });
+		mGphy->addAction("GMTSAR",     [fSar]()    { (*fSar)(); });
 	};
 	// Clicking the "Geophysics ›" row ITSELF (not one of the disciplines in its flyout) goes back to
 	// the neutral chooser — menubar title "Geophysics ▾", all disciplines listed. Qt never emits
@@ -30338,11 +30340,11 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	auto gphyPageId = [](const QString &n) {
 		return n == "Tsunamis" ? 1 : n == "Seismology" ? 2 : n == "Magnetics" ? 3 :
 		       n == "Gravity"  ? 4 : n == "Plates"     ? 5 :
-		       n == "MB-System" ? 7 : 0;   // 6 was Copernicus, now a Satellite entry; never reused
+		       n == "MB-System" ? 7 : n == "GMTSAR" ? 8 : 0;   // 6 was Copernicus, now a Satellite entry; never reused
 	};
 	// Put the menu on a given page from OUTSIDE the menu code — what session restore calls. Same
 	// lambdas the menu items themselves run, so there is no second way to switch page.
-	s->gphySetPage = [fGroup, fTsu, fSeis, fMag, fGrav, fPlates, fMBSys](int p) {
+	s->gphySetPage = [fGroup, fTsu, fSeis, fMag, fGrav, fPlates, fMBSys, fSar](int p) {
 		switch (p) {
 			case 1: (*fTsu)();    break;
 			case 2: (*fSeis)();   break;
@@ -30350,12 +30352,13 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 			case 4: (*fGrav)();   break;
 			case 5: (*fPlates)(); break;
 			case 7: (*fMBSys)();  break;
+			case 8: (*fSar)();    break;
 			// 6 was Copernicus. A session saved on that page reopens on the chooser, below.
 			default: (*fGroup)(); break;
 		}
 	};
 
-	auto backItem = [mGphy, s, gphyPageId, fTsu, fSeis, fMag, fGrav, fPlates, fMBSys](const QString &current) {
+	auto backItem = [mGphy, s, gphyPageId, fTsu, fSeis, fMag, fGrav, fPlates, fMBSys, fSar](const QString &current) {
 		s->gphyPage = gphyPageId(current);      // every page announces itself here, once
 		// Single entry — itself a submenu, direct access to any OTHER discipline (skips the
 		// chooser page entirely). Each fXxx already reopens the menu itself at its end.
@@ -30366,6 +30369,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		if (current != "Gravity")    mBack->addAction("Gravity",    [fGrav]()   { (*fGrav)();   });
 		if (current != "Plates")     mBack->addAction("Plates",     [fPlates]() { (*fPlates)(); });
 		if (current != "MB-System")  mBack->addAction("MB-System",  [fMBSys]()  { (*fMBSys)();  });
+		if (current != "GMTSAR")     mBack->addAction("GMTSAR",     [fSar]()    { (*fSar)();    });
 		mGphy->addSeparator();
 	};
 
@@ -30731,22 +30735,68 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// this one). Each entry is built only with its IGMT_WITH_* switch in CMakeLists.txt. This page is
 	// shown with mGphy->popup() (reopen), and a window shown while that popup still holds its grab
 	// does not come up (see "Compute Euler pole…" above) — so each open waits for the grab to go.
-	*fMBSys = [mGphy, win, s, backItem, reopen]() {
+	auto afterPopup = [win](std::function<void()> open) {
+		auto tries = std::make_shared<int>(0);
+		auto step = std::make_shared<std::function<void()>>();
+		*step = [win, open, tries, step]() {
+			if (QApplication::activePopupWidget() && ++*tries < 30) {
+				QTimer::singleShot(30, win, *step);
+				return;
+			}
+			open();
+		};
+		QTimer::singleShot(0, win, *step);
+	};
+
+	// "Install as plugin": a GMT supplement from its repository's rolling release (`<name>-latest`)
+	// into <iGMT>/<name>, then loaded into GMT -- the ONE install entry for every GMT plugin iGMT
+	// offers (src/gmtplugin.jl, install_plugin): MB-System (GMTVTK_PLUGIN_MBSYSTEM) and GMTSAR
+	// (GMTVTK_PLUGIN_GMTSAR). Linux and macOS, and Windows when the host's GMT is GMT_jll's (the host
+	// says so: g_pluginOffered). Compiled everywhere, shown only where it applies, so every build
+	// checks it. "Install as plugin" until the plugin is installed and passes its self-test, then
+	// nothing to do -- until the start-up check finds a newer one on the release: "Update the
+	// plugin", the same install. A page is rebuilt every time it is opened, so the state here also
+	// covers a window that was already open during the install or the check. Returns whether it
+	// added anything.
+	auto pluginEntry = [mGphy, win, s, afterPopup](int which, const char *title, const char *juliaCall) {
+		if (!g_pluginOffered[which]) {
+			if (g_pluginState[which] != 3) return false;
+			mGphy->addSeparator();
+			mGphy->addAction(QString("%1 modules installed with GMT").arg(title))->setEnabled(false);
+			return true;
+		}
+		mGphy->addSeparator();
+		if (g_pluginState[which] == 1) {
+			mGphy->addAction(QString("%1 plugin installed").arg(title))->setEnabled(false);
+			return true;
+		}
+		const QString label = g_pluginState[which] == 2 ? "Update the plugin" : "Install as plugin";
+		const QString busy = QString(g_pluginState[which] == 2 ? "Downloading and installing the new %1 plugin..."
+		                                                       : "Downloading and installing the %1 plugin...").arg(title);
+		const std::string call = juliaCall;
+		mGphy->addAction(label, [win, s, afterPopup, label, busy, call]() {
+			afterPopup([win, s, label, busy, call]() {
+				if (!g_juliaEval) {
+					QMessageBox::warning(win, label, "This needs the Julia/GMT host.");
+					return;
+				}
+				showBusyDialog(busy.toUtf8().constData());
+				static std::vector<char> buf(1 << 16);
+				const int r = g_juliaEval(s, call.c_str(), buf.data(), (int)buf.size());
+				closeBusyDialog();
+				QString txt = QString::fromUtf8(buf.data(), r < 0 ? -r : r).trimmed();
+				if (txt.isEmpty()) txt = "No output.";
+				if (r < 0) QMessageBox::warning(win, label, txt);
+				else       QMessageBox::information(win, label, txt);
+			});
+		});
+		return true;
+	};
+
+	*fMBSys = [mGphy, win, s, backItem, reopen, afterPopup, pluginEntry]() {
 		mGphy->clear();
 		mGphy->setTitle("MB-System ▾");
 		backItem("MB-System");
-		auto afterPopup = [win](std::function<void()> open) {
-			auto tries = std::make_shared<int>(0);
-			auto step = std::make_shared<std::function<void()>>();
-			*step = [win, open, tries, step]() {
-				if (QApplication::activePopupWidget() && ++*tries < 30) {
-					QTimer::singleShot(30, win, *step);
-					return;
-				}
-				open();
-			};
-			QTimer::singleShot(0, win, *step);
-		};
 		int n = 0;
 #ifdef GMTVTK_MBEDIT
 		// Every one of them parks in THIS window's Scene Objects (host parkScene).
@@ -30911,43 +30961,22 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		});
 		++n;
 #endif
-		// "Install as plugin": MB-System's GMT supplement from the joa-quim/MB-System `mbsystem-latest`
-		// release into <iGMT>/mbsystem, then loaded into GMT (InteractiveGMT.install_mbsystem_plugin(),
-		// src/mbplugin.jl). Linux and macOS, and Windows when the host's GMT is GMT_jll's (the host says
-		// so: g_mbPluginOffered); an installed Windows GMT brings the plugin itself. Compiled everywhere,
-		// shown only where it applies, so every build checks it.
-		if (g_mbPluginOffered) {
-			// "Install as plugin" until the plugin is installed and passes its self-test, then nothing to
-			// do -- until the start-up check finds a newer one on the release: "Update the plugin", the
-			// same install. This group is rebuilt every time it is opened, so the state here also covers
-			// a window that was already open during the install or the check.
-			mGphy->addSeparator();
-			if (g_mbPluginState == 1) {
-				mGphy->addAction("MB-System plugin installed")->setEnabled(false);
-			}
-			else {
-				const QString label = g_mbPluginState == 2 ? "Update the plugin" : "Install as plugin";
-				mGphy->addAction(label, [win, s, afterPopup, label]() {
-					afterPopup([win, s, label]() {
-						if (!g_juliaEval) {
-							QMessageBox::warning(win, label, "This needs the Julia/GMT host.");
-							return;
-						}
-						showBusyDialog(label == "Update the plugin" ? "Downloading and installing the new MB-System plugin..."
-						                                            : "Downloading and installing the MB-System plugin...");
-						static std::vector<char> buf(1 << 16);
-						const int r = g_juliaEval(s, "InteractiveGMT.install_mbsystem_plugin()", buf.data(), (int)buf.size());
-						closeBusyDialog();
-						QString txt = QString::fromUtf8(buf.data(), r < 0 ? -r : r).trimmed();
-						if (txt.isEmpty()) txt = "No output.";
-						if (r < 0) QMessageBox::warning(win, label, txt);
-						else       QMessageBox::information(win, label, txt);
-					});
-				});
-			}
-			++n;
-		}
+		// MB-System's GMT supplement, from the joa-quim/MB-System `mbsystem-latest` release. An installed
+		// Windows GMT brings it itself.
+		if (pluginEntry(GMTVTK_PLUGIN_MBSYSTEM, "MB-System", "InteractiveGMT.install_mbsystem_plugin()")) ++n;
 		if (n == 0) mGphy->addAction("(no MB-System tool in this build)")->setEnabled(false);
+		reopen();
+	};
+
+	// GMTSAR discipline -- for now only its GMT supplement (the InSAR processing modules), from the
+	// joa-quim/gmtsar `gmtsar-latest` release. No Windows GMT brings it, but the archive is built
+	// against GMT_jll, so on Windows it is offered only when the host's GMT is GMT_jll's.
+	*fSar = [mGphy, backItem, reopen, pluginEntry]() {
+		mGphy->clear();
+		mGphy->setTitle("GMTSAR ▾");
+		backItem("GMTSAR");
+		if (!pluginEntry(GMTVTK_PLUGIN_GMTSAR, "GMTSAR", "InteractiveGMT.install_gmtsar_plugin()"))
+			mGphy->addAction("GMTSAR modules not in this GMT")->setEnabled(false);
 		reopen();
 	};
 

@@ -44,7 +44,7 @@ there (`GMT.gmt_restart`) and deletes the directory. No `gmt.conf` is left anywh
 
 | | |
 |---|---|
-| Julia | `src/mbplugin.jl` — `install_mbsystem_plugin`, activation at start-up from `__init__` |
-| Menu | `deps/src/70_window.cpp`, Geophysics ▸ MB-System (shown on Linux and macOS) |
-| Tests | `test/test-mbplugin-unit.jl` |
+| Julia | `src/gmtplugin.jl` — `install_mbsystem_plugin` (= `install_plugin(MBSYSTEM_PLUGIN)`), activation at start-up from `__init__` |
+| Menu | `deps/src/70_window.cpp`, Geophysics ▸ MB-System (`pluginEntry`, shown on Linux and macOS) |
+| Tests | `test/test-gmtplugin-unit.jl` |
 | Archive | joa-quim/MB-System `.github/workflows/build.yml`, job `plugin` |

@@ -5057,6 +5057,26 @@ static inline void sceneAxesSetShown(Scene *s, bool on) {
 	}
 }
 
+// EACH raster's own axes intent, saved and put back exactly — for a capture that hides every set for
+// one shot. Restoring through sceneAxesSetShown(s, anyShown) is wrong: it switches the intent ON for
+// EVERY raster, hidden ones included, and since a container row's checkbox ORs its axes intent, every
+// loaded grid came back checked ("Plot with GMT.jl activates all loaded grids").
+struct AxesShownSnap { bool base = false; std::vector<bool> ex; };
+static AxesShownSnap sceneAxesSnapshot(Scene *s) {
+	AxesShownSnap snap;
+	if (!s) return snap;
+	snap.base = s->baseAxes.shown;
+	snap.ex.reserve(s->extras.size());
+	for (auto &ex : s->extras) snap.ex.push_back(ex.ax.shown);
+	return snap;
+}
+static void sceneAxesRestore(Scene *s, const AxesShownSnap &snap) {
+	if (!s) return;
+	s->baseAxes.shown = snap.base;
+	for (size_t i = 0; i < s->extras.size() && i < snap.ex.size(); ++i)
+		s->extras[i].ax.shown = snap.ex[i];
+}
+
 // Is a raster's OWN handle showing? An axes set is a property of its container, so it lives and dies
 // with it — the group-uncheck law, applied to the one child row that used to escape it because the
 // axes were window-level and there was only one of them to gate.

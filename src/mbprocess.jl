@@ -101,7 +101,7 @@ end
 _mbp_opt(flag::String, val::String)::String = occursin(' ', val) ? "-$flag\"$val\"" : "-$flag$val"
 
 # Run MB-System module `mod` with `args` through GMT's own entry point (GMT.jl's gmt() appends output
-# options the MB modules reject — see mbplugin.jl), capturing what it writes to stdout and stderr:
+# options the MB modules reject — see gmtplugin.jl), capturing what it writes to stdout and stderr:
 # mbset and mbprocess report with GMT_Report and plain fprintf alike. Returns (status, report).
 function _mbp_module(mod::String, args::Vector{String})::Tuple{Int,String}
 	api = GMT.G_API[]

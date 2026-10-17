@@ -159,7 +159,7 @@ include("gmtedit.jl")    # Geophysics > Magnetics > gmtedit: the MGD77 track edi
 # Julia side (`mbedit`, exported from the file itself). The C side is switched by IGMT_WITH_MBEDIT in
 # deps/CMakeLists.txt; its exports are optional (_LIB_OPTIONAL), so either side may be off alone.
 isfile(joinpath(@__DIR__, "mbedit.jl")) && include("mbedit.jl")
-include("mbplugin.jl")   # Geophysics > MB-System > Install as plugin: MB-System's GMT supplement from GitHub
+include("gmtplugin.jl")  # Geophysics > MB-System / GMTSAR > Install as plugin: their GMT supplements from GitHub
 include("gmtcli.jl")     # the `gmtjl` command line launcher (GMT.gmt_cli), written once the first window is up
 include("mbprocess.jl")  # Geophysics > MB-System > Process swath data: mbset + mbprocess behind a dialog
 # EXPERIMENTAL sound velocity tool (MB-System's mbvelocitytool, deps/src/mbvelocitytool/), switched the
@@ -271,17 +271,17 @@ function __init__()
 	catch e
 		@debug "InteractiveGMT: could not set the GDAL threading options (harmless)" exception=(e,)
 	end
-	# The MB-System GMT plugin, when Geophysics > MB-System > Install as plugin has put it in
-	# <root>/mbsystem: GMT only loads plugins when a session is created, so GMT.jl's session is
-	# re-created with it (mbplugin.jl). Linux and macOS, like the menu item, and Windows when GMT.jl
-	# runs GMT_jll's GMT (an installed Windows GMT brings its own). One isfile() when it is not
-	# installed. When it is, a newer one on the release is looked for once the first window is up.
-	if _mbplugin_applies()
+	# The GMT plugins (MB-System, GMTSAR), when Geophysics > <discipline> > Install as plugin has put
+	# them in <root>/<name>: GMT only loads plugins when a session is created, so GMT.jl's session is
+	# re-created with them (gmtplugin.jl). Linux and macOS, like the menu items, and Windows when GMT.jl
+	# runs GMT_jll's GMT. One isfile() per plugin when none is installed. When one is, a newer one on
+	# the release is looked for once the first window is up.
+	if _plugin_applies()
 		try
-			_mbplugin_activate_installed()
-			_mbplugin_schedule_update_check()
+			_plugin_activate_installed()
+			_plugin_schedule_update_check()
 		catch e
-			@tool_error "InteractiveGMT: could not load the MB-System plugin." exception=(e,)
+			@tool_error "InteractiveGMT: could not load the GMT plugins." exception=(e,)
 		end
 	end
 	# ONLY load the DLL here. The dlopen handle + dlsym pointers are runtime values that can't be
@@ -292,7 +292,7 @@ function __init__()
 	# error on first use.
 	try
 		_load_library()
-		_mbplugin_push_ready()      # activated above, before the viewer existed (mbplugin.jl)
+		_plugin_push_ready()        # activated above, before the viewer existed (gmtplugin.jl)
 		# Global UI assets the viewer bakes into every window's toolbar at build time, so they must be
 		# set BEFORE the first window opens — cheap static path pushes, no GMT inference (unlike the
 		# callbacks, which stay lazy in _ensure_callbacks). Guarded: a DLL missing the export must not

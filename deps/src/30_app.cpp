@@ -199,16 +199,19 @@ static double prefLineWidthPx(Scene *s) {
 typedef int (*JuliaEvalFn)(void *scene, const char *cmd, char *outbuf, int outcap);
 static JuliaEvalFn g_juliaEval = nullptr;
 
-// The MB-System GMT plugin's state (src/mbplugin.jl, via gmtvtk_set_mbplugin_ready): 0 = not installed
-// (Geophysics > MB-System offers "Install as plugin"), 1 = installed, loaded and tested, 2 = installed,
-// and a newer one is on the release ("Update the plugin").
-static int g_mbPluginState = 0;
-// Is the plugin offered on this system at all (gmtvtk_set_mbplugin_offered)? Linux and macOS always;
-// Windows only when the host's GMT is GMT_jll's (an installed Windows GMT brings its own).
+// The GMT plugins iGMT installs (src/gmtplugin.jl), by the index the host uses for them: their
+// Geophysics page offers "Install as plugin" (70_window.cpp, pluginEntry).
+enum { GMTVTK_PLUGIN_MBSYSTEM = 0, GMTVTK_PLUGIN_GMTSAR = 1, GMTVTK_PLUGIN_COUNT };
+// Each one's state (via gmtvtk_set_plugin_state): 0 = not installed ("Install as plugin"), 1 = installed,
+// loaded and tested, 2 = installed, and a newer one is on the release ("Update the plugin"), 3 = not
+// offered here, but the GMT in use already has its modules ("<name> modules installed with GMT").
+static int g_pluginState[GMTVTK_PLUGIN_COUNT] = {0, 0};
+// Is it offered on this system at all (gmtvtk_set_plugin_offered)? Linux and macOS always; Windows only
+// when the host's GMT is GMT_jll's (the archives are built against it).
 #if defined(Q_OS_LINUX) || defined(Q_OS_MACOS)
-static bool g_mbPluginOffered = true;
+static bool g_pluginOffered[GMTVTK_PLUGIN_COUNT] = {true, true};
 #else
-static bool g_mbPluginOffered = false;
+static bool g_pluginOffered[GMTVTK_PLUGIN_COUNT] = {false, false};
 #endif
 
 // File drag-and-drop: a window receives a dropped file and hands its local path to Julia

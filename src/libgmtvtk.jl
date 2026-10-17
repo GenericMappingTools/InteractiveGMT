@@ -298,8 +298,8 @@ const _LIB_SYMBOLS = (
 # A symbol graduates from here into `_LIB_SYMBOLS` once its C side is on master — at that point every
 # build really does have it, and a library without it really is stale.
 const _LIB_OPTIONAL = (
-	:gmtvtk_set_mbplugin_ready,  # MB-System plugin 0 install / 1 installed / 2 update available (mbplugin.jl)
-	:gmtvtk_set_mbplugin_offered,  # is the plugin offered here (Windows: only with GMT_jll) (mbplugin.jl)
+	:gmtvtk_set_plugin_state,    # a GMT plugin: 0 install / 1 installed / 2 update available (gmtplugin.jl)
+	:gmtvtk_set_plugin_offered,  # is that plugin offered here (Windows: only with GMT_jll) (gmtplugin.jl)
 	:gmtvtk_set_mbprocess_callback, :gmtvtk_mbprocess_open, :gmtvtk_mbprocess_test,   # MB-System > mbprocess (mbprocess.jl)
 	:gmtvtk_mbprocess_set_par, :gmtvtk_mbprocess_open_h, :gmtvtk_mbprocess_parked_test,
 	:gmtvtk_save_png_h,        # movie tool: render ONE window to PNG (gmtvtk_save_png is the app-wide one)

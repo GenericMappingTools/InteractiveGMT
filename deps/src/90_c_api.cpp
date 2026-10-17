@@ -3632,16 +3632,19 @@ GMTVTK_API int gmtvtk_wcd_close(void) {
 }
 #endif // GMTVTK_WCDVIEWER
 
-// The MB-System GMT plugin's state (src/mbplugin.jl): 0 = not installed ("Install as plugin"),
-// 1 = installed and passed its self-test ("MB-System plugin installed"), 2 = installed and a newer one
-// is on the release ("Update the plugin").
-GMTVTK_API void gmtvtk_set_mbplugin_ready(int ready) {
-	g_mbPluginState = (ready >= 0 && ready <= 2) ? ready : 0;
+// A GMT plugin's state (src/gmtplugin.jl; `which` = GMTVTK_PLUGIN_MBSYSTEM / _GMTSAR): 0 = not installed
+// ("Install as plugin"), 1 = installed and passed its self-test ("<name> plugin installed"), 2 = installed
+// and a newer one is on the release ("Update the plugin"), 3 = not offered here but the GMT in use
+// already has its modules ("<name> modules installed with GMT").
+GMTVTK_API void gmtvtk_set_plugin_state(int which, int state) {
+	if (which < 0 || which >= GMTVTK_PLUGIN_COUNT) return;
+	g_pluginState[which] = (state >= 0 && state <= 3) ? state : 0;
 }
 
-// Is the plugin offered here at all (Windows: only with GMT_jll's GMT)? 1 = yes.
-GMTVTK_API void gmtvtk_set_mbplugin_offered(int on) {
-	g_mbPluginOffered = on != 0;
+// Is that plugin offered here at all (Windows: only with GMT_jll's GMT)? 1 = yes.
+GMTVTK_API void gmtvtk_set_plugin_offered(int which, int on) {
+	if (which < 0 || which >= GMTVTK_PLUGIN_COUNT) return;
+	g_pluginOffered[which] = on != 0;
 }
 
 // Geophysics > MB-System > Process swath data (72_mbprocess.cpp): the host's mbset / mbprocess
@@ -11876,7 +11879,7 @@ GMTVTK_API int gmtvtk_capture_rect_rgb(void *handle, double w, double e, double 
                                         unsigned char **outRgb, int *outW, int *outH) {
 	Scene *s = static_cast<Scene*>(handle);
 	if (!sceneAlive(s) || !s->ren || !s->widget || !outRgb || !outW || !outH) return 0;
-	const bool axesVis = sceneAxesShown(s);
+	const AxesShownSnap axesVis = sceneAxesSnapshot(s);   // per raster, never one OR for all of them
 	const bool barVis  = colorbarVisible(s);
 	sceneAxesSetShown(s, false);   // decoration only — never part of the captured pixels (EVERY
 	                                // raster's own set, so none of them bleeds into the capture)
@@ -11948,7 +11951,7 @@ GMTVTK_API int gmtvtk_capture_rect_rgb(void *handle, double w, double e, double 
 		}
 		*outRgb = buf;
 	}
-	sceneAxesSetShown(s, axesVis);
+	sceneAxesRestore(s, axesVis);
 	if (s->bar)  setColorbarVisible(s, barVis);
 	for (auto *a : hiddenPolyLine) a->SetVisibility(1);
 	for (auto *a : hiddenPolyFill) a->SetVisibility(1);
