@@ -25,9 +25,12 @@ const _GEO_LINE_NAMES = Dict{String,String}(
 function _geo_dataset(kind::AbstractString, res::Symbol, W, E, S, N)
 	R = (W, E, S, N)
 	base, cls = occursin(':', kind) ? split(kind, ':'; limit = 2) : (kind, "")
-	D = base == "coast"   ? GMT.coast(R = R, D = res, M = true) :
-	    base == "borders" ? GMT.coast(R = R, D = res, N = String(cls), M = true) :
-	    base == "rivers"  ? GMT.coast(R = R, D = res, I = String(cls), M = true) : nothing
+	# `coast -M` dumps longitudes in -180..180 whatever -R says; GMT's FORMAT_GEO_OUT picks the range
+	# (+D = 0..360, D = -180..180) so a 0..360 view does not lose everything west of Greenwich.
+	par = (FORMAT_GEO_OUT = E > 180 ? "+D" : "D",)
+	D = base == "coast"   ? GMT.coast(R = R, D = res, M = true, par = par) :
+	    base == "borders" ? GMT.coast(R = R, D = res, N = String(cls), M = true, par = par) :
+	    base == "rivers"  ? GMT.coast(R = R, D = res, I = String(cls), M = true, par = par) : nothing
 	D === nothing && (@warn "geography: unknown feature kind '$kind'"; return nothing)
 	(D isa GMTdataset || (D isa Vector && !isempty(D))) || return nothing
 	# Segments that hold points only (a class with no feature in the region comes back as one empty
