@@ -729,6 +729,26 @@ GMTVTK_API int gmtvtk_add_overlay_ex4_h(void *handle, const double *xyz, int npt
 	return 1;
 }
 
+// A modal question over this window with TWO named answers: returns 0 for `first`, 1 for `second`, -1
+// when the box is closed without either. For a host decision that is the user's to make (drop.jl: split
+// a vector file into one handle per category, or keep it as one). `second` is the default button.
+GMTVTK_API int gmtvtk_ask_two_choices_h(void *handle, const char *title, const char *text,
+                                        const char *first, const char *second) {
+	Scene *s = static_cast<Scene*>(handle);
+	QWidget *parent = sceneAlive(s) ? static_cast<QWidget*>(s->win) : nullptr;
+	QMessageBox box(parent);
+	box.setIcon(QMessageBox::Question);
+	box.setWindowTitle(QString::fromUtf8(title ? title : ""));
+	box.setText(QString::fromUtf8(text ? text : ""));
+	QPushButton *a = box.addButton(QString::fromUtf8(first && first[0] ? first : "Yes"), QMessageBox::AcceptRole);
+	QPushButton *b = box.addButton(QString::fromUtf8(second && second[0] ? second : "No"), QMessageBox::RejectRole);
+	box.setDefaultButton(b);
+	box.exec();
+	if (box.clickedButton() == a) return 0;
+	if (box.clickedButton() == b) return 1;
+	return -1;
+}
+
 // Fill (on=1) or unfill the line overlay(s) called `name` — the host's door to the SAME
 // overlaySetFilled the "Fill polygons" menu item runs. Returns how many overlays matched.
 GMTVTK_API int gmtvtk_overlay_set_filled_h(void *handle, const char *name, int on) {

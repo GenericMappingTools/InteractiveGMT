@@ -1355,6 +1355,10 @@ function _drop_into(scene::Ptr{Cvoid}, D::GMTdataset, name; promote=false, sourc
 end
 function _drop_into(scene::Ptr{Cvoid}, D::Vector{<:GMTdataset}, name; promote=false, source="")
 	promote && return _promote_dataset(scene, D, name)
+	if _is_feature_set(D)
+		Dc = _clip_features_to_display(scene, D)
+		return Dc === nothing ? false : _add_features_to_scene(scene, Dc, name)
+	end
 	Dc = _clip_to_display(scene, D)
 	Dc === nothing ? false : _add_dataset_to_scene(scene, Dc, name)
 end
@@ -1402,7 +1406,11 @@ function _promote_dataset(scene::Ptr{Cvoid}, D, name)
 	# operation, one function; and an empty launcher is always reused, never replaced).
 	_promote_point_cloud(scene, D, name) && return true
 	_promote_for_vector(scene, D)
-	_add_dataset_to_scene(scene, D, name)                          # overlay -> stays in this window
+	if _is_feature_set(D)
+		_add_features_to_scene(scene, D, name)                      # one sub-handle per geometry
+	else
+		_add_dataset_to_scene(scene, D, name)                      # overlay -> stays in this window
+	end
 	return true
 end
 
@@ -1978,6 +1986,114 @@ function _add_dataset_to_scene(scene::Ptr{Cvoid}, D, name; groupName::AbstractSt
 	# coordinates are what the renderer needed, not what the data is.
 	ok != 0 && _attach_source_table(scene, nm, D, npts)
 	return ok != 0
+end
+
+# A vector FILE read through OGR (.gpkg/.shp/.kml/.geojson …) comes back one GMTdataset per GEOMETRY,
+# each carrying its feature's attribute record (`.attrib`). Its geometries are drawn ONE OVERLAY PER
+# CATEGORY (`_feature_category_key`), every category a sub-handle under ONE master handle named for the
+# file (SACRED_LAW.md, Scene Objects registration law). Never one handle per geometry: an OSM extract is
+# thousands of ways, and a row each buries the panel and slows every rebuild of it. A plain multisegment
+# table (no attribute records) keeps the single-overlay path: its segments are not features.
+_is_feature_set(D) = D isa AbstractVector{<:GMTdataset} && length(D) > 1 && any(s -> !isempty(s.attrib), D)
+
+# `_clip_to_display` for a feature set, with each geometry's attribute record kept. GMT's gmtselect
+# returns one segment per input segment but drops `.attrib`; the segment HEADER survives, so each
+# geometry is tagged with its index for the trip and its own header and record are put back after.
+const _FEATURE_TAG = "\x01iGMTfeature="
+function _clip_features_to_display(scene::Ptr{Cvoid}, D::Vector{<:GMTdataset})
+	hdr = String[String(s.header) for s in D]
+	for (i, s) in enumerate(D)
+		s.header = _FEATURE_TAG * string(i)
+	end
+	Dc = try
+		_clip_to_display(scene, D)
+	finally
+		for (i, s) in enumerate(D)
+			s.header = hdr[i]
+		end
+	end
+	Dc === nothing && return nothing
+	segs = Dc isa GMTdataset ? [Dc] : Dc
+	for s in segs
+		h = String(s.header)
+		startswith(h, _FEATURE_TAG) || continue
+		i = tryparse(Int, h[length(_FEATURE_TAG)+1:end])
+		(i === nothing || !(1 <= i <= length(D))) && continue
+		s.header = hdr[i]
+		s.attrib = D[i].attrib
+	end
+	return segs
+end
+
+# The attribute a feature set is split into categories by: OSM's `highway` (the road class) when the
+# records carry one, else the attribute with the FEWEST distinct values between 2 and 50 — a class
+# column, never a name or an id. `nothing` when no attribute qualifies (the file stays one overlay).
+_feature_attr(s, k::AbstractString)::String = (v = get(s.attrib, k, ""); v isa AbstractString ? String(strip(v)) : "")
+function _feature_category_key(D)::Union{Nothing,String}
+	any(s -> !isempty(_feature_attr(s, "highway")), D) && return "highway"
+	best, nbest = nothing, typemax(Int)
+	for k in sort!(collect(keys(D[1].attrib)))
+		u = Set{String}()
+		for s in D
+			v = _feature_attr(s, k)
+			isempty(v) || push!(u, v)
+			length(u) > 50 && break
+		end
+		(2 <= length(u) <= 50 && length(u) < nbest) && (best = k; nbest = length(u))
+	end
+	return best
+end
+
+# A geometry's own name, from its record ("" when it has none): the hover text and what the category
+# row's "Show names" plots, carried as the segment header (`_ds_segment_headers` makes it the info).
+const _FEATURE_NAME_KEYS = ("name", "NAME", "Name")
+function _feature_name(s)::String
+	for k in _FEATURE_NAME_KEYS
+		v = _feature_attr(s, k)
+		isempty(v) || return v
+	end
+	return ""
+end
+
+# More categories than this and the USER decides: every category is a handle, and a file with many
+# distinct values would flood the panel and slow every rebuild of it. Split, or keep the whole file as
+# ONE handle (the default answer). `_FEATURE_SPLIT_ANSWER` lets a test answer without a modal box.
+const _FEATURE_SPLIT_ASK = 10
+const _FEATURE_SPLIT_ANSWER = Ref{Union{Nothing,Bool}}(nothing)
+function _ask_feature_split(scene::Ptr{Cvoid}, gname::String, key::String, n::Int)::Bool
+	_FEATURE_SPLIT_ANSWER[] === nothing || return _FEATURE_SPLIT_ANSWER[]
+	_load_dialog_end()                   # never a busy spinner over a modal question (see the netCDF picker)
+	r = ccall(_fn(:gmtvtk_ask_two_choices_h), Cint, (Ptr{Cvoid}, Cstring, Cstring, Cstring, Cstring), scene,
+	          "Open $gname",
+	          "'$gname' has $n different values of '$key'.\n\n" *
+	          "Split it into one handle per $key value ($n handles), or keep it all in a single handle?",
+	          "Split into $n handles", "Single handle")
+	return r == 0
+end
+
+# Add a feature set: one overlay per category, each named for its category and tagged with the file's
+# name, so they fold under its master handle. Each goes through `_add_dataset_to_scene` — the SAME add
+# every dropped table uses (classifier, CRS crossing, packing, colours).
+function _add_features_to_scene(scene::Ptr{Cvoid}, D, name)::Bool
+	segs = D isa GMTdataset ? [D] : D
+	gname = String(name === nothing ? "" : name)
+	key = _feature_category_key(segs)
+	key === nothing && return _add_dataset_to_scene(scene, segs, gname)
+	mode = _drop_overlay_kind(segs)
+	cats = Dict{String,Vector{eltype(segs)}}()
+	for s in segs
+		nm = _feature_name(s)
+		isempty(nm) || (s.header = nm)
+		c = _feature_attr(s, key)
+		push!(get!(cats, isempty(c) ? "(no $key)" : c, eltype(segs)[]), s)
+	end
+	(length(cats) > _FEATURE_SPLIT_ASK && !_ask_feature_split(scene, gname, key, length(cats))) &&
+		return _add_dataset_to_scene(scene, segs, gname; forceMode = mode)
+	ok = false
+	for c in sort!(collect(keys(cats)))
+		ok |= _add_dataset_to_scene(scene, cats[c], c; groupName = gname, forceMode = mode)
+	end
+	return ok
 end
 
 # How many numeric columns the source table has (the widest segment; a ragged multisegment table is

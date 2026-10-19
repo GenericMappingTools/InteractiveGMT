@@ -2581,6 +2581,32 @@ static std::function<void(const QPoint&)> textBatchMenu(Scene *s, const std::str
 //
 // So: anything reached from a row handler queues the rebuild through here. Requests coalesce, and
 // the timer is owned by the window, so a closed window never fires one.
+// THE ROWS ABOVE A CLICKED ROW FOLLOW IT, IN PLACE (SACRED_LAW.md, group-uncheck law, read upwards): each
+// group above `item` gets the OR of its own rows' boxes, nothing is deleted or rebuilt. A click used to
+// queue a whole-panel rebuild for this, which tore the tree down and made every row blink on every
+// show/hide. The group's box is set under a signal blocker: its own toggle would cascade back DOWN into
+// the rows the user just set. The two things a rebuild re-derives from what is on screen are re-derived
+// here too — the Shading dock's flat box (which layer is showing) and the Swipe button (raster count).
+static void objRowsAboveFollow(Scene *s, QTreeWidget *tree, QTreeWidgetItem *item) {
+	if (!s || !sceneAlive(s) || !tree || !item) return;
+	auto boxOf = [tree](QTreeWidgetItem *it) -> QCheckBox* {
+		QWidget *w = tree->itemWidget(it, 0);
+		return w ? w->findChild<QCheckBox*>() : nullptr;
+	};
+	for (QTreeWidgetItem *p = item->parent(); p; p = p->parent()) {
+		QCheckBox *pb = boxOf(p);
+		if (!pb) continue;
+		bool any = false;
+		for (int i = 0; i < p->childCount() && !any; ++i)
+			if (QCheckBox *cb = boxOf(p->child(i))) any = cb->isChecked();
+		if (pb->isChecked() == any) continue;
+		const QSignalBlocker block(pb);
+		pb->setChecked(any);
+	}
+	if (s->syncFlatBox) s->syncFlatBox();
+	swipeRefreshAvailability(s);
+}
+
 static void sceneQueueRebuildObjects(Scene *s) {
 	if (!s || !sceneAlive(s) || s->objRebuildQueued) return;
 	QObject *ctx = s->win ? static_cast<QObject*>(s->win)
@@ -2702,13 +2728,6 @@ static void rebuildSceneObjects(Scene *s) {
 			onToggle(on);
 			if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 		});
-		// THE ROWS ABOVE FOLLOW (SACRED_LAW.md, group-uncheck law, read upwards): a group's box is the
-		// OR of its rows, so it is recomputed after the USER changes one — checking the bathymetry left
-		// its tsunami file row unchecked, because nothing rebuilt the panel. On `clicked`, the user's act,
-		// NEVER on `toggled`: code sets boxes too (a slice, a sync), and a rebuild per programmatic
-		// toggle rebuilt the whole panel at every Aquamoto step. Queued and coalesced.
-		QObject::connect(cb, &QCheckBox::clicked, [s](bool) { sceneQueueRebuildObjects(s); });
-
 		QLabel *icon = new QLabel(row); icon->setPixmap(makeObjectIcon(iconKind));
 		ClickableLabel *text = new ClickableLabel(label, row);   // left-click -> properties
 		if (!tip.isEmpty()) { icon->setToolTip(tip); text->setToolTip(tip); }
@@ -2727,6 +2746,12 @@ static void rebuildSceneObjects(Scene *s) {
 		QTreeWidgetItem *item = new QTreeWidgetItem();
 		if (curParent) curParent->addChild(item); else tree->addTopLevelItem(item);
 		tree->setItemWidget(item, 0, row);
+		// THE ROWS ABOVE FOLLOW (SACRED_LAW.md, group-uncheck law, read upwards): a group's box is the
+		// OR of its rows, so it is recomputed after the USER changes one — checking the bathymetry left
+		// its tsunami file row unchecked. On `clicked`, the user's act, NEVER on `toggled`: code sets
+		// boxes too (a slice, a sync, a group's cascade). In place — objRowsAboveFollow — never a rebuild.
+		QTreeWidget *t = tree;
+		QObject::connect(cb, &QCheckBox::clicked, [s, t, item](bool) { objRowsAboveFollow(s, t, item); });
 	};
 
 	// beginGroupHandle / endGroup: a collapsible PARENT node that is ITSELF a full handle — its header
@@ -2790,8 +2815,9 @@ static void rebuildSceneObjects(Scene *s) {
 				if (tl.groupName == gname && tl.actor) tl.actor->SetVisibility(on ? 1 : 0);
 			if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 		});
-		// the groups above follow — on the USER's click only (see makeRow)
-		QObject::connect(cb, &QCheckBox::clicked, [s](bool) { sceneQueueRebuildObjects(s); });
+		// the groups above follow — on the USER's click only, in place (see makeRow)
+		QTreeWidget *t = tree;
+		QObject::connect(cb, &QCheckBox::clicked, [s, t, grp](bool) { objRowsAboveFollow(s, t, grp); });
 
 		QLabel *icon = new QLabel(row); icon->setPixmap(makeObjectIcon(iconKind));
 		ClickableLabel *text = new ClickableLabel(name, row);
