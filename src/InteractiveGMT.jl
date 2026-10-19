@@ -189,6 +189,7 @@ include("bandslist.jl")  # Image > Load Bands: multiband/.vrt band picker (port 
 include("RemoteS/RemoteS.jl") # submodule InteractiveGMT.RemoteS: port of RemoteS.jl (indices, Landsat, MODIS L2, orbits)
 include("swot.jl")      # Satellite > SWOT: PO.DAAC L2 search/download/grid (a Remote sensing dialog tool)
 include("RemoteS/remotes_gui.jl") # Satellite > Remote sensing: the dialogs over that submodule
+include("crsselect.jl")   # the Coordinate Reference System selector (PROJ catalogue; 73_crsselect.cpp)
 
 export gmtscript, gmtreplay,
        view_grid, view_image, view_points, view_fv, view_demo, iview,
@@ -198,7 +199,8 @@ export gmtscript, gmtreplay,
        xyplot, clear!, profile_to_xyplot, xtime!, logscale!, stickplot, xyinfo!, xynowcross!,
        QtFigure, QtPoints, QtFV, QtImage, QtEmpty, QtXYPlot, rtp3d, shapenc, isoc2shapenc, shapenc2isoc,
        gmtedit, mbgrid, cubegrid, cubegrid_all, tsushade, tsupbr, aqua_shade_image,
-       TLE, Satellite, read_tle, propagate, propagate_ecef, subpoint, groundtrack, plot_groundtrack!
+       TLE, Satellite, read_tle, propagate, propagate_ecef, subpoint, groundtrack, plot_groundtrack!,
+       crs_select
 
 # --- precompile (ALL of it lives HERE, via PrecompileTools — never hidden in other files) ---
 # Callbacks are thin invokelatest trampolines registered lazily on first window open

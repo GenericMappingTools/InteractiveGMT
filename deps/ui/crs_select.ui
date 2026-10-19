@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>CrsSelect</class>
+ <widget class="QDialog" name="CrsSelect">
+  <property name="geometry">
+   <rect><x>0</x><y>0</y><width>780</width><height>860</height></rect>
+  </property>
+  <property name="windowTitle">
+   <string>Coordinate Reference System Selector</string>
+  </property>
+  <widget class="QLabel" name="filterLabel">
+   <property name="geometry"><rect><x>11</x><y>11</y><width>40</width><height>26</height></rect></property>
+   <property name="text"><string>Filter</string></property>
+  </widget>
+  <widget class="QLineEdit" name="filterEdit">
+   <property name="geometry"><rect><x>56</x><y>11</y><width>713</width><height>26</height></rect></property>
+   <property name="placeholderText"><string>Name or authority ID, e.g. UTM 29N or EPSG:3763</string></property>
+   <property name="clearButtonEnabled"><bool>true</bool></property>
+   <property name="toolTip"><string>Show only the systems whose name or authority ID contains every word typed here (case is ignored).</string></property>
+  </widget>
+  <widget class="QLabel" name="recentLabel">
+   <property name="geometry"><rect><x>11</x><y>47</y><width>500</width><height>22</height></rect></property>
+   <property name="font"><font><bold>true</bold></font></property>
+   <property name="text"><string>Recently Used Coordinate Reference Systems</string></property>
+  </widget>
+  <widget class="QTreeWidget" name="recentTree">
+   <property name="geometry"><rect><x>11</x><y>71</y><width>758</width><height>150</height></rect></property>
+   <property name="rootIsDecorated"><bool>false</bool></property>
+   <property name="alternatingRowColors"><bool>true</bool></property>
+   <property name="uniformRowHeights"><bool>true</bool></property>
+   <column><property name="text"><string>Coordinate Reference System</string></property></column>
+   <column><property name="text"><string>Authority ID</string></property></column>
+  </widget>
+  <widget class="QLabel" name="predefLabel">
+   <property name="geometry"><rect><x>11</x><y>231</y><width>400</width><height>22</height></rect></property>
+   <property name="font"><font><bold>true</bold></font></property>
+   <property name="text"><string>Predefined Coordinate Reference Systems</string></property>
+  </widget>
+  <widget class="QCheckBox" name="hideDeprecated">
+   <property name="geometry"><rect><x>620</x><y>231</y><width>149</width><height>22</height></rect></property>
+   <property name="text"><string>Hide deprecated CRSs</string></property>
+   <property name="toolTip"><string>Leave out the systems the authority has marked as deprecated (superseded by a newer definition).</string></property>
+  </widget>
+  <widget class="QTreeWidget" name="crsTree">
+   <property name="geometry"><rect><x>11</x><y>255</y><width>758</width><height>320</height></rect></property>
+   <property name="alternatingRowColors"><bool>true</bool></property>
+   <property name="uniformRowHeights"><bool>true</bool></property>
+   <column><property name="text"><string>Coordinate Reference System</string></property></column>
+   <column><property name="text"><string>Authority ID</string></property></column>
+  </widget>
+  <widget class="QTextBrowser" name="infoText">
+   <property name="geometry"><rect><x>11</x><y>585</y><width>374</width><height>227</height></rect></property>
+  </widget>
+  <widget class="QFrame" name="mapFrame">
+   <property name="geometry"><rect><x>395</x><y>585</y><width>374</width><height>227</height></rect></property>
+   <property name="frameShape"><enum>QFrame::StyledPanel</enum></property>
+   <property name="toolTip"><string>Area of use of the selected system (red), as declared by its authority.</string></property>
+  </widget>
+  <widget class="QDialogButtonBox" name="buttonBox">
+   <property name="geometry"><rect><x>11</x><y>822</y><width>758</width><height>28</height></rect></property>
+   <property name="standardButtons"><set>QDialogButtonBox::Cancel|QDialogButtonBox::Ok</set></property>
+  </widget>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

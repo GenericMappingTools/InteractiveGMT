@@ -22575,11 +22575,17 @@ public:
 // one the status-corner EPSG chip and the Geography-menu gate read), never from a second copy: the
 // .m reads Mirone's 'Proj4'/'ProjWKT' appdata for the same reason.
 // ============================================================================================
+// The CRS selector (73_crsselect.cpp, included after this fragment).
+static void crsPickAsync(QWidget *parent, const QString &initial,
+                         std::function<void(const QString &id, const QString &name)> done);
+
 class ProjectDialog {
 public:
 	QDialog *dlg = nullptr;
 	Scene *scn = nullptr;
 	QComboBox *projCb = nullptr;
+	int prevIdx = 0;          // the combo's row before "More..." was picked (back to it on Cancel)
+	QString lastPick;         // the last system taken from the selector, preselected next time
 	QPlainTextEdit *srcEdit = nullptr, *dstEdit = nullptr;
 	QLineEdit *rowsEdit = nullptr, *colsEdit = nullptr, *xincEdit = nullptr, *yincEdit = nullptr;
 	QRadioButton *rbNear = nullptr, *rbBilinear = nullptr, *rbCubic = nullptr, *rbSpline = nullptr;
@@ -22663,7 +22669,15 @@ public:
 					projCb->setItemData(idx, p.epsg > 0 ? QString("%1   (EPSG:%2)").arg(p.proj4).arg(p.epsg)
 					                                    : QString(p.proj4), Qt::ToolTipRole);
 			}
-			QObject::connect(projCb, QOverload<int>::of(&QComboBox::currentIndexChanged), d, [this]() {
+			// Last row: every system PROJ knows (EPSG, ESRI, IAU, IGNF, ...), through the CRS selector.
+			// A system picked there joins the list above this row, so it can be picked again directly.
+			projCb->addItem("More... (every PROJ system)");
+			projCb->setItemData(projCb->count() - 1, true, Qt::UserRole + 2);
+			projCb->setItemData(projCb->count() - 1,
+			                    "Choose among every coordinate reference system PROJ knows", Qt::ToolTipRole);
+			QObject::connect(projCb, QOverload<int>::of(&QComboBox::currentIndexChanged), d, [this, d]() {
+				if (projCb->currentData(Qt::UserRole + 2).toBool()) { pickFromCatalogue(d); return; }
+				prevIdx = projCb->currentIndex();
 				if (dstEdit) dstEdit->setPlainText(projCb->currentData().toString());
 			});
 		}
@@ -22679,11 +22693,37 @@ public:
 		}
 		if (srcEdit) srcEdit->setPlainText(src);
 
+		// The CRS selector's button, when the .ui has one ("push_crs"). Same door as the combo's
+		// "More..." row.
+		if (auto *b = d->findChild<QPushButton *>("push_crs"))
+			QObject::connect(b, &QPushButton::clicked, d, [this, d]() { pickFromCatalogue(d); });
+
 		for (QPushButton *b : d->findChildren<QPushButton *>()) { b->setAutoDefault(false); b->setDefault(false); }
 		if (auto *b = d->findChild<QPushButton *>("push_ok"))
 			QObject::connect(b, &QPushButton::clicked, d, [this, d]() { runProject(d); });
 
 		QObject::connect(d, &QObject::destroyed, d, [this]() { delete this; });
+	}
+
+	// "More...": the CRS selector. The pick becomes a combo row of its own (item data = its authority
+	// ID, which gdalwarp takes as a -t_srs as it is, plus its EPSG code when it is one, so runProject
+	// labels the result exactly as for the built-in rows). Cancel puts the combo back where it was.
+	void pickFromCatalogue(QDialog *d) {
+		crsPickAsync(d, lastPick, [this](const QString &id, const QString &name) {
+			QSignalBlocker block(projCb);
+			if (id.isEmpty()) { projCb->setCurrentIndex(prevIdx); return; }
+			lastPick = id;
+			int at = projCb->findData(id);
+			if (at < 0) {
+				at = projCb->count() - 1;              // just above "More..."
+				projCb->insertItem(at, QString("%1  (%2)").arg(name, id), id);
+				projCb->setItemData(at, id.startsWith("EPSG:") ? id.mid(5).toInt() : 0, Qt::UserRole + 1);
+				projCb->setItemData(at, id, Qt::ToolTipRole);
+			}
+			projCb->setCurrentIndex(at);
+			prevIdx = at;
+			if (dstEdit) dstEdit->setPlainText(id);
+		});
 	}
 
 	// gdalwarp's -r name for the checked radio (Mirone's own four).
@@ -26478,7 +26518,7 @@ static void sceneShowMessages(Scene *s, bool show) {
 
 // Build the status bar's right-hand corner: [globe EPSG:xxxx] [bubble], pinned there as ONE
 // permanent widget so the temporary-message readout keeps the rest of the bar to itself. The CRS
-// chip's dialog is not written yet — it reports so.
+// chip opens the CRS selector (73_crsselect.cpp).
 static void buildIGStatusBar(Scene *s, QMainWindow *win) {
 	QStatusBar *sb = win->statusBar();
 
@@ -26504,8 +26544,11 @@ static void buildIGStatusBar(Scene *s, QMainWindow *win) {
 
 	sb->addPermanentWidget(corner, 0);    // RIGHT corner, never hidden by a temporary message
 
+	// QGIS's corner button: the CRS selector, opened on the window's own system.
 	QObject::connect(crs, &QToolButton::clicked, [s]() {
-		if (s->win) s->win->statusBar()->showMessage("CRS manager — not written yet", 3000);
+		if (!s->win) return;
+		crsPickAsync(s->win, s->crsEpsg > 0 ? QString("EPSG:%1").arg(s->crsEpsg) : QString(),
+		             [](const QString &, const QString &) {});
 	});
 	QObject::connect(msg, &QToolButton::clicked, [s]() {
 		sceneShowMessages(s, !(s->msgDock && s->msgDock->isVisible()));

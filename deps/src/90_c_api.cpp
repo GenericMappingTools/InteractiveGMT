@@ -7340,6 +7340,27 @@ GMTVTK_API const char *gmtvtk_active_grid_name_h(void *handle) {
 	return out.c_str();
 }
 
+// The CRS selector (73_crsselect.cpp): its one data callback (src/crsselect.jl). nullptr to detach.
+GMTVTK_API void gmtvtk_set_crs_select_callback(JuliaCrsFn fn) {
+	g_juliaCrs = fn;
+}
+
+// Open the CRS selector, modal, over the window `handle` (NULL = no parent), `initial` preselected.
+// Returns 1 and the chosen authority ID ("EPSG:3763") in `out`, 0 when cancelled or it failed.
+GMTVTK_API int gmtvtk_crs_select(void *handle, const char *initial, char *out, int cap) {
+	if (out && cap > 0) out[0] = '\0';
+	ensureApp();
+	Scene *s = static_cast<Scene *>(handle);
+	QWidget *parent = sceneAlive(s) ? s->win : nullptr;
+	QString chosen;
+	if (!crsSelectDialog(parent, QString::fromUtf8(initial ? initial : ""), chosen)) return 0;
+	const QByteArray b = chosen.toUtf8();
+	if (!out || cap <= b.size()) return 0;
+	memcpy(out, b.constData(), b.size());
+	out[b.size()] = '\0';
+	return 1;
+}
+
 // --- test-only hooks for the fault-trace endpoint logic (exercised by the Julia test suite) -------
 // Compiled ONLY into gmtvtk_test.dll (GMTVTK_TEST_API, set by the gmtvtk_test CMake target).
 // The production gmtvtk.dll never sees these symbols at all — not hidden, not exported.
@@ -11099,6 +11120,191 @@ GMTVTK_API int gmtvtk_toplevel_widget_test(const char *title, const char *objNam
 		return 1;
 	}
 	return 0;
+}
+
+// test hook: THE CRS SELECTOR, DRIVEN LIKE A USER. Opens it (preselecting `initial`), and once it is on
+// screen: types `filter`, ticks "Hide deprecated" when asked, clicks the row whose Authority ID is `pick`
+// and then OK -- both with real mouse presses -- after first squeezing the dialog to 560x480 to see
+// that everything still fits. `out` gets what the dialog returned. Bits of the result:
+//   1 dialog visible and active   2 no taller than the screen   4 after the squeeze every pane is
+//   inside the dialog and none collapsed   8 the picked row was visible after the filter
+//   16 the preselected row was current at open   32 the details pane names the picked system
+//   64 the dialog returned the picked ID
+static void crsTestClick(QWidget *w, QPoint at) {
+	const QPointF p(at);
+	QMouseEvent press(QEvent::MouseButtonPress, p, w->mapToGlobal(at), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+	QMouseEvent release(QEvent::MouseButtonRelease, p, w->mapToGlobal(at), Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+	QApplication::sendEvent(w, &press);
+	QApplication::sendEvent(w, &release);
+	QApplication::processEvents();
+}
+GMTVTK_API int gmtvtk_crs_select_test(const char *initial, const char *filter, const char *pick,
+                                      int hideDep, char *out, int cap) {
+	if (out && cap > 0) out[0] = '\0';
+	ensureApp();
+	int flags = 0;
+	const QString want = QString::fromUtf8(pick ? pick : "");
+	const QString pre = QString::fromUtf8(initial ? initial : "");
+	const QVariant userRecent = igmtSettings().value("crs/recent");   // a test never edits the user's list
+	QString chosen;
+	struct Restore {
+		QVariant v;
+		~Restore() { if (v.isValid()) igmtSettings().setValue("crs/recent", v); else igmtSettings().remove("crs/recent"); }
+	} restore{userRecent};
+	crsSelectDialog(nullptr, pre, chosen, [&](QDialog *d) {
+		d->raise();
+		d->activateWindow();
+		QApplication::processEvents();
+		if (d->isVisible() && d->isActiveWindow()) flags |= 1;
+		if (const QScreen *scr = d->screen())
+			if (d->frameGeometry().height() <= scr->availableGeometry().height()) flags |= 2;
+		auto *tree = d->findChild<QTreeWidget *>("crsTree");
+		if (!pre.isEmpty() && tree->currentItem() && tree->currentItem()->text(1).compare(pre, Qt::CaseInsensitive) == 0)
+			flags |= 16;
+		d->resize(560, 480);
+		QApplication::processEvents();
+		bool fits = true;
+		for (const char *n : {"filterEdit", "recentTree", "crsTree", "infoText", "mapFrame", "buttonBox"}) {
+			QWidget *c = d->findChild<QWidget *>(n);
+			if (!c || c->geometry().bottom() > d->height() || c->geometry().right() > d->width() || c->height() < 20)
+				fits = false;
+		}
+		if (fits) flags |= 4;
+		d->resize(780, 860);
+		QApplication::processEvents();
+		d->findChild<QLineEdit *>("filterEdit")->setText(QString::fromUtf8(filter ? filter : ""));
+		if (hideDep) crsTestClick(d->findChild<QCheckBox *>("hideDeprecated"), QPoint(8, 11));
+		QTreeWidgetItem *hit = nullptr;
+		std::function<void(QTreeWidgetItem *)> find = [&](QTreeWidgetItem *g) {
+			for (int c = 0; c < g->childCount() && !hit; c++) {
+				QTreeWidgetItem *ch = g->child(c);
+				if (ch->text(1) == want && !ch->isHidden()) hit = ch;
+				else find(ch);
+			}
+		};
+		for (int t = 0; t < tree->topLevelItemCount() && !hit; t++)
+			if (!tree->topLevelItem(t)->isHidden()) find(tree->topLevelItem(t));
+		if (hit) {
+			flags |= 8;
+			tree->scrollToItem(hit);
+			QApplication::processEvents();
+			crsTestClick(tree->viewport(), tree->visualItemRect(hit).center());
+			if (d->findChild<QTextBrowser *>("infoText")->toPlainText().contains(hit->text(0))) flags |= 32;
+		}
+		QPushButton *ok = d->findChild<QDialogButtonBox *>("buttonBox")->button(QDialogButtonBox::Ok);
+		if (ok->isEnabled()) crsTestClick(ok, ok->rect().center());
+		else d->reject();
+	});
+	if (!want.isEmpty() && chosen == want) flags |= 64;
+	const QByteArray b = chosen.toUtf8();
+	if (out && cap > b.size()) { memcpy(out, b.constData(), b.size()); out[b.size()] = '\0'; }
+	return flags;
+}
+
+// test hook: THE SELECTOR FROM TOOLS > PROJECT, the user's own path. Picks Tools > Project... in the
+// window of `handle`, clicks the "Select CRS..." button with the mouse, and in the selector that comes
+// up types `filter`, clicks the row `pick` and OK. `out` gets the Destination box afterwards. Bits:
+//   1 the Project dialog is on screen   2 its CRS button (push_crs) is visible, inside the dialog
+//   4 the button brought the selector up   8 the Destination box holds `pick`
+//   16 the Projections combo shows the picked system
+GMTVTK_API int gmtvtk_project_crs_test(void *handle, const char *filter, const char *pick, char *out, int cap) {
+	if (out && cap > 0) out[0] = '\0';
+	int flags = 0;
+	const QString want = QString::fromUtf8(pick ? pick : "");
+	const QVariant userRecent = igmtSettings().value("crs/recent");
+	struct Restore {
+		QVariant v;
+		~Restore() { if (v.isValid()) igmtSettings().setValue("crs/recent", v); else igmtSettings().remove("crs/recent"); }
+	} restore{userRecent};
+	if (gmtvtk_menu_trigger_test(handle, "Tools/Project") < 2) return 0;
+	QDialog *pd = nullptr;
+	for (QWidget *w : QApplication::topLevelWidgets())
+		if (w->isVisible() && w->objectName() == "ProjectDialog") pd = qobject_cast<QDialog *>(w);
+	if (!pd) return 0;
+	flags |= 1;
+	QPushButton *sel = pd->findChild<QPushButton *>("push_crs");     // the .ui's own button
+	if (!sel || !sel->isVisible() || !pd->rect().contains(sel->geometry())) { pd->close(); return flags; }
+	flags |= 2;
+	// The selector is modal: drive it from a timer that fires inside its exec().
+	auto tries = std::make_shared<int>(0);
+	auto alive = std::make_shared<bool>(true);     // a timer outliving this call must not touch its stack
+	auto step = std::make_shared<std::function<void()>>();
+	*step = [&, tries, step, alive]() {
+		if (!*alive) return;
+		QDialog *d = nullptr;
+		for (QWidget *w : QApplication::topLevelWidgets())
+			if (w->isVisible() && w->objectName() == "CrsSelect") d = qobject_cast<QDialog *>(w);
+		if (!d) {
+			if (++*tries < 400) QTimer::singleShot(25, *step);
+			return;
+		}
+		flags |= 4;
+		auto *tree = d->findChild<QTreeWidget *>("crsTree");
+		d->findChild<QLineEdit *>("filterEdit")->setText(QString::fromUtf8(filter ? filter : ""));
+		QTreeWidgetItem *hit = nullptr;
+		std::function<void(QTreeWidgetItem *)> find = [&](QTreeWidgetItem *g) {
+			for (int c = 0; c < g->childCount() && !hit; c++) {
+				QTreeWidgetItem *ch = g->child(c);
+				if (ch->text(1) == want && !ch->isHidden()) hit = ch;
+				else find(ch);
+			}
+		};
+		for (int t = 0; t < tree->topLevelItemCount() && !hit; t++)
+			if (!tree->topLevelItem(t)->isHidden()) find(tree->topLevelItem(t));
+		if (hit) {
+			tree->scrollToItem(hit);
+			QApplication::processEvents();
+			crsTestClick(tree->viewport(), tree->visualItemRect(hit).center());
+		}
+		QPushButton *ok = d->findChild<QDialogButtonBox *>("buttonBox")->button(QDialogButtonBox::Ok);
+		if (ok->isEnabled()) crsTestClick(ok, ok->rect().center());
+		else d->reject();
+	};
+	QTimer::singleShot(0, *step);
+	crsTestClick(sel, sel->rect().center());
+	QApplication::processEvents();
+	const QString dst = pd->findChild<QPlainTextEdit *>("edit_target")->toPlainText();
+	if (!want.isEmpty() && dst == want) flags |= 8;
+	if (auto *cb = pd->findChild<QComboBox *>("combo_proj"))
+		if (!want.isEmpty() && cb->currentText().contains(want)) flags |= 16;
+	const QByteArray b = dst.toUtf8();
+	if (out && cap > b.size()) { memcpy(out, b.constData(), b.size()); out[b.size()] = '\0'; }
+	*alive = false;
+	pd->close();
+	return flags;
+}
+
+// test hook: THE STATUS-CORNER EPSG CHIP. Clicks it with the mouse; returns 1 when the CRS selector came
+// up, and `out` gets its preselected row's Authority ID (the window's own system, "" when unreferenced).
+GMTVTK_API int gmtvtk_crs_chip_test(void *handle, char *out, int cap) {
+	if (out && cap > 0) out[0] = '\0';
+	Scene *s = static_cast<Scene *>(handle);
+	if (!s || !s->crsChip) return 0;
+	int ok = 0;
+	QString pre;
+	auto tries = std::make_shared<int>(0);
+	auto alive = std::make_shared<bool>(true);
+	auto step = std::make_shared<std::function<void()>>();
+	*step = [&, tries, step, alive]() {
+		if (!*alive) return;
+		QDialog *d = nullptr;
+		for (QWidget *w : QApplication::topLevelWidgets())
+			if (w->isVisible() && w->objectName() == "CrsSelect") d = qobject_cast<QDialog *>(w);
+		if (!d) {
+			if (++*tries < 400) QTimer::singleShot(25, *step);
+			return;
+		}
+		ok = 1;
+		if (QTreeWidgetItem *it = d->findChild<QTreeWidget *>("crsTree")->currentItem()) pre = it->text(1);
+		d->reject();
+	};
+	QTimer::singleShot(0, *step);
+	crsTestClick(s->crsChip, s->crsChip->rect().center());
+	QApplication::processEvents();
+	*alive = false;
+	const QByteArray b = pre.toUtf8();
+	if (out && cap > b.size()) { memcpy(out, b.constData(), b.size()); out[b.size()] = '\0'; }
+	return ok;
 }
 #endif // GMTVTK_TEST_API
 

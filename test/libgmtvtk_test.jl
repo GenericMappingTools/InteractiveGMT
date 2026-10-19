@@ -89,6 +89,7 @@ const _TEST_SYMBOLS = (
 	:gmtvtk_hide_windows_test,        # park the run's windows off the user's screen (runtests.jl)
 	:gmtvtk_press_return_test,        # press Return in a named widget of a named window
 	:gmtvtk_window_owned_test,        # is a named top-level window OWNED (can never go behind its owner)?
+	:gmtvtk_crs_select_test, :gmtvtk_project_crs_test, :gmtvtk_crs_chip_test, :gmtvtk_set_crs_select_callback,   # the CRS selector, driven like a user
 
 	:gmtvtk_platecalc_open_dialog_test, :gmtvtk_platecalc_close_dialog_test,
 	:gmtvtk_platecalc_delete_dialog_test, :gmtvtk_platecalc_parked_test,
@@ -172,6 +173,15 @@ function register_fftstuff_test()
 	return
 end
 
+# The CRS selector asks Julia for its catalogue, so a dialog built inside gmtvtk_test.dll needs THIS
+# dll's own g_juliaCrs set.
+function register_crs_select_test()
+	fptr = @cfunction((q, o, c) -> Base.invokelatest(InteractiveGMT._on_crs, q, o, c)::Cint,
+	                  Cint, (Cstring, Ptr{UInt8}, Cint))
+	ccall(_test_fn(:gmtvtk_set_crs_select_callback), Cvoid, (Ptr{Cvoid},), fptr)
+	return
+end
+
 # Open the FFT dialog on `scene` (1 = it is up). `png` non-empty also grabs it, for a layout check.
 fft_open(scene::Ptr{Cvoid}, png::AbstractString = "") =
 	ccall(_test_fn(:gmtvtk_fft_dialog_test), Cint, (Ptr{Cvoid}, Cstring, Cstring), scene, "", String(png))
@@ -244,7 +254,7 @@ function _register_ceuler_test()
 	return
 end
 
-export _test_fn, register_fftstuff_test, fft_open, fft_click, fft_sizes, fft_park, scene_adopt, objrows,
+export _test_fn, register_fftstuff_test, register_crs_select_test, fft_open, fft_click, fft_sizes, fft_park, scene_adopt, objrows,
 	_register_faultgeom_test, _register_euler_test, _register_ceuler_test
 
 end

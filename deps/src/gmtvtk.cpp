@@ -22,6 +22,7 @@
 //                  included BEFORE 70_window.cpp, whose Geophysics menu constructs it by name
 //   72_mbprocess   MB-System > Process swath data: mbset + mbprocess over the host (src/mbprocess.jl);
 //                  included BEFORE 70_window.cpp for the same reason
+//   73_crsselect   Coordinate Reference System selector (modal picker, PROJ catalogue via src/crsselect.jl)
 //   70_window     buildAndShow — the Qt main window
 //   69_magfield    Magnetic field lines (3-D): IGRF streamlines traced round a textured globe
 //   80_rubberband  Ctrl+right-drag point-cloud selection
@@ -42,6 +43,7 @@
 #include "67_gmtedit.cpp"
 #include "75_aquamoto.cpp"
 #include "72_mbprocess.cpp"
+#include "73_crsselect.cpp"
 static QDialog *faultDemoOpen(QWidget *parent, Scene *scene);
 static QDialog *magFieldOpen(QWidget *parent, Scene *scene);
 #include "70_window.cpp"
