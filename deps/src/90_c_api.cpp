@@ -3053,10 +3053,11 @@ static MbGrdVizHost mbgrdvizViewerHost() {
 		Scene *s = static_cast<Scene *>(gmtvtk_view_grid(g.z.data(), g.nx, g.ny, g.x0, g.x1, g.y0, g.y1, g.geographic ? 1 : 0,
 		                                                 cz, crgb, 11, nullptr, 0, 0, 0, 0, 0, 0, title, /*zlayout=BCB*/0));
 		if (sceneAlive(s) && !g.geographic && !g.crs.empty()) {   // the new window keeps its parent grid's projection
+			// Through the ONE setter, so the EPSG chip and the Geography menu follow it too.
 			if (g.crs.rfind("EPSG:", 0) == 0)
-				s->crsEpsg = std::atoi(g.crs.c_str() + 5);
+				gmtvtk_set_crs(s, "", "", std::atoi(g.crs.c_str() + 5));
 			else
-				s->crsProj4 = g.crs;
+				gmtvtk_set_crs(s, g.crs.c_str(), "", 0);
 		}
 		return s;
 	};

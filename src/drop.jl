@@ -1835,10 +1835,10 @@ function iview_image_obj(I::GMTimage, name::AbstractString; title::String="i'GMT
 	ccall(_fn(:gmtvtk_hide_surface), Cvoid, (Ptr{Cvoid},), h)   # plane is scaffold only
 	_add_image_to_scene(h, I, name; promote=false)              # ExtraObj image -> has properties menu
 	# Referenced image -> store the CRS (reveals the Geography menu + geographic axes).
-	pr = (isdefined(I, :proj4) && I.proj4 isa AbstractString) ? I.proj4 : ""
-	ep = (I.epsg isa Integer && I.epsg > 0) ? Cint(I.epsg) : Cint(0)
-	(pr != "" || ep != 0) && ccall(_fn(:gmtvtk_set_crs), Cvoid, (Ptr{Cvoid}, Cstring, Cstring, Cint),
-	                               h, pr, "", ep)
+	# crs_from resolves all three forms (EPSG code included) — never push the raw fields.
+	crs = crs_from(I; geographic=(geog != 0))
+	hascrs(crs) && ccall(_fn(:gmtvtk_set_crs), Cvoid, (Ptr{Cvoid}, Cstring, Cstring, Cint),
+	                     h, crs.proj4, crs.wkt, Cint(crs.epsg))
 	fig = _register_fig!(QtImage(h, I))
 	_start_pump()
 	return fig

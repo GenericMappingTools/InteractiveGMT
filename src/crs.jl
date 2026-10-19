@@ -33,6 +33,44 @@ _prop_int(O, s::Symbol) = (hasproperty(O, s) && getfield(O, s) isa Integer)     
 _try_str(f)::String = try (r = f(); r isa AbstractString ? String(r) : "") catch; "" end
 _try_int(f)::Int    = try (r = f(); r isa Integer ? Int(r) : 0)            catch; 0  end
 
+# EPSG code of a PROJ4 / WKT pair, 0 if no registered system matches. GMT.jl >= the release that
+# added `srsmatches` does this itself (its toEPSG falls back to OSRFindMatches). Older GMT.jl only
+# reads authority nodes, so a bare "+proj=utm +zone=29 +datum=WGS84" came back with no code: for
+# those, _epsg_findmatches does the same OSRFindMatches search here. Drop it once that GMT.jl is
+# the minimum.
+function _epsg_of(p::String, w::String)::Int
+	e = isempty(w) ? 0 : _try_int(() -> GMT.wkt2epsg(w))
+	e == 0 && !isempty(p) && (e = _try_int(() -> GMT.proj2epsg(p)))
+	(e != 0 || isdefined(GMT, :srsmatches)) && return e
+	!isempty(p) && (e = _try_int(() -> _epsg_findmatches(GMT.Gdal.importPROJ4(p))))
+	e == 0 && !isempty(w) && (e = _try_int(() -> _epsg_findmatches(GMT.Gdal.importWKT(w))))
+	return e
+end
+
+# First EPSG entry of OSRFindMatches for a GMT.Gdal spatial reference (what gdalsrsinfo -o epsg
+# prints), 0 if none. Compat path for older GMT.jl only — see _epsg_of.
+function _epsg_findmatches(sr)::Int
+	(sr.ptr == C_NULL) && return 0
+	n, conf = Ref{Cint}(0), Ref{Ptr{Cint}}(C_NULL)
+	arr = ccall((:OSRFindMatches, GMT.Gdal.libgdal), Ptr{Ptr{Cvoid}}, (Ptr{Cvoid}, Ptr{Cstring}, Ptr{Cint}, Ptr{Ptr{Cint}}),
+	            sr.ptr, C_NULL, n, conf)
+	e = 0
+	try
+		for k = 1:n[]
+			h = unsafe_load(arr, k)
+			a = ccall((:OSRGetAuthorityName, GMT.Gdal.libgdal), Cstring, (Ptr{Cvoid}, Cstring), h, C_NULL)
+			c = ccall((:OSRGetAuthorityCode, GMT.Gdal.libgdal), Cstring, (Ptr{Cvoid}, Cstring), h, C_NULL)
+			(a == C_NULL || c == C_NULL || unsafe_string(a) != "EPSG") && continue
+			e = something(tryparse(Int, unsafe_string(c)), 0)
+			e != 0 && break
+		end
+	finally
+		(arr != C_NULL) && ccall((:OSRFreeSRSArray, GMT.Gdal.libgdal), Cvoid, (Ptr{Ptr{Cvoid}},), arr)
+		(conf[] != C_NULL) && ccall((:VSIFree, GMT.Gdal.libgdal), Cvoid, (Ptr{Cvoid},), conf[])
+	end
+	return e
+end
+
 """
 	crs_from(O; geographic=false) -> CRS
 
@@ -56,7 +94,7 @@ function crs_from(O; geographic::Bool=false)
 	end
 	isempty(w) && !isempty(p)  && (w = _try_str(() -> GMT.proj2wkt(p)))
 	isempty(w) && e != 0       && (w = _try_str(() -> GMT.epsg2wkt(e)))
-	e == 0     && !isempty(p)  && (e = _try_int(() -> GMT.proj2epsg(p)))
+	e == 0                     && (e = _epsg_of(p, w))    # 0 = no registered code exists
 	return CRS(p, w, e)
 end
 
