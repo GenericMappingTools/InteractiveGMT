@@ -19,6 +19,10 @@
 	pump(n=25) = for _ in 1:n; IG._pump_once(); sleep(0.02); end
 	px(h) = ccall(_test_fn(:gmtvtk_pixel_count_test), Cint, (Ptr{Cvoid}, Cdouble, Cdouble, Cdouble, Cdouble),
 	              h, 1.0, 0.0, 1.0, 0.08)                     # the track is pure magenta, nothing else is
+	scr(h, i) = (x = Ref{Cint}(0); y = Ref{Cint}(0);      # vertex i of the track, where it is drawn
+	             r = ccall(_test_fn(:gmtvtk_overlay_point_screen_test), Cint,
+	                       (Ptr{Cvoid}, Cstring, Cint, Ref{Cint}, Ref{Cint}), h, "track", i, x, y);
+	             (r, x[], y[]))
 	probe(h) = (b = zeros(UInt8, 2048);
 	            ccall(_test_fn(:gmtvtk_overlay_probe_test), Cint, (Ptr{Cvoid}, Cstring, Ptr{UInt8}, Cint), h, "track", b, 2048);
 	            Dict(split(kv, '=')[1] => parse(Float64, split(kv, '=')[2]) for kv in split(unsafe_string(pointer(b)), ';')))
@@ -82,9 +86,18 @@
 			# no z of its own: it lies on top of ITS grid (the second one's highest z), at ITS grid's scale
 			@test p["bz0"] ≈ Float64(maximum(Zs)) * p["sz"] rtol=1e-5
 			@test p["bz1"] ≈ p["bz0"]
+			# The track IS on screen, along its WHOLE length. Measured against where its two ends
+			# project, not against a fixed pixel count: how many pixels a 2 px line covers depends on
+			# the window size, the screen's pixel ratio and the GL's line width (a VE of 5 on the active
+			# grid frames it ~65 px long; Windows counts ~736 magenta pixels there, Linux/Mesa 144). A
+			# line at least one device pixel wide, drawn end to end, covers at least its Chebyshev length.
 			n = px(h)
-			@test n > 300                                     # the track IS on screen (a 2 px line, ~900 px long)
-			n > 300 || @info "track not drawn" mode veBase veSecond veAfter n p
+			e0, e1 = scr(h, 0), scr(h, 199)
+			L = max(abs(e0[2] - e1[2]), abs(e0[3] - e1[3]))   # logical px <= device px
+			@test e0[1] == 1 && e1[1] == 1
+			@test L > 20                                      # the ends project apart: a real line, not a dot
+			@test n >= L
+			n >= L || @info "track not drawn" mode veBase veSecond veAfter n L p
 		finally
 			ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), h); pump()
 		end
