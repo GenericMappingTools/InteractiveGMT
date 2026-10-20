@@ -11326,6 +11326,82 @@ GMTVTK_API int gmtvtk_crs_chip_test(void *handle, char *out, int cap) {
 	if (out && cap > b.size()) { memcpy(out, b.constData(), b.size()); out[b.size()] = '\0'; }
 	return ok;
 }
+
+// test hook: A PICK ON THE EPSG CHIP, all the way. Clicks the chip, types `filter`, clicks the row `pick`
+// and OK -- then whatever follows runs as it does for the user: the reprojection, or the warning that it
+// cannot be done (closed here, its text into `out`). Bits: 1 the selector came up  2 the row was picked
+// and accepted  4 a warning box came up.
+GMTVTK_API int gmtvtk_crs_chip_pick_test(void *handle, const char *filter, const char *pick, char *out, int cap) {
+	if (out && cap > 0) out[0] = '\0';
+	Scene *s = static_cast<Scene *>(handle);
+	if (!s || !s->crsChip) return 0;
+	int flags = 0;
+	QString warn;
+	const QString want = QString::fromUtf8(pick ? pick : "");
+	const QVariant userRecent = igmtSettings().value("crs/recent");
+	struct Restore {
+		QVariant v;
+		~Restore() { if (v.isValid()) igmtSettings().setValue("crs/recent", v); else igmtSettings().remove("crs/recent"); }
+	} restore{userRecent};
+	auto tries = std::make_shared<int>(0);
+	auto alive = std::make_shared<bool>(true);
+	auto step = std::make_shared<std::function<void()>>();
+	*step = [&, tries, step, alive]() {
+		if (!*alive) return;
+		for (QWidget *w : QApplication::topLevelWidgets()) {
+			if (!w->isVisible()) continue;
+			if (auto *mb = qobject_cast<QMessageBox *>(w)) {          // the "cannot be done" warning
+				flags |= 4;
+				warn = mb->text();
+				mb->accept();
+				return;
+			}
+			if (w->objectName() == "CrsSelect" && !(flags & 1)) {
+				auto *d = qobject_cast<QDialog *>(w);
+				flags |= 1;
+				auto *tree = d->findChild<QTreeWidget *>("crsTree");
+				d->findChild<QLineEdit *>("filterEdit")->setText(QString::fromUtf8(filter ? filter : ""));
+				QTreeWidgetItem *hit = nullptr;
+				std::function<void(QTreeWidgetItem *)> find = [&](QTreeWidgetItem *g) {
+					for (int c = 0; c < g->childCount() && !hit; c++) {
+						QTreeWidgetItem *ch = g->child(c);
+						if (ch->text(1) == want && !ch->isHidden()) hit = ch;
+						else find(ch);
+					}
+				};
+				for (int t = 0; t < tree->topLevelItemCount() && !hit; t++)
+					if (!tree->topLevelItem(t)->isHidden()) find(tree->topLevelItem(t));
+				if (hit) {
+					tree->scrollToItem(hit);
+					QApplication::processEvents();
+					crsTestClick(tree->viewport(), tree->visualItemRect(hit).center());
+				}
+				QPushButton *ok = d->findChild<QDialogButtonBox *>("buttonBox")->button(QDialogButtonBox::Ok);
+				if (hit && ok->isEnabled()) { flags |= 2; crsTestClick(ok, ok->rect().center()); }
+				else d->reject();
+				// keep watching: a warning box may follow
+				break;
+			}
+		}
+		if (++*tries < 400) QTimer::singleShot(25, *step);
+	};
+	const int seen = int(g_testDismissedDialogs.size());
+	QTimer::singleShot(0, *step);
+	crsTestClick(s->crsChip, s->crsChip->rect().center());
+	QApplication::processEvents();
+	*alive = false;
+	// The warning is this hook's own expected box, not a stray one: claimed from the parker's record
+	// (which may have dismissed it before the watcher above got to it).
+	for (int i = int(g_testDismissedDialogs.size()) - 1; i >= seen; i--)
+		if (g_testDismissedDialogs[i].startsWith("Reproject: ")) {
+			flags |= 4;
+			if (warn.isEmpty()) warn = g_testDismissedDialogs[i].mid(11);
+			g_testDismissedDialogs.removeAt(i);
+		}
+	const QByteArray b = warn.toUtf8();
+	if (out && cap > b.size()) { memcpy(out, b.constData(), b.size()); out[b.size()] = '\0'; }
+	return flags;
+}
 #endif // GMTVTK_TEST_API
 
 // Register the grid-metadata callback used by the grdsample dialog's "OR Ref grid" picker.

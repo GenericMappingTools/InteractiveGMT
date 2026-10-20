@@ -439,3 +439,39 @@ static void crsPickAsync(QWidget *parent, const QString &initial,
 	};
 	QTimer::singleShot(0, guard.data(), *step);
 }
+
+// The window reprojected into the system picked on its status-corner EPSG chip. Asked of Julia first
+// ("check"): when PROJ cannot carry the window's data there, a warning says why and nothing runs.
+// Otherwise it is Tools > Project's own run (g_juliaProject, src/project.jl) -- the ONE reprojection,
+// with the window's CRS as the source, exactly what the Project dialog's Source box holds.
+static void crsReprojectWindow(Scene *s, const QString &id, const QString &name) {
+	if (!sceneAlive(s) || !s->win) return;
+	const QString grid = QString::fromStdString(activeGridName(s));
+	QByteArray ans;
+	const bool asked = crsAsk(QString("check\t%1\t%2\t%3").arg(quintptr(s), 0, 16).arg(grid, id), ans);
+	const QString a = QString::fromUtf8(ans);
+	if (!asked || !(a.startsWith("OK\t") || a.startsWith("NO\t"))) {
+		QMessageBox::warning(s->win, "Reproject", "Could not find out whether this window can be reprojected "
+		                     "into " + id + " (see the Messages panel).");
+		return;
+	}
+	if (a.startsWith("NO\t")) {
+		QMessageBox::warning(s->win, "Reproject", "This window cannot be reprojected into " + name + " (" + id +
+		                     ").\n\n" + a.mid(3));
+		return;
+	}
+	if (!g_juliaProject) {
+		QMessageBox::warning(s->win, "Reproject", "The reprojection's Julia side is not wired (src/project.jl).");
+		return;
+	}
+	QStringList kv;
+	kv << "t_srs=" + id << "s_srs=" + a.mid(3).simplified() << "resample=bilinear" << "projname=" + name
+	   << "grid=" + grid;
+	if (id.startsWith("EPSG:")) kv << "t_epsg=" + id.mid(5);
+	showBusyDialog(("Reprojecting into " + id + "...").toUtf8().constData());
+	const int ok = g_juliaProject(s, kv.join("\n").toUtf8().constData());
+	closeBusyDialog();
+	if (!ok && sceneAlive(s))
+		QMessageBox::warning(s->win, "Reproject", "The reprojection into " + id +
+		                     " failed - see this window's Messages panel for details.");
+}

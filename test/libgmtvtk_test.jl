@@ -89,7 +89,7 @@ const _TEST_SYMBOLS = (
 	:gmtvtk_hide_windows_test,        # park the run's windows off the user's screen (runtests.jl)
 	:gmtvtk_press_return_test,        # press Return in a named widget of a named window
 	:gmtvtk_window_owned_test,        # is a named top-level window OWNED (can never go behind its owner)?
-	:gmtvtk_crs_select_test, :gmtvtk_project_crs_test, :gmtvtk_crs_chip_test, :gmtvtk_set_crs_select_callback,   # the CRS selector, driven like a user
+	:gmtvtk_crs_select_test, :gmtvtk_project_crs_test, :gmtvtk_crs_chip_test, :gmtvtk_crs_chip_pick_test, :gmtvtk_set_crs_select_callback,   # the CRS selector, driven like a user
 
 	:gmtvtk_platecalc_open_dialog_test, :gmtvtk_platecalc_close_dialog_test,
 	:gmtvtk_platecalc_delete_dialog_test, :gmtvtk_platecalc_parked_test,

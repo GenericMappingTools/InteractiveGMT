@@ -73,3 +73,55 @@ end
 		ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), f.h)
 	end
 end
+
+@testitem "crs selector: the EPSG chip reprojects only when it can be done" tags=[:gui] begin
+	IG = InteractiveGMT
+	G = IG.GMT.mat2grid(rand(Float32, 41, 41); x = collect(range(500000.0, 600000.0; length = 41)),
+	                    y = collect(range(4100000.0, 4200000.0; length = 41)))
+	G.proj4 = "+proj=utm +zone=29 +datum=WGS84 +units=m +no_defs"
+	f = view_grid(G)
+	U = IG.GMT.mat2grid(rand(Float32, 21, 21); x = collect(0.0:50:1000), y = collect(0.0:50:1000))   # no CRS at all
+	g = view_grid(U)
+	try
+		ok = IG._crs_check(f.h, "", "EPSG:3763")
+		@test startswith(ok, "OK\t") && occursin("utm", ok)              # the source is the window's own
+		@test startswith(IG._crs_check(f.h, "", "EPSG:4326"), "OK\t")
+		far = IG._crs_check(f.h, "", "EPSG:32660")                         # UTM 60N: the other side of the world
+		@test startswith(far, "NO\t") && occursin("outside the area", far)
+		@test startswith(IG._crs_check(f.h, "", "IAU_2015:49900"), "NO\t") # Mars
+		none = IG._crs_check(g.h, "", "EPSG:3763")
+		@test startswith(none, "NO\t") && occursin("no coordinate reference system", none)
+		# the C door asks through the protocol, scene pointer in hex
+		req = "check\t" * string(UInt(f.h); base = 16) * "\t\tEPSG:3763"
+		@test startswith(IG._crs_answer(req), "OK\t")
+	finally
+		ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), f.h)
+		ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), g.h)
+	end
+end
+
+@testitem "crs selector: a pick on the EPSG chip reprojects the window, or says why it cannot" tags=[:gui] setup=[GmtvtkTest] begin
+	IG = InteractiveGMT
+	IG._register_crs_select()
+	G = IG.GMT.mat2grid(rand(Float32, 41, 41); x = collect(range(500000.0, 600000.0; length = 41)),
+	                    y = collect(range(4100000.0, 4200000.0; length = 41)))
+	G.proj4 = "+proj=utm +zone=29 +datum=WGS84 +units=m +no_defs"
+	f = view_grid(G)
+	pick(filter, id) = (out = zeros(UInt8, 2048);
+		fl = ccall(_test_fn(:gmtvtk_crs_chip_pick_test), Cint, (Ptr{Cvoid}, Cstring, Cstring, Ptr{UInt8}, Cint),
+		           f.h, filter, id, out, length(out));
+		(fl, GC.@preserve(out, unsafe_string(pointer(out)))))
+	nwin() = ccall(_test_fn(:gmtvtk_window_exists_test), Cint, (Cstring,), "Reprojected")
+	try
+		n0 = nwin()
+		fl, msg = pick("Portugal TM06", "EPSG:3763")
+		@test fl & 3 == 3 && fl & 4 == 0 && msg == ""          # picked, no warning...
+		@test nwin() == n0 + 1                                  # ...and the reprojected grid is on screen
+		fl, msg = pick("WGS 84 / UTM zone 60N", "EPSG:32660")
+		@test fl & 7 == 7                                       # picked, and the warning came up
+		@test occursin("cannot be reprojected", msg) && occursin("outside the area", msg)
+		@test nwin() == n0 + 1                                  # nothing ran
+	finally
+		ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), f.h)
+	end
+end

@@ -22578,6 +22578,7 @@ public:
 // The CRS selector (73_crsselect.cpp, included after this fragment).
 static void crsPickAsync(QWidget *parent, const QString &initial,
                          std::function<void(const QString &id, const QString &name)> done);
+static void crsReprojectWindow(Scene *s, const QString &id, const QString &name);
 
 class ProjectDialog {
 public:
@@ -26544,11 +26545,15 @@ static void buildIGStatusBar(Scene *s, QMainWindow *win) {
 
 	sb->addPermanentWidget(corner, 0);    // RIGHT corner, never hidden by a temporary message
 
-	// QGIS's corner button: the CRS selector, opened on the window's own system.
+	// QGIS's corner button: the CRS selector, opened on the window's own system; a different pick
+	// reprojects the window (crsReprojectWindow, 73_crsselect.cpp) when that can be done.
 	QObject::connect(crs, &QToolButton::clicked, [s]() {
 		if (!s->win) return;
-		crsPickAsync(s->win, s->crsEpsg > 0 ? QString("EPSG:%1").arg(s->crsEpsg) : QString(),
-		             [](const QString &, const QString &) {});
+		const QString cur = s->crsEpsg > 0 ? QString("EPSG:%1").arg(s->crsEpsg) : QString();
+		crsPickAsync(s->win, cur, [s, cur](const QString &id, const QString &name) {
+			if (id.isEmpty() || id == cur) return;        // cancelled, or the system it already has
+			crsReprojectWindow(s, id, name);
+		});
 	});
 	QObject::connect(msg, &QToolButton::clicked, [s]() {
 		sceneShowMessages(s, !(s->msgDock && s->msgDock->isVisible()));
