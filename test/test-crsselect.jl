@@ -121,6 +121,16 @@ end
 		@test fl & 7 == 7                                       # picked, and the warning came up
 		@test occursin("cannot be reprojected", msg) && occursin("outside the area", msg)
 		@test nwin() == n0 + 1                                  # nothing ran
+		# That warning is the behaviour under test, not a defect: claim exactly it (and nothing else)
+		# from the run's modal-box verdict, which would otherwise fail the whole suite on it.
+		IG._drain_qt_messages()
+		mine(e) = occursin("EPSG:32660", e)
+		claimed = IG._take_tool_errors!()
+		@test any(mine, claimed)                                # the warning was reported, in its words
+		for e in claimed                                        # anything else goes back to the verdict
+			mine(e) || IG._record_tool_error(e)
+		end
+		filter!(e -> !(occursin("modal dialog \"Reproject\"", e) && mine(e)), IG._INTERNAL_ERRORS)
 	finally
 		ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), f.h)
 	end

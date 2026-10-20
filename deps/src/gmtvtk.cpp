@@ -14,6 +14,7 @@
 //   40_shading     sky env + applyShading (light rig, SSAO/tone/FXAA)
 //   50_scene       Scene Objects panel, overlays, curtains, line styles, context menus
 //   55_lineprops   shared Line Properties dialog + unified line right-click menu
+//   56_axesprops   Axes Properties dialog (deps/ui/axes_props.ui): one raster's own AxesSet, GMT-named fields
 //   57_swipe       Swipe tool: two rasters split by a draggable camera-aligned cut plane
 //   60_profile     ProfilePanel (2D s,z) + profile sampling + GLView
 //   65_xyplot      standalone X,Y plot tool (vtkChartXY + Object Manager + Data Viewer)
@@ -34,8 +35,10 @@
 #include "20_gizmo.cpp"
 #include "30_app.cpp"
 #include "40_shading.cpp"
+static void axesPropsOpen(Scene *s, AxesSet *A);   // 56_axesprops.cpp (the Axes row opens it)
 #include "50_scene.cpp"
 #include "55_lineprops.cpp"
+#include "56_axesprops.cpp"
 #include "57_swipe.cpp"
 #include "58_movieanno.cpp"
 #include "60_profile.cpp"

@@ -3086,8 +3086,8 @@ static void rebuildSceneObjects(Scene *s) {
 		const bool av = A && A->shown;
 		makeRow("Axes", IC_Axes, av,
 		        [s, A](bool on) { if (A) { A->shown = on; if (!on) axesHideAll(*A); rebuildAxisLabels(s); } },
-		        [s](const QPoint&) { if (s->win) s->win->statusBar()->showMessage("Axes properties — coming soon", 2500); },
-		        "This raster's own axes (properties coming soon)");
+		        [s, A](const QPoint&) { axesPropsOpen(s, A); },
+		        "This raster's own axes · left-click the label for its Axes properties");
 	};
 
 	// ── AQUAMOTO FILE WRAPPER ── every variable loaded from the open tsunami netCDF -- the composited

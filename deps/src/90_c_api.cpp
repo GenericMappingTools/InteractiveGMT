@@ -1338,6 +1338,23 @@ GMTVTK_API int gmtvtk_script_editor_show_h(void *handle, const char *text) {
 	return 1;
 }
 
+// The Axes properties of ONE raster's own set (by layer name; "" = the base), as "KEY=value" lines —
+// what File > Plot with GMT.jl turns into -B / --PAR. Empty when that set was never edited.
+// Returns the byte length; copies when cap is larger.
+GMTVTK_API int gmtvtk_axes_props_h(void *handle, const char *name, char *buf, int cap) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s)) return 0;
+	AxesSet *A = (name && *name) ? axesForName(s, name) : &s->baseAxes;
+	if (!A || !A->draw.custom) return 0;
+	std::string out;
+	for (const auto &kv : A->props) out += kv.first + "=" + kv.second + "\n";
+	if (buf && cap > (int)out.size()) {
+		memcpy(buf, out.data(), out.size());
+		buf[out.size()] = '\0';
+	}
+	return (int)out.size();
+}
+
 // text: the editor's CURRENT text (what the user edited), UTF-8. Two-phase: call with buf=NULL to get
 // the byte count, then with a buffer of at least count+1. Returns the byte count, 0 when there is no
 // editor for this window.
@@ -11098,6 +11115,84 @@ GMTVTK_API int gmtvtk_cloud_select_box_test(void *handle, double fx0, double fy0
 		else                      s->rbSel.erase(it);
 	}
 	return int(s->rbSel.size());
+}
+
+// Open the Axes properties of the window's BASE raster, as its Axes row's label click does, on tab
+// `tab` (0 Frame ... 6 Fonts). Returns the dialog's tab count, 0 when it did not open.
+GMTVTK_API int gmtvtk_axesprops_open_test(void *scene, int tab) {
+	Scene *s = static_cast<Scene*>(scene);
+	if (!s) return 0;
+	axesPropsOpen(s, &s->baseAxes);
+	for (AxesPropsDialog *p : g_axesProps)
+		if (p->s == s && p->owner == kAxesOwnerBase) {
+			auto *t = p->dlg->findChild<QTabWidget *>("tabs");
+			if (!t) return 0;
+			t->setCurrentIndex(tab);
+			QApplication::processEvents();
+			return t->count();
+		}
+	return 0;
+}
+
+// In the open base-axes dialog: put `value` in the field `key` ("KEY" or "KEY.part"), CLICK Apply,
+// and read the base set's actors back: out[0] = first X annotation's font size, out[1] = tick pen
+// width (px), out[2] = X frame-line width (px). 1 = done, 0 = no dialog / no such field.
+GMTVTK_API int gmtvtk_axesprops_apply_test(void *scene, const char *key, const char *value, double *out) {
+	Scene *s = static_cast<Scene*>(scene);
+	for (AxesPropsDialog *p : g_axesProps)
+		if (p->s == s && p->owner == kAxesOwnerBase) {
+			QWidget *w = p->field(QString::fromUtf8(key ? key : ""));
+			auto *ap = p->dlg->findChild<QPushButton *>("btnApply");
+			if (!w || !ap || !out) return 0;
+			axpSet(w, QString::fromUtf8(value ? value : ""));
+			ap->click();
+			QApplication::processEvents();
+			const AxesSet &A = s->baseAxes;
+			out[0] = (!A.xlab.empty() && A.xlab[0]) ? A.xlab[0]->GetTextProperty()->GetFontSize() : -1;
+			out[1] = A.ticks ? A.ticks->GetProperty()->GetLineWidth() : -1;
+			out[2] = A.cube ? A.cube->GetXAxesLinesProperty()->GetLineWidth() : -1;
+			return 1;
+		}
+	return 0;
+}
+
+// What the base set draws now: out[0..5] = visible X numbers, visible Y numbers, grid-line cells,
+// frame-line cells, tick cells (grid/frame -1 when their actor is hidden or absent), axis names shown.
+GMTVTK_API int gmtvtk_axesprops_counts_test(void *scene, double *out) {
+	Scene *s = static_cast<Scene*>(scene);
+	if (!s || !out || !s->widget) return 0;
+	s->widget->renderWindow()->Render();
+	const AxesSet &A = s->baseAxes;
+	auto shown = [](const std::vector<vtkSmartPointer<vtkBillboardTextActor3D>> &pool) {
+		int n = 0;
+		for (const auto &t : pool) if (t && t->GetVisibility()) n++;
+		return double(n);
+	};
+	out[0] = shown(A.xlab);
+	out[1] = shown(A.ylab);
+	out[2] = (A.grid && A.grid->GetVisibility() && A.gridPD) ? double(A.gridPD->GetNumberOfLines()) : -1;
+	out[3] = (A.frame && A.frame->GetVisibility() && A.framePD) ? double(A.framePD->GetNumberOfLines()) : -1;
+	out[4] = A.tickPD ? double(A.tickPD->GetNumberOfLines()) : -1;
+	out[5] = double((A.title[0] && A.title[0]->GetVisibility() ? 1 : 0) + (A.title[1] && A.title[1]->GetVisibility() ? 1 : 0));
+	return 1;
+}
+
+// The open base-axes dialog's enabled tabs as bits (bit i = tab i enabled), plus bit 15 = the
+// "Vertical" side combo enabled. -1 when no such dialog is open.
+GMTVTK_API int gmtvtk_axesprops_tabmask_test(void *scene) {
+	Scene *s = static_cast<Scene*>(scene);
+	for (AxesPropsDialog *p : g_axesProps)
+		if (p->s == s && p->owner == kAxesOwnerBase) {
+			auto *t = p->dlg->findChild<QTabWidget *>("tabs");
+			auto *z = p->dlg->findChild<QComboBox *>("cmbSideZ");
+			if (!t || !z) return -1;
+			int m = 0;
+			for (int i = 0; i < t->count() && i < 15; i++)
+				if (t->isTabEnabled(i)) m |= 1 << i;
+			if (z->isEnabled()) m |= 1 << 15;
+			return m;
+		}
+	return -1;
 }
 
 // Grab the first visible top-level window whose title contains `title` to a PNG (docs screenshots of

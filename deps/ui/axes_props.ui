@@ -1,0 +1,6123 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>AxesProps</class>
+ <widget class="QDialog" name="AxesProps">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>560</width>
+    <height>431</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>Axes properties</string>
+  </property>
+  <widget class="QTabWidget" name="tabs">
+   <property name="geometry">
+    <rect>
+     <x>11</x>
+     <y>11</y>
+     <width>538</width>
+     <height>370</height>
+    </rect>
+   </property>
+   <property name="currentIndex">
+    <number>0</number>
+   </property>
+   <widget class="QWidget" name="tabFrame">
+    <attribute name="title">
+     <string>Frame</string>
+    </attribute>
+    <widget class="QGroupBox" name="grpFrameAxes">
+     <property name="geometry">
+      <rect>
+       <x>11</x>
+       <y>8</y>
+       <width>251</width>
+       <height>222</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-B axes (MAP_FRAME_AXES): which sides of the frame are drawn and how. Annot. + ticks = line, ticks and numbers (W E S N Z); Line + ticks = line and ticks, no numbers (w e s n z); Line only = the bare line (l r b t u); Not drawn = left out.</string>
+     </property>
+     <property name="title">
+      <string>Sides drawn</string>
+     </property>
+     <widget class="QLabel" name="lblSideW">
+      <property name="geometry">
+       <rect>
+        <x>11</x>
+        <y>26</y>
+        <width>60</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string>West</string>
+      </property>
+     </widget>
+     <widget class="QComboBox" name="cmbSideW">
+      <property name="geometry">
+       <rect>
+        <x>60</x>
+        <y>26</y>
+        <width>111</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="toolTip">
+       <string/>
+      </property>
+      <property name="gmtKey" stdset="0">
+       <string>MAP_FRAME_AXES</string>
+      </property>
+      <property name="gmtPart" stdset="0">
+       <string>W</string>
+      </property>
+      <item>
+       <property name="text">
+        <string>Annot. + ticks</string>
+       </property>
+      </item>
+      <item>
+       <property name="text">
+        <string>Line + ticks</string>
+       </property>
+      </item>
+      <item>
+       <property name="text">
+        <string>Line only</string>
+       </property>
+      </item>
+      <item>
+       <property name="text">
+        <string>Not drawn</string>
+       </property>
+      </item>
+     </widget>
+     <widget class="QCheckBox" name="chkGridW">
+      <property name="geometry">
+       <rect>
+        <x>180</x>
+        <y>26</y>
+        <width>61</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="toolTip">
+       <string>-Byg: grid lines from the West axis (horizontal lines), at the y axis' grid spacing (its g box; auto or empty = the annotation spacing).</string>
+      </property>
+      <property name="text">
+       <string>Grid</string>
+      </property>
+      <property name="gmtKey" stdset="0">
+       <string>MAP_FRAME_AXES</string>
+      </property>
+      <property name="gmtPart" stdset="0">
+       <string>Wg</string>
+      </property>
+     </widget>
+     <widget class="QLabel" name="lblSideE">
+      <property name="geometry">
+       <rect>
+        <x>11</x>
+        <y>58</y>
+        <width>60</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string>East</string>
+      </property>
+     </widget>
+     <widget class="QComboBox" name="cmbSideE">
+      <property name="geometry">
+       <rect>
+        <x>60</x>
+        <y>58</y>
+        <width>111</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="toolTip">
+       <string/>
+      </property>
+      <property name="currentIndex">
+       <number>1</number>
+      </property>
+      <property name="gmtKey" stdset="0">
+       <string>MAP_FRAME_AXES</string>
+      </property>
+      <property name="gmtPart" stdset="0">
+       <string>E</string>
+      </property>
+      <item>
+       <property name="text">
+        <string>Annot. + ticks</string>
+       </property>
+      </item>
+      <item>
+       <property name="text">
+        <string>Line + ticks</string>
+       </property>
+      </item>
+      <item>
+       <property name="text">
+        <string>Line only</string>
+       </property>
+      </item>
+      <item>
+       <property name="text">
+        <string>Not drawn</string>
+       </property>
+      </item>
+     </widget>
+     <widget class="QLabel" name="lblSideS">
+      <property name="geometry">
+       <rect>
+        <x>11</x>
+        <y>90</y>
+        <width>60</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string>South</string>
+      </property>
+     </widget>
+     <widget class="QComboBox" name="cmbSideS">
+      <property name="geometry">
+       <rect>
+        <x>60</x>
+        <y>90</y>
+        <width>111</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="toolTip">
+       <string/>
+      </property>
+      <property name="gmtKey" stdset="0">
+       <string>MAP_FRAME_AXES</string>
+      </property>
+      <property name="gmtPart" stdset="0">
+       <string>S</string>
+      </property>
+      <item>
+       <property name="text">
+        <string>Annot. + ticks</string>
+       </property>
+      </item>
+      <item>
+       <property name="text">
+        <string>Line + ticks</string>
+       </property>
+      </item>
+      <item>
+       <property name="text">
+        <string>Line only</string>
+       </property>
+      </item>
+      <item>
+       <property name="text">
+        <string>Not drawn</string>
+       </property>
+      </item>
+     </widget>
+     <widget class="QCheckBox" name="chkGridS">
+      <property name="geometry">
+       <rect>
+        <x>180</x>
+        <y>90</y>
+        <width>61</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="toolTip">
+       <string>-Bxg: grid lines from the South axis (vertical lines), at the x axis' grid spacing (its g box; auto or empty = the annotation spacing).</string>
+      </property>
+      <property name="text">
+       <string>Grid</string>
+      </property>
+      <property name="gmtKey" stdset="0">
+       <string>MAP_FRAME_AXES</string>
+      </property>
+      <property name="gmtPart" stdset="0">
+       <string>Sg</string>
+      </property>
+     </widget>
+     <widget class="QLabel" name="lblSideN">
+      <property name="geometry">
+       <rect>
+        <x>11</x>
+        <y>122</y>
+        <width>60</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string>North</string>
+      </property>
+     </widget>
+     <widget class="QComboBox" name="cmbSideN">
+      <property name="geometry">
+       <rect>
+        <x>60</x>
+        <y>122</y>
+        <width>111</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="toolTip">
+       <string/>
+      </property>
+      <property name="currentIndex">
+       <number>1</number>
+      </property>
+      <property name="gmtKey" stdset="0">
+       <string>MAP_FRAME_AXES</string>
+      </property>
+      <property name="gmtPart" stdset="0">
+       <string>N</string>
+      </property>
+      <item>
+       <property name="text">
+        <string>Annot. + ticks</string>
+       </property>
+      </item>
+      <item>
+       <property name="text">
+        <string>Line + ticks</string>
+       </property>
+      </item>
+      <item>
+       <property name="text">
+        <string>Line only</string>
+       </property>
+      </item>
+      <item>
+       <property name="text">
+        <string>Not drawn</string>
+       </property>
+      </item>
+     </widget>
+     <widget class="QLabel" name="lblSideZ">
+      <property name="geometry">
+       <rect>
+        <x>11</x>
+        <y>154</y>
+        <width>60</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string>Vertical</string>
+      </property>
+      <property name="vertical" stdset="0">
+       <bool>true</bool>
+      </property>
+     </widget>
+     <widget class="QComboBox" name="cmbSideZ">
+      <property name="geometry">
+       <rect>
+        <x>60</x>
+        <y>154</y>
+        <width>111</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="toolTip">
+       <string/>
+      </property>
+      <property name="gmtKey" stdset="0">
+       <string>MAP_FRAME_AXES</string>
+      </property>
+      <property name="gmtPart" stdset="0">
+       <string>Z</string>
+      </property>
+      <property name="vertical" stdset="0">
+       <bool>true</bool>
+      </property>
+      <item>
+       <property name="text">
+        <string>Annot. + ticks</string>
+       </property>
+      </item>
+      <item>
+       <property name="text">
+        <string>Line + ticks</string>
+       </property>
+      </item>
+      <item>
+       <property name="text">
+        <string>Line only</string>
+       </property>
+      </item>
+      <item>
+       <property name="text">
+        <string>Not drawn</string>
+       </property>
+      </item>
+     </widget>
+     <widget class="QCheckBox" name="chkNoFrame">
+      <property name="geometry">
+       <rect>
+        <x>11</x>
+        <y>188</y>
+        <width>204</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="toolTip">
+       <string>-B+n: no frame and no annotations, whatever the sides say.</string>
+      </property>
+      <property name="text">
+       <string>No frame at all</string>
+      </property>
+      <property name="gmtKey" stdset="0">
+       <string>-B</string>
+      </property>
+      <property name="gmtPart" stdset="0">
+       <string>+n</string>
+      </property>
+     </widget>
+    </widget>
+    <widget class="QLabel" name="lblFrameType">
+     <property name="geometry">
+      <rect>
+       <x>270</x>
+       <y>16</y>
+       <width>71</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Frame type</string>
+     </property>
+    </widget>
+    <widget class="QComboBox" name="cmbFrameType">
+     <property name="geometry">
+      <rect>
+       <x>350</x>
+       <y>16</y>
+       <width>172</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>MAP_FRAME_TYPE. plain = a line; fancy = thick alternating black/white border (geographic maps); inside = ticks and numbers inside the frame; graph = an arrow at the end of each axis (Cartesian); graph-origin = graph axes crossing at the data origin.</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>MAP_FRAME_TYPE</string>
+     </property>
+     <item>
+      <property name="text">
+       <string>plain</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>fancy</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>fancy-rounded</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>inside</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>graph</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>graph-origin</string>
+      </property>
+     </item>
+    </widget>
+    <widget class="QLabel" name="lblFramePen">
+     <property name="geometry">
+      <rect>
+       <x>270</x>
+       <y>48</y>
+       <width>71</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Frame pen</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editFramePenW">
+     <property name="geometry">
+      <rect>
+       <x>350</x>
+       <y>48</y>
+       <width>50</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>MAP_FRAME_PEN width.</string>
+     </property>
+     <property name="text">
+      <string>1.5p</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>MAP_FRAME_PEN</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>width</string>
+     </property>
+    </widget>
+    <widget class="QPushButton" name="btnFramePenC">
+     <property name="geometry">
+      <rect>
+       <x>404</x>
+       <y>48</y>
+       <width>34</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>MAP_FRAME_PEN colour.</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>MAP_FRAME_PEN</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>color</string>
+     </property>
+     <property name="gmtColor" stdset="0">
+      <string>black</string>
+     </property>
+    </widget>
+    <widget class="QComboBox" name="cmbFramePenS">
+     <property name="geometry">
+      <rect>
+       <x>442</x>
+       <y>48</y>
+       <width>80</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>MAP_FRAME_PEN style.</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>MAP_FRAME_PEN</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>style</string>
+     </property>
+     <item>
+      <property name="text">
+       <string>solid</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>dash</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>dot</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>dash-dot</string>
+      </property>
+     </item>
+    </widget>
+    <widget class="QLabel" name="lblFrameWidth">
+     <property name="geometry">
+      <rect>
+       <x>270</x>
+       <y>80</y>
+       <width>71</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Fancy width</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editFrameWidth">
+     <property name="geometry">
+      <rect>
+       <x>350</x>
+       <y>80</y>
+       <width>60</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>MAP_FRAME_WIDTH: width of the fancy frame's border.</string>
+     </property>
+     <property name="text">
+      <string>5p</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>MAP_FRAME_WIDTH</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblFramePercent">
+     <property name="geometry">
+      <rect>
+       <x>270</x>
+       <y>112</y>
+       <width>71</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Checker %</string>
+     </property>
+    </widget>
+    <widget class="QSpinBox" name="spinFramePercent">
+     <property name="geometry">
+      <rect>
+       <x>350</x>
+       <y>112</y>
+       <width>90</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>MAP_FRAME_PERCENT: percentage of the fancy frame width used for its inner checkerboard lines.</string>
+     </property>
+     <property name="suffix">
+      <string/>
+     </property>
+     <property name="maximum">
+      <number>100</number>
+     </property>
+     <property name="value">
+      <number>100</number>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>MAP_FRAME_PERCENT</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblFrameLine">
+     <property name="geometry">
+      <rect>
+       <x>270</x>
+       <y>144</y>
+       <width>71</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Frame line</string>
+     </property>
+    </widget>
+    <widget class="QComboBox" name="cmbFrameLine">
+     <property name="geometry">
+      <rect>
+       <x>350</x>
+       <y>144</y>
+       <width>172</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-B0 / -B00 / -B000. drawn = normal; hairline = annotations and ticks with a zero-width frame line (00); not drawn = annotations, ticks and grid lines but no frame line (000); bare frame = only the frame line, no annotations, ticks or grid (0).</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-B</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>line</string>
+     </property>
+     <item>
+      <property name="text">
+       <string>drawn</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>hairline</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>not drawn</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>bare frame</string>
+      </property>
+     </item>
+    </widget>
+    <widget class="QCheckBox" name="chkFill">
+     <property name="geometry">
+      <rect>
+       <x>270</x>
+       <y>176</y>
+       <width>111</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-B+g: paint the inside of the frame (and, in 3-D, the two back walls).</string>
+     </property>
+     <property name="text">
+      <string>Background fill</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-B</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>+g</string>
+     </property>
+    </widget>
+    <widget class="QPushButton" name="btnFillC">
+     <property name="geometry">
+      <rect>
+       <x>404</x>
+       <y>176</y>
+       <width>34</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-B+g fill colour.</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-B</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>+g.color</string>
+     </property>
+     <property name="gmtColor" stdset="0">
+      <string>white</string>
+     </property>
+    </widget>
+    <widget class="QCheckBox" name="chkInternal">
+     <property name="geometry">
+      <rect>
+       <x>270</x>
+       <y>208</y>
+       <width>111</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-B+i: annotate an internal meridian or parallel when the axis that would carry it does not exist (e.g. a 360-degree azimuthal map).</string>
+     </property>
+     <property name="text">
+      <string>Internal line</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-B</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>+i</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editInternal">
+     <property name="geometry">
+      <rect>
+       <x>404</x>
+       <y>208</y>
+       <width>60</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-B+i: the meridian or parallel to annotate.</string>
+     </property>
+     <property name="text">
+      <string>0</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-B</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>+i.val</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblTitle">
+     <property name="geometry">
+      <rect>
+       <x>11</x>
+       <y>244</y>
+       <width>105</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Title</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editTitle">
+     <property name="geometry">
+      <rect>
+       <x>79</x>
+       <y>244</y>
+       <width>441</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-B+t: the title above the frame (@^ breaks it into lines).</string>
+     </property>
+     <property name="text">
+      <string/>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-B</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>+t</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblSubtitle">
+     <property name="geometry">
+      <rect>
+       <x>11</x>
+       <y>276</y>
+       <width>105</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Subtitle</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editSubtitle">
+     <property name="geometry">
+      <rect>
+       <x>79</x>
+       <y>276</y>
+       <width>441</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-B+s: a subtitle under the title (needs a title).</string>
+     </property>
+     <property name="text">
+      <string/>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-B</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>+s</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblTitleOffset">
+     <property name="geometry">
+      <rect>
+       <x>11</x>
+       <y>308</y>
+       <width>105</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Title offset</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editTitleOffset">
+     <property name="geometry">
+      <rect>
+       <x>80</x>
+       <y>308</y>
+       <width>60</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>MAP_TITLE_OFFSET: distance from the top of the annotations (or the axis label) to the base of the title.</string>
+     </property>
+     <property name="text">
+      <string>14p</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>MAP_TITLE_OFFSET</string>
+     </property>
+    </widget>
+   </widget>
+   <widget class="QWidget" name="tab3D">
+    <property name="vertical" stdset="0">
+     <bool>true</bool>
+    </property>
+    <attribute name="title">
+     <string>3-D</string>
+    </attribute>
+    <widget class="QLabel" name="lblZCorners">
+     <property name="geometry">
+      <rect>
+       <x>11</x>
+       <y>16</y>
+       <width>170</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-BZ1234: the corners that carry a vertical axis. None checked = GMT picks the most suitable corner.</string>
+     </property>
+     <property name="text">
+      <string>Vertical axis at</string>
+     </property>
+    </widget>
+    <widget class="QCheckBox" name="chkCorner1">
+     <property name="geometry">
+      <rect>
+       <x>185</x>
+       <y>16</y>
+       <width>62</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-BZ1: the south-western (lower-left) corner.</string>
+     </property>
+     <property name="text">
+      <string>1 SW</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-B</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>Z1</string>
+     </property>
+    </widget>
+    <widget class="QCheckBox" name="chkCorner2">
+     <property name="geometry">
+      <rect>
+       <x>251</x>
+       <y>16</y>
+       <width>62</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-BZ2: the south-eastern (lower-right) corner.</string>
+     </property>
+     <property name="text">
+      <string>2 SE</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-B</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>Z2</string>
+     </property>
+    </widget>
+    <widget class="QCheckBox" name="chkCorner3">
+     <property name="geometry">
+      <rect>
+       <x>317</x>
+       <y>16</y>
+       <width>62</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-BZ3: the north-eastern (upper-right) corner.</string>
+     </property>
+     <property name="text">
+      <string>3 NE</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-B</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>Z3</string>
+     </property>
+    </widget>
+    <widget class="QCheckBox" name="chkCorner4">
+     <property name="geometry">
+      <rect>
+       <x>383</x>
+       <y>16</y>
+       <width>62</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-BZ4: the north-western (upper-left) corner.</string>
+     </property>
+     <property name="text">
+      <string>4 NW</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-B</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>Z4</string>
+     </property>
+    </widget>
+    <widget class="QCheckBox" name="chkCube">
+     <property name="geometry">
+      <rect>
+       <x>11</x>
+       <y>48</y>
+       <width>300</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-B+b: draw the foreground lines of the 3-D cube too.</string>
+     </property>
+     <property name="text">
+      <string>Draw the whole 3-D box</string>
+     </property>
+     <property name="checked">
+      <bool>true</bool>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-B</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>+b</string>
+     </property>
+    </widget>
+    <widget class="QCheckBox" name="chkPlaneOutline">
+     <property name="geometry">
+      <rect>
+       <x>11</x>
+       <y>80</y>
+       <width>170</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-B+w: draw the outlines of the x-z and y-z planes.</string>
+     </property>
+     <property name="text">
+      <string>Plane outlines</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-B</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>+w</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editPlanePenW">
+     <property name="geometry">
+      <rect>
+       <x>185</x>
+       <y>80</y>
+       <width>50</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-B+w pen (default MAP_GRID_PEN_PRIMARY): width.</string>
+     </property>
+     <property name="text">
+      <string>0.25p</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-B</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>+w.width</string>
+     </property>
+    </widget>
+    <widget class="QPushButton" name="btnPlanePenC">
+     <property name="geometry">
+      <rect>
+       <x>239</x>
+       <y>80</y>
+       <width>34</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-B+w pen (default MAP_GRID_PEN_PRIMARY): colour.</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-B</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>+w.color</string>
+     </property>
+     <property name="gmtColor" stdset="0">
+      <string>black</string>
+     </property>
+    </widget>
+    <widget class="QComboBox" name="cmbPlanePenS">
+     <property name="geometry">
+      <rect>
+       <x>277</x>
+       <y>80</y>
+       <width>80</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-B+w pen (default MAP_GRID_PEN_PRIMARY): style.</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-B</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>+w.style</string>
+     </property>
+     <item>
+      <property name="text">
+       <string>solid</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>dash</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>dot</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>dash-dot</string>
+      </property>
+     </item>
+    </widget>
+    <widget class="QCheckBox" name="chkFillXY">
+     <property name="geometry">
+      <rect>
+       <x>11</x>
+       <y>124</y>
+       <width>170</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-B+z: paint the x-y plane.</string>
+     </property>
+     <property name="text">
+      <string>Floor (x-y plane)</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-B</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>+z</string>
+     </property>
+    </widget>
+    <widget class="QPushButton" name="btnFillXYC">
+     <property name="geometry">
+      <rect>
+       <x>185</x>
+       <y>124</y>
+       <width>34</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-B+z fill colour.</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-B</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>+z.color</string>
+     </property>
+     <property name="gmtColor" stdset="0">
+      <string>white</string>
+     </property>
+    </widget>
+    <widget class="QCheckBox" name="chkFillXZ">
+     <property name="geometry">
+      <rect>
+       <x>11</x>
+       <y>156</y>
+       <width>170</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-B+y: paint the x-z plane.</string>
+     </property>
+     <property name="text">
+      <string>Wall (x-z plane)</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-B</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>+y</string>
+     </property>
+    </widget>
+    <widget class="QPushButton" name="btnFillXZC">
+     <property name="geometry">
+      <rect>
+       <x>185</x>
+       <y>156</y>
+       <width>34</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-B+y fill colour.</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-B</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>+y.color</string>
+     </property>
+     <property name="gmtColor" stdset="0">
+      <string>white</string>
+     </property>
+    </widget>
+    <widget class="QCheckBox" name="chkFillYZ">
+     <property name="geometry">
+      <rect>
+       <x>11</x>
+       <y>188</y>
+       <width>170</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-B+x: paint the y-z plane.</string>
+     </property>
+     <property name="text">
+      <string>Wall (y-z plane)</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-B</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>+x</string>
+     </property>
+    </widget>
+    <widget class="QPushButton" name="btnFillYZC">
+     <property name="geometry">
+      <rect>
+       <x>185</x>
+       <y>188</y>
+       <width>34</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-B+x fill colour.</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-B</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>+x.color</string>
+     </property>
+     <property name="gmtColor" stdset="0">
+      <string>white</string>
+     </property>
+    </widget>
+   </widget>
+   <widget class="QWidget" name="tabX">
+    <attribute name="title">
+     <string>X axis</string>
+    </attribute>
+    <widget class="QLabel" name="lblXLimits">
+     <property name="geometry">
+      <rect>
+       <x>11</x>
+       <y>8</y>
+       <width>85</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Limits</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editXmin">
+     <property name="geometry">
+      <rect>
+       <x>100</x>
+       <y>8</y>
+       <width>95</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-R: X minimum.</string>
+     </property>
+     <property name="text">
+      <string/>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-R</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>xmin</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editXmax">
+     <property name="geometry">
+      <rect>
+       <x>205</x>
+       <y>8</y>
+       <width>95</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-R: X maximum.</string>
+     </property>
+     <property name="text">
+      <string/>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-R</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>xmax</string>
+     </property>
+    </widget>
+    <widget class="QCheckBox" name="chkDataLimitsX">
+     <property name="geometry">
+      <rect>
+       <x>315</x>
+       <y>8</y>
+       <width>205</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-R from the raster itself: this axis spans exactly the dataset's own X limits. Uncheck to type your own.</string>
+     </property>
+     <property name="text">
+      <string>Follow the data</string>
+     </property>
+     <property name="checked">
+      <bool>true</bool>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-R</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>xauto</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblXHdrP">
+     <property name="geometry">
+      <rect>
+       <x>100</x>
+       <y>40</y>
+       <width>188</width>
+       <height>18</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-Bpx: the annotations closest to the axis.</string>
+     </property>
+     <property name="text">
+      <string>Primary</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblXHdrS">
+     <property name="geometry">
+      <rect>
+       <x>300</x>
+       <y>40</y>
+       <width>188</width>
+       <height>18</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-Bsx: a second level further from the axis (mostly for time axes); its intervals must be longer than the primary ones.</string>
+     </property>
+     <property name="text">
+      <string>Secondary</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblXPStride">
+     <property name="geometry">
+      <rect>
+       <x>100</x>
+       <y>58</y>
+       <width>70</width>
+       <height>18</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Stride</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblXPPhase">
+     <property name="geometry">
+      <rect>
+       <x>174</x>
+       <y>58</y>
+       <width>50</width>
+       <height>18</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Phase</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblXPUnit">
+     <property name="geometry">
+      <rect>
+       <x>228</x>
+       <y>58</y>
+       <width>60</width>
+       <height>18</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Unit</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editXPa">
+     <property name="geometry">
+      <rect>
+       <x>100</x>
+       <y>78</y>
+       <width>70</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-Bpxa: annotation and major tick spacing. auto = GMT chooses the spacing; empty box = not drawn.</string>
+     </property>
+     <property name="text">
+      <string>auto</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-Bpx</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>a</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editXPaPhase">
+     <property name="geometry">
+      <rect>
+       <x>174</x>
+       <y>78</y>
+       <width>50</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-Bpxa phase: shift this item by a signed amount, e.g. +0.5.</string>
+     </property>
+     <property name="text">
+      <string/>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-Bpx</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>a.phase</string>
+     </property>
+    </widget>
+    <widget class="QComboBox" name="cmbXPaUnit">
+     <property name="geometry">
+      <rect>
+       <x>228</x>
+       <y>78</y>
+       <width>60</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-Bpxa unit: d / m / s = arc degrees, minutes, seconds on a map; Y y O o U u r K k D d R H h M m S s = the time units of GMT's -B. Empty = the axis' own units.</string>
+     </property>
+     <property name="editable">
+      <bool>true</bool>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-Bpx</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>a.unit</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editXPf">
+     <property name="geometry">
+      <rect>
+       <x>100</x>
+       <y>108</y>
+       <width>70</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-Bpxf: minor tick spacing. auto = GMT chooses the spacing; empty box = not drawn.</string>
+     </property>
+     <property name="text">
+      <string>auto</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-Bpx</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>f</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editXPfPhase">
+     <property name="geometry">
+      <rect>
+       <x>174</x>
+       <y>108</y>
+       <width>50</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-Bpxf phase: shift this item by a signed amount, e.g. +0.5.</string>
+     </property>
+     <property name="text">
+      <string/>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-Bpx</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>f.phase</string>
+     </property>
+    </widget>
+    <widget class="QComboBox" name="cmbXPfUnit">
+     <property name="geometry">
+      <rect>
+       <x>228</x>
+       <y>108</y>
+       <width>60</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-Bpxf unit: d / m / s = arc degrees, minutes, seconds on a map; Y y O o U u r K k D d R H h M m S s = the time units of GMT's -B. Empty = the axis' own units.</string>
+     </property>
+     <property name="editable">
+      <bool>true</bool>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-Bpx</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>f.unit</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editXPg">
+     <property name="geometry">
+      <rect>
+       <x>100</x>
+       <y>138</y>
+       <width>70</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-Bpxg: grid line spacing. auto = GMT chooses the spacing; empty box = not drawn.</string>
+     </property>
+     <property name="text">
+      <string/>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-Bpx</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>g</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editXPgPhase">
+     <property name="geometry">
+      <rect>
+       <x>174</x>
+       <y>138</y>
+       <width>50</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-Bpxg phase: shift this item by a signed amount, e.g. +0.5.</string>
+     </property>
+     <property name="text">
+      <string/>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-Bpx</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>g.phase</string>
+     </property>
+    </widget>
+    <widget class="QComboBox" name="cmbXPgUnit">
+     <property name="geometry">
+      <rect>
+       <x>228</x>
+       <y>138</y>
+       <width>60</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-Bpxg unit: d / m / s = arc degrees, minutes, seconds on a map; Y y O o U u r K k D d R H h M m S s = the time units of GMT's -B. Empty = the axis' own units.</string>
+     </property>
+     <property name="editable">
+      <bool>true</bool>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-Bpx</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>g.unit</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblXSStride">
+     <property name="geometry">
+      <rect>
+       <x>300</x>
+       <y>58</y>
+       <width>70</width>
+       <height>18</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Stride</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblXSPhase">
+     <property name="geometry">
+      <rect>
+       <x>374</x>
+       <y>58</y>
+       <width>50</width>
+       <height>18</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Phase</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblXSUnit">
+     <property name="geometry">
+      <rect>
+       <x>428</x>
+       <y>58</y>
+       <width>60</width>
+       <height>18</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Unit</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editXSa">
+     <property name="geometry">
+      <rect>
+       <x>300</x>
+       <y>78</y>
+       <width>70</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-Bsxa: annotation and major tick spacing. auto = GMT chooses the spacing; empty box = not drawn.</string>
+     </property>
+     <property name="text">
+      <string/>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-Bsx</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>a</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editXSaPhase">
+     <property name="geometry">
+      <rect>
+       <x>374</x>
+       <y>78</y>
+       <width>50</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-Bsxa phase: shift this item by a signed amount, e.g. +0.5.</string>
+     </property>
+     <property name="text">
+      <string/>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-Bsx</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>a.phase</string>
+     </property>
+    </widget>
+    <widget class="QComboBox" name="cmbXSaUnit">
+     <property name="geometry">
+      <rect>
+       <x>428</x>
+       <y>78</y>
+       <width>60</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-Bsxa unit: d / m / s = arc degrees, minutes, seconds on a map; Y y O o U u r K k D d R H h M m S s = the time units of GMT's -B. Empty = the axis' own units.</string>
+     </property>
+     <property name="editable">
+      <bool>true</bool>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-Bsx</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>a.unit</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editXSf">
+     <property name="geometry">
+      <rect>
+       <x>300</x>
+       <y>108</y>
+       <width>70</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-Bsxf: minor tick spacing. auto = GMT chooses the spacing; empty box = not drawn.</string>
+     </property>
+     <property name="text">
+      <string/>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-Bsx</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>f</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editXSfPhase">
+     <property name="geometry">
+      <rect>
+       <x>374</x>
+       <y>108</y>
+       <width>50</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-Bsxf phase: shift this item by a signed amount, e.g. +0.5.</string>
+     </property>
+     <property name="text">
+      <string/>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-Bsx</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>f.phase</string>
+     </property>
+    </widget>
+    <widget class="QComboBox" name="cmbXSfUnit">
+     <property name="geometry">
+      <rect>
+       <x>428</x>
+       <y>108</y>
+       <width>60</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-Bsxf unit: d / m / s = arc degrees, minutes, seconds on a map; Y y O o U u r K k D d R H h M m S s = the time units of GMT's -B. Empty = the axis' own units.</string>
+     </property>
+     <property name="editable">
+      <bool>true</bool>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-Bsx</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>f.unit</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editXSg">
+     <property name="geometry">
+      <rect>
+       <x>300</x>
+       <y>138</y>
+       <width>70</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-Bsxg: grid line spacing. auto = GMT chooses the spacing; empty box = not drawn.</string>
+     </property>
+     <property name="text">
+      <string/>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-Bsx</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>g</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editXSgPhase">
+     <property name="geometry">
+      <rect>
+       <x>374</x>
+       <y>138</y>
+       <width>50</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-Bsxg phase: shift this item by a signed amount, e.g. +0.5.</string>
+     </property>
+     <property name="text">
+      <string/>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-Bsx</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>g.phase</string>
+     </property>
+    </widget>
+    <widget class="QComboBox" name="cmbXSgUnit">
+     <property name="geometry">
+      <rect>
+       <x>428</x>
+       <y>138</y>
+       <width>60</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-Bsxg unit: d / m / s = arc degrees, minutes, seconds on a map; Y y O o U u r K k D d R H h M m S s = the time units of GMT's -B. Empty = the axis' own units.</string>
+     </property>
+     <property name="editable">
+      <bool>true</bool>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-Bsx</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>g.unit</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblXAnn">
+     <property name="geometry">
+      <rect>
+       <x>11</x>
+       <y>78</y>
+       <width>85</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Annotations</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblXTick">
+     <property name="geometry">
+      <rect>
+       <x>11</x>
+       <y>108</y>
+       <width>85</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Minor ticks</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblXGrid">
+     <property name="geometry">
+      <rect>
+       <x>11</x>
+       <y>138</y>
+       <width>85</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Grid lines</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblXLabel">
+     <property name="geometry">
+      <rect>
+       <x>11</x>
+       <y>170</y>
+       <width>85</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Label</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editXLabel">
+     <property name="geometry">
+      <rect>
+       <x>100</x>
+       <y>170</y>
+       <width>300</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-Bx+l: the name written along the X axis (Cartesian).</string>
+     </property>
+     <property name="text">
+      <string/>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-Bx</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>label</string>
+     </property>
+    </widget>
+    <widget class="QCheckBox" name="chkXLabelH">
+     <property name="geometry">
+      <rect>
+       <x>410</x>
+       <y>170</y>
+       <width>110</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-Bx+L: write the label horizontally (useful for short y labels).</string>
+     </property>
+     <property name="text">
+      <string>Horizontal</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-Bx</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>labelH</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblXSecLabel">
+     <property name="geometry">
+      <rect>
+       <x>11</x>
+       <y>200</y>
+       <width>85</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Opposite label</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editXSecLabel">
+     <property name="geometry">
+      <rect>
+       <x>100</x>
+       <y>200</y>
+       <width>300</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-Bx+s: a different label for the opposite (right or upper) axis (Cartesian).</string>
+     </property>
+     <property name="text">
+      <string/>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-Bx</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>seclabel</string>
+     </property>
+    </widget>
+    <widget class="QCheckBox" name="chkXSecLabelH">
+     <property name="geometry">
+      <rect>
+       <x>410</x>
+       <y>200</y>
+       <width>110</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-Bx+S: write the opposite label horizontally.</string>
+     </property>
+     <property name="text">
+      <string>Horizontal</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-Bx</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>seclabelH</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblXPrefix">
+     <property name="geometry">
+      <rect>
+       <x>11</x>
+       <y>230</y>
+       <width>85</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Prefix</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editXPrefix">
+     <property name="geometry">
+      <rect>
+       <x>100</x>
+       <y>230</y>
+       <width>80</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-Bx+p: text put before every annotation, e.g. $ (Cartesian).</string>
+     </property>
+     <property name="text">
+      <string/>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-Bx</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>prefix</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblXUnit">
+     <property name="geometry">
+      <rect>
+       <x>190</x>
+       <y>230</y>
+       <width>40</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Unit</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editXUnit">
+     <property name="geometry">
+      <rect>
+       <x>230</x>
+       <y>230</y>
+       <width>80</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-Bx+u: text put after every annotation, e.g. km (Cartesian).</string>
+     </property>
+     <property name="text">
+      <string/>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-Bx</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>unit</string>
+     </property>
+    </widget>
+    <widget class="QCheckBox" name="chkXFancy">
+     <property name="geometry">
+      <rect>
+       <x>330</x>
+       <y>230</y>
+       <width>190</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-Bx+f: geographic annotations carry W/E instead of a sign.</string>
+     </property>
+     <property name="text">
+      <string>W / E suffixes</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-Bx</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>fancy</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblXAngle">
+     <property name="geometry">
+      <rect>
+       <x>11</x>
+       <y>260</y>
+       <width>85</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Angle</string>
+     </property>
+    </widget>
+    <widget class="QComboBox" name="cmbXAngle">
+     <property name="geometry">
+      <rect>
+       <x>100</x>
+       <y>260</y>
+       <width>80</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-Bx+a: slant of the annotations. parallel (+ap), normal (+an), or type an angle in -90..90 (Cartesian). Empty = MAP_ANNOT_ORTHO decides.</string>
+     </property>
+     <property name="editable">
+      <bool>true</bool>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-Bx</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>angle</string>
+     </property>
+     <item>
+      <property name="text">
+       <string/>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>parallel</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>normal</string>
+      </property>
+     </item>
+    </widget>
+    <widget class="QLabel" name="lblXEnds">
+     <property name="geometry">
+      <rect>
+       <x>190</x>
+       <y>260</y>
+       <width>80</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Skip ends</string>
+     </property>
+    </widget>
+    <widget class="QComboBox" name="cmbXEnds">
+     <property name="geometry">
+      <rect>
+       <x>280</x>
+       <y>260</y>
+       <width>90</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-Bx+e: leave out the annotations that fall exactly on the ends of the axis (both, or only the lower / upper one).</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-Bx</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>ends</string>
+     </property>
+     <item>
+      <property name="text">
+       <string>none</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>both</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>lower</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>upper</string>
+      </property>
+     </item>
+    </widget>
+    <widget class="QLabel" name="lblXLabelOffset">
+     <property name="geometry">
+      <rect>
+       <x>11</x>
+       <y>290</y>
+       <width>85</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Label offset</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editLabelOffsetX">
+     <property name="geometry">
+      <rect>
+       <x>100</x>
+       <y>290</y>
+       <width>60</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>MAP_LABEL_OFFSET, x axis: distance from the annotations to the axis label.</string>
+     </property>
+     <property name="text">
+      <string>8p</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>MAP_LABEL_OFFSET</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>x</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblXLabelMode">
+     <property name="geometry">
+      <rect>
+       <x>190</x>
+       <y>290</y>
+       <width>80</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Offset from</string>
+     </property>
+    </widget>
+    <widget class="QComboBox" name="cmbLabelModeX">
+     <property name="geometry">
+      <rect>
+       <x>280</x>
+       <y>290</y>
+       <width>90</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>MAP_LABEL_MODE, x axis: measure the label offset from the end of the annotations (annot) or from the axis itself (axis).</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>MAP_LABEL_MODE</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>x</string>
+     </property>
+     <item>
+      <property name="text">
+       <string>annot</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>axis</string>
+      </property>
+     </item>
+    </widget>
+   </widget>
+   <widget class="QWidget" name="tabY">
+    <attribute name="title">
+     <string>Y axis</string>
+    </attribute>
+    <widget class="QLabel" name="lblYLimits">
+     <property name="geometry">
+      <rect>
+       <x>11</x>
+       <y>8</y>
+       <width>85</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Limits</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editYmin">
+     <property name="geometry">
+      <rect>
+       <x>100</x>
+       <y>8</y>
+       <width>95</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-R: Y minimum.</string>
+     </property>
+     <property name="text">
+      <string/>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-R</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>ymin</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editYmax">
+     <property name="geometry">
+      <rect>
+       <x>205</x>
+       <y>8</y>
+       <width>95</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-R: Y maximum.</string>
+     </property>
+     <property name="text">
+      <string/>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-R</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>ymax</string>
+     </property>
+    </widget>
+    <widget class="QCheckBox" name="chkDataLimitsY">
+     <property name="geometry">
+      <rect>
+       <x>315</x>
+       <y>8</y>
+       <width>205</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-R from the raster itself: this axis spans exactly the dataset's own Y limits. Uncheck to type your own.</string>
+     </property>
+     <property name="text">
+      <string>Follow the data</string>
+     </property>
+     <property name="checked">
+      <bool>true</bool>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-R</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>yauto</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblYHdrP">
+     <property name="geometry">
+      <rect>
+       <x>100</x>
+       <y>40</y>
+       <width>188</width>
+       <height>18</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-Bpy: the annotations closest to the axis.</string>
+     </property>
+     <property name="text">
+      <string>Primary</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblYHdrS">
+     <property name="geometry">
+      <rect>
+       <x>300</x>
+       <y>40</y>
+       <width>188</width>
+       <height>18</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-Bsy: a second level further from the axis (mostly for time axes); its intervals must be longer than the primary ones.</string>
+     </property>
+     <property name="text">
+      <string>Secondary</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblYPStride">
+     <property name="geometry">
+      <rect>
+       <x>100</x>
+       <y>58</y>
+       <width>70</width>
+       <height>18</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Stride</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblYPPhase">
+     <property name="geometry">
+      <rect>
+       <x>174</x>
+       <y>58</y>
+       <width>50</width>
+       <height>18</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Phase</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblYPUnit">
+     <property name="geometry">
+      <rect>
+       <x>228</x>
+       <y>58</y>
+       <width>60</width>
+       <height>18</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Unit</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editYPa">
+     <property name="geometry">
+      <rect>
+       <x>100</x>
+       <y>78</y>
+       <width>70</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-Bpya: annotation and major tick spacing. auto = GMT chooses the spacing; empty box = not drawn.</string>
+     </property>
+     <property name="text">
+      <string>auto</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-Bpy</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>a</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editYPaPhase">
+     <property name="geometry">
+      <rect>
+       <x>174</x>
+       <y>78</y>
+       <width>50</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-Bpya phase: shift this item by a signed amount, e.g. +0.5.</string>
+     </property>
+     <property name="text">
+      <string/>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-Bpy</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>a.phase</string>
+     </property>
+    </widget>
+    <widget class="QComboBox" name="cmbYPaUnit">
+     <property name="geometry">
+      <rect>
+       <x>228</x>
+       <y>78</y>
+       <width>60</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-Bpya unit: d / m / s = arc degrees, minutes, seconds on a map; Y y O o U u r K k D d R H h M m S s = the time units of GMT's -B. Empty = the axis' own units.</string>
+     </property>
+     <property name="editable">
+      <bool>true</bool>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-Bpy</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>a.unit</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editYPf">
+     <property name="geometry">
+      <rect>
+       <x>100</x>
+       <y>108</y>
+       <width>70</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-Bpyf: minor tick spacing. auto = GMT chooses the spacing; empty box = not drawn.</string>
+     </property>
+     <property name="text">
+      <string>auto</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-Bpy</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>f</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editYPfPhase">
+     <property name="geometry">
+      <rect>
+       <x>174</x>
+       <y>108</y>
+       <width>50</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-Bpyf phase: shift this item by a signed amount, e.g. +0.5.</string>
+     </property>
+     <property name="text">
+      <string/>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-Bpy</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>f.phase</string>
+     </property>
+    </widget>
+    <widget class="QComboBox" name="cmbYPfUnit">
+     <property name="geometry">
+      <rect>
+       <x>228</x>
+       <y>108</y>
+       <width>60</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-Bpyf unit: d / m / s = arc degrees, minutes, seconds on a map; Y y O o U u r K k D d R H h M m S s = the time units of GMT's -B. Empty = the axis' own units.</string>
+     </property>
+     <property name="editable">
+      <bool>true</bool>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-Bpy</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>f.unit</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editYPg">
+     <property name="geometry">
+      <rect>
+       <x>100</x>
+       <y>138</y>
+       <width>70</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-Bpyg: grid line spacing. auto = GMT chooses the spacing; empty box = not drawn.</string>
+     </property>
+     <property name="text">
+      <string/>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-Bpy</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>g</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editYPgPhase">
+     <property name="geometry">
+      <rect>
+       <x>174</x>
+       <y>138</y>
+       <width>50</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-Bpyg phase: shift this item by a signed amount, e.g. +0.5.</string>
+     </property>
+     <property name="text">
+      <string/>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-Bpy</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>g.phase</string>
+     </property>
+    </widget>
+    <widget class="QComboBox" name="cmbYPgUnit">
+     <property name="geometry">
+      <rect>
+       <x>228</x>
+       <y>138</y>
+       <width>60</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-Bpyg unit: d / m / s = arc degrees, minutes, seconds on a map; Y y O o U u r K k D d R H h M m S s = the time units of GMT's -B. Empty = the axis' own units.</string>
+     </property>
+     <property name="editable">
+      <bool>true</bool>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-Bpy</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>g.unit</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblYSStride">
+     <property name="geometry">
+      <rect>
+       <x>300</x>
+       <y>58</y>
+       <width>70</width>
+       <height>18</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Stride</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblYSPhase">
+     <property name="geometry">
+      <rect>
+       <x>374</x>
+       <y>58</y>
+       <width>50</width>
+       <height>18</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Phase</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblYSUnit">
+     <property name="geometry">
+      <rect>
+       <x>428</x>
+       <y>58</y>
+       <width>60</width>
+       <height>18</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Unit</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editYSa">
+     <property name="geometry">
+      <rect>
+       <x>300</x>
+       <y>78</y>
+       <width>70</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-Bsya: annotation and major tick spacing. auto = GMT chooses the spacing; empty box = not drawn.</string>
+     </property>
+     <property name="text">
+      <string/>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-Bsy</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>a</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editYSaPhase">
+     <property name="geometry">
+      <rect>
+       <x>374</x>
+       <y>78</y>
+       <width>50</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-Bsya phase: shift this item by a signed amount, e.g. +0.5.</string>
+     </property>
+     <property name="text">
+      <string/>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-Bsy</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>a.phase</string>
+     </property>
+    </widget>
+    <widget class="QComboBox" name="cmbYSaUnit">
+     <property name="geometry">
+      <rect>
+       <x>428</x>
+       <y>78</y>
+       <width>60</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-Bsya unit: d / m / s = arc degrees, minutes, seconds on a map; Y y O o U u r K k D d R H h M m S s = the time units of GMT's -B. Empty = the axis' own units.</string>
+     </property>
+     <property name="editable">
+      <bool>true</bool>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-Bsy</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>a.unit</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editYSf">
+     <property name="geometry">
+      <rect>
+       <x>300</x>
+       <y>108</y>
+       <width>70</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-Bsyf: minor tick spacing. auto = GMT chooses the spacing; empty box = not drawn.</string>
+     </property>
+     <property name="text">
+      <string/>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-Bsy</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>f</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editYSfPhase">
+     <property name="geometry">
+      <rect>
+       <x>374</x>
+       <y>108</y>
+       <width>50</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-Bsyf phase: shift this item by a signed amount, e.g. +0.5.</string>
+     </property>
+     <property name="text">
+      <string/>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-Bsy</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>f.phase</string>
+     </property>
+    </widget>
+    <widget class="QComboBox" name="cmbYSfUnit">
+     <property name="geometry">
+      <rect>
+       <x>428</x>
+       <y>108</y>
+       <width>60</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-Bsyf unit: d / m / s = arc degrees, minutes, seconds on a map; Y y O o U u r K k D d R H h M m S s = the time units of GMT's -B. Empty = the axis' own units.</string>
+     </property>
+     <property name="editable">
+      <bool>true</bool>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-Bsy</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>f.unit</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editYSg">
+     <property name="geometry">
+      <rect>
+       <x>300</x>
+       <y>138</y>
+       <width>70</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-Bsyg: grid line spacing. auto = GMT chooses the spacing; empty box = not drawn.</string>
+     </property>
+     <property name="text">
+      <string/>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-Bsy</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>g</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editYSgPhase">
+     <property name="geometry">
+      <rect>
+       <x>374</x>
+       <y>138</y>
+       <width>50</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-Bsyg phase: shift this item by a signed amount, e.g. +0.5.</string>
+     </property>
+     <property name="text">
+      <string/>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-Bsy</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>g.phase</string>
+     </property>
+    </widget>
+    <widget class="QComboBox" name="cmbYSgUnit">
+     <property name="geometry">
+      <rect>
+       <x>428</x>
+       <y>138</y>
+       <width>60</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-Bsyg unit: d / m / s = arc degrees, minutes, seconds on a map; Y y O o U u r K k D d R H h M m S s = the time units of GMT's -B. Empty = the axis' own units.</string>
+     </property>
+     <property name="editable">
+      <bool>true</bool>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-Bsy</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>g.unit</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblYAnn">
+     <property name="geometry">
+      <rect>
+       <x>11</x>
+       <y>78</y>
+       <width>85</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Annotations</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblYTick">
+     <property name="geometry">
+      <rect>
+       <x>11</x>
+       <y>108</y>
+       <width>85</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Minor ticks</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblYGrid">
+     <property name="geometry">
+      <rect>
+       <x>11</x>
+       <y>138</y>
+       <width>85</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Grid lines</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblYLabel">
+     <property name="geometry">
+      <rect>
+       <x>11</x>
+       <y>170</y>
+       <width>85</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Label</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editYLabel">
+     <property name="geometry">
+      <rect>
+       <x>100</x>
+       <y>170</y>
+       <width>300</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-By+l: the name written along the Y axis (Cartesian).</string>
+     </property>
+     <property name="text">
+      <string/>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-By</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>label</string>
+     </property>
+    </widget>
+    <widget class="QCheckBox" name="chkYLabelH">
+     <property name="geometry">
+      <rect>
+       <x>410</x>
+       <y>170</y>
+       <width>110</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-By+L: write the label horizontally (useful for short y labels).</string>
+     </property>
+     <property name="text">
+      <string>Horizontal</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-By</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>labelH</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblYSecLabel">
+     <property name="geometry">
+      <rect>
+       <x>11</x>
+       <y>200</y>
+       <width>85</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Opposite label</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editYSecLabel">
+     <property name="geometry">
+      <rect>
+       <x>100</x>
+       <y>200</y>
+       <width>300</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-By+s: a different label for the opposite (right or upper) axis (Cartesian).</string>
+     </property>
+     <property name="text">
+      <string/>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-By</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>seclabel</string>
+     </property>
+    </widget>
+    <widget class="QCheckBox" name="chkYSecLabelH">
+     <property name="geometry">
+      <rect>
+       <x>410</x>
+       <y>200</y>
+       <width>110</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-By+S: write the opposite label horizontally.</string>
+     </property>
+     <property name="text">
+      <string>Horizontal</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-By</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>seclabelH</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblYPrefix">
+     <property name="geometry">
+      <rect>
+       <x>11</x>
+       <y>230</y>
+       <width>85</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Prefix</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editYPrefix">
+     <property name="geometry">
+      <rect>
+       <x>100</x>
+       <y>230</y>
+       <width>80</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-By+p: text put before every annotation, e.g. $ (Cartesian).</string>
+     </property>
+     <property name="text">
+      <string/>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-By</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>prefix</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblYUnit">
+     <property name="geometry">
+      <rect>
+       <x>190</x>
+       <y>230</y>
+       <width>40</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Unit</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editYUnit">
+     <property name="geometry">
+      <rect>
+       <x>230</x>
+       <y>230</y>
+       <width>80</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-By+u: text put after every annotation, e.g. km (Cartesian).</string>
+     </property>
+     <property name="text">
+      <string/>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-By</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>unit</string>
+     </property>
+    </widget>
+    <widget class="QCheckBox" name="chkYFancy">
+     <property name="geometry">
+      <rect>
+       <x>330</x>
+       <y>230</y>
+       <width>190</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-By+f: geographic annotations carry S/N instead of a sign.</string>
+     </property>
+     <property name="text">
+      <string>S / N suffixes</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-By</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>fancy</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblYAngle">
+     <property name="geometry">
+      <rect>
+       <x>11</x>
+       <y>260</y>
+       <width>85</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Angle</string>
+     </property>
+    </widget>
+    <widget class="QComboBox" name="cmbYAngle">
+     <property name="geometry">
+      <rect>
+       <x>100</x>
+       <y>260</y>
+       <width>80</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-By+a: slant of the annotations. parallel (+ap), normal (+an), or type an angle in -90..90 (Cartesian). Empty = MAP_ANNOT_ORTHO decides.</string>
+     </property>
+     <property name="editable">
+      <bool>true</bool>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-By</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>angle</string>
+     </property>
+     <item>
+      <property name="text">
+       <string/>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>parallel</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>normal</string>
+      </property>
+     </item>
+    </widget>
+    <widget class="QLabel" name="lblYEnds">
+     <property name="geometry">
+      <rect>
+       <x>190</x>
+       <y>260</y>
+       <width>80</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Skip ends</string>
+     </property>
+    </widget>
+    <widget class="QComboBox" name="cmbYEnds">
+     <property name="geometry">
+      <rect>
+       <x>280</x>
+       <y>260</y>
+       <width>90</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-By+e: leave out the annotations that fall exactly on the ends of the axis (both, or only the lower / upper one).</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-By</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>ends</string>
+     </property>
+     <item>
+      <property name="text">
+       <string>none</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>both</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>lower</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>upper</string>
+      </property>
+     </item>
+    </widget>
+    <widget class="QLabel" name="lblYLabelOffset">
+     <property name="geometry">
+      <rect>
+       <x>11</x>
+       <y>290</y>
+       <width>85</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Label offset</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editLabelOffsetY">
+     <property name="geometry">
+      <rect>
+       <x>100</x>
+       <y>290</y>
+       <width>60</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>MAP_LABEL_OFFSET, y axis: distance from the annotations to the axis label.</string>
+     </property>
+     <property name="text">
+      <string>8p</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>MAP_LABEL_OFFSET</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>y</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblYLabelMode">
+     <property name="geometry">
+      <rect>
+       <x>190</x>
+       <y>290</y>
+       <width>80</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Offset from</string>
+     </property>
+    </widget>
+    <widget class="QComboBox" name="cmbLabelModeY">
+     <property name="geometry">
+      <rect>
+       <x>280</x>
+       <y>290</y>
+       <width>90</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>MAP_LABEL_MODE, y axis: measure the label offset from the end of the annotations (annot) or from the axis itself (axis).</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>MAP_LABEL_MODE</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>y</string>
+     </property>
+     <item>
+      <property name="text">
+       <string>annot</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>axis</string>
+      </property>
+     </item>
+    </widget>
+   </widget>
+   <widget class="QWidget" name="tabZ">
+    <property name="vertical" stdset="0">
+     <bool>true</bool>
+    </property>
+    <attribute name="title">
+     <string>Z axis</string>
+    </attribute>
+    <widget class="QLabel" name="lblZLimits">
+     <property name="geometry">
+      <rect>
+       <x>11</x>
+       <y>8</y>
+       <width>85</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Limits</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editZmin">
+     <property name="geometry">
+      <rect>
+       <x>100</x>
+       <y>8</y>
+       <width>95</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-R: Z minimum.</string>
+     </property>
+     <property name="text">
+      <string/>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-R</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>zmin</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editZmax">
+     <property name="geometry">
+      <rect>
+       <x>205</x>
+       <y>8</y>
+       <width>95</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-R: Z maximum.</string>
+     </property>
+     <property name="text">
+      <string/>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-R</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>zmax</string>
+     </property>
+    </widget>
+    <widget class="QCheckBox" name="chkDataLimitsZ">
+     <property name="geometry">
+      <rect>
+       <x>315</x>
+       <y>8</y>
+       <width>205</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-R from the raster itself: this axis spans exactly the dataset's own Z limits. Uncheck to type your own.</string>
+     </property>
+     <property name="text">
+      <string>Follow the data</string>
+     </property>
+     <property name="checked">
+      <bool>true</bool>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-R</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>zauto</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblZHdrP">
+     <property name="geometry">
+      <rect>
+       <x>100</x>
+       <y>40</y>
+       <width>188</width>
+       <height>18</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-Bpz: the annotations closest to the axis.</string>
+     </property>
+     <property name="text">
+      <string>Primary</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblZHdrS">
+     <property name="geometry">
+      <rect>
+       <x>300</x>
+       <y>40</y>
+       <width>188</width>
+       <height>18</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-Bsz: a second level further from the axis (mostly for time axes); its intervals must be longer than the primary ones.</string>
+     </property>
+     <property name="text">
+      <string>Secondary</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblZPStride">
+     <property name="geometry">
+      <rect>
+       <x>100</x>
+       <y>58</y>
+       <width>70</width>
+       <height>18</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Stride</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblZPPhase">
+     <property name="geometry">
+      <rect>
+       <x>174</x>
+       <y>58</y>
+       <width>50</width>
+       <height>18</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Phase</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblZPUnit">
+     <property name="geometry">
+      <rect>
+       <x>228</x>
+       <y>58</y>
+       <width>60</width>
+       <height>18</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Unit</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editZPa">
+     <property name="geometry">
+      <rect>
+       <x>100</x>
+       <y>78</y>
+       <width>70</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-Bpza: annotation and major tick spacing. auto = GMT chooses the spacing; empty box = not drawn.</string>
+     </property>
+     <property name="text">
+      <string>auto</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-Bpz</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>a</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editZPaPhase">
+     <property name="geometry">
+      <rect>
+       <x>174</x>
+       <y>78</y>
+       <width>50</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-Bpza phase: shift this item by a signed amount, e.g. +0.5.</string>
+     </property>
+     <property name="text">
+      <string/>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-Bpz</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>a.phase</string>
+     </property>
+    </widget>
+    <widget class="QComboBox" name="cmbZPaUnit">
+     <property name="geometry">
+      <rect>
+       <x>228</x>
+       <y>78</y>
+       <width>60</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-Bpza unit: d / m / s = arc degrees, minutes, seconds on a map; Y y O o U u r K k D d R H h M m S s = the time units of GMT's -B. Empty = the axis' own units.</string>
+     </property>
+     <property name="editable">
+      <bool>true</bool>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-Bpz</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>a.unit</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editZPf">
+     <property name="geometry">
+      <rect>
+       <x>100</x>
+       <y>108</y>
+       <width>70</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-Bpzf: minor tick spacing. auto = GMT chooses the spacing; empty box = not drawn.</string>
+     </property>
+     <property name="text">
+      <string>auto</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-Bpz</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>f</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editZPfPhase">
+     <property name="geometry">
+      <rect>
+       <x>174</x>
+       <y>108</y>
+       <width>50</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-Bpzf phase: shift this item by a signed amount, e.g. +0.5.</string>
+     </property>
+     <property name="text">
+      <string/>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-Bpz</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>f.phase</string>
+     </property>
+    </widget>
+    <widget class="QComboBox" name="cmbZPfUnit">
+     <property name="geometry">
+      <rect>
+       <x>228</x>
+       <y>108</y>
+       <width>60</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-Bpzf unit: d / m / s = arc degrees, minutes, seconds on a map; Y y O o U u r K k D d R H h M m S s = the time units of GMT's -B. Empty = the axis' own units.</string>
+     </property>
+     <property name="editable">
+      <bool>true</bool>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-Bpz</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>f.unit</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editZPg">
+     <property name="geometry">
+      <rect>
+       <x>100</x>
+       <y>138</y>
+       <width>70</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-Bpzg: grid line spacing. auto = GMT chooses the spacing; empty box = not drawn.</string>
+     </property>
+     <property name="text">
+      <string/>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-Bpz</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>g</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editZPgPhase">
+     <property name="geometry">
+      <rect>
+       <x>174</x>
+       <y>138</y>
+       <width>50</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-Bpzg phase: shift this item by a signed amount, e.g. +0.5.</string>
+     </property>
+     <property name="text">
+      <string/>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-Bpz</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>g.phase</string>
+     </property>
+    </widget>
+    <widget class="QComboBox" name="cmbZPgUnit">
+     <property name="geometry">
+      <rect>
+       <x>228</x>
+       <y>138</y>
+       <width>60</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-Bpzg unit: d / m / s = arc degrees, minutes, seconds on a map; Y y O o U u r K k D d R H h M m S s = the time units of GMT's -B. Empty = the axis' own units.</string>
+     </property>
+     <property name="editable">
+      <bool>true</bool>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-Bpz</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>g.unit</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblZSStride">
+     <property name="geometry">
+      <rect>
+       <x>300</x>
+       <y>58</y>
+       <width>70</width>
+       <height>18</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Stride</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblZSPhase">
+     <property name="geometry">
+      <rect>
+       <x>374</x>
+       <y>58</y>
+       <width>50</width>
+       <height>18</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Phase</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblZSUnit">
+     <property name="geometry">
+      <rect>
+       <x>428</x>
+       <y>58</y>
+       <width>60</width>
+       <height>18</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Unit</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editZSa">
+     <property name="geometry">
+      <rect>
+       <x>300</x>
+       <y>78</y>
+       <width>70</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-Bsza: annotation and major tick spacing. auto = GMT chooses the spacing; empty box = not drawn.</string>
+     </property>
+     <property name="text">
+      <string/>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-Bsz</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>a</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editZSaPhase">
+     <property name="geometry">
+      <rect>
+       <x>374</x>
+       <y>78</y>
+       <width>50</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-Bsza phase: shift this item by a signed amount, e.g. +0.5.</string>
+     </property>
+     <property name="text">
+      <string/>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-Bsz</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>a.phase</string>
+     </property>
+    </widget>
+    <widget class="QComboBox" name="cmbZSaUnit">
+     <property name="geometry">
+      <rect>
+       <x>428</x>
+       <y>78</y>
+       <width>60</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-Bsza unit: d / m / s = arc degrees, minutes, seconds on a map; Y y O o U u r K k D d R H h M m S s = the time units of GMT's -B. Empty = the axis' own units.</string>
+     </property>
+     <property name="editable">
+      <bool>true</bool>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-Bsz</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>a.unit</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editZSf">
+     <property name="geometry">
+      <rect>
+       <x>300</x>
+       <y>108</y>
+       <width>70</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-Bszf: minor tick spacing. auto = GMT chooses the spacing; empty box = not drawn.</string>
+     </property>
+     <property name="text">
+      <string/>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-Bsz</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>f</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editZSfPhase">
+     <property name="geometry">
+      <rect>
+       <x>374</x>
+       <y>108</y>
+       <width>50</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-Bszf phase: shift this item by a signed amount, e.g. +0.5.</string>
+     </property>
+     <property name="text">
+      <string/>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-Bsz</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>f.phase</string>
+     </property>
+    </widget>
+    <widget class="QComboBox" name="cmbZSfUnit">
+     <property name="geometry">
+      <rect>
+       <x>428</x>
+       <y>108</y>
+       <width>60</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-Bszf unit: d / m / s = arc degrees, minutes, seconds on a map; Y y O o U u r K k D d R H h M m S s = the time units of GMT's -B. Empty = the axis' own units.</string>
+     </property>
+     <property name="editable">
+      <bool>true</bool>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-Bsz</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>f.unit</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editZSg">
+     <property name="geometry">
+      <rect>
+       <x>300</x>
+       <y>138</y>
+       <width>70</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-Bszg: grid line spacing. auto = GMT chooses the spacing; empty box = not drawn.</string>
+     </property>
+     <property name="text">
+      <string/>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-Bsz</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>g</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editZSgPhase">
+     <property name="geometry">
+      <rect>
+       <x>374</x>
+       <y>138</y>
+       <width>50</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-Bszg phase: shift this item by a signed amount, e.g. +0.5.</string>
+     </property>
+     <property name="text">
+      <string/>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-Bsz</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>g.phase</string>
+     </property>
+    </widget>
+    <widget class="QComboBox" name="cmbZSgUnit">
+     <property name="geometry">
+      <rect>
+       <x>428</x>
+       <y>138</y>
+       <width>60</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-Bszg unit: d / m / s = arc degrees, minutes, seconds on a map; Y y O o U u r K k D d R H h M m S s = the time units of GMT's -B. Empty = the axis' own units.</string>
+     </property>
+     <property name="editable">
+      <bool>true</bool>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-Bsz</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>g.unit</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblZAnn">
+     <property name="geometry">
+      <rect>
+       <x>11</x>
+       <y>78</y>
+       <width>85</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Annotations</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblZTick">
+     <property name="geometry">
+      <rect>
+       <x>11</x>
+       <y>108</y>
+       <width>85</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Minor ticks</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblZGrid">
+     <property name="geometry">
+      <rect>
+       <x>11</x>
+       <y>138</y>
+       <width>85</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Grid lines</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblZLabel">
+     <property name="geometry">
+      <rect>
+       <x>11</x>
+       <y>170</y>
+       <width>85</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Label</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editZLabel">
+     <property name="geometry">
+      <rect>
+       <x>100</x>
+       <y>170</y>
+       <width>300</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-Bz+l: the name written along the Z axis (Cartesian).</string>
+     </property>
+     <property name="text">
+      <string/>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-Bz</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>label</string>
+     </property>
+    </widget>
+    <widget class="QCheckBox" name="chkZLabelH">
+     <property name="geometry">
+      <rect>
+       <x>410</x>
+       <y>170</y>
+       <width>110</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-Bz+L: write the label horizontally (useful for short y labels).</string>
+     </property>
+     <property name="text">
+      <string>Horizontal</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-Bz</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>labelH</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblZSecLabel">
+     <property name="geometry">
+      <rect>
+       <x>11</x>
+       <y>200</y>
+       <width>85</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Opposite label</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editZSecLabel">
+     <property name="geometry">
+      <rect>
+       <x>100</x>
+       <y>200</y>
+       <width>300</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-Bz+s: a different label for the opposite (right or upper) axis (Cartesian).</string>
+     </property>
+     <property name="text">
+      <string/>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-Bz</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>seclabel</string>
+     </property>
+    </widget>
+    <widget class="QCheckBox" name="chkZSecLabelH">
+     <property name="geometry">
+      <rect>
+       <x>410</x>
+       <y>200</y>
+       <width>110</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-Bz+S: write the opposite label horizontally.</string>
+     </property>
+     <property name="text">
+      <string>Horizontal</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-Bz</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>seclabelH</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblZPrefix">
+     <property name="geometry">
+      <rect>
+       <x>11</x>
+       <y>230</y>
+       <width>85</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Prefix</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editZPrefix">
+     <property name="geometry">
+      <rect>
+       <x>100</x>
+       <y>230</y>
+       <width>80</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-Bz+p: text put before every annotation, e.g. $ (Cartesian).</string>
+     </property>
+     <property name="text">
+      <string/>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-Bz</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>prefix</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblZUnit">
+     <property name="geometry">
+      <rect>
+       <x>190</x>
+       <y>230</y>
+       <width>40</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Unit</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editZUnit">
+     <property name="geometry">
+      <rect>
+       <x>230</x>
+       <y>230</y>
+       <width>80</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-Bz+u: text put after every annotation, e.g. km (Cartesian).</string>
+     </property>
+     <property name="text">
+      <string/>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-Bz</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>unit</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblZAngle">
+     <property name="geometry">
+      <rect>
+       <x>11</x>
+       <y>260</y>
+       <width>85</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Angle</string>
+     </property>
+    </widget>
+    <widget class="QComboBox" name="cmbZAngle">
+     <property name="geometry">
+      <rect>
+       <x>100</x>
+       <y>260</y>
+       <width>80</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-Bz+a: slant of the annotations. parallel (+ap), normal (+an), or type an angle in -90..90 (Cartesian). Empty = MAP_ANNOT_ORTHO decides.</string>
+     </property>
+     <property name="editable">
+      <bool>true</bool>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-Bz</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>angle</string>
+     </property>
+     <item>
+      <property name="text">
+       <string/>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>parallel</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>normal</string>
+      </property>
+     </item>
+    </widget>
+    <widget class="QLabel" name="lblZEnds">
+     <property name="geometry">
+      <rect>
+       <x>190</x>
+       <y>260</y>
+       <width>80</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Skip ends</string>
+     </property>
+    </widget>
+    <widget class="QComboBox" name="cmbZEnds">
+     <property name="geometry">
+      <rect>
+       <x>280</x>
+       <y>260</y>
+       <width>90</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-Bz+e: leave out the annotations that fall exactly on the ends of the axis (both, or only the lower / upper one).</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-Bz</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>ends</string>
+     </property>
+     <item>
+      <property name="text">
+       <string>none</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>both</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>lower</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>upper</string>
+      </property>
+     </item>
+    </widget>
+   </widget>
+   <widget class="QWidget" name="tabTicks">
+    <attribute name="title">
+     <string>Ticks</string>
+    </attribute>
+    <widget class="QLabel" name="lblHdrMajor">
+     <property name="geometry">
+      <rect>
+       <x>185</x>
+       <y>8</y>
+       <width>60</width>
+       <height>20</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Major</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblHdrMinor">
+     <property name="geometry">
+      <rect>
+       <x>251</x>
+       <y>8</y>
+       <width>60</width>
+       <height>20</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Minor</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblTickLenP">
+     <property name="geometry">
+      <rect>
+       <x>11</x>
+       <y>30</y>
+       <width>170</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Primary tick length</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editTickLenPMajor">
+     <property name="geometry">
+      <rect>
+       <x>185</x>
+       <y>30</y>
+       <width>60</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>MAP_TICK_LENGTH_PRIMARY, major ticks.</string>
+     </property>
+     <property name="text">
+      <string>5p</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>MAP_TICK_LENGTH_PRIMARY</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>major</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editTickLenPMinor">
+     <property name="geometry">
+      <rect>
+       <x>251</x>
+       <y>30</y>
+       <width>60</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>MAP_TICK_LENGTH_PRIMARY, minor ticks. Empty = 50% of the major.</string>
+     </property>
+     <property name="text">
+      <string>2.5p</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>MAP_TICK_LENGTH_PRIMARY</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>minor</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblTickLenS">
+     <property name="geometry">
+      <rect>
+       <x>11</x>
+       <y>62</y>
+       <width>170</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Secondary tick length</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editTickLenSMajor">
+     <property name="geometry">
+      <rect>
+       <x>185</x>
+       <y>62</y>
+       <width>60</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>MAP_TICK_LENGTH_SECONDARY, major ticks (time axes with two annotation levels).</string>
+     </property>
+     <property name="text">
+      <string>15p</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>MAP_TICK_LENGTH_SECONDARY</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>major</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editTickLenSMinor">
+     <property name="geometry">
+      <rect>
+       <x>251</x>
+       <y>62</y>
+       <width>60</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>MAP_TICK_LENGTH_SECONDARY, minor ticks. Empty = 25% of the major.</string>
+     </property>
+     <property name="text">
+      <string>3.75p</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>MAP_TICK_LENGTH_SECONDARY</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>minor</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblHdrPenW">
+     <property name="geometry">
+      <rect>
+       <x>185</x>
+       <y>98</y>
+       <width>60</width>
+       <height>20</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Width</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblHdrPenC">
+     <property name="geometry">
+      <rect>
+       <x>251</x>
+       <y>98</y>
+       <width>46</width>
+       <height>20</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Colour</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblHdrPenS">
+     <property name="geometry">
+      <rect>
+       <x>297</x>
+       <y>98</y>
+       <width>80</width>
+       <height>20</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Style</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblTickPenP">
+     <property name="geometry">
+      <rect>
+       <x>11</x>
+       <y>120</y>
+       <width>170</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Primary tick pen</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editTickPenPW">
+     <property name="geometry">
+      <rect>
+       <x>185</x>
+       <y>120</y>
+       <width>60</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>MAP_TICK_PEN_PRIMARY width.</string>
+     </property>
+     <property name="text">
+      <string>0.25p</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>MAP_TICK_PEN_PRIMARY</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>width</string>
+     </property>
+    </widget>
+    <widget class="QPushButton" name="btnTickPenPC">
+     <property name="geometry">
+      <rect>
+       <x>251</x>
+       <y>120</y>
+       <width>34</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>MAP_TICK_PEN_PRIMARY colour.</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>MAP_TICK_PEN_PRIMARY</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>color</string>
+     </property>
+     <property name="gmtColor" stdset="0">
+      <string>black</string>
+     </property>
+    </widget>
+    <widget class="QComboBox" name="cmbTickPenPS">
+     <property name="geometry">
+      <rect>
+       <x>297</x>
+       <y>120</y>
+       <width>80</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>MAP_TICK_PEN_PRIMARY style.</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>MAP_TICK_PEN_PRIMARY</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>style</string>
+     </property>
+     <item>
+      <property name="text">
+       <string>solid</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>dash</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>dot</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>dash-dot</string>
+      </property>
+     </item>
+    </widget>
+    <widget class="QLabel" name="lblTickPenS">
+     <property name="geometry">
+      <rect>
+       <x>11</x>
+       <y>152</y>
+       <width>170</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Secondary tick pen</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editTickPenSW">
+     <property name="geometry">
+      <rect>
+       <x>185</x>
+       <y>152</y>
+       <width>60</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>MAP_TICK_PEN_SECONDARY width.</string>
+     </property>
+     <property name="text">
+      <string>0.5p</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>MAP_TICK_PEN_SECONDARY</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>width</string>
+     </property>
+    </widget>
+    <widget class="QPushButton" name="btnTickPenSC">
+     <property name="geometry">
+      <rect>
+       <x>251</x>
+       <y>152</y>
+       <width>34</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>MAP_TICK_PEN_SECONDARY colour.</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>MAP_TICK_PEN_SECONDARY</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>color</string>
+     </property>
+     <property name="gmtColor" stdset="0">
+      <string>black</string>
+     </property>
+    </widget>
+    <widget class="QComboBox" name="cmbTickPenSS">
+     <property name="geometry">
+      <rect>
+       <x>297</x>
+       <y>152</y>
+       <width>80</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>MAP_TICK_PEN_SECONDARY style.</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>MAP_TICK_PEN_SECONDARY</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>style</string>
+     </property>
+     <item>
+      <property name="text">
+       <string>solid</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>dash</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>dot</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>dash-dot</string>
+      </property>
+     </item>
+    </widget>
+   </widget>
+   <widget class="QWidget" name="tabAnnot">
+    <attribute name="title">
+     <string>Annotations</string>
+    </attribute>
+    <widget class="QLabel" name="lblAnnotOffP">
+     <property name="geometry">
+      <rect>
+       <x>11</x>
+       <y>16</y>
+       <width>170</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Primary offset</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editAnnotOffP">
+     <property name="geometry">
+      <rect>
+       <x>185</x>
+       <y>16</y>
+       <width>60</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>MAP_ANNOT_OFFSET_PRIMARY: distance from the end of a tick to its number.</string>
+     </property>
+     <property name="text">
+      <string>5p</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>MAP_ANNOT_OFFSET_PRIMARY</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblAnnotOffS">
+     <property name="geometry">
+      <rect>
+       <x>11</x>
+       <y>48</y>
+       <width>170</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Secondary offset</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editAnnotOffS">
+     <property name="geometry">
+      <rect>
+       <x>185</x>
+       <y>48</y>
+       <width>60</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>MAP_ANNOT_OFFSET_SECONDARY: distance from the primary to the secondary annotation (time axes).</string>
+     </property>
+     <property name="text">
+      <string>5p</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>MAP_ANNOT_OFFSET_SECONDARY</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblAnnotMinAngle">
+     <property name="geometry">
+      <rect>
+       <x>11</x>
+       <y>80</y>
+       <width>170</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Minimum angle</string>
+     </property>
+    </widget>
+    <widget class="QSpinBox" name="spinAnnotMinAngle">
+     <property name="geometry">
+      <rect>
+       <x>185</x>
+       <y>80</y>
+       <width>80</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>MAP_ANNOT_MIN_ANGLE: an annotation meeting the frame at less than this angle is not drawn (oblique projections).</string>
+     </property>
+     <property name="suffix">
+      <string>°</string>
+     </property>
+     <property name="maximum">
+      <number>90</number>
+     </property>
+     <property name="value">
+      <number>20</number>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>MAP_ANNOT_MIN_ANGLE</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblAnnotMinSpacing">
+     <property name="geometry">
+      <rect>
+       <x>11</x>
+       <y>112</y>
+       <width>170</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Minimum spacing</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editAnnotMinSpacing">
+     <property name="geometry">
+      <rect>
+       <x>185</x>
+       <y>112</y>
+       <width>60</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>MAP_ANNOT_MIN_SPACING: an annotation closer than this to its neighbour is not drawn.</string>
+     </property>
+     <property name="text">
+      <string>0p</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>MAP_ANNOT_MIN_SPACING</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblFormatFloat">
+     <property name="geometry">
+      <rect>
+       <x>11</x>
+       <y>144</y>
+       <width>170</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Number format</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editFormatFloat">
+     <property name="geometry">
+      <rect>
+       <x>185</x>
+       <y>144</y>
+       <width>100</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>FORMAT_FLOAT_MAP: C printf format of the numbers on Cartesian axes, e.g. %.12g, %.2f, %08.2f.</string>
+     </property>
+     <property name="text">
+      <string>%.12g</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>FORMAT_FLOAT_MAP</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblFormatGeo">
+     <property name="geometry">
+      <rect>
+       <x>11</x>
+       <y>176</y>
+       <width>170</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Geographic format</string>
+     </property>
+    </widget>
+    <widget class="QComboBox" name="cmbFormatGeo">
+     <property name="geometry">
+      <rect>
+       <x>185</x>
+       <y>176</y>
+       <width>140</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>FORMAT_GEO_MAP: template of the longitude/latitude annotations. ddd = degrees, mm = minutes, ss = seconds, .xxx = decimals, D = decimal degrees, F = W/E/S/N suffix, A = absolute value.</string>
+     </property>
+     <property name="editable">
+      <bool>true</bool>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>FORMAT_GEO_MAP</string>
+     </property>
+     <item>
+      <property name="text">
+       <string>ddd:mm:ss</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>ddd:mm:ssF</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>ddd:mm</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>ddd:mmF</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>ddd:mm:ss.x</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>D</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>DF</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>+D</string>
+      </property>
+     </item>
+    </widget>
+    <widget class="QLabel" name="lblDegreeSymbol">
+     <property name="geometry">
+      <rect>
+       <x>11</x>
+       <y>208</y>
+       <width>170</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Degree symbol</string>
+     </property>
+    </widget>
+    <widget class="QComboBox" name="cmbDegreeSymbol">
+     <property name="geometry">
+      <rect>
+       <x>185</x>
+       <y>208</y>
+       <width>100</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>MAP_DEGREE_SYMBOL: the symbol after the degrees of geographic annotations.</string>
+     </property>
+     <property name="currentIndex">
+      <number>1</number>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>MAP_DEGREE_SYMBOL</string>
+     </property>
+     <item>
+      <property name="text">
+       <string>ring</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>degree</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>colon</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>none</string>
+      </property>
+     </item>
+    </widget>
+    <widget class="QGroupBox" name="grpAnnotOrtho">
+     <property name="geometry">
+      <rect>
+       <x>345</x>
+       <y>8</y>
+       <width>175</width>
+       <height>86</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>MAP_ANNOT_ORTHO: on these sides of a Cartesian plot the numbers are written perpendicular to the axis.</string>
+     </property>
+     <property name="title">
+      <string>Orthogonal to the axis</string>
+     </property>
+     <widget class="QCheckBox" name="chkOrthoW">
+      <property name="geometry">
+       <rect>
+        <x>10</x>
+        <y>24</y>
+        <width>50</width>
+        <height>24</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string>W</string>
+      </property>
+      <property name="checked">
+       <bool>true</bool>
+      </property>
+      <property name="gmtKey" stdset="0">
+       <string>MAP_ANNOT_ORTHO</string>
+      </property>
+      <property name="gmtPart" stdset="0">
+       <string>w</string>
+      </property>
+     </widget>
+     <widget class="QCheckBox" name="chkOrthoE">
+      <property name="geometry">
+       <rect>
+        <x>62</x>
+        <y>24</y>
+        <width>50</width>
+        <height>24</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string>E</string>
+      </property>
+      <property name="checked">
+       <bool>true</bool>
+      </property>
+      <property name="gmtKey" stdset="0">
+       <string>MAP_ANNOT_ORTHO</string>
+      </property>
+      <property name="gmtPart" stdset="0">
+       <string>e</string>
+      </property>
+     </widget>
+     <widget class="QCheckBox" name="chkOrthoS">
+      <property name="geometry">
+       <rect>
+        <x>114</x>
+        <y>24</y>
+        <width>50</width>
+        <height>24</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string>S</string>
+      </property>
+      <property name="gmtKey" stdset="0">
+       <string>MAP_ANNOT_ORTHO</string>
+      </property>
+      <property name="gmtPart" stdset="0">
+       <string>s</string>
+      </property>
+     </widget>
+     <widget class="QCheckBox" name="chkOrthoN">
+      <property name="geometry">
+       <rect>
+        <x>10</x>
+        <y>52</y>
+        <width>50</width>
+        <height>24</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string>N</string>
+      </property>
+      <property name="gmtKey" stdset="0">
+       <string>MAP_ANNOT_ORTHO</string>
+      </property>
+      <property name="gmtPart" stdset="0">
+       <string>n</string>
+      </property>
+     </widget>
+     <widget class="QCheckBox" name="chkOrthoZ">
+      <property name="geometry">
+       <rect>
+        <x>62</x>
+        <y>52</y>
+        <width>50</width>
+        <height>24</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string>Z</string>
+      </property>
+      <property name="vertical" stdset="0">
+       <bool>true</bool>
+      </property>
+      <property name="gmtKey" stdset="0">
+       <string>MAP_ANNOT_ORTHO</string>
+      </property>
+      <property name="gmtPart" stdset="0">
+       <string>z</string>
+      </property>
+     </widget>
+    </widget>
+    <widget class="QGroupBox" name="grpAnnotOblique">
+     <property name="geometry">
+      <rect>
+       <x>345</x>
+       <y>102</y>
+       <width>175</width>
+       <height>196</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>MAP_ANNOT_OBLIQUE: how a map whose frame is not made of meridians and parallels is annotated.</string>
+     </property>
+     <property name="title">
+      <string>Oblique projections</string>
+     </property>
+     <widget class="QCheckBox" name="chkOblSeparate">
+      <property name="geometry">
+       <rect>
+        <x>10</x>
+        <y>22</y>
+        <width>160</width>
+        <height>22</height>
+       </rect>
+      </property>
+      <property name="toolTip">
+       <string>separate: longitudes on the lower and upper sides only, latitudes on the left and right only.</string>
+      </property>
+      <property name="text">
+       <string>Separate</string>
+      </property>
+      <property name="gmtKey" stdset="0">
+       <string>MAP_ANNOT_OBLIQUE</string>
+      </property>
+      <property name="gmtPart" stdset="0">
+       <string>separate</string>
+      </property>
+     </widget>
+     <widget class="QCheckBox" name="chkOblAnywhere">
+      <property name="geometry">
+       <rect>
+        <x>10</x>
+        <y>46</y>
+        <width>160</width>
+        <height>22</height>
+       </rect>
+      </property>
+      <property name="toolTip">
+       <string>anywhere: annotate wherever a grid line crosses the frame.</string>
+      </property>
+      <property name="text">
+       <string>Anywhere</string>
+      </property>
+      <property name="checked">
+       <bool>true</bool>
+      </property>
+      <property name="gmtKey" stdset="0">
+       <string>MAP_ANNOT_OBLIQUE</string>
+      </property>
+      <property name="gmtPart" stdset="0">
+       <string>anywhere</string>
+      </property>
+     </widget>
+     <widget class="QCheckBox" name="chkOblLonHoriz">
+      <property name="geometry">
+       <rect>
+        <x>10</x>
+        <y>70</y>
+        <width>160</width>
+        <height>22</height>
+       </rect>
+      </property>
+      <property name="toolTip">
+       <string>lon_horizontal: longitude annotations are written horizontally.</string>
+      </property>
+      <property name="text">
+       <string>Longitudes horizontal</string>
+      </property>
+      <property name="gmtKey" stdset="0">
+       <string>MAP_ANNOT_OBLIQUE</string>
+      </property>
+      <property name="gmtPart" stdset="0">
+       <string>lon_horizontal</string>
+      </property>
+     </widget>
+     <widget class="QCheckBox" name="chkOblLatHoriz">
+      <property name="geometry">
+       <rect>
+        <x>10</x>
+        <y>94</y>
+        <width>160</width>
+        <height>22</height>
+       </rect>
+      </property>
+      <property name="toolTip">
+       <string>lat_horizontal: latitude annotations are written horizontally.</string>
+      </property>
+      <property name="text">
+       <string>Latitudes horizontal</string>
+      </property>
+      <property name="gmtKey" stdset="0">
+       <string>MAP_ANNOT_OBLIQUE</string>
+      </property>
+      <property name="gmtPart" stdset="0">
+       <string>lat_horizontal</string>
+      </property>
+     </widget>
+     <widget class="QCheckBox" name="chkOblTickExtend">
+      <property name="geometry">
+       <rect>
+        <x>10</x>
+        <y>118</y>
+        <width>160</width>
+        <height>22</height>
+       </rect>
+      </property>
+      <property name="toolTip">
+       <string>tick_extend: extend oblique ticks so their tip is one tick length away from the frame.</string>
+      </property>
+      <property name="text">
+       <string>Extend ticks</string>
+      </property>
+      <property name="gmtKey" stdset="0">
+       <string>MAP_ANNOT_OBLIQUE</string>
+      </property>
+      <property name="gmtPart" stdset="0">
+       <string>tick_extend</string>
+      </property>
+     </widget>
+     <widget class="QCheckBox" name="chkOblTickNormal">
+      <property name="geometry">
+       <rect>
+        <x>10</x>
+        <y>142</y>
+        <width>160</width>
+        <height>22</height>
+       </rect>
+      </property>
+      <property name="toolTip">
+       <string>tick_normal: ticks are drawn normal to the frame, whatever the grid line's angle.</string>
+      </property>
+      <property name="text">
+       <string>Ticks normal to frame</string>
+      </property>
+      <property name="gmtKey" stdset="0">
+       <string>MAP_ANNOT_OBLIQUE</string>
+      </property>
+      <property name="gmtPart" stdset="0">
+       <string>tick_normal</string>
+      </property>
+     </widget>
+     <widget class="QCheckBox" name="chkOblLatParallel">
+      <property name="geometry">
+       <rect>
+        <x>10</x>
+        <y>166</y>
+        <width>160</width>
+        <height>22</height>
+       </rect>
+      </property>
+      <property name="toolTip">
+       <string>lat_parallel: latitude annotations are written parallel to the frame.</string>
+      </property>
+      <property name="text">
+       <string>Latitudes parallel</string>
+      </property>
+      <property name="gmtKey" stdset="0">
+       <string>MAP_ANNOT_OBLIQUE</string>
+      </property>
+      <property name="gmtPart" stdset="0">
+       <string>lat_parallel</string>
+      </property>
+     </widget>
+    </widget>
+   </widget>
+   <widget class="QWidget" name="tabGrid">
+    <attribute name="title">
+     <string>Grid lines</string>
+    </attribute>
+    <widget class="QLabel" name="lblHdrGridW">
+     <property name="geometry">
+      <rect>
+       <x>185</x>
+       <y>8</y>
+       <width>60</width>
+       <height>20</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Width</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblHdrGridC">
+     <property name="geometry">
+      <rect>
+       <x>251</x>
+       <y>8</y>
+       <width>46</width>
+       <height>20</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Colour</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblHdrGridS">
+     <property name="geometry">
+      <rect>
+       <x>297</x>
+       <y>8</y>
+       <width>80</width>
+       <height>20</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Style</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblHdrGridT">
+     <property name="geometry">
+      <rect>
+       <x>383</x>
+       <y>8</y>
+       <width>100</width>
+       <height>20</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Transparency</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblGridPenP">
+     <property name="geometry">
+      <rect>
+       <x>11</x>
+       <y>30</y>
+       <width>170</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Primary grid pen</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editGridPenPW">
+     <property name="geometry">
+      <rect>
+       <x>185</x>
+       <y>30</y>
+       <width>60</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>MAP_GRID_PEN_PRIMARY width.</string>
+     </property>
+     <property name="text">
+      <string>0.25p</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>MAP_GRID_PEN_PRIMARY</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>width</string>
+     </property>
+    </widget>
+    <widget class="QPushButton" name="btnGridPenPC">
+     <property name="geometry">
+      <rect>
+       <x>251</x>
+       <y>30</y>
+       <width>34</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>MAP_GRID_PEN_PRIMARY colour.</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>MAP_GRID_PEN_PRIMARY</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>color</string>
+     </property>
+     <property name="gmtColor" stdset="0">
+      <string>black</string>
+     </property>
+    </widget>
+    <widget class="QComboBox" name="cmbGridPenPS">
+     <property name="geometry">
+      <rect>
+       <x>297</x>
+       <y>30</y>
+       <width>80</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>MAP_GRID_PEN_PRIMARY style.</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>MAP_GRID_PEN_PRIMARY</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>style</string>
+     </property>
+     <item>
+      <property name="text">
+       <string>solid</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>dash</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>dot</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>dash-dot</string>
+      </property>
+     </item>
+    </widget>
+    <widget class="QSpinBox" name="spinGridPenPT">
+     <property name="geometry">
+      <rect>
+       <x>383</x>
+       <y>30</y>
+       <width>80</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>MAP_GRID_PEN_PRIMARY transparency, 0 (opaque) to 100 % (the pen colour's @transparency).</string>
+     </property>
+     <property name="suffix">
+      <string>%</string>
+     </property>
+     <property name="maximum">
+      <number>100</number>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>MAP_GRID_PEN_PRIMARY</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>transparency</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblGridPenS">
+     <property name="geometry">
+      <rect>
+       <x>11</x>
+       <y>62</y>
+       <width>170</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Secondary grid pen</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editGridPenSW">
+     <property name="geometry">
+      <rect>
+       <x>185</x>
+       <y>62</y>
+       <width>60</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>MAP_GRID_PEN_SECONDARY width.</string>
+     </property>
+     <property name="text">
+      <string>0.5p</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>MAP_GRID_PEN_SECONDARY</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>width</string>
+     </property>
+    </widget>
+    <widget class="QPushButton" name="btnGridPenSC">
+     <property name="geometry">
+      <rect>
+       <x>251</x>
+       <y>62</y>
+       <width>34</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>MAP_GRID_PEN_SECONDARY colour.</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>MAP_GRID_PEN_SECONDARY</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>color</string>
+     </property>
+     <property name="gmtColor" stdset="0">
+      <string>black</string>
+     </property>
+    </widget>
+    <widget class="QComboBox" name="cmbGridPenSS">
+     <property name="geometry">
+      <rect>
+       <x>297</x>
+       <y>62</y>
+       <width>80</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>MAP_GRID_PEN_SECONDARY style.</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>MAP_GRID_PEN_SECONDARY</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>style</string>
+     </property>
+     <item>
+      <property name="text">
+       <string>solid</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>dash</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>dot</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>dash-dot</string>
+      </property>
+     </item>
+    </widget>
+    <widget class="QSpinBox" name="spinGridPenST">
+     <property name="geometry">
+      <rect>
+       <x>383</x>
+       <y>62</y>
+       <width>80</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>MAP_GRID_PEN_SECONDARY transparency, 0 (opaque) to 100 %.</string>
+     </property>
+     <property name="suffix">
+      <string>%</string>
+     </property>
+     <property name="maximum">
+      <number>100</number>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>MAP_GRID_PEN_SECONDARY</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>transparency</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblGridCrossP">
+     <property name="geometry">
+      <rect>
+       <x>11</x>
+       <y>106</y>
+       <width>170</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Primary cross size</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editGridCrossP">
+     <property name="geometry">
+      <rect>
+       <x>185</x>
+       <y>106</y>
+       <width>60</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>MAP_GRID_CROSS_SIZE_PRIMARY: 0 draws continuous grid lines; a size draws a cross of that size at each intersection; negative = ticks only away from the Equator and Greenwich.</string>
+     </property>
+     <property name="text">
+      <string>0p</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>MAP_GRID_CROSS_SIZE_PRIMARY</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblGridCrossS">
+     <property name="geometry">
+      <rect>
+       <x>11</x>
+       <y>138</y>
+       <width>170</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Secondary cross size</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editGridCrossS">
+     <property name="geometry">
+      <rect>
+       <x>185</x>
+       <y>138</y>
+       <width>60</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>MAP_GRID_CROSS_SIZE_SECONDARY: the same, at the secondary intersections.</string>
+     </property>
+     <property name="text">
+      <string>0p</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>MAP_GRID_CROSS_SIZE_SECONDARY</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblPolarCap">
+     <property name="geometry">
+      <rect>
+       <x>11</x>
+       <y>170</y>
+       <width>170</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Polar cap</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editPolarCap">
+     <property name="geometry">
+      <rect>
+       <x>185</x>
+       <y>170</y>
+       <width>100</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>MAP_POLAR_CAP: lat/dlon. Ordinary grid lines stop at +/-lat; above it meridians are drawn every dlon. none = no special handling; auto = chosen from the region.</string>
+     </property>
+     <property name="text">
+      <string>85/90</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>MAP_POLAR_CAP</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblObliquePole">
+     <property name="geometry">
+      <rect>
+       <x>11</x>
+       <y>202</y>
+       <width>170</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Oblique pole</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editObliquePole">
+     <property name="geometry">
+      <rect>
+       <x>185</x>
+       <y>202</y>
+       <width>100</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>-B+o: draw the grid lines about another pole, given as lon/lat (geographic maps; ignored without grid lines). Empty = the North pole.</string>
+     </property>
+     <property name="placeholderText">
+      <string>lon/lat</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>-B</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>+o</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblGridNote">
+     <property name="geometry">
+      <rect>
+       <x>11</x>
+       <y>240</y>
+       <width>510</width>
+       <height>40</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>The spacing of the grid lines is set per axis in each axis tab (Grid lines row).</string>
+     </property>
+     <property name="wordWrap">
+      <bool>true</bool>
+     </property>
+    </widget>
+   </widget>
+   <widget class="QWidget" name="tabFonts">
+    <attribute name="title">
+     <string>Fonts</string>
+    </attribute>
+    <widget class="QLabel" name="lblHdrFontSize">
+     <property name="geometry">
+      <rect>
+       <x>185</x>
+       <y>8</y>
+       <width>60</width>
+       <height>20</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Size</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblHdrFontName">
+     <property name="geometry">
+      <rect>
+       <x>251</x>
+       <y>8</y>
+       <width>200</width>
+       <height>20</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Font</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblHdrFontColor">
+     <property name="geometry">
+      <rect>
+       <x>455</x>
+       <y>8</y>
+       <width>60</width>
+       <height>20</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Colour</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblFontAll">
+     <property name="geometry">
+      <rect>
+       <x>11</x>
+       <y>30</y>
+       <width>170</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>All fonts</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editFontAllSize">
+     <property name="geometry">
+      <rect>
+       <x>185</x>
+       <y>30</y>
+       <width>60</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>FONT: sets every font below at once. Empty = leave them as they are.</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>FONT</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>size</string>
+     </property>
+    </widget>
+    <widget class="QComboBox" name="cmbFontAllName">
+     <property name="geometry">
+      <rect>
+       <x>251</x>
+       <y>30</y>
+       <width>200</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>FONT: sets every font below at once.</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>FONT</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>name</string>
+     </property>
+    </widget>
+    <widget class="QPushButton" name="btnFontAllC">
+     <property name="geometry">
+      <rect>
+       <x>455</x>
+       <y>30</y>
+       <width>34</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>FONT colour: sets the colour of every font below at once.</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>FONT</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>color</string>
+     </property>
+     <property name="gmtColor" stdset="0">
+      <string>black</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblFontAnnotP">
+     <property name="geometry">
+      <rect>
+       <x>11</x>
+       <y>70</y>
+       <width>170</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Primary annotations</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editFontAnnotPSize">
+     <property name="geometry">
+      <rect>
+       <x>185</x>
+       <y>70</y>
+       <width>60</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>FONT_ANNOT_PRIMARY size: the axis numbers.</string>
+     </property>
+     <property name="text">
+      <string>12p</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>FONT_ANNOT_PRIMARY</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>size</string>
+     </property>
+    </widget>
+    <widget class="QComboBox" name="cmbFontAnnotPName">
+     <property name="geometry">
+      <rect>
+       <x>251</x>
+       <y>70</y>
+       <width>200</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>FONT_ANNOT_PRIMARY font.</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>FONT_ANNOT_PRIMARY</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>name</string>
+     </property>
+    </widget>
+    <widget class="QPushButton" name="btnFontAnnotPC">
+     <property name="geometry">
+      <rect>
+       <x>455</x>
+       <y>70</y>
+       <width>34</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>FONT_ANNOT_PRIMARY colour.</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>FONT_ANNOT_PRIMARY</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>color</string>
+     </property>
+     <property name="gmtColor" stdset="0">
+      <string>black</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblFontAnnotS">
+     <property name="geometry">
+      <rect>
+       <x>11</x>
+       <y>102</y>
+       <width>170</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Secondary annotations</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editFontAnnotSSize">
+     <property name="geometry">
+      <rect>
+       <x>185</x>
+       <y>102</y>
+       <width>60</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>FONT_ANNOT_SECONDARY size: the second annotation level of time axes.</string>
+     </property>
+     <property name="text">
+      <string>14p</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>FONT_ANNOT_SECONDARY</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>size</string>
+     </property>
+    </widget>
+    <widget class="QComboBox" name="cmbFontAnnotSName">
+     <property name="geometry">
+      <rect>
+       <x>251</x>
+       <y>102</y>
+       <width>200</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>FONT_ANNOT_SECONDARY font.</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>FONT_ANNOT_SECONDARY</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>name</string>
+     </property>
+    </widget>
+    <widget class="QPushButton" name="btnFontAnnotSC">
+     <property name="geometry">
+      <rect>
+       <x>455</x>
+       <y>102</y>
+       <width>34</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>FONT_ANNOT_SECONDARY colour.</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>FONT_ANNOT_SECONDARY</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>color</string>
+     </property>
+     <property name="gmtColor" stdset="0">
+      <string>black</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblFontLabel">
+     <property name="geometry">
+      <rect>
+       <x>11</x>
+       <y>134</y>
+       <width>170</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Axis labels</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editFontLabelSize">
+     <property name="geometry">
+      <rect>
+       <x>185</x>
+       <y>134</y>
+       <width>60</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>FONT_LABEL size: the axis names.</string>
+     </property>
+     <property name="text">
+      <string>16p</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>FONT_LABEL</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>size</string>
+     </property>
+    </widget>
+    <widget class="QComboBox" name="cmbFontLabelName">
+     <property name="geometry">
+      <rect>
+       <x>251</x>
+       <y>134</y>
+       <width>200</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>FONT_LABEL font.</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>FONT_LABEL</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>name</string>
+     </property>
+    </widget>
+    <widget class="QPushButton" name="btnFontLabelC">
+     <property name="geometry">
+      <rect>
+       <x>455</x>
+       <y>134</y>
+       <width>34</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>FONT_LABEL colour.</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>FONT_LABEL</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>color</string>
+     </property>
+     <property name="gmtColor" stdset="0">
+      <string>black</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblFontTitle">
+     <property name="geometry">
+      <rect>
+       <x>11</x>
+       <y>166</y>
+       <width>170</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Title</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editFontTitleSize">
+     <property name="geometry">
+      <rect>
+       <x>185</x>
+       <y>166</y>
+       <width>60</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>FONT_TITLE size.</string>
+     </property>
+     <property name="text">
+      <string>24p</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>FONT_TITLE</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>size</string>
+     </property>
+    </widget>
+    <widget class="QComboBox" name="cmbFontTitleName">
+     <property name="geometry">
+      <rect>
+       <x>251</x>
+       <y>166</y>
+       <width>200</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>FONT_TITLE font.</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>FONT_TITLE</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>name</string>
+     </property>
+    </widget>
+    <widget class="QPushButton" name="btnFontTitleC">
+     <property name="geometry">
+      <rect>
+       <x>455</x>
+       <y>166</y>
+       <width>34</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>FONT_TITLE colour.</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>FONT_TITLE</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>color</string>
+     </property>
+     <property name="gmtColor" stdset="0">
+      <string>black</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="lblFontSubtitle">
+     <property name="geometry">
+      <rect>
+       <x>11</x>
+       <y>198</y>
+       <width>170</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Subtitle</string>
+     </property>
+    </widget>
+    <widget class="QLineEdit" name="editFontSubtitleSize">
+     <property name="geometry">
+      <rect>
+       <x>185</x>
+       <y>198</y>
+       <width>60</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>FONT_SUBTITLE size.</string>
+     </property>
+     <property name="text">
+      <string>18p</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>FONT_SUBTITLE</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>size</string>
+     </property>
+    </widget>
+    <widget class="QComboBox" name="cmbFontSubtitleName">
+     <property name="geometry">
+      <rect>
+       <x>251</x>
+       <y>198</y>
+       <width>200</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>FONT_SUBTITLE font.</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>FONT_SUBTITLE</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>name</string>
+     </property>
+    </widget>
+    <widget class="QPushButton" name="btnFontSubtitleC">
+     <property name="geometry">
+      <rect>
+       <x>455</x>
+       <y>198</y>
+       <width>34</width>
+       <height>26</height>
+      </rect>
+     </property>
+     <property name="toolTip">
+      <string>FONT_SUBTITLE colour.</string>
+     </property>
+     <property name="gmtKey" stdset="0">
+      <string>FONT_SUBTITLE</string>
+     </property>
+     <property name="gmtPart" stdset="0">
+      <string>color</string>
+     </property>
+     <property name="gmtColor" stdset="0">
+      <string>black</string>
+     </property>
+    </widget>
+   </widget>
+  </widget>
+  <widget class="QPushButton" name="btnDefaults">
+   <property name="geometry">
+    <rect>
+     <x>11</x>
+     <y>392</y>
+     <width>90</width>
+     <height>28</height>
+    </rect>
+   </property>
+   <property name="toolTip">
+    <string>Put every field back to GMT's classic defaults (and the limits back to the data's own).</string>
+   </property>
+   <property name="text">
+    <string>Defaults</string>
+   </property>
+  </widget>
+  <widget class="QPushButton" name="btnApply">
+   <property name="geometry">
+    <rect>
+     <x>469</x>
+     <y>392</y>
+     <width>80</width>
+     <height>28</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string>Apply</string>
+   </property>
+  </widget>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

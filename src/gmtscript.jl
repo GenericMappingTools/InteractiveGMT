@@ -559,6 +559,108 @@ function _script_emit_raster!(ctx::ScriptCtx, r::ElementRecipe, obj, first::Bool
 	return _script_emit_raster_finish!(ctx, r, binds, mod, bind.var, kw, first, isgrid, disp)
 end
 
+# THE FRAME: what the raster's own Axes properties dialog says (gmtvtk_axes_props_h), as GMT.jl's
+# frame / xaxis / yaxis / zaxis / par kwargs. A set never edited draws the app's mapping convention:
+# W and S annotated, ticks on all four sides. One function, so the backdrop export frames the same way.
+function _script_frame_kw(h::Ptr{Cvoid}, name::String, view3d::Bool)::Vector{Pair{Symbol,Any}}
+	default = Pair{Symbol,Any}[:frame => (annot=:auto, ticks=:auto, axes=:WSen)]
+	n = ccall(_fn(:gmtvtk_axes_props_h), Cint, (Ptr{Cvoid}, Cstring, Ptr{UInt8}, Cint), h, name, C_NULL, Cint(0))
+	n <= 0 && return default
+	buf = Vector{UInt8}(undef, n + 1)
+	ccall(_fn(:gmtvtk_axes_props_h), Cint, (Ptr{Cvoid}, Cstring, Ptr{UInt8}, Cint), h, name, buf, Cint(n + 1))
+	p = Dict{String,String}()
+	for ln in split(unsafe_string(pointer(buf)), '\n')
+		i = findfirst('=', ln)
+		i === nothing || (p[String(ln[1:i-1])] = String(ln[i+1:end]))
+	end
+	get(p, "-B.+n", "0") == "1" && return Pair{Symbol,Any}[:frame => :none]
+	on(k) = get(p, k, "0") == "1"
+	# Sides: annotations + ticks = W, line + ticks = w, line only = l/r/b/t, not drawn = left out.
+	axes = ""
+	for (k, up, lo, line) in (("W", "W", "w", "l"), ("E", "E", "e", "r"), ("S", "S", "s", "b"), ("N", "N", "n", "t"))
+		m = get(p, "MAP_FRAME_AXES." * k, "")
+		axes *= m == "Annot. + ticks" ? up : m == "Line + ticks" ? lo : m == "Line only" ? line : ""
+	end
+	if view3d
+		m = get(p, "MAP_FRAME_AXES.Z", "")
+		z = m == "Annot. + ticks" ? "Z" : m == "Line + ticks" ? "z" : ""
+		isempty(z) || (axes *= z * join(c for c in "1234" if on("-B.Z$c")))
+	end
+	fr = Pair{Symbol,Any}[:axes => (isempty(axes) ? :none : Symbol(axes))]
+	t = strip(get(p, "-B.+t", "")); isempty(t) || push!(fr, :title => String(t))
+	t = strip(get(p, "-B.+s", "")); isempty(t) || push!(fr, :subtitle => String(t))
+	view3d && on("-B.+b") && push!(fr, :cube => true)
+	on("-B.+g") && !isempty(get(p, "-B.+g.color", "")) && push!(fr, :fill => p["-B.+g.color"])
+	# One -B stride: auto / empty (not drawn) / stride[+-phase][unit].
+	function stride(pre, item)
+		v = strip(get(p, pre * item, ""))
+		isempty(v) && return nothing
+		lowercase(v) == "auto" && return :auto
+		ph = strip(get(p, pre * item * ".phase", ""))
+		(isempty(ph) || ph[1] in "+-") || (ph = "+" * ph)
+		return String(v) * ph * get(p, pre * item * ".unit", "")
+	end
+	gridOn = (on("MAP_FRAME_AXES.Sg"), on("MAP_FRAME_AXES.Wg"), on("MAP_FRAME_AXES.Sg") || on("MAP_FRAME_AXES.Wg"))
+	ints = [Pair{Symbol,Any}[] for _ in 1:3]          # per axis: annot / ticks / grid
+	rest = [Pair{Symbol,Any}[] for _ in 1:3]          # per axis: label / prefix / suffix
+	for (k, ax) in ((1, "x"), (2, "y"), (3, "z"))
+		(k == 3 && !view3d) && continue
+		pre = "-Bp" * ax * "."
+		(s = stride(pre, "a")) === nothing || push!(ints[k], :annot => s)
+		(s = stride(pre, "f")) === nothing || push!(ints[k], :ticks => s)
+		if gridOn[k]
+			s = stride(pre, "g")
+			push!(ints[k], :grid => s === nothing ? :auto : s)
+		end
+		for (key, field) in (("label", :label), ("prefix", :prefix), ("unit", :suffix))
+			t = strip(get(p, "-B" * ax * "." * key, ""))
+			isempty(t) || push!(rest[k], field => String(t))
+		end
+	end
+	# X and Y spaced alike: ONE frame=(annot=…, ticks=…, grid=…), as a hand-written script says it.
+	if ints[1] == ints[2]
+		append!(fr, ints[1])
+		empty!(ints[1]); empty!(ints[2])
+	end
+	kw = Pair{Symbol,Any}[:frame => (; fr...)]
+	for (k, sym) in ((1, :xaxis), (2, :yaxis), (3, :zaxis))
+		a = vcat(ints[k], rest[k])
+		isempty(a) || push!(kw, sym => (; a...))
+	end
+	# Fonts and pens: ONLY what differs from GMT's own defaults (gmtdefaults -D, classic theme — what a
+	# GMT.jl session draws with). Compared per component, so an unchanged size or face is left out
+	# and GMT's positional syntax keeps the rest ("12p,,red" = only the colour, ",,red" style).
+	part(k, f) = strip(get(p, k * "." * f, ""))
+	pts(s) = (m = match(r"^([0-9.]+)\s*([pci]?)$", s); m === nothing ? NaN :
+	          parse(Float64, m[1]) * (m[2] == "c" ? 72 / 2.54 : m[2] == "i" ? 72.0 : 1.0))
+	samelen(a, b) = isempty(a) || (x = pts(a); isfinite(x) && abs(x - pts(b)) < 1e-3)
+	samecol(c) = isempty(c) || lowercase(c) in ("black", "#000000", "0/0/0")
+	join_pos(bits) = rstrip(join(bits, ","), ',')
+	par = Pair{Symbol,Any}[]
+	fontdef = Dict("FONT_ANNOT_PRIMARY" => ("12p", "Helvetica"), "FONT_LABEL" => ("16p", "Helvetica"),
+	               "FONT_TITLE" => ("24p", "Helvetica"))
+	for k in ("FONT_ANNOT_PRIMARY", "FONT_LABEL", "FONT_TITLE")
+		sz, nm, c = part(k, "size"), part(k, "name"), part(k, "color")
+		bits = [samelen(sz, fontdef[k][1]) ? "" : sz, (isempty(nm) || nm == fontdef[k][2]) ? "" : nm,
+		        samecol(c) ? "" : c]
+		v = join_pos(bits)
+		isempty(v) || push!(par, Symbol(k) => v)
+	end
+	pendef = Dict("MAP_FRAME_PEN" => "1.5p", "MAP_TICK_PEN_PRIMARY" => "0.25p", "MAP_GRID_PEN_PRIMARY" => "0.25p")
+	for k in ("MAP_FRAME_PEN", "MAP_TICK_PEN_PRIMARY", "MAP_GRID_PEN_PRIMARY")
+		w, c, st = part(k, "width"), part(k, "color"), part(k, "style")
+		bits = [samelen(w, pendef[k]) ? "" : w, samecol(c) ? "" : c, st in ("", "solid") ? "" : st]
+		v = join_pos(bits)
+		isempty(v) || push!(par, Symbol(k) => v)
+	end
+	ma, mi = part("MAP_TICK_LENGTH_PRIMARY", "major"), part("MAP_TICK_LENGTH_PRIMARY", "minor")
+	if !(samelen(ma, "5p") && samelen(mi, "2.5p"))
+		push!(par, :MAP_TICK_LENGTH_PRIMARY => (isempty(ma) ? "5p" : ma) * (isempty(mi) ? "" : "/" * mi))
+	end
+	isempty(par) || push!(kw, :par => (; par...))
+	return kw
+end
+
 # The half every raster path shares: the figure-wide kwargs (first layer only) and the ScriptStep. Both
 # the ordinary CPT path and the rasterized-look path above end here, so neither can drift from the
 # other on region/projection/size/frame or on how the step is labelled.
@@ -571,9 +673,9 @@ function _script_emit_raster_finish!(ctx::ScriptCtx, r::ElementRecipe, binds::Ve
 		push!(kw, :figsize => ScriptVar(:FIGSIZE, ctx.figsize))
 		ctx.view  !== nothing && push!(kw, :view => ctx.view)
 		ctx.zsize !== nothing && push!(kw, :zsize => ctx.zsize)
-		# Every top-down map annotates W and S and carries TICKS ON ALL FOUR SIDES (lowercase e/n
-		# draw the axis without annotations) — the mapping convention this app holds to.
-		push!(kw, :frame => (annot=:auto, ticks=:auto, axes=:WSen))
+		# The frame of THIS raster's own axes, as its Axes properties say (default: W/S annotated,
+		# ticks on all four sides — the mapping convention this app holds to).
+		append!(kw, _script_frame_kw(ctx.scene, r.name, ctx.view !== nothing))
 	end
 	label = isempty(r.name) ? (isgrid ? "base grid" : "base image") : r.name
 	tier = isempty(binds) ? "" : String(binds[1].tier)   # the DATA bind; a trailing :cpt is not the tier
@@ -1455,8 +1557,8 @@ function _script_emit(h::Ptr{Cvoid}; figsize::Real=15.0, recompute::Bool=false, 
 		bind = DataBind(var, :capture, _script_capture_call(h, x0, x1, y0, y1))
 		push!(ctx.notes, "BACKDROP MODE: this is a PICTURE of the window, not a reproduction — nothing in it is editable or re-projectable")
 		kw = Pair{Symbol,Any}[:region => ScriptVar(:REG, ctx.region), :proj => ScriptVar(:PROJ, ctx.proj),
-		                      :figsize => ScriptVar(:FIGSIZE, ctx.figsize),
-		                      :frame => (annot=:auto, ticks=:auto, axes=:WSen)]
+		                      :figsize => ScriptVar(:FIGSIZE, ctx.figsize)]
+		append!(kw, _script_frame_kw(h, "", false))
 		return ScriptStep[ScriptStep("whole-window capture (backdrop mode)", DataBind[bind],
 		                             :grdimage, var, kw, false)], ctx
 	end

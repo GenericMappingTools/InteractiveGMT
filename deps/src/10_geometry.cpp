@@ -527,6 +527,32 @@ struct PaletteLegend {
 // to reach into. x0..z1 are TRUE DATA coordinates (never the scaled actor space) -- `axesScaledBox`
 // is the ONE place they are turned into the drawn xfac/zfac*ve box, so every consumer of a set's
 // geometry reads the same source (SACRED_LAW.md: fix the shared source, never each call site).
+// HOW ONE SET IS DRAWN, as its Axes properties dialog asked (56_axesprops.cpp parses AxesSet::props into
+// this on Apply). `custom` false = never edited: rebuildAxesFor draws exactly as it always has.
+struct AxesDraw {
+	bool   custom = false;
+	// Per axis X Y Z, the -B intervals. a: step <= 0 with aAuto -> niceNum's; !aOn -> no annotations.
+	// f: minor ticks (fOn, fAuto as a). g: grid spacing (gAuto or 0 -> the annotation step).
+	bool   aOn[3] = { true, true, true },  aAuto[3] = { true, true, true };
+	bool   fOn[3] = { false, false, false }, fAuto[3] = { true, true, true };
+	bool   gAuto[3] = { true, true, true };
+	double a[3] = { 0, 0, 0 }, aPh[3] = { 0, 0, 0 };
+	double f[3] = { 0, 0, 0 }, fPh[3] = { 0, 0, 0 };
+	double g[3] = { 0, 0, 0 }, gPh[3] = { 0, 0, 0 };
+	// MAP_FRAME_AXES per side W E S N Z: 0 annotations + ticks, 1 line + ticks, 2 line only, 3 not drawn.
+	int    side[5] = { 0, 1, 0, 1, 0 };
+	bool   gridW = false, gridS = false;     // grid lines from the West (horizontal) / South (vertical) axis
+	bool   noFrame = false;                  // -B+n
+	int    frameLine = 0;                    // -B line: 0 drawn, 1 hairline, 2 not drawn, 3 bare frame
+	double tickMajorPx = 0, tickMinorPx = 0; // MAP_TICK_LENGTH_PRIMARY, pixels (0 = the box-relative default)
+	std::string label[2];                    // -Bx/-By label: empty = no axis name
+	vtkSmartPointer<vtkTextProperty> annot;  // FONT_ANNOT_PRIMARY: every number, also ones made later
+	// The set's SCREEN look before its first Apply: a field left at GMT's default draws this, never
+	// GMT's paper black (56_axesprops.cpp restores it before applying what the user changed).
+	vtkSmartPointer<vtkTextProperty> annot0, label0;
+	vtkSmartPointer<vtkProperty>     frame0[3], grid0[3], tick0;
+};
+
 struct AxesSet {
 	vtkSmartPointer<vtkCubeAxesActor> cube;      // the box + gridlines (native labels/ticks OFF)
 	vtkSmartPointer<vtkActor>         ticks;     // our own single outward tickmarks
@@ -537,7 +563,7 @@ struct AxesSet {
 	// THIS raster's own frame, in TRUE data coordinates. z0/z1 are in ITS OWN UNITS (a mGal anomaly
 	// over a metre bathymetry keeps mGal), which is the whole point of the Z half of the law.
 	double x0 = 0, x1 = 1, y0 = 0, y1 = 1, z0 = 0, z1 = 1;
-	int    geog  = 0;        // THIS raster's own x,y kind: != 0 -> lon/lat titles, 0 -> X/Y
+	int    geog  = 0;        // THIS raster's own x,y kind: != 0 -> no axis names (degrees say it), 0 -> X/Y
 	// Z PIN. A 3-D cube's layers are one quantity sampled at many levels, so every layer must be boxed
 	// and numbered alike — the pin holds this set's Z box + Z tick labels at the WHOLE cube's range
 	// instead of the layer's own. It lives HERE, on the set the cube's layers own, because that is what
@@ -557,6 +583,13 @@ struct AxesSet {
 	// and every set in the window moved together as though the VE were window-wide -- which is exactly
 	// what per-layer VE exists to prevent (SACRED_LAW.md: each grid its own parameters, axes included).
 	int    owner = -1;       // == kAxesOwnerBase
+	AxesDraw draw;           // what the Axes properties dialog asked for (custom false = never edited)
+	vtkSmartPointer<vtkActor>    frame, grid;        // the flat-2-D frame border (MAP_FRAME_PEN) and grid
+	vtkSmartPointer<vtkPolyData> framePD, gridPD;    // lines (MAP_GRID_PEN_PRIMARY): made on first use
+	// THIS set's Axes properties (deps/ui/axes_props.ui, 56_axesprops.cpp): every field of the dialog
+	// as "GMT_KEY" or "GMT_KEY.part" -> value, in GMT's own spelling. Lives on the set, like everything
+	// else the axes own, so two rasters never share one. Empty = never edited (the .ui's defaults).
+	std::map<std::string, std::string> props;
 };
 static const int kAxesOwnerBase = -1;   // AxesSet::owner value meaning "the base relief's own set"
 
@@ -4324,14 +4357,14 @@ static double niceNum(double range, bool round) {
 // needs axes on all 4 sides, annotations belong on the near (south/west) pair only.
 static void placeTickMarksOnly(double v0, double v1, double d0, double d1,
 		int axis, double fixedA, double fixedB, const double ctr[3],
-		vtkPoints *tpts, vtkCellArray *tlines, double tickLen) {
+		vtkPoints *tpts, vtkCellArray *tlines, double tickLen, double step = 0, double phase = 0) {
 	const double vspan = v1 - v0;
 	if (std::abs(vspan) <= 1e-12 || std::abs(d1 - d0) <= 1e-12 || !tpts || !tlines) return;
-	const double range = niceNum(std::abs(vspan), false);
-	const double step  = niceNum(range / 4.0, true);
+	if (step <= 0 || std::abs(vspan) / step > 5000)        // auto, or a stride too fine to draw
+		step = niceNum(niceNum(std::abs(vspan), false) / 4.0, true);
 	const double lo = std::min(v0, v1), hi = std::max(v0, v1);
 	const double eps = 1e-9 * std::abs(vspan);
-	for (double v = std::ceil(lo / step) * step; v <= hi + eps; v += step) {
+	for (double v = std::ceil((lo - phase) / step) * step + phase; v <= hi + eps; v += step) {
 		if (v < lo - eps) continue;
 		const double frac = (v - v0) / vspan;
 		const double dpos = d0 + frac * (d1 - d0);
@@ -4358,19 +4391,22 @@ static void placeTickMarksOnly(double v0, double v1, double d0, double d1,
 // on the axis or the tick. Values are TRUE (v0..v1); positions follow the DRAWN coords (d0..d1).
 // Actors pooled + reused. axis: 0=x varies, 1=y varies, 2=z varies; other two coords pinned to
 // the edge (fixedA, fixedB). tickLen is the tick length in world units.
-static void placeTickBillboards(Scene *s,
+// step <= 0 = auto (~5 ticks). `start` = first pool slot to use (a second edge of the same axis
+// continues after the first); returns the slots used. Slots past the return are hidden.
+static size_t placeTickBillboards(Scene *s,
 		std::vector<vtkSmartPointer<vtkBillboardTextActor3D>> &pool,
 		double v0, double v1, double d0, double d1,
 		int axis, double fixedA, double fixedB, const double ctr[3],
-		vtkPoints *tpts, vtkCellArray *tlines, double tickLen) {
-	size_t used = 0;
+		vtkPoints *tpts, vtkCellArray *tlines, double tickLen,
+		double step = 0, double phase = 0, size_t start = 0) {
+	size_t used = start;
 	const double vspan = v1 - v0;
 	if (std::abs(vspan) > 1e-12 && std::abs(d1 - d0) > 1e-12) {
-		const double range = niceNum(std::abs(vspan), false);
-		const double step  = niceNum(range / 4.0, true);   // ~5 ticks
+		if (step <= 0 || std::abs(vspan) / step > 2000)    // auto (~5 ticks), or too fine to label
+			step = niceNum(niceNum(std::abs(vspan), false) / 4.0, true);
 		const double lo = std::min(v0, v1), hi = std::max(v0, v1);
 		const double eps = 1e-9 * std::abs(vspan);
-		for (double v = std::ceil(lo / step) * step; v <= hi + eps; v += step) {
+		for (double v = std::ceil((lo - phase) / step) * step + phase; v <= hi + eps; v += step) {
 			if (v < lo - eps) continue;
 			const double frac = (v - v0) / vspan;
 			const double dpos = d0 + frac * (d1 - d0);
@@ -4411,7 +4447,7 @@ static void placeTickBillboards(Scene *s,
 				pool.push_back(nt);
 			}
 			vtkBillboardTextActor3D *t = pool[used];
-			char buf[64]; std::snprintf(buf, sizeof(buf), "%g", v);
+			char buf[64]; std::snprintf(buf, sizeof(buf), "%g", std::abs(v) < eps ? 0.0 : v);
 			t->SetInput(buf);
 			t->SetPosition(p[0], p[1], p[2]);
 			// Offset the label in SCREEN space along the tick direction, PAST the tick's end:
@@ -4441,6 +4477,28 @@ static void placeTickBillboards(Scene *s,
 		}
 	}
 	for (size_t i = used; i < pool.size(); ++i) pool[i]->SetVisibility(0);   // hide unused
+	return used;
+}
+
+// Grid lines of one axis across the flat map: one segment per grid value, spanning the other axis
+// (oLo..oHi) at height z. Same value walk as the ticks (step <= 0 = auto).
+static void placeGridLines(double v0, double v1, double d0, double d1, int axis,
+		double oLo, double oHi, double z, double step, double phase,
+		vtkPoints *pts, vtkCellArray *lines) {
+	const double vspan = v1 - v0;
+	if (std::abs(vspan) <= 1e-12 || std::abs(d1 - d0) <= 1e-12 || !pts || !lines) return;
+	if (step <= 0 || std::abs(vspan) / step > 5000)
+		step = niceNum(niceNum(std::abs(vspan), false) / 4.0, true);
+	const double lo = std::min(v0, v1), hi = std::max(v0, v1);
+	const double eps = 1e-9 * std::abs(vspan);
+	for (double v = std::ceil((lo - phase) / step) * step + phase; v <= hi + eps; v += step) {
+		if (v < lo - eps) continue;
+		const double dpos = d0 + (v - v0) / vspan * (d1 - d0);
+		vtkIdType ia, ib;
+		if (axis == 0) { ia = pts->InsertNextPoint(dpos, oLo, z); ib = pts->InsertNextPoint(dpos, oHi, z); }
+		else           { ia = pts->InsertNextPoint(oLo, dpos, z); ib = pts->InsertNextPoint(oHi, dpos, z); }
+		lines->InsertNextCell(2); lines->InsertCellPoint(ia); lines->InsertCellPoint(ib);
+	}
 }
 
 // Place one axis NAME title billboard at the midpoint of the axis' camera-near edge, pushed
@@ -4605,8 +4663,8 @@ static void axesBuild(Scene *s, AxesSet &A, bool addToRen) {
 	// billboards (placeAxisTitle), NOT cube-native titles (those don't render in this StaticTriad
 	// setup with native labels off). Clear the cube titles so nothing competes.
 	A.cube->SetXTitle(" "); A.cube->SetYTitle(" "); A.cube->SetZTitle(" ");  // single space, NOT "" — empty makes vtkVectorText error "Text is not set!" every render
-	A.name[0] = A.geog ? "lon" : "X";
-	A.name[1] = A.geog ? "lat" : "Y";                // X/Y names only — Z gets NO name title
+	A.name[0] = A.geog ? "" : "X";            // geographic: NO name (the degree annotations say it)
+	A.name[1] = A.geog ? "" : "Y";                // X/Y names only — Z gets NO name title
 	for (int i = 0; i < 2; ++i) {
 		auto t = vtkSmartPointer<vtkBillboardTextActor3D>::New();
 		vtkTextProperty *tp = t->GetTextProperty();
@@ -4615,7 +4673,7 @@ static void axesBuild(Scene *s, AxesSet &A, bool addToRen) {
 		tp->SetFontSize(13);                         // a touch larger + bold so the name reads as a title
 		tp->SetJustificationToCentered();
 		tp->SetVerticalJustificationToCentered();
-		t->SetInput(A.name[i].c_str());
+		t->SetInput(A.name[i].empty() ? " " : A.name[i].c_str());
 		t->ForceOpaqueOn();
 		t->PickableOff();
 		t->SetVisibility(0);                         // rebuildAxesFor positions + shows it
@@ -4689,6 +4747,8 @@ static void axesDestroy(Scene *s, AxesSet &A) {
 		if (A.cube)  s->ren->RemoveActor(A.cube);
 		if (A.ticks) s->ren->RemoveActor(A.ticks);
 	}
+	if (ov) { if (A.grid) ov->RemoveActor(A.grid); if (A.frame) ov->RemoveActor(A.frame); }
+	A.frame = A.grid = nullptr; A.framePD = A.gridPD = nullptr;
 	if (ov) {
 		for (auto &t : A.title) if (t) ov->RemoveViewProp(t);
 		for (auto &l : A.xlab)  if (l) ov->RemoveViewProp(l);
@@ -4707,6 +4767,8 @@ static void axesDestroy(Scene *s, AxesSet &A) {
 static inline void axesHideAll(AxesSet &A) {
 	if (A.cube)  A.cube->SetVisibility(0);
 	if (A.ticks) A.ticks->SetVisibility(0);
+	if (A.frame) A.frame->SetVisibility(0);
+	if (A.grid)  A.grid->SetVisibility(0);
 	for (auto &l : A.xlab)  if (l) l->SetVisibility(0);
 	for (auto &l : A.ylab)  if (l) l->SetVisibility(0);
 	for (auto &l : A.zlab)  if (l) l->SetVisibility(0);
@@ -4867,7 +4929,7 @@ static void cameraFitToScaledBBox(Scene *s, const double b[6], bool keepMargin) 
 	ren->ResetCameraClippingRange();
 }
 
-// The X/Y axis NAME titles, from the ACTIVE layer's own x,y kind. Geographic -> "lon"/"lat";
+// The X/Y axis NAME titles, from the ACTIVE layer's own x,y kind. Geographic -> NONE (user order);
 // cartesian -> "X"/"Y". ONE function for it (buildAndShow seeds the billboards, rebuildAxisLabels
 // calls this every render), so the names re-follow the layer the moment the active one changes —
 // a cartesian derived grid dropped into a geographic window must NOT keep saying lon/lat. Only
@@ -4878,11 +4940,11 @@ static void cameraFitToScaledBBox(Scene *s, const double b[6], bool keepMargin) 
 // StartEvent).
 static inline void syncAxisNames(Scene *s, AxesSet &A) {
 	(void)s;
-	const char *want[2] = { A.geog ? "lon" : "X", A.geog ? "lat" : "Y" };
+	const char *want[2] = { A.geog ? "" : "X", A.geog ? "" : "Y" };   // geographic: no name at all
 	for (int i = 0; i < 2; ++i) {
 		if (A.name[i] == want[i]) continue;
 		A.name[i] = want[i];
-		if (A.title[i]) A.title[i]->SetInput(A.name[i].c_str());
+		if (A.title[i]) A.title[i]->SetInput(A.name[i].empty() ? " " : A.name[i].c_str());   // " ": VTK errors on ""
 	}
 }
 
@@ -4890,6 +4952,191 @@ static inline void syncAxisNames(Scene *s, AxesSet &A) {
 // the "active" grid, or any other handle's state — the entire geometry comes from `A` (SACRED_LAW.md
 // Raster-own-axes law: axes cannot be shared between rasters). `visible` is the owning handle's
 // verdict: its container checkbox AND the set's own Axes row.
+// Does THIS set draw no Z? Flat-2-D (Z points at the camera), a degenerate drawn Z extent, or an owner
+// that HAS NO ELEVATION AT ALL. An image is a picture on a flat plane: its pixel values are colour, not
+// height, so there is no quantity for a Z axis to measure. Without this a Base Map viewed in 3-D grew
+// a Z axis numbered 0..255 with a fan of gridlines standing off the map. Asked of the SET'S OWN owner,
+// not of the window: a window holding a relief grid AND an image keeps the grid's Z axis.
+static bool axesZHidden(Scene *s, const AxesSet &A, const double b[6]) {
+	bool ownerIsImage = false;
+	if (A.owner != kAxesOwnerBase) {
+		for (const auto &ex : s->extras)
+			if (ex.tag == A.owner) { ownerIsImage = ex.isImage; break; }
+	}
+	else ownerIsImage = s->imageOnly;          // the base itself is a bare picture
+	return s->flat2d || ownerIsImage || (b[5] - b[4]) <= 0.0;
+}
+
+// The frame-border and grid-line actors of an edited set, made on first use. Border beside the ticks
+// and grid in the overlay layer, so the map never covers them (they lie in its plane).
+static void axesEnsureLineActors(Scene *s, AxesSet &A) {
+	if (!s || !s->ren) return;
+	auto make = [](vtkSmartPointer<vtkActor> &act, vtkSmartPointer<vtkPolyData> &pd, vtkRenderer *ren) {
+		if (act) return;
+		pd = vtkSmartPointer<vtkPolyData>::New();
+		vtkNew<vtkPolyDataMapper> m; m->SetInputData(pd);
+		act = vtkSmartPointer<vtkActor>::New();
+		act->SetMapper(m);
+		act->GetProperty()->SetColor(0.85, 0.85, 0.85);
+		act->GetProperty()->LightingOff();
+		act->GetProperty()->SetLineWidth(1.0);
+		act->PickableOff();
+		act->SetVisibility(0);
+		ren->AddActor(act);
+	};
+	make(A.frame, A.framePD, s->axesRen ? s->axesRen.Get() : s->ren.Get());
+	make(A.grid, A.gridPD, s->axesRen ? s->axesRen.Get() : s->ren.Get());
+}
+
+// The annotation font onto one number (the pools grow while drawing, so new numbers take it too).
+static void axesCopyFace(vtkTextProperty *dst, vtkTextProperty *src) {
+	if (!dst || !src) return;
+	dst->SetFontFamily(src->GetFontFamily());
+	dst->SetFontSize(src->GetFontSize());
+	dst->SetBold(src->GetBold());
+	dst->SetItalic(src->GetItalic());
+	dst->SetColor(src->GetColor());
+}
+
+// The automatic -B steps: annotations ~5 per axis (niceNum), minor ticks 1/5 of that (1/4 on a 2-stride).
+static double axesAutoStep(double span) {
+	return niceNum(niceNum(std::abs(span), false) / 4.0, true);
+}
+static double axesAutoMinor(double a) {
+	const double m = a / std::pow(10.0, std::floor(std::log10(a)));
+	return a / ((m > 1.5 && m < 3.0) ? 4.0 : 5.0);
+}
+
+// AN EDITED SET: drawn as its Axes properties dialog says. The -B intervals (a, f, g with phase), each
+// side per MAP_FRAME_AXES (annotations + ticks / line + ticks / line only / not drawn), the grid boxes,
+// the tick lengths, the frame line, the axis names. Same placement functions as the plain path.
+static void rebuildAxesDrawn(Scene *s, AxesSet &A, const double b[6], const double ctr[3],
+                             double xEdgeY, double yEdgeX, double zx, double zy, double diag) {
+	const AxesDraw &D = A.draw;
+	axesEnsureLineActors(s, A);
+	const bool zHide = axesZHidden(s, A, b);
+	const bool flat = zHide;                           // a flat map (flat-2-D, an image, no Z): 4 sides, own grid
+	if (D.noFrame) {                                   // -B+n: nothing at all
+		axesHideAll(A);
+		return;
+	}
+	const bool bare = D.frameLine == 3;                // only the frame line
+	const bool lineOn = D.frameLine != 2;              // 000: no frame line
+
+	// Tick lengths: points on screen -> world, measured across this box at its centre.
+	double tickLen = 0.00625 * diag, minorLen = 0.5 * tickLen;
+	if (D.tickMajorPx > 0 || D.tickMinorPx > 0) {
+		double p0[2], p1[2];
+		s->ren->SetWorldPoint(ctr[0], ctr[1], ctr[2], 1.0); s->ren->WorldToDisplay();
+		{ double *d = s->ren->GetDisplayPoint(); p0[0] = d[0]; p0[1] = d[1]; }
+		s->ren->SetWorldPoint(ctr[0] + 0.1 * (b[1] - b[0]), ctr[1], ctr[2], 1.0); s->ren->WorldToDisplay();
+		{ double *d = s->ren->GetDisplayPoint(); p1[0] = d[0]; p1[1] = d[1]; }
+		const double px = std::hypot(p1[0] - p0[0], p1[1] - p0[1]);
+		if (px > 1e-6) {
+			const double wpp = 0.1 * (b[1] - b[0]) / px;
+			if (D.tickMajorPx > 0) tickLen = D.tickMajorPx * wpp;
+			minorLen = D.tickMinorPx > 0 ? D.tickMinorPx * wpp : 0.5 * tickLen;
+		}
+	}
+
+	// Per axis: the resolved steps (true data units).
+	const double v0[3] = { A.x0, A.y0, A.zLock ? A.zLo : A.z0 };
+	const double v1[3] = { A.x1, A.y1, A.zLock ? A.zHi : A.z1 };
+	double aStep[3], fStep[3], gStep[3];
+	for (int k = 0; k < 3; k++) {
+		const double au = axesAutoStep(v1[k] - v0[k]);
+		aStep[k] = (D.aAuto[k] || D.a[k] <= 0) ? au : D.a[k];
+		fStep[k] = (D.fAuto[k] || D.f[k] <= 0) ? axesAutoMinor(aStep[k]) : D.f[k];
+		gStep[k] = (D.gAuto[k] || D.g[k] <= 0) ? aStep[k] : D.g[k];
+	}
+
+	vtkNew<vtkPoints> tp; vtkNew<vtkCellArray> tl;       // ticks (tick pen)
+	vtkNew<vtkPoints> fp; vtkNew<vtkCellArray> fl;       // frame lines (frame pen)
+	vtkNew<vtkPoints> gp; vtkNew<vtkCellArray> gl;       // grid lines (grid pen)
+	auto frameSeg = [&](double xa, double ya, double xb, double yb) {
+		vtkIdType i0 = fp->InsertNextPoint(xa, ya, b[4]);
+		vtkIdType i1 = fp->InsertNextPoint(xb, yb, b[4]);
+		fl->InsertNextCell(2); fl->InsertCellPoint(i0); fl->InsertCellPoint(i1);
+	};
+	// One edge of one axis, drawn in `mode`. `used` carries the axis' number pool across its edges.
+	auto edge = [&](std::vector<vtkSmartPointer<vtkBillboardTextActor3D>> &pool, size_t &used, int k,
+	                double d0, double d1, double fixedA, double fixedB, int mode) {
+		if (bare || mode >= 2) return;
+		if (D.aOn[k]) {
+			if (mode == 0)
+				used = placeTickBillboards(s, pool, v0[k], v1[k], d0, d1, k, fixedA, fixedB, ctr, tp, tl, tickLen,
+				                           aStep[k], D.aPh[k], used);
+			else
+				placeTickMarksOnly(v0[k], v1[k], d0, d1, k, fixedA, fixedB, ctr, tp, tl, tickLen, aStep[k], D.aPh[k]);
+		}
+		if (D.fOn[k])
+			placeTickMarksOnly(v0[k], v1[k], d0, d1, k, fixedA, fixedB, ctr, tp, tl, minorLen, fStep[k], D.fPh[k]);
+	};
+	size_t nx = 0, ny = 0, nz = 0;
+	enum { W = 0, E = 1, S = 2, N = 3, Z = 4 };
+	if (flat) {
+		edge(A.xlab, nx, 0, b[0], b[1], b[2], b[4], D.side[S]);
+		edge(A.xlab, nx, 0, b[0], b[1], b[3], b[4], D.side[N]);
+		edge(A.ylab, ny, 1, b[2], b[3], b[0], b[4], D.side[W]);
+		edge(A.ylab, ny, 1, b[2], b[3], b[1], b[4], D.side[E]);
+		if (lineOn) {
+			if (D.side[S] <= 2) frameSeg(b[0], b[2], b[1], b[2]);
+			if (D.side[E] <= 2) frameSeg(b[1], b[2], b[1], b[3]);
+			if (D.side[N] <= 2) frameSeg(b[1], b[3], b[0], b[3]);
+			if (D.side[W] <= 2) frameSeg(b[0], b[3], b[0], b[2]);
+		}
+		if (!bare) {
+			if (D.gridS) placeGridLines(v0[0], v1[0], b[0], b[1], 0, b[2], b[3], b[4], gStep[0], D.gPh[0], gp, gl);
+			if (D.gridW) placeGridLines(v0[1], v1[1], b[2], b[3], 1, b[0], b[1], b[4], gStep[1], D.gPh[1], gp, gl);
+		}
+		A.cube->SetXAxisVisibility(0);               // the border is ours, in the frame pen
+		A.cube->SetYAxisVisibility(0);
+		A.cube->DrawXGridlinesOff(); A.cube->DrawYGridlinesOff();
+	}
+	else {
+		// 3-D: the numbers follow the camera to the near edges, drawn as the South / West sides say.
+		edge(A.xlab, nx, 0, b[0], b[1], xEdgeY, b[4], D.side[S]);
+		edge(A.ylab, ny, 1, b[2], b[3], yEdgeX, b[4], D.side[W]);
+		A.cube->SetXAxisVisibility(lineOn && D.side[S] <= 2 ? 1 : 0);
+		A.cube->SetYAxisVisibility(lineOn && D.side[W] <= 2 ? 1 : 0);
+		const bool gx = D.gridS && !bare, gy = D.gridW && !bare;
+		if (gx) A.cube->DrawXGridlinesOn(); else A.cube->DrawXGridlinesOff();
+		if (gy) A.cube->DrawYGridlinesOn(); else A.cube->DrawYGridlinesOff();
+	}
+	if (zHide) {
+		A.cube->SetZAxisVisibility(0);
+		A.cube->DrawZGridlinesOff();
+	}
+	else {
+		edge(A.zlab, nz, 2, b[4], b[5], zx, zy, D.side[Z]);
+		A.cube->SetZAxisVisibility(lineOn && D.side[Z] <= 2 ? 1 : 0);
+		if ((D.gridS || D.gridW) && !bare) A.cube->DrawZGridlinesOn(); else A.cube->DrawZGridlinesOff();
+	}
+	// Numbers no edge used go dark; the ones drawn wear the annotation font.
+	const std::pair<std::vector<vtkSmartPointer<vtkBillboardTextActor3D>> *, size_t> pools[3] =
+		{ { &A.xlab, nx }, { &A.ylab, ny }, { &A.zlab, zHide ? 0 : nz } };
+	for (const auto &pl : pools)
+		for (size_t i = 0; i < pl.first->size(); ++i) {
+			vtkBillboardTextActor3D *t = (*pl.first)[i];
+			if (!t) continue;
+			if (i >= pl.second) t->SetVisibility(0);
+			else if (D.annot) axesCopyFace(t->GetTextProperty(), D.annot);
+		}
+	// Axis names: shown when the dialog gives one, on the annotated (near / south-west) edges.
+	const double tEdge[2] = { flat ? b[2] : xEdgeY, flat ? b[0] : yEdgeX };
+	for (int i = 0; i < 2; i++) {
+		if (!A.title[i]) continue;
+		if (D.label[i].empty() || bare) { A.title[i]->SetVisibility(0); continue; }
+		placeAxisTitle(s, A.title[i], i, i == 0 ? 0.5*(b[0]+b[1]) : 0.5*(b[2]+b[3]), tEdge[i], b[4], ctr, tickLen);
+	}
+	if (D.frameLine == 1 && A.frame) A.frame->GetProperty()->SetLineWidth(1.0);   // 00: hairline
+	A.tickPD->SetPoints(tp); A.tickPD->SetLines(tl); A.tickPD->Modified();
+	A.framePD->SetPoints(fp); A.framePD->SetLines(fl); A.framePD->Modified();
+	A.gridPD->SetPoints(gp); A.gridPD->SetLines(gl); A.gridPD->Modified();
+	A.frame->SetVisibility(flat ? 1 : 0);
+	A.grid->SetVisibility(flat ? 1 : 0);
+}
+
 static void rebuildAxesFor(Scene *s, AxesSet &A, bool visible) {
 	if (!s->ren || !s->ren->GetActiveCamera() || !A.cube) return;
 	// Hidden owner (or its own Axes row unchecked): the WHOLE set goes dark. This callback fires
@@ -4937,6 +5184,13 @@ static void rebuildAxesFor(Scene *s, AxesSet &A, bool visible) {
 			const double dd = (cx-cam[0])*(cx-cam[0]) + (cy-cam[1])*(cy-cam[1]) + (ctr[2]-cam[2])*(ctr[2]-cam[2]);
 			if (dd < zbest) { zbest = dd; zx = cx; zy = cy; }
 		}
+	// Edited in its Axes properties dialog: drawn as the dialog says (intervals, sides, grid, frame pen).
+	if (A.draw.custom) {
+		rebuildAxesDrawn(s, A, b, ctr, xEdgeY, yEdgeX, zx, zy, diag);
+		return;
+	}
+	if (A.frame) A.frame->SetVisibility(0);
+	if (A.grid)  A.grid->SetVisibility(0);
 	vtkNew<vtkPoints> tp; vtkNew<vtkCellArray> tl;
 	// Terminology: ANNOTATIONS = the coordinate NUMBERS (xlabels/ylabels billboards). LABELS =
 	// the axis NAME titles (axTitle, e.g. "lon"/"lat"). Flat-2D is a top-down lon/lat MAP: it
@@ -4966,8 +5220,11 @@ static void rebuildAxesFor(Scene *s, AxesSet &A, bool visible) {
 		// the geographic parent keeps "lon"/"lat" on ITS OWN, simultaneously.
 		syncAxisNames(s, A);
 		// X/Y NAME labels at the midpoint of each floor edge, pushed well past the numbers. No Z name.
-		placeAxisTitle(s, A.title[0], 0, 0.5*(b[0]+b[1]), xEdgeY, b[4], ctr, tickLen);
-		placeAxisTitle(s, A.title[1], 1, 0.5*(b[2]+b[3]), yEdgeX, b[4], ctr, tickLen);
+		// A geographic raster has none: its degree annotations already say what the axes are.
+		if (A.name[0].empty()) { if (A.title[0]) A.title[0]->SetVisibility(0); }
+		else placeAxisTitle(s, A.title[0], 0, 0.5*(b[0]+b[1]), xEdgeY, b[4], ctr, tickLen);
+		if (A.name[1].empty()) { if (A.title[1]) A.title[1]->SetVisibility(0); }
+		else placeAxisTitle(s, A.title[1], 1, 0.5*(b[2]+b[3]), yEdgeX, b[4], ctr, tickLen);
 	}
 	// Z axis: hide in flat-2D (top-down map -> Z points at the camera, meaningless) or when the
 	// drawn Z extent is degenerate. Drives the cube Z LINE/gridlines + the Z number billboards so
@@ -4978,13 +5235,7 @@ static void rebuildAxesFor(Scene *s, AxesSet &A, bool visible) {
 	// image's 8-bit range read as metres — with a fan of gridlines standing off the map.
 	// Asked of the SET'S OWN owner, not of the window: a window holding a relief grid AND an image
 	// must keep the grid's Z axis while the image's stays off.
-	bool ownerIsImage = false;
-	if (A.owner != kAxesOwnerBase) {
-		for (const auto &ex : s->extras)
-			if (ex.tag == A.owner) { ownerIsImage = ex.isImage; break; }
-	}
-	else ownerIsImage = s->imageOnly;          // the base itself is a bare picture
-	const bool zHide = s->flat2d || ownerIsImage || (b[5] - b[4]) <= 0.0;
+	const bool zHide = axesZHidden(s, A, b);
 	A.cube->SetZAxisVisibility(zHide ? 0 : 1);
 	if (zHide) A.cube->DrawZGridlinesOff(); else A.cube->DrawZGridlinesOn();
 	// Flat map (no Z relief): the X/Y gridlines lie coplanar with the image, drawing a graticule
