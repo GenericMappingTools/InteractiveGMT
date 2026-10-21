@@ -119,6 +119,7 @@ const _TEST_SYMBOLS = (
 	:gmtvtk_combo_index_test,         # a dialog combo's current index
 	:gmtvtk_widget_screen_test, :gmtvtk_objrow_screen_test, :gmtvtk_popup_item_screen_test, :gmtvtk_active_window_test, :gmtvtk_popup_autoclick_os_test, :gmtvtk_autoclick_trace_test, :gmtvtk_overlay_point_screen_test,  # screen positions + a real click inside a menu, for REAL-mouse tests
 	:gmtvtk_scene_remove_surface_test, # the base row's Remove (sceneRemoveSurface)
+	:gmtvtk_dock_probe_test,          # a dock's geometry ("x,y,w,h,floating,area")
 	:gmtvtk_set_remotes_callback,     # NOT test-only -- mirrored: this dll's Remote sensing dialogs call Julia too
 )
 

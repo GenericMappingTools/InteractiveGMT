@@ -35,7 +35,7 @@ Front-door dispatcher over the Qt + VTK viewers. `x` may be:
 - a `GMTimage`          -> [`view_image`](@ref) (bare image: flat plane, top-down map)
 - a `GMTfv`             -> [`view_fv`](@ref) (faceted z-colour + matching colorbar; `color=:explicit` for baked colours)
 - a `GMTdataset` / `Vector{GMTdataset}` -> points -> [`view_points`](@ref); polygons -> `view_fv(poly2fv(...))`
-- an `N×≥3` matrix      -> `x y z` point cloud -> [`view_points`](@ref)
+- a matrix              -> a grid (`GMT.mat2grid`) -> [`view_grid`](@ref)
 - a `String`            -> `"grid"`/`"peaks"` demo or a grid file -> `view_grid`; else a named
   solid from SOLIDS -> [`view_fv`](@ref)
 
@@ -75,8 +75,12 @@ function iview(D::Vector{<:GMTdataset}; xy=nothing, kwargs...)
 	return view_fv(poly2fv(D; pk...); vk...)
 end
 
-# A bare N×≥3 numeric matrix is an `x y z [...]` point cloud.
-iview(M::AbstractMatrix{<:Real}; kwargs...) = view_points(M; kwargs...)
+# A matrix is a grid (GMT.mat2grid), unless its type has an iview_recipe (recipes.jl): a foreign
+# matrix-like type (a package's 2-D array with coordinates of its own) would otherwise never reach it.
+# mat2grid takes a real Array only, so a view / transpose / foreign matrix is copied to one first.
+iview(M::AbstractMatrix{<:Real}; kwargs...) =
+	_has_recipe(M) ? _iview_recipe(iview_recipe(M), values(kwargs), typeof(M)) :
+	                 view_grid(GMT.mat2grid(M isa Array ? M : Matrix(M)); kwargs...)
 
 function iview(name::AbstractString; kwargs...)
 	lname = lowercase(String(name))

@@ -44,6 +44,7 @@ const titles = Dict(
     "81-gmtsarplugin.md" => "GMTSAR plugin",
     "90-user-manual.md" => "User Manual",
     "95-reference.md" => "API Reference",
+    "96-recipes.md" => "Recipes (experimental)",
     "hillshade.md" => "Hillshade",
 )
 

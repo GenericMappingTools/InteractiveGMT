@@ -3854,10 +3854,12 @@ static void rebuildSceneObjects(Scene *s) {
 	// folded, where the fold strip owns the width. It lives here, not at window creation, because an
 	// empty launcher's panel is still empty then: that window used to keep its folded strip width for
 	// good. Deferred by a zero timer so the layout has settled before the resize.
+	// The "done" mark lives ON THE DOCK, so it dies with its window. It used to be a static set of
+	// Scene pointers that was never cleared: a new window allocated at a closed one's address was taken
+	// as already done, and opened at whatever width Qt gave it (260 px, ~5.7 cm, instead of 3 cm).
 	{
-		static std::unordered_set<Scene*> objWidthDone;
-		if (s->win && s->objDock && tree->topLevelItemCount() > 0 && !objWidthDone.count(s)) {
-			objWidthDone.insert(s);
+		if (s->win && s->objDock && tree->topLevelItemCount() > 0 && !s->objDock->property("igObjWidthDone").toBool()) {
+			s->objDock->setProperty("igObjWidthDone", true);
 			// An empty launcher starts FOLDED; content has just arrived, so open it — skipping folded
 			// docks (what this used to do) left exactly that window stuck at its 63 px fold strip.
 			unfoldSceneObjects(s);

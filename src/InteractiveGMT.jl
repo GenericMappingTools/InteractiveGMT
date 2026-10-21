@@ -47,6 +47,8 @@ include("isosurface.jl")
 include("points.jl")
 include("fv.jl")
 include("dispatch.jl")
+include("recipes.jl")     # iview_recipe: one method teaches iview a foreign type
+include("package_recipes.jl")   # recipe functions for Rasters, ...
 include("xyplot.jl")     # standalone X,Y plot tool (vtkChartXY); evolution of the Profile
 include("xyanalysis.jl") # X,Y Analysis menu (remove mean/trend, derivatives, FFT, autocorr)
 include("xystick.jl")    # stick (vector) diagrams for the X,Y tool (ecran 'stick')
@@ -192,7 +194,7 @@ include("RemoteS/remotes_gui.jl") # Satellite > Remote sensing: the dialogs over
 include("crsselect.jl")   # the Coordinate Reference System selector (PROJ catalogue; 73_crsselect.cpp)
 
 export gmtscript, gmtreplay,
-       view_grid, view_image, view_points, view_fv, view_demo, iview,
+       view_grid, view_image, view_points, view_fv, view_demo, iview, iview_recipe,
        add!, setvisible!, setopacity!, add_curtain!, add_isosurface!, add_symbols!, show_table, selection, selection_ids, isalive,
        poly2fv, colorize_by_z!, save_png, wait_windows, stereo!, movie, MovieFrame, orbit!, replace_grid!,
        set_layer!, nlayers, add_label!, add_progress!, remove_annotation!, movie_annotations,
