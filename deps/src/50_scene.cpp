@@ -2721,7 +2721,13 @@ static void rebuildSceneObjects(Scene *s) {
 		h->setContentsMargins(0, 1, 0, 1);
 		h->setSpacing(5);
 
-		QCheckBox *cb = new QCheckBox(row);                  // box only — no text, so only the box toggles
+		// Box only — no text, so only the box toggles. Its state is set BEFORE it has a parent: setChecked
+		// raises an accessibility event, and with Windows UI Automation active (the foreground moving
+		// between windows is enough) UIA walks from a checkbox already inside the window being rebuilt
+		// into a widget this rebuild has just freed (QAccessibleWidget::window -> QWidget::windowHandle,
+		// an access violation). A box with no parent yet gives it nothing to walk. h->addWidget below
+		// parents it to the row, as before.
+		QCheckBox *cb = new QCheckBox();
 		cb->setChecked(checked);
 		cb->setToolTip("Show / hide");
 		QObject::connect(cb, &QCheckBox::toggled, [s, onToggle](bool on) {

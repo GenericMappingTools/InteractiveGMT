@@ -132,6 +132,19 @@ function _ruler_length(path::String, proj4::String, datype::AbstractString="Elli
 	return nothing
 end
 
+# The Ctrl-drag profile's distance axis (60_profile.cpp `profileDistances`): the CUMULATIVE horizontal
+# distance at every sample of the track, by the same engine and Preferences as the ruler above
+# (`_seg_dist_azim`, `_length_scale`). Prints "<unit>|d1 d2 … dn".
+function _profile_distances(path::String, proj4::String, datype::AbstractString="Ellipsoidal",
+                            units::AbstractString="kilometers")
+	segs, geog, _ = _measure_load(path, proj4)
+	x = Float64.(segs[1].data[:, 1]);  y = Float64.(segs[1].data[:, 2])
+	inc, _ = _seg_dist_azim(x, y, geog; datype=datype)
+	scale, ulab = _length_scale(units, geog)
+	print(ulab, '|', join((string(v) for v in cumsum(inc) .* scale), ' '))
+	return nothing
+end
+
 # "Azimuth(s)…": for a single straight line the one forward azimuth; for a polyline a per-vertex
 # #/X/Y/azimuth table (forward bearing to the next vertex; last vertex repeats the prior).
 function _line_azimuth(scene::Ptr{Cvoid}, path::String, proj4::String, ispoly::Bool,

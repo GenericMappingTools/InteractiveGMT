@@ -23,10 +23,12 @@ function _on_grdsample(scene::Ptr{Cvoid}, cparams::Cstring)::Cvoid
 		toggle  = getp(7) == "1"
 		srcname = getp(8)
 
-		# Resolve the input. "selected" -> the grid/image this window is showing (via _FIGREG).
+		# Resolve the input. "selected" -> the grid ON DISPLAY (`_active_grid`, savefile.jl — never the
+		# window's base grid when another layer is the one shown), else the window's image.
 		src = if input == "selected"
+			Ga = _active_grid(scene)
 			fig = get(_FIGREG, scene, nothing)
-			fig isa QtFigure ? fig.G : fig isa QtImage ? fig.I :
+			Ga isa GMTgrid ? Ga : fig isa QtImage ? fig.I :
 				error("No grid or image loaded in this window")
 		else
 			isempty(input) && error("No input grid given")

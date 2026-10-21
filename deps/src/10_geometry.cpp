@@ -1769,6 +1769,7 @@ struct Scene {
 	bool   profMarkDrag = false, profMarkMoved = false;
 	int    profMarkPX = 0, profMarkPY = 0;             // press position (display px)
 	std::vector<double> profS, profZ;                  // last profile (along-track distance, elevation)
+	QString profDistUnit;                              // profS's unit, as the distance engine names it ("m", "km", "units")
 
 	// --- polygon draw / edit tool (toolbar polygon button) ------------------
 	// Draw mode (polyMode, toolbar toggle on): left-click adds a vertex, right-click removes the

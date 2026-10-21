@@ -491,8 +491,9 @@ function _on_roi_crop(scene::Ptr{Cvoid}, kind::String, rectstr::String)::Cvoid
 			error("Roi Crop: the rectangle takes four numbers, West/East/South/North — got '$rectstr'")
 		w, e, s, n = nums
 		if k == "grid"
-			srcname, G = _find_object_named(scene, :grid)
-			G === nothing && error("No grid to crop in this window")
+			srcname = _active_grid_name(scene)           # the grid ON DISPLAY (savefile.jl), not the first one
+			G = _active_grid(scene, srcname)
+			G isa GMTgrid || error("No grid to crop in this window")
 			Gc = _roi_crop_grid(G, w, e, s, n)
 			newname = isempty(srcname) ? "Cropped grid" : "$srcname (cropped)"
 			_add_grid_to_scene(scene, Gc, newname; promote=false)

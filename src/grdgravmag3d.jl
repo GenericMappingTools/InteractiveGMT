@@ -6,13 +6,13 @@
 #
 # The C++ dialog is GrdGravMag3DDialog (70_window.cpp, loads deps/ui/grdgravmag3d_dialog.ui).
 
-# "selected" = the grid already loaded in the window (the dialog's default top surface), same sentinel
-# and same _FIGREG resolution as grdsample.jl/rtp3d.jl use.
+# "selected" = the grid ON DISPLAY in the window (the dialog's default top surface): `_active_grid`
+# (savefile.jl), the one answer every tool gives — never the window's base grid when another is shown.
 function _grdgm3d_grid(scene::Ptr{Cvoid}, spec::AbstractString)::GMTgrid
 	if spec == "selected"
-		fig = get(_FIGREG, scene, nothing)
-		(fig isa QtFigure) || error("no grid loaded in this window")
-		return fig.G
+		G = _active_grid(scene)
+		G isa GMTgrid || error("no grid loaded in this window")
+		return G
 	end
 	isfile(spec) || error("grid file not found: $spec")
 	return _gmtread_trb(String(spec))      # grids are READ in "TRB" — THE reader

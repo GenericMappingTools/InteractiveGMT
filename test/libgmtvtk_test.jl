@@ -76,6 +76,7 @@ const _TEST_SYMBOLS = (
 	:gmtvtk_axes_sets_test,           # EVERY axes set: name|shown|onscreen|zlock|z0|z1 per line
 	:gmtvtk_image_tex_hash_test,      # hash + dims of an image extra's texture bytes
 	:gmtvtk_aqua_arrow_screen_test,   # screen pos of an arrow, for REAL OS mouse input
+	:gmtvtk_aqua_arrow_under_cursor_test,   # is that arrow the widget under the OS cursor (Qt's answer)
 	:gmtvtk_view_fixed_size_test,     # pin the 3-D view widget size (comparable captures)
 	:gmtvtk_objtree_checks_test,      # Scene Objects tree with each row's checkbox state
 	:gmtvtk_objrow_click_test,        # click a row's checkbox by label path, as the user does
@@ -112,6 +113,7 @@ const _TEST_SYMBOLS = (
 	:gmtvtk_set_faultgeom_callback,   # NOT test-only -- dlsym'd here too so we can mirror the
 	                                  # callback registration into this dll's own global.
 	:gmtvtk_set_euler_callback, :gmtvtk_euler_result,   # same, for the Plates dialogs.
+	:gmtvtk_set_julia_eval,           # same, for the console-eval bridge (the measure engine the profile uses)
 	:gmtvtk_set_ui_dir,               # ditto: the .ui directory is a file-static override per dll.
 	:gmtvtk_tile_mesh_test,           # the grid mesh's NaN contract, counted off makeGridTile's output
 	:gmtvtk_cloud_select_box_test,    # a Shift+left-drag box over a point cloud (rbAreaPick), as the mouse ends one
@@ -120,6 +122,12 @@ const _TEST_SYMBOLS = (
 	:gmtvtk_widget_screen_test, :gmtvtk_objrow_screen_test, :gmtvtk_popup_item_screen_test, :gmtvtk_active_window_test, :gmtvtk_popup_autoclick_os_test, :gmtvtk_autoclick_trace_test, :gmtvtk_overlay_point_screen_test,  # screen positions + a real click inside a menu, for REAL-mouse tests
 	:gmtvtk_scene_remove_surface_test, # the base row's Remove (sceneRemoveSurface)
 	:gmtvtk_dock_probe_test,          # a dock's geometry ("x,y,w,h,floating,area")
+	:gmtvtk_xyplot_click_test, :gmtvtk_xyplot_type_test, :gmtvtk_xyplot_rclick_test,  # X,Y bar code tools: a click,
+	:gmtvtk_xyplot_magbar_dblclick_test, :gmtvtk_xyplot_mag_state_test,               # typing, menus, the bar strip, state
+	:gmtvtk_xyplot_misc_state_test,   # what the X,Y Misc menu shows (log X/Y, time mode)
+	:gmtvtk_xyplot_drag_test, :gmtvtk_xyplot_sg_state_test,   # a left-drag on the chart; the kept S&G lines
+	:gmtvtk_xyplot_sg_on_test,        # the S&G tool on/off without its unit question
+	:gmtvtk_xyplot_menu_test,         # an X,Y menu item chosen
 	:gmtvtk_set_remotes_callback,     # NOT test-only -- mirrored: this dll's Remote sensing dialogs call Julia too
 )
 
@@ -220,6 +228,16 @@ function _register_grdblend_test()
 	return
 end
 
+# The console-eval bridge, mirrored into this dll (on = true) or taken back out (on = false). Code
+# running INSIDE the test dll — a Ctrl-drag profile driven by gmtvtk_profile_drag_test — measures its
+# track through it; without it that code falls back to its no-Julia formula and is not what the app does.
+function _register_console_eval_test(on::Bool = true)
+	fptr = on ? @cfunction((s, c, b, n) -> Base.invokelatest(InteractiveGMT._console_eval, s, c, b, n),
+	                       Cint, (Ptr{Cvoid}, Cstring, Ptr{UInt8}, Cint)) : C_NULL
+	ccall(_test_fn(:gmtvtk_set_julia_eval), Cvoid, (Ptr{Cvoid},), fptr)
+	return
+end
+
 function _register_faultgeom_test()
 	fptr = @cfunction((a, b, c, d) -> Base.invokelatest(InteractiveGMT._on_faultgeom, a, b, c, d),
 	                  Cstring, (Cdouble, Cdouble, Cdouble, Cdouble))
@@ -256,6 +274,6 @@ function _register_ceuler_test()
 end
 
 export _test_fn, register_fftstuff_test, register_crs_select_test, fft_open, fft_click, fft_sizes, fft_park, scene_adopt, objrows,
-	_register_faultgeom_test, _register_euler_test, _register_ceuler_test
+	_register_faultgeom_test, _register_euler_test, _register_ceuler_test, _register_console_eval_test
 
 end

@@ -14,6 +14,23 @@
 //  NEW page instead of a new window — see Julia _on_xy_analysis.
 // ============================================================================
 
+// The owner of a "Plot with GMT.jl" script editor. There is ONE editor (buildScriptEditor,
+// 70_window.cpp) for every kind of window that has the menu item — the 3-D viewer and this X,Y plot —
+// and this is all it needs to know about the window it belongs to. Defined here because this fragment
+// is the first that builds one (scriptHostXY); 70_window.cpp builds the 3-D viewer's (scriptHostScene).
+struct ScriptHost {
+	void *key = nullptr;                    // the owner's handle: registry key, and what Julia is handed
+	QWidget *parent = nullptr;              // the editor's parent window
+	Scene *parkIn = nullptr;                // whose Scene Objects dock the editor parks in (null: X closes it)
+	QString parkLabel = "GMT.jl script";
+	QString openCall;                       // the Julia function that builds the script for this owner
+	std::function<bool()> alive;
+	std::function<void(const QString &)> logError;
+	std::function<void(const QString &, int)> status;
+};
+static void showScriptEditor(const ScriptHost &h);                          // 70_window.cpp
+static void buildScriptEditor(const ScriptHost &host, const QString &text); // 70_window.cpp
+
 // One plotted curve: its data table (column 0 = X, column 1 = Y) + the chart
 // plot item (owned by the chart) + presentation state.
 struct XYSeries {
@@ -44,6 +61,61 @@ struct XYSeries {
 	double                    crossCenterX = 0.0, crossCenterY = 0.0;
 	double                    crossSizePx = 24.0;
 	double                    lastHx = -1.0, lastHy = -1.0;   // cached data-space half-lengths
+	// Its part in the page's magnetic modelling (the "Geomagnetic bar code" strip, ecran's isocs tools):
+	// 0 none, 1 the MEASURED anomaly profile the bar code / synthetic / fit refer to, 2 the synthetic RTP
+	// profile, 3 the synthetic chunk moved to its best-correlation place by "Fit". A flag on the series,
+	// not an index on the page, so a delete or a reorder never points the tools at the wrong curve.
+	int                       magRole = 0;
+	// The track under the curve, one (x, y) per row — a profile opened from the 3-D viewer carries it
+	// (ProfilePanel::track). trackGeog: -1 no track, 0 cartesian, 1 lon/lat. ecran's handles.data(:,1:2):
+	// what the magnetic model reads the profile azimuth and the bathymetry along the track from.
+	std::vector<double>       trackX, trackY;
+	int                       trackGeog = -1;
+};
+
+// One Spector-Grant fit line kept on a spectrum page (ecran's 'FitLine': the line a drag left behind,
+// editable by its two ends, with its own right-click menu). The ends are stored as PLOTTED (x, power);
+// m, b are the ln(power) = m*k + b fit, depth = |m|/(4 pi) * unit.
+struct XYSGLine {
+	double x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+	double m = 0, b = 0, depth = 0, unit = 1000.0;
+	double r = 0, g = 0, bl = 0;
+	vtkSmartPointer<vtkTable> table;
+	vtkPlot *plot = nullptr;                   // owned by the page chart
+};
+
+// One page's magnetic-anomaly modelling state — a port of what ecran.m keeps in its handles for the
+// bar code (push_magBar_CB), the synthetic RTP profile (push_syntheticRTP_CB, slider_filter_CB) and
+// the isochron age fit (popup_ageFit_CB / edit_ageFit_CB / push_ageFit_CB / pinpointLine).
+struct XYMag {
+	double ageStart = 0.0;                      // as typed: ageStart > ageEnd = bar drawn reversed (old -> young)
+	double ageEnd   = std::numeric_limits<double>::quiet_NaN();
+	bool   barOn = false;                       // the bar code exists
+	std::vector<double>      bStart, bEnd;      // its normal-polarity bricks (ascending ages, clipped)
+	std::vector<std::string> bTxt;              // anomaly names ("a" = unnamed)
+	double barX0 = 0.0, barX1 = 1.0;            // the measured profile's first / last x: the bar spans them
+	std::vector<double> picos;                  // red "pico" markers on the bar (ages)
+	// model parameters (the Parameters dialog; ecran reads them from OPTcontrol.txt MIR_MAGPROF lines)
+	double dec = 0.0, inc = 90.0;               // field declination / inclination (deg)
+	double speed = 0.0;                         // FULL spreading rate, cm/yr (0 = from the profile and the ages)
+	double profDir = 0.0;                       // profile azimuth (deg)
+	double spreadDir = std::numeric_limits<double>::quiet_NaN();   // NaN = the profile azimuth
+	double depth = 2.5;                         // top of the magnetized layer (km)
+	int    unit = 1;                            // profile distance unit: 0 m, 1 km, 2 NM
+	double contam = 1.0;                        // Tissot & Patriat contamination factor [0.5 1]
+	std::string isocs;                          // isochrons to fit: "age[_pad[_stretch]] ..."
+	std::string batFile;                        // bathymetry grid sampled along the track (ecran's BAT)
+	double barStretch = 1.0;                    // ecran's stretchMagBar: oblique profile/spreading (1 = none)
+	double lastSpeed = 0.0;                     // the rate the last synthetic was computed with
+	// the synthetic and the fit
+	std::vector<double> ageLine;                // age under every point of the synthetic
+	int    ageIdx = 0;                          // isochron list choice (0 = none)
+	double ageTyped = std::numeric_limits<double>::quiet_NaN();    // the age typed when there is no list
+	int    starIdx = -1;                        // red star: row of the synthetic at the chosen age
+	int    guessIdx = -1;                       // "Guide me" first guess: row of the measured profile
+	double ageLineX = std::numeric_limits<double>::quiet_NaN();    // the fitted isochron (dashed line)
+	std::vector<double> pinned;                 // "Pin-point me" isochron lines
+	bool   rerun = false;                       // the measured track was redrawn while this page was not shown
 };
 
 // One PAGE inside an X,Y window: its own chart, its own series list, its own axis
@@ -67,6 +139,9 @@ struct XYPage {
 	double                      sgUnit = 1000.0;  // wavenumber->metres factor (1/km default)
 	vtkPlot                    *sgFit = nullptr;  // the live fit line (not in series)
 	vtkSmartPointer<vtkTable>   sgFitTable;
+	double                      sgR = 0, sgG = 0, sgB = 0;   // its colour: black first, random after (mkAnother)
+	std::vector<XYSGLine>       sgLines;          // the fit lines kept (ecran 'FitLine's)
+	int                         sgEdit = -1, sgEditEnd = 0;  // the line / end being dragged
 	// Curve marker — the same gestures as the Profile panel's: a click ON a curve drops a circle there,
 	// dragging slides it ALONG that curve with an "x,  y" label beside it, a double-click on it removes
 	// it. Position = fractional row index into series[markSel] (row i + t towards row i+1), so it works
@@ -75,6 +150,14 @@ struct XYPage {
 	double                      markU = 0.0;
 	bool                        markDrag = false, markNew = false, markMoved = false;
 	QPointF                     markPress;
+	XYMag                       mag;              // magnetic modelling of this page (bar code, synthetic, fit)
+	// "Reference a curve to another" (ecran's pick_onLines2reference / add_refMarkers / do_reference):
+	// refLine[0] is the curve that gets referenced (red markers), refLine[1] the reference (green);
+	// refRows[k] the rows picked on each, in click order. refLast = the curve marked last.
+	bool                        refPicking = false;
+	int                         refLine[2] = { -1, -1 };
+	std::vector<int>            refRows[2];
+	int                         refLast = -1;
 };
 
 // Reveal + unfold a viewer's Scene Objects dock (defined in 70_window.cpp, later in this same
@@ -113,6 +196,10 @@ struct XYPlot {
 	double                              legendFontPt = 12.0;     // legend label font size (Legend row's "Font size…")
 	QAction                            *actGrid = nullptr;
 	QAction                            *actConsole = nullptr;
+	// Misc menu items that SHOW the current page's axis state (xySyncMiscMenu keeps them true to it,
+	// whoever changed it: the menu, Julia's xtime!/logscale!, a page switch, a session load).
+	QAction                            *actLogX = nullptr, *actLogY = nullptr;
+	QAction                            *actTime[6] = {};          // indexed by XYPage::xTimeFmt
 	vtkSmartPointer<vtkCallbackCommand> moveCb;               // mouse-move coord readout
 	vtkSmartPointer<vtkCallbackCommand> ticksCb;             // time-axis tick refresh on range change
 	bool                                rebuilding = false;    // guard objMgr itemChanged storms
@@ -126,6 +213,24 @@ struct XYPlot {
 	QPointer<ProfilePanel>              markPanel;
 	int                                 markLinkPage = -1, markLinkSel = -1;
 	bool                                markSyncing = false;   // applying the panel's change: don't echo it
+	// "Geomagnetic bar code" tools (ecran's isocs toggle): the toolbar toggle, the bar strip over the
+	// chart, the control strip under it. Widgets are the window's; their values are the current page's.
+	QAction                            *actMag = nullptr;
+	QWidget                            *magBar = nullptr;      // the bar code strip (XYMagBarStrip)
+	QWidget                            *magCtl = nullptr;      // the control strip
+	QLineEdit                          *magStart = nullptr, *magEnd = nullptr, *magAgeEdit = nullptr;
+	QPushButton                        *magBtnBar = nullptr, *magBtnSynth = nullptr, *magBtnParams = nullptr,
+	                                   *magBtnFit = nullptr;
+	QSlider                            *magSlider = nullptr;
+	QComboBox                          *magAgeCombo = nullptr;
+	bool                                magGuiding = false;    // "Guide me": next left click sets the first guess
+	bool                                magSyncing = false;    // filling the widgets: their signals do nothing
+	QString                             reqErr;                // a failed Julia request's message (xyRequest shows it)
+	QTimer                             *profTimer = nullptr;   // a redrawn 3-D track re-runs the mag tools once it settles
+	QAction                            *actRef = nullptr;      // Analysis > Reference a curve to another (checkable)
+	// The Spector-Grant fit's answer from GMT's trend1d (xyanalysis.jl, gmtvtk_xyplot_sg_set_fit).
+	bool                                sgFitGot = false;
+	double                              sgFitM = 0.0, sgFitB = 0.0;
 };
 
 // Live X,Y windows, keyed by the XYPlot *handed back to the host. A handle is
@@ -292,6 +397,17 @@ static void xyRebuildPlots(XYPlot *s) {
 		pl->SetVisible(se.visible);
 		se.plot = pl;
 		xyApplyStyle(s, se);
+	}
+	// ClearPlots took the Spector-Grant lines too: the live one is dropped, the kept ones re-plotted.
+	pg.sgFit = nullptr;
+	pg.sgFitTable = nullptr;
+	for (XYSGLine &l : pg.sgLines) {
+		l.plot = pg.chart->AddPlot(vtkChart::LINE);
+		l.plot->SetInputData(l.table, 0, 1);
+		l.plot->SetColor((unsigned char)(l.r * 255), (unsigned char)(l.g * 255), (unsigned char)(l.bl * 255), 255);
+		l.plot->SetWidth(2.5f);
+		l.plot->SetLabel("S&G fit");
+		l.plot->SetVisible(pg.sgActive);
 	}
 	if (s->widget && s->widget->renderWindow())
 		s->widget->renderWindow()->Render();
@@ -554,6 +670,11 @@ static void xyClear(XYPlot *s) {
 	XYPage &pg = xyCur(s);
 	pg.chart->ClearPlots();
 	pg.series.clear();
+	pg.sgLines.clear();                    // ClearPlots took their plots
+	pg.refLine[0] = pg.refLine[1] = -1;    // the reference picks went with their curves
+	pg.refRows[0].clear(); pg.refRows[1].clear(); pg.refPicking = false;
+	pg.sgFit = nullptr;
+	pg.sgFitTable = nullptr;
 	pg.markSel = -1;                       // its curve is gone
 	if (s->curPageIdx == s->markLinkPage) s->markLinkSel = -1;
 	xyRebuildObjMgr(s);
@@ -573,6 +694,11 @@ static void xyDeleteSeries(XYPlot *s, int idx) {
 	if (s->curPageIdx == s->markLinkPage) {        // …and so does the Profile link
 		if (s->markLinkSel == idx)     s->markLinkSel = -1;
 		else if (s->markLinkSel > idx) --s->markLinkSel;
+	}
+	XYPage &rp = xyCur(s);                         // the reference picks follow their curves, or go with them
+	for (int k = 0; k < 2; ++k) {
+		if (rp.refLine[k] == idx) { rp.refLine[0] = rp.refLine[1] = -1; rp.refRows[0].clear(); rp.refRows[1].clear(); rp.refPicking = false; break; }
+		if (rp.refLine[k] > idx) --rp.refLine[k];
 	}
 	xyRebuildPlots(s);
 	xyRebuildObjMgr(s);
@@ -872,6 +998,47 @@ static bool xyAskButter(QWidget *parent, QString &type, double &fc) {
 	return true;
 }
 
+// Sound Velocity Profile (ecran AnalysisSVP_CB) inputs: three pulldowns over every Data-Viewer column
+// (the abscissa = code -1, each series' value column = its index) for Temperature, Salinity and
+// Pressure (dbar), plus the latitude the depths are computed at. Each pulldown starts on the first
+// column whose name says what it is. Builds "T=<code>:S=<code>:P=<code>:lat=<deg>" for _xy_svp.
+static bool xyAskSVP(QWidget *parent, XYPlot *s, QString &args) {
+	std::vector<XYSeries> &series = xyCur(s).series;
+	QDialog d(parent);
+	d.setWindowTitle("Sound Velocity Profile");
+	QFormLayout *f = new QFormLayout(&d);
+	const char *axt = xyCur(s).chart && xyCur(s).chart->GetAxis(vtkAxis::BOTTOM)
+	                      ? xyCur(s).chart->GetAxis(vtkAxis::BOTTOM)->GetTitle().c_str() : nullptr;
+	const QString xlab = (axt && *axt) ? QString::fromUtf8(axt) : QStringLiteral("X");
+	auto makeCol = [&](const char *hint) {
+		QComboBox *cb = new QComboBox(&d);
+		cb->addItem(xlab, -1);
+		for (int i = 0; i < (int)series.size(); ++i)
+			cb->addItem(QString::fromStdString(series[i].name), i);
+		for (int k = 0; k < cb->count(); ++k)
+			if (cb->itemText(k).contains(hint, Qt::CaseInsensitive)) { cb->setCurrentIndex(k); break; }
+		return cb;
+	};
+	QComboBox *ct = makeCol("temp");
+	QComboBox *cs = makeCol("sal");
+	QComboBox *cp = makeCol("pres");
+	QDoubleSpinBox *lat = new QDoubleSpinBox(&d);
+	lat->setDecimals(4); lat->setRange(-90.0, 90.0); lat->setValue(0.0);
+	f->addRow("Temperature (\xC2\xB0""C)", ct);
+	f->addRow("Salinity", cs);
+	f->addRow("Pressure (dbar)", cp);
+	f->addRow("Latitude", lat);
+	QDialogButtonBox *bb = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &d);
+	f->addRow(bb);
+	QObject::connect(bb, &QDialogButtonBox::accepted, &d, &QDialog::accept);
+	QObject::connect(bb, &QDialogButtonBox::rejected, &d, &QDialog::reject);
+	if (d.exec() != QDialog::Accepted)
+		return false;
+	args = QString("T=%1:S=%2:P=%3:lat=%4").arg(ct->currentData().toInt()).arg(cs->currentData().toInt())
+	           .arg(cp->currentData().toInt()).arg(lat->value(), 0, 'g', 10);
+	return true;
+}
+
 // ---- GMT menu: full spectrum1d interface -----------------------------------
 // Options dialog for GMT's spectrum1d (auto- and cross-spectra). Two pulldowns pick the input
 // series from the current page (the same names shown in the Data Viewer): the 1st series is X(t),
@@ -1009,8 +1176,10 @@ static double xySGDataX(XYPlot *s, const QPointF &p) {
 	return ax->GetMinimum() + (px - a1[0]) / w * (ax->GetMaximum() - ax->GetMinimum());
 }
 
-// Least-squares fit of ln(power) vs k over band [xa,xb] of series idx (positive power only) on the
-// current page.
+// The fit of ln(power) vs k over band [xa,xb] of series idx (positive power only) on the current page —
+// ecran's `trend1d_m(xy, '-N2r')`: GMT's own trend1d, ROBUST (Huber-weighted) when the band holds more
+// than two points, run by xyanalysis.jl (`_xy_sgfit`) and handed back through gmtvtk_xyplot_sg_set_fit.
+// The plain least squares below is the FALLBACK ONLY, for a window with no Julia side (the demo exe).
 static bool xySGFit(XYPlot *s, int idx, double xa, double xb, double unit,
                     double &slope, double &inter, double &depth, double &xlo, double &xhi) {
 	std::vector<XYSeries> &series = xyCur(s).series;
@@ -1019,6 +1188,16 @@ static bool xySGFit(XYPlot *s, int idx, double xa, double xb, double unit,
 	if (xa > xb) std::swap(xa, xb);
 	vtkTable *t = series[idx].table;
 	if (!t) return false;
+	if (g_juliaXYAna) {
+		s->sgFitGot = false;
+		g_juliaXYAna(s, QString("sgfit:xa=%1:xb=%2").arg(xa, 0, 'g', 17).arg(xb, 0, 'g', 17).toUtf8().constData(), idx);
+		if (!xyAlive(s) || !s->sgFitGot) return false;
+		slope = s->sgFitM;
+		inter = s->sgFitB;
+		depth = std::abs(slope) / (4.0 * vtkMath::Pi()) * unit;
+		xlo = xa; xhi = xb;
+		return true;
+	}
 	double sx = 0, sy = 0, sxx = 0, sxy = 0; int n = 0;
 	const vtkIdType nr = t->GetNumberOfRows();
 	for (vtkIdType r = 0; r < nr; ++r) {
@@ -1054,7 +1233,7 @@ static void xySGUpdate(XYPlot *s, double x1) {
 	pg.sgFitTable->SetValue(1, 0, (float)xhi); pg.sgFitTable->SetValue(1, 1, (float)std::exp(slope * xhi + inter));
 	if (!pg.sgFit) {
 		pg.sgFit = pg.chart->AddPlot(vtkChart::LINE);
-		pg.sgFit->SetColor(0, 0, 0, 255);
+		pg.sgFit->SetColor((unsigned char)(pg.sgR * 255), (unsigned char)(pg.sgG * 255), (unsigned char)(pg.sgB * 255), 255);
 		pg.sgFit->SetWidth(2.5f);
 		pg.sgFit->SetLabel("S&G fit");
 	}
@@ -1065,17 +1244,214 @@ static void xySGUpdate(XYPlot *s, double x1) {
 		s->widget->renderWindow()->Render();
 }
 
-// Remove the fit line from the current page (tool turned off).
+// The fit lines kept on the page show while the tool is on and hide when it is off (dynSlope_CB).
+static void xySGShowLines(XYPage &pg, bool on) {
+	for (XYSGLine &l : pg.sgLines) if (l.plot) l.plot->SetVisible(on);
+}
+
+// Tool turned off: the live fit goes, the kept lines hide.
 static void xySGClear(XYPlot *s) {
 	XYPage &pg = xyCur(s);
 	if (pg.sgFit) { pg.chart->RemovePlotInstance(pg.sgFit); pg.sgFit = nullptr; }
 	pg.sgFitTable = nullptr;
+	pg.sgEdit = -1;
+	xySGShowLines(pg, false);
 	if (s->widget && s->widget->renderWindow())
 		s->widget->renderWindow()->Render();
 }
 
+// Add a kept fit line to page `pg` (a released drag, or a session being reopened).
+static void xySGAddLine(XYPage &pg, XYSGLine l) {
+	l.table = vtkSmartPointer<vtkTable>::New();
+	vtkNew<vtkFloatArray> ax; ax->SetName("k");       l.table->AddColumn(ax);
+	vtkNew<vtkFloatArray> ay; ay->SetName("S&G fit"); l.table->AddColumn(ay);
+	l.table->SetNumberOfRows(2);
+	l.table->SetValue(0, 0, (float)l.x0); l.table->SetValue(0, 1, (float)l.y0);
+	l.table->SetValue(1, 0, (float)l.x1); l.table->SetValue(1, 1, (float)l.y1);
+	l.plot = pg.chart->AddPlot(vtkChart::LINE);
+	l.plot->SetInputData(l.table, 0, 1);
+	l.plot->SetColor((unsigned char)(l.r * 255), (unsigned char)(l.g * 255), (unsigned char)(l.bl * 255), 255);
+	l.plot->SetWidth(2.5f);
+	l.plot->SetLabel("S&G fit");
+	l.plot->SetVisible(pg.sgActive);
+	pg.sgLines.push_back(l);
+}
+
+// wbu_dynSlope: the drag is over — the live fit becomes a kept line, with its own menu and ends.
+static void xySGKeep(XYPlot *s) {
+	XYPage &pg = xyCur(s);
+	if (!pg.sgFit || !pg.sgFitTable) return;
+	XYSGLine l;
+	l.x0 = pg.sgFitTable->GetValue(0, 0).ToDouble(); l.y0 = pg.sgFitTable->GetValue(0, 1).ToDouble();
+	l.x1 = pg.sgFitTable->GetValue(1, 0).ToDouble(); l.y1 = pg.sgFitTable->GetValue(1, 1).ToDouble();
+	double slope, inter, depth, xlo, xhi;
+	if (!xySGFit(s, pg.sgSel, l.x0, l.x1, pg.sgUnit, slope, inter, depth, xlo, xhi)) return;
+	l.m = slope; l.b = inter; l.depth = depth; l.unit = pg.sgUnit;
+	l.r = pg.sgR; l.g = pg.sgG; l.bl = pg.sgB;
+	pg.chart->RemovePlotInstance(pg.sgFit);
+	pg.sgFit = nullptr;
+	pg.sgFitTable = nullptr;
+	xySGAddLine(pg, l);
+}
+
+// recompSI: slope and intercept again from the line's two ends, once they have been dragged. In
+// ln(power), the space the line was fitted in (ecran takes the plotted power itself, which for the
+// Spector & Grant line is not the quantity whose slope is the depth).
+static void xySGRecomp(XYPlot *s, int i) {
+	XYPage &pg = xyCur(s);
+	if (i < 0 || i >= (int)pg.sgLines.size()) return;
+	XYSGLine &l = pg.sgLines[i];
+	if (!(l.y0 > 0 && l.y1 > 0) || l.x1 == l.x0) return;
+	l.m = (std::log(l.y1) - std::log(l.y0)) / (l.x1 - l.x0);
+	l.b = std::log(l.y0) - l.m * l.x0;
+	l.depth = std::abs(l.m) / (4.0 * vtkMath::Pi()) * l.unit;
+	s->win->statusBar()->showMessage(QString("Dist=%1   Depth=%2").arg(l.x1 - l.x0, 0, 'g', 6).arg(l.depth, 0, 'f', 3));
+}
+
+static bool xyDataToScene(XYPage &pg, double x, double y, double &sx, double &sy);   // (curve marker, below)
+static void xyQtToScene(XYPlot *s, const QPointF &p, double &sx, double &sy);
+static bool xyRequest(XYPlot *s, const QString &op, int sel, const char *busy, bool fileCb = false,
+                      const QString &path = QString());
+
+// Map a Qt widget point to a DATA y through the current page's left axis (log10 when it is active).
+static double xySGDataY(XYPlot *s, const QPointF &p) {
+	double sx, sy;
+	xyQtToScene(s, p, sx, sy);
+	vtkAxis *ay = xyCur(s).chart->GetAxis(vtkAxis::LEFT);
+	const float *a1 = ay->GetPoint1(), *a2 = ay->GetPoint2();
+	const double h = a2[1] - a1[1];
+	double v = (h == 0.0) ? ay->GetMinimum() : ay->GetMinimum() + (sy - a1[1]) / h * (ay->GetMaximum() - ay->GetMinimum());
+	return ay->GetLogScaleActive() ? std::pow(10.0, v) : v;
+}
+
+// ecran's bandpass(): Low cut / Low pass / High cut / High pass, in frequency or wavelength, prefilled
+// from the line's band with a 10% transition. Returns the pass band in CYCLES PER METRE (the outer
+// cuts, which is what fft_stuff.m's 'bpass' uses), false on Cancel.
+static bool xySGAskBand(QWidget *parent, double fa, double fb, double &flo, double &fhi) {
+	if (fa > fb) std::swap(fa, fb);
+	const double tr = (fb - fa) * 0.1;                  // 10%
+	double LC = std::max(fa - tr / 2, 0.0), HP = std::max(fb - tr / 2, 0.0);
+	double LP = std::min(fa + tr / 2, fb), HC = fb + tr / 2;
+	// frequencies, increasing: LC <= LP <= HP' ... held as the four band edges f[0..3]
+	double f[4] = { LC, LP, HP, HC };
+	QDialog d(parent);
+	d.setWindowTitle("Bandpass");
+	QGridLayout *g = new QGridLayout(&d);
+	QRadioButton *rFreq = new QRadioButton("Frequency", &d), *rWave = new QRadioButton("Wavelength", &d);
+	rWave->setChecked(true);
+	QLineEdit *e[4];
+	const char *lab[4] = { "Low cut", "Low pass", "High cut", "High pass" };
+	const char *tip[4] = { "Low Cut frequency", "Low Pass frequency", "High Cut frequency", "High Pass frequency" };
+	for (int i = 0; i < 4; ++i) { e[i] = new QLineEdit(&d); e[i]->setToolTip(tip[i]); }
+	g->addWidget(rFreq, 0, 1); g->addWidget(rWave, 0, 3);
+	g->addWidget(new QLabel(lab[0], &d), 1, 0); g->addWidget(e[0], 1, 1);
+	g->addWidget(new QLabel(lab[2], &d), 1, 2); g->addWidget(e[2], 1, 3);
+	g->addWidget(new QLabel(lab[1], &d), 2, 0); g->addWidget(e[1], 2, 1);
+	g->addWidget(new QLabel(lab[3], &d), 2, 2); g->addWidget(e[3], 2, 3);
+	QPushButton *ok = new QPushButton("OK", &d);
+	g->addWidget(ok, 3, 3);
+	// The boxes read low -> high in the unit shown: as wavelengths the order of the frequencies turns
+	// over (ecran's prefill: LC = 1/HC, LP = 1/HP, HC = 1/LP, HP = 1/LC).
+	auto fill = [&]() {
+		const bool wave = rWave->isChecked();
+		const double v[4] = { wave ? 1 / f[3] : f[0], wave ? 1 / f[2] : f[1], wave ? 1 / f[1] : f[2], wave ? 1 / f[0] : f[3] };
+		for (int i = 0; i < 4; ++i) e[i]->setText(QString::number(v[i], 'g', 6));
+	};
+	auto read = [&](double v[4]) {
+		for (int i = 0; i < 4; ++i) {
+			bool okv = false;
+			v[i] = e[i]->text().trimmed().toDouble(&okv);
+			if (!okv || v[i] <= 0) return false;
+		}
+		return true;
+	};
+	fill();
+	auto flip = [&]() {                                // keep the band when the unit changes
+		double v[4];
+		if (!read(v)) return;
+		const bool toWave = rWave->isChecked();       // the boxes still hold the OTHER unit
+		if (toWave) { f[0] = v[0]; f[1] = v[1]; f[2] = v[2]; f[3] = v[3]; }
+		else        { f[0] = 1 / v[3]; f[1] = 1 / v[2]; f[2] = 1 / v[1]; f[3] = 1 / v[0]; }
+		fill();
+	};
+	QObject::connect(rWave, &QRadioButton::toggled, &d, [&](bool) { flip(); });
+	QObject::connect(ok, &QPushButton::clicked, &d, [&]() {
+		double v[4];
+		if (!read(v)) { QMessageBox::warning(&d, "Error", "Each box needs a positive number."); return; }
+		QString msg;
+		if (v[0] > v[1])      msg = "Low cut cannot be higher than Low pass";
+		else if (v[2] > v[3]) msg = "High cut cannot be higher than High pass";
+		else if (v[1] > v[2]) msg = "Low pass cannot be higher than High cut";
+		if (!msg.isEmpty()) { QMessageBox::warning(&d, "Error", msg); return; }
+		if (rWave->isChecked()) { flo = 1 / v[3]; fhi = 1 / v[0]; }   // 1./[HP HC LP LC]: bp(1), bp(4)
+		else                    { flo = v[0];     fhi = v[3]; }
+		d.accept();
+	});
+	wrapTooltips(&d);
+	return d.exec() == QDialog::Accepted;
+}
+
+// The kept line's right-click menu (wbu_dynSlope's uicontextmenu).
+static void xySGLineMenu(XYPlot *s, int i, const QPoint &global) {
+	XYPage &pg = xyCur(s);
+	if (i < 0 || i >= (int)pg.sgLines.size()) return;
+	const XYSGLine l = pg.sgLines[i];
+	QMenu m(s->win);
+	m.addAction("Slope(m/cycle) &  Intercept")->setEnabled(false);
+	m.addAction(QString("%1   %2").arg(l.m / (2 * vtkMath::Pi()), 0, 'f', 2).arg(l.b, 0, 'g', 9))->setEnabled(false);
+	m.addAction(QString("Depth to sources (m) = %1").arg(l.depth, 0, 'f', 3))->setEnabled(false);
+	m.addSeparator();
+	QAction *aBand = m.addAction("Bandpass Filter");
+	m.addSeparator();
+	QAction *aRe = m.addAction("Recomp Slope/Intercept");
+	m.addSeparator();
+	QAction *aDel = m.addAction("Delete this line");
+	QAction *pick = m.exec(global);
+	if (!pick || !xyAlive(s)) return;
+	if (pick == aRe) {
+		xySGRecomp(s, i);
+	}
+	else if (pick == aDel) {
+		XYPage &p2 = xyCur(s);
+		if (i < (int)p2.sgLines.size()) {
+			if (p2.sgLines[i].plot) p2.chart->RemovePlotInstance(p2.sgLines[i].plot);
+			p2.sgLines.erase(p2.sgLines.begin() + i);
+		}
+	}
+	else if (pick == aBand) {
+		double flo, fhi;
+		if (!xySGAskBand(s->win, l.x0 / l.unit, l.x1 / l.unit, flo, fhi)) return;   // frequencies in 1/m
+		xyRequest(s, QString("sgbandpass:flo=%1:fhi=%2").arg(flo, 0, 'g', 17).arg(fhi, 0, 'g', 17), -1,
+		          "Band-pass filtering the grid…");
+	}
+	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+}
+
+// The kept line (and its end, 0/1) under widget point `qp`: an end within 7 px, or the line within 5.
+static int xySGLineAt(XYPlot *s, const QPointF &qp, int &end) {
+	XYPage &pg = xyCur(s);
+	double sx, sy;
+	xyQtToScene(s, qp, sx, sy);
+	const double dpr = s->widget->devicePixelRatioF();
+	end = -1;
+	for (int i = (int)pg.sgLines.size() - 1; i >= 0; --i) {
+		const XYSGLine &l = pg.sgLines[i];
+		if (!l.plot || !l.plot->GetVisible()) continue;
+		double ax, ay, bx, by;
+		if (!xyDataToScene(pg, l.x0, l.y0, ax, ay) || !xyDataToScene(pg, l.x1, l.y1, bx, by)) continue;
+		const double t7 = 7.0 * dpr;
+		if ((sx - ax) * (sx - ax) + (sy - ay) * (sy - ay) <= t7 * t7) { end = 0; return i; }
+		if ((sx - bx) * (sx - bx) + (sy - by) * (sy - by) <= t7 * t7) { end = 1; return i; }
+		const double a[2] = { ax, ay }, b[2] = { bx, by };
+		if (segDist2(sx, sy, a, b) <= 25.0 * dpr * dpr) return i;
+	}
+	return -1;
+}
+
 // Qt event filter on the chart widget: while the tool is active, left-drag selects the band and
-// drives the live fit (consuming the events so the chart's own zoom/pan stays out of the way).
+// drives the live fit (consuming the events so the chart's own zoom/pan stays out of the way); a
+// press on a kept line's END drags that end (ui_edit_polygon), a right-click on a kept line opens
+// its menu.
 class XYSGFilter : public QObject {
 public:
 	XYPlot *s = nullptr;
@@ -1088,15 +1464,50 @@ protected:
 		const QEvent::Type t = ev->type();
 		if (t == QEvent::MouseButtonPress) {
 			QMouseEvent *me = static_cast<QMouseEvent*>(ev);
-			if (me->button() == Qt::LeftButton) { pg.sgDragging = true; pg.sgX0 = xySGDataX(s, me->position()); return true; }
+			int end = -1;
+			const int hit = xySGLineAt(s, me->position(), end);
+			if (me->button() == Qt::RightButton && hit >= 0) {
+				xySGLineMenu(s, hit, me->globalPosition().toPoint());
+				return true;
+			}
+			if (me->button() == Qt::LeftButton) {
+				if (hit >= 0 && end >= 0) { pg.sgEdit = hit; pg.sgEditEnd = end; return true; }
+				pg.sgDragging = true;
+				pg.sgX0 = xySGDataX(s, me->position());
+				// mkAnother: the first fit line is black, every later one a colour of its own
+				if (pg.sgLines.empty()) { pg.sgR = pg.sgG = pg.sgB = 0.0; }
+				else {
+					const double *c = xyPalette((int)pg.sgLines.size());
+					pg.sgR = c[0]; pg.sgG = c[1]; pg.sgB = c[2];
+				}
+				return true;
+			}
+		}
+		else if (t == QEvent::MouseMove && pg.sgEdit >= 0) {
+			QMouseEvent *me = static_cast<QMouseEvent*>(ev);
+			if (pg.sgEdit < (int)pg.sgLines.size()) {
+				XYSGLine &l = pg.sgLines[pg.sgEdit];
+				const double x = xySGDataX(s, me->position()), y = xySGDataY(s, me->position());
+				if (pg.sgEditEnd == 0) { l.x0 = x; l.y0 = y; } else { l.x1 = x; l.y1 = y; }
+				l.table->SetValue(pg.sgEditEnd, 0, (float)x);
+				l.table->SetValue(pg.sgEditEnd, 1, (float)y);
+				l.table->Modified();
+				if (s->widget->renderWindow()) s->widget->renderWindow()->Render();
+			}
+			return true;
 		}
 		else if (t == QEvent::MouseMove && pg.sgDragging) {
 			xySGUpdate(s, xySGDataX(s, static_cast<QMouseEvent*>(ev)->position()));
 			return true;
 		}
-		else if (t == QEvent::MouseButtonRelease && pg.sgDragging) {
+		else if (t == QEvent::MouseButtonRelease && (pg.sgDragging || pg.sgEdit >= 0)) {
 			QMouseEvent *me = static_cast<QMouseEvent*>(ev);
-			if (me->button() == Qt::LeftButton) { pg.sgDragging = false; return true; }
+			if (me->button() == Qt::LeftButton) {
+				if (pg.sgDragging) xySGKeep(s);
+				pg.sgDragging = false;
+				pg.sgEdit = -1;
+				return true;
+			}
 		}
 		return QObject::eventFilter(obj, ev);
 	}
@@ -1281,6 +1692,19 @@ static void xyTicksOnRender(vtkObject *, unsigned long, void *clientData, void *
 	}
 }
 
+// Tick the Misc menu's "Log X/Y axis" and "Time axis (X)" items from the CURRENT page, without
+// re-applying what they show.
+static void xySyncMiscMenu(XYPlot *s) {
+	if (!s || s->pages.empty()) return;
+	XYPage &pg = xyCur(s);
+	if (s->actLogX) { QSignalBlocker b(s->actLogX); s->actLogX->setChecked(pg.chart->GetAxis(vtkAxis::BOTTOM)->GetLogScale()); }
+	if (s->actLogY) { QSignalBlocker b(s->actLogY); s->actLogY->setChecked(pg.chart->GetAxis(vtkAxis::LEFT)->GetLogScale()); }
+	// NOT blocked: the exclusive QActionGroup clears the other items off this action's own signal, and
+	// the items act on `triggered`, which setChecked never emits.
+	if (pg.xTimeFmt >= 0 && pg.xTimeFmt < 6 && s->actTime[pg.xTimeFmt])
+		s->actTime[pg.xTimeFmt]->setChecked(true);
+}
+
 // Toggle log scaling on a current-page axis (axis 0 = bottom/X, 1 = left/Y). Data must be positive
 // for VTK to actually activate it. Recomputes bounds + renders.
 static void xySetLog(XYPlot *s, int axis, bool on) {
@@ -1291,6 +1715,7 @@ static void xySetLog(XYPlot *s, int axis, bool on) {
 	pg.lastLo = std::numeric_limits<double>::quiet_NaN();   // X log on/off changes the tick scheme
 	pg.lastHi = std::numeric_limits<double>::quiet_NaN();
 	xyRefreshTicks(s);
+	xySyncMiscMenu(s);                                       // set from Julia too: the menu shows it
 	if (s->widget && s->widget->renderWindow())
 		s->widget->renderWindow()->Render();
 }
@@ -1302,6 +1727,7 @@ static void xySetXTime(XYPlot *s, int fmt) {
 	pg.lastLo = std::numeric_limits<double>::quiet_NaN();   // force the observer to recompute
 	pg.lastHi = std::numeric_limits<double>::quiet_NaN();
 	xyRefreshTicks(s);
+	xySyncMiscMenu(s);
 	if (s->widget && s->widget->renderWindow())
 		s->widget->renderWindow()->Render();
 }
@@ -1456,6 +1882,9 @@ static void xyMarkPaint(XYPlot *s, vtkChartXY *chart, vtkContext2D *p) {
 	p->DrawString(bx + pad, by + pad, lab);
 }
 
+static void xyMagPaint(XYPlot *s, vtkChartXY *chart, vtkContext2D *p);   // the magnetic picks (below)
+static void xyRefPaint(XYPlot *s, vtkChartXY *chart, vtkContext2D *p);   // the reference picks (below)
+
 class XYChart : public vtkChartXY {
 public:
 	static XYChart *New();
@@ -1463,6 +1892,8 @@ public:
 	XYPlot *owner = nullptr;                            // set right after New(); never reparented
 	bool Paint(vtkContext2D *painter) override {
 		const bool r = vtkChartXY::Paint(painter);
+		if (owner && xyAlive(owner)) xyMagPaint(owner, this, painter);    // chron names, isochron picks
+		if (owner && xyAlive(owner)) xyRefPaint(owner, this, painter);    // the reference pick markers
 		if (owner && xyAlive(owner)) xyMarkPaint(owner, this, painter);   // the curve marker, on top
 		return r;
 	}
@@ -1584,6 +2015,7 @@ static vtkSmartPointer<vtkChartXY> xyMakeChart(XYPlot *s) {
 }
 
 static void xySwitchPage(XYPlot *s, int idx);
+static void xyMagSyncUi(XYPlot *s);                      // magnetic tools (below)
 
 // Append a new page (its own chart + empty series list). Inserts a tab. If `switchTo`, makes it
 // current. Returns the new page index.
@@ -1621,6 +2053,8 @@ static void xySwitchPage(XYPlot *s, int idx) {
 	pg.lastLo = std::numeric_limits<double>::quiet_NaN();   // force a tick recompute for this page
 	pg.lastHi = std::numeric_limits<double>::quiet_NaN();
 	xyRefreshTicks(s);
+	xySyncMiscMenu(s);                                       // log / time items show THIS page's
+	xyMagSyncUi(s);                                          // the bar strip + controls show THIS page's
 	if (s->widget && s->widget->renderWindow())
 		s->widget->renderWindow()->Render();
 }
@@ -1638,6 +2072,7 @@ static void xyDuplicatePage(XYPlot *s, int idx) {
 	dst.chart->GetAxis(vtkAxis::BOTTOM)->SetTitle(src.chart->GetAxis(vtkAxis::BOTTOM)->GetTitle());
 	dst.chart->GetAxis(vtkAxis::LEFT)->SetTitle(src.chart->GetAxis(vtkAxis::LEFT)->GetTitle());
 	dst.xTimeFmt = src.xTimeFmt;
+	dst.mag = src.mag;                                   // the copied series keep their mag roles, so the state goes too
 	for (const XYSeries &so : src.series) {
 		XYSeries se = so;                                // copies style/name; deep-copy the table next
 		se.table = vtkSmartPointer<vtkTable>::New();
@@ -1740,6 +2175,7 @@ static void xyCopyToPage(XYPlot *s, int srcIdx, int dstIdx) {
 	XYPage &dst = s->pages[dstIdx];
 	for (const XYSeries &so : src.series) {
 		XYSeries se = so;                                // copies style/name; deep-copy the table next
+		se.magRole = 0;                                  // its mag role belongs to the SOURCE page's state
 		se.table = vtkSmartPointer<vtkTable>::New();
 		se.table->DeepCopy(so.table);
 		vtkPlot *pl = dst.chart->AddPlot(se.kind == 1 ? vtkChart::BAR : vtkChart::LINE);
@@ -1851,6 +2287,1301 @@ static std::function<void(const QPoint &)> xyParkedMenu(XYPlot *p) {
 			p->win->close();            // WA_DeleteOnClose -> destroyed -> the row goes with it
 		}
 	};
+}
+
+// ---- magnetic anomaly modelling (ecran's "Geomagnetic bar code" tools) ----------------------------
+// The toolbar toggle (ecran's isocs_CB) shows a control strip under the chart — Start / End age,
+// Create Mag Bar, Synthetic RTP, Parameters…, the contamination slider, the isochron age and Fit — and,
+// once a bar exists, the bar code strip over the chart. The maths is Julia's (xymag.jl, reached through
+// the Analysis callback with "mag…" ops); its results come back through gmtvtk_xyplot_mag_set_*. The
+// picks — red star, first-guess circle, fitted and pinned isochron lines, chron names — are drawn by
+// the chart itself (xyMagPaint), so they follow zoom and pan.
+
+// Requests that go to Julia from this window and must be answered in front of the user when they fail
+// (the action-errors-pop-up rule): xymag.jl / xysession.jl hand the message back through
+// gmtvtk_xyplot_request_failed into `reqErr`, and the ONE door below shows it. The busy notice is raised
+// at the same door (No-dead-time law).
+static bool xyRequest(XYPlot *s, const QString &op, int sel, const char *busy, bool fileCb,
+                      const QString &path) {
+	if (!xyAlive(s)) return false;
+	if (fileCb ? !g_juliaXY : !g_juliaXYAna) {
+		QMessageBox::warning(s->win, "X,Y plot", "Not wired: the Julia side of the X,Y tool is not loaded.");
+		return false;
+	}
+	s->reqErr.clear();
+	if (busy) showBusyDialog(busy);
+	if (fileCb) g_juliaXY(s, op.toUtf8().constData(), sel, path.toUtf8().constData());
+	else        g_juliaXYAna(s, op.toUtf8().constData(), sel);
+	if (busy) closeBusyDialog();
+	if (!xyAlive(s)) return false;
+	if (!s->reqErr.isEmpty()) {
+		QMessageBox::warning(s->win, "X,Y plot", s->reqErr);
+		return false;
+	}
+	return true;
+}
+
+// The page's series playing `role` (XYSeries::magRole), -1 if none.
+static int xyMagSeries(const XYPage &pg, int role) {
+	for (int i = 0; i < (int)pg.series.size(); ++i)
+		if (pg.series[i].magRole == role) return i;
+	return -1;
+}
+
+// A bar-code age -> data x and back. The bar spans the measured profile's first..last x, from the
+// start age to the end age — reversed (old -> young, ecran's XDir 'reverse') when the start is older.
+static bool xyMagAgeToX(const XYMag &m, double age, double &x) {
+	const double lo = std::min(m.ageStart, m.ageEnd), hi = std::max(m.ageStart, m.ageEnd);
+	if (!m.barOn || !(hi > lo)) return false;
+	double f = (age - lo) / (hi - lo);
+	if (m.ageStart > m.ageEnd) f = 1.0 - f;
+	x = m.barX0 + f * (m.barX1 - m.barX0);
+	return true;
+}
+static bool xyMagXToAge(const XYMag &m, double x, double &age) {
+	const double lo = std::min(m.ageStart, m.ageEnd), hi = std::max(m.ageStart, m.ageEnd);
+	if (!m.barOn || !(hi > lo) || m.barX1 == m.barX0) return false;
+	double f = (x - m.barX0) / (m.barX1 - m.barX0);
+	if (m.ageStart > m.ageEnd) f = 1.0 - f;
+	age = lo + f * (hi - lo);
+	return true;
+}
+
+// Data x <-> logical px across the chart widget — and across the bar strip above it, which shares its
+// left edge (both sit in the same zero-margin column).
+static double xyMagXToPx(XYPlot *s, double x) {
+	return xyAxisToScene(xyCur(s).chart->GetAxis(vtkAxis::BOTTOM), x, 0) / s->widget->devicePixelRatioF();
+}
+static double xyMagPxToX(XYPlot *s, double px) {
+	vtkAxis *ax = xyCur(s).chart->GetAxis(vtkAxis::BOTTOM);
+	const float *p1 = ax->GetPoint1(), *p2 = ax->GetPoint2();
+	const double w = p2[0] - p1[0];
+	if (w == 0.0) return ax->GetMinimum();
+	return ax->GetMinimum() + (px * s->widget->devicePixelRatioF() - p1[0]) / w * (ax->GetMaximum() - ax->GetMinimum());
+}
+
+static void xyMagRender(XYPlot *s) {
+	if (s->magBar) s->magBar->update();
+	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+}
+
+// One isochron of the Parameters dialog's list: "age[_pad[_stretch]]", ecran's MIR_MAGPROF ISOC syntax.
+// pad (Ma either side of the age) defaults to 1.5, stretch (max % the synthetic is expanded/shrunk
+// while correlating) to 0.
+struct XYIsoc { QString age; double pad = 1.5; int stretch = 0; };
+static std::vector<XYIsoc> xyMagIsocList(const std::string &txt) {
+	std::vector<XYIsoc> out;
+	for (const QString &tok : QString::fromStdString(txt).split(QRegularExpression("[\\s,;]+"), Qt::SkipEmptyParts)) {
+		const QStringList p = tok.split('_');
+		bool ok = false;
+		p[0].toDouble(&ok);
+		if (!ok) continue;
+		XYIsoc it;
+		it.age = p[0];
+		if (p.size() >= 2) it.pad = p[1].toDouble();
+		if (p.size() >= 3) it.stretch = (int)p[2].toDouble();
+		out.push_back(it);
+	}
+	return out;
+}
+
+// The age the fit works on: the list's choice when there is a list, else the typed one. NaN = none.
+static double xyMagChosenAge(const XYMag &m, double *pad = nullptr, int *stretch = nullptr) {
+	const std::vector<XYIsoc> list = xyMagIsocList(m.isocs);
+	if (!list.empty()) {
+		if (m.ageIdx <= 0 || m.ageIdx > (int)list.size()) return std::numeric_limits<double>::quiet_NaN();
+		const XYIsoc &it = list[m.ageIdx - 1];
+		if (pad) *pad = it.pad;
+		if (stretch) *stretch = it.stretch;
+		return it.age.toDouble();
+	}
+	if (pad) *pad = 1.5;                       // ecran's default pad, and its 15% stretch for a typed age
+	if (stretch) *stretch = 15;
+	return m.ageTyped;
+}
+
+// popup_ageFit_CB / edit_ageFit_CB: the red star on the synthetic, at the point whose age is closest
+// to the chosen one.
+static void xyMagPlaceStar(XYPlot *s) {
+	XYPage &pg = xyCur(s);
+	XYMag &m = pg.mag;
+	const double age = xyMagChosenAge(m);
+	const int syn = xyMagSeries(pg, 2);
+	m.starIdx = -1;
+	if (std::isnan(age) || syn < 0 || m.ageLine.empty()) return;
+	double best = std::numeric_limits<double>::infinity();
+	for (int i = 0; i < (int)m.ageLine.size(); ++i)
+		if (std::abs(m.ageLine[i] - age) < best) { best = std::abs(m.ageLine[i] - age); m.starIdx = i; }
+}
+
+static void xyMagRerun(XYPlot *s);            // below
+
+// Fill the widgets from the CURRENT page's state and show what applies (isocs_CB's visibility rules:
+// Synthetic RTP once a bar exists, slider/age/Fit once a synthetic exists, the age LIST when the
+// parameters carry isochrons, the age BOX otherwise).
+static void xyMagSyncUi(XYPlot *s) {
+	if (!xyAlive(s) || !s->magCtl || !s->magBar || !s->actMag || s->pages.empty()) return;
+	XYPage &pg = xyCur(s);
+	XYMag &m = pg.mag;
+	const bool tool = s->actMag->isChecked();
+	const bool syn = xyMagSeries(pg, 2) >= 0;
+	const std::vector<XYIsoc> list = xyMagIsocList(m.isocs);
+	auto num = [](double v) { return std::isnan(v) ? QString() : QString::number(v, 'g', 10); };
+	s->magSyncing = true;
+	s->magCtl->setVisible(tool);
+	s->magBar->setVisible(tool && m.barOn);
+	s->magStart->setText(num(m.ageStart));
+	s->magEnd->setText(num(m.ageEnd));
+	s->magBtnSynth->setVisible(m.barOn);
+	s->magBtnParams->setVisible(m.barOn);
+	s->magSlider->setVisible(syn);
+	s->magSlider->setValue(qRound(m.contam * 100));
+	s->magBtnFit->setVisible(syn);
+	s->magAgeCombo->setVisible(syn && !list.empty());
+	s->magAgeEdit->setVisible(syn && list.empty());
+	s->magAgeCombo->clear();
+	s->magAgeCombo->addItem("");                   // ecran's popup starts with an empty entry
+	for (const XYIsoc &it : list) s->magAgeCombo->addItem(it.age);
+	if (m.ageIdx > (int)list.size()) m.ageIdx = 0;
+	s->magAgeCombo->setCurrentIndex(m.ageIdx);
+	s->magAgeEdit->setText(num(m.ageTyped));
+	s->magSyncing = false;
+	if (s->magBar) s->magBar->update();
+	// Its track was redrawn while another page was showing: re-run now it is shown (not from inside
+	// whatever switched to it).
+	if (m.rerun) QTimer::singleShot(0, s->win, [s] { if (xyAlive(s) && xyCur(s).mag.rerun) xyMagRerun(s); });
+}
+
+// "Create Mag Bar" (push_magBar_CB). The measured profile is the Object Manager's current curve (a
+// plain line), else the one already chosen; the bar spans its first..last x.
+static void xyMagCreateBar(XYPlot *s) {
+	XYPage &pg = xyCur(s);
+	XYMag &m = pg.mag;
+	if (std::isnan(m.ageStart) || std::isnan(m.ageEnd) || m.ageStart == m.ageEnd) {
+		QMessageBox::warning(s->win, "Geomagnetic bar code", "Take a second look to what you are asking for. Wrong ages");
+		return;
+	}
+	int sel = xyCurrentSel(s);
+	if (sel >= 0 && (pg.series[sel].magRole >= 2 || pg.series[sel].kind != 0 || pg.series[sel].nowCross)) sel = -1;
+	if (sel < 0) sel = xyMagSeries(pg, 1);
+	if (sel < 0 || !pg.series[sel].table || pg.series[sel].table->GetNumberOfRows() < 2) {
+		QMessageBox::warning(s->win, "Geomagnetic bar code", "Select the measured anomaly profile in the Object Manager first.");
+		return;
+	}
+	for (XYSeries &se : pg.series) if (se.magRole == 1) se.magRole = 0;
+	pg.series[sel].magRole = 1;
+	vtkTable *t = pg.series[sel].table;
+	m.barX0 = t->GetValue(0, 0).ToDouble();
+	m.barX1 = t->GetValue(t->GetNumberOfRows() - 1, 0).ToDouble();
+	xyRequest(s, QString("magbar:aS=%1:aE=%2:stretch=%3").arg(m.ageStart, 0, 'g', 17).arg(m.ageEnd, 0, 'g', 17)
+	             .arg(m.barStretch, 0, 'g', 17), sel, nullptr);
+}
+
+// A value inside a ":"-joined op string: '%' and ':' escaped (a Windows path carries a ':'). xymag.jl's
+// `_mag_unesc` undoes it.
+static QString xyOpEsc(const QString &v) {
+	QString o = v;
+	return o.replace("%", "%25").replace(":", "%3A");
+}
+
+// "Synthetic RTP" (push_syntheticRTP_CB) — and, with only `contam` changed, the slider (slider_filter_CB).
+// `quiet`: an automatic re-run (the track was redrawn) — a wait cursor, not a modal busy box over a drag.
+static void xyMagSynth(XYPlot *s, bool quiet = false) {
+	XYPage &pg = xyCur(s);
+	XYMag &m = pg.mag;
+	const int sel = xyMagSeries(pg, 1);
+	if (!m.barOn || m.bStart.empty() || sel < 0) {
+		if (!quiet) QMessageBox::warning(s->win, "Geomagnetic bar code", "Create the bar code first: it sets the ages the profile spans.");
+		return;
+	}
+	auto n = [](double v) { return std::isnan(v) ? QString() : QString::number(v, 'g', 17); };
+	const QString op = QString("magsynth:aS=%1:aE=%2:x0=%3:rev=%4:unit=%5:speed=%6:pdir=%7:sdir=%8:depth=%9"
+	                           ":dec=%10:inc=%11:contam=%12:bat=%13:dtype=%14")
+		.arg(n(m.ageStart), n(m.ageEnd), n(m.bStart.front()), QString::number(m.ageStart > m.ageEnd ? 1 : 0),
+		     QString::number(m.unit), n(m.speed), n(m.profDir), n(m.spreadDir), n(m.depth))
+		.arg(n(m.dec), n(m.inc), n(m.contam), xyOpEsc(QString::fromStdString(m.batFile)),
+		     xyOpEsc(prefDistAzimType()));        // the track is measured like everything else (Preferences)
+	if (quiet) {
+		QApplication::setOverrideCursor(Qt::WaitCursor);
+		xyRequest(s, op, sel, nullptr);
+		QApplication::restoreOverrideCursor();
+	}
+	else {
+		xyRequest(s, op, sel, "Computing the synthetic magnetic anomaly…");
+	}
+}
+
+// "Fit" (push_ageFit_CB): the synthetic chunk around the chosen age, moved to its best correlation
+// with the measured profile.
+static void xyMagFit(XYPlot *s) {
+	XYPage &pg = xyCur(s);
+	XYMag &m = pg.mag;
+	const int dat = xyMagSeries(pg, 1), syn = xyMagSeries(pg, 2);
+	if (dat < 0 || syn < 0) {
+		QMessageBox::warning(s->win, "Geomagnetic bar code", "Compute the synthetic profile first.");
+		return;
+	}
+	double pad = 1.5;
+	int stretch = 15;
+	const double age = xyMagChosenAge(m, &pad, &stretch);
+	if (std::isnan(age)) {
+		QMessageBox::warning(s->win, "Geomagnetic bar code", "Please, fit what? Your anniversary? How many Ma?");
+		return;
+	}
+	xyMagPlaceStar(s);
+	if (m.starIdx < 0) return;
+	const QString op = QString("magfit:syn=%1:age=%2:pad=%3:stretch=%4:rev=%5:star=%6:guess=%7")
+		.arg(syn).arg(age, 0, 'g', 17).arg(pad, 0, 'g', 17).arg(stretch)
+		.arg(m.ageStart > m.ageEnd ? 1 : 0).arg(m.starIdx).arg(m.guessIdx);
+	xyRequest(s, op, dat, "Fitting the isochron by correlation…");
+}
+
+// Replace a series' data in place (its plot, style and Object Manager row stay).
+static void xyMagSetData(XYPlot *s, XYSeries &se, const double *x, const double *y, int n) {
+	se.table->SetNumberOfRows(n);
+	for (int i = 0; i < n; ++i) {
+		se.table->SetValue(i, 0, x[i]);
+		se.table->SetValue(i, 1, (float)y[i]);
+	}
+	se.table->Modified();
+	xyCur(s).chart->RecalculateBounds();
+}
+
+// Julia's answers.
+static void xyMagSetBar(XYPlot *s, const double *a0, const double *a1, int n, const char *labels,
+                        double aS, double aE) {
+	XYMag &m = xyCur(s).mag;
+	m.bStart.assign(a0, a0 + n);
+	m.bEnd.assign(a1, a1 + n);
+	m.bTxt.clear();
+	for (const QString &t : QString::fromUtf8(labels ? labels : "").split(QChar(0x1f)))
+		m.bTxt.push_back(t.toStdString());
+	m.bTxt.resize(n, "a");
+	m.ageStart = aS;
+	m.ageEnd = aE;
+	m.barOn = n > 0;
+	xyMagSyncUi(s);
+	xyMagRender(s);
+}
+static void xyMagSetSynth(XYPlot *s, const double *x, const double *y, const double *ageLine, int n, double speed) {
+	XYPage &pg = xyCur(s);
+	int k = xyMagSeries(pg, 2);
+	if (k >= 0) {
+		xyMagSetData(s, pg.series[k], x, y, n);
+	}
+	else {
+		k = xyAddSeries(s, x, y, n, "Synthetic RTP", 1.0, 0.0, 0.0, 1.5, -1, -1, -1.0);
+		if (k >= 0) xyCur(s).series[k].magRole = 2;
+	}
+	XYMag &m = xyCur(s).mag;
+	m.ageLine.assign(ageLine, ageLine + n);
+	m.lastSpeed = speed;
+	xyMagPlaceStar(s);                         // the chosen age keeps its star on the new curve
+	xyMagSyncUi(s);
+	xyMagRender(s);
+}
+static void xyMagSetFit(XYPlot *s, const double *x, const double *y, int n, double ageX, const char *name) {
+	XYPage &pg = xyCur(s);
+	const std::string nm = (name && name[0]) ? name : "Fit";
+	int k = xyMagSeries(pg, 3);
+	if (k >= 0) {
+		xyMagSetData(s, pg.series[k], x, y, n);
+		pg.series[k].name = nm;
+		if (pg.series[k].plot) pg.series[k].plot->SetLabel(nm);
+		xyRebuildObjMgr(s);
+	}
+	else {
+		k = xyAddSeries(s, x, y, n, nm.c_str(), 0.0, 0.0, 1.0, 1.5, /*DASH*/2, -1, -1.0);
+		if (k >= 0) xyCur(s).series[k].magRole = 3;
+	}
+	xyCur(s).mag.ageLineX = ageX;
+	xyMagRender(s);
+}
+
+// pinpointLine: the fitted isochron becomes a fixed grey line, and the next fit draws a new one.
+static void xyMagPin(XYPlot *s) {
+	XYMag &m = xyCur(s).mag;
+	if (std::isnan(m.ageLineX)) return;
+	if (std::find(m.pinned.begin(), m.pinned.end(), m.ageLineX) == m.pinned.end()) m.pinned.push_back(m.ageLineX);
+	std::sort(m.pinned.begin(), m.pinned.end());
+	m.ageLineX = std::numeric_limits<double>::quiet_NaN();
+	xyMagRender(s);
+}
+
+// ecran's freshFig == false path: the measured track changed, so the bar spans its new x, the old fit
+// (dashed chunk + its age line) goes, and the synthetic + the star are computed again on it.
+static void xyMagRerun(XYPlot *s) {
+	XYPage &pg = xyCur(s);
+	XYMag &m = pg.mag;
+	m.rerun = false;
+	const int dat = xyMagSeries(pg, 1);
+	if (dat < 0 || !m.barOn) return;
+	vtkTable *t = pg.series[dat].table;
+	if (!t || t->GetNumberOfRows() < 2) return;
+	m.barX0 = t->GetValue(0, 0).ToDouble();
+	m.barX1 = t->GetValue(t->GetNumberOfRows() - 1, 0).ToDouble();
+	m.ageLineX = std::numeric_limits<double>::quiet_NaN();
+	m.guessIdx = -1;
+	const int fit = xyMagSeries(pg, 3);
+	if (fit >= 0) xyDeleteSeries(s, fit);
+	if (xyMagSeries(xyCur(s), 2) >= 0) xyMagSynth(s, true);
+	xyMagSyncUi(s);
+	xyMagRender(s);
+}
+
+// The 3-D profile this window's linked curve came from was redrawn (ProfilePanel data listener): the
+// curve takes the new samples and track at once; the magnetic tools re-run once the drag settles.
+static void xyProfileUpdated(XYPlot *p) {
+	if (!xyAlive(p) || !p->markPanel || p->markLinkPage < 0 || p->markLinkPage >= (int)p->pages.size()) return;
+	XYPage &pg = p->pages[p->markLinkPage];
+	if (p->markLinkSel < 0 || p->markLinkSel >= (int)pg.series.size()) return;
+	const std::vector<double> &X = p->markPanel->seriesX(), &Y = p->markPanel->seriesY();
+	if (X.size() < 2 || Y.size() != X.size()) return;
+	XYSeries &se = pg.series[p->markLinkSel];
+	se.table->SetNumberOfRows((vtkIdType)X.size());
+	for (size_t i = 0; i < X.size(); ++i) {
+		se.table->SetValue((vtkIdType)i, 0, X[i]);
+		se.table->SetValue((vtkIdType)i, 1, (float)Y[i]);
+	}
+	se.table->Modified();
+	int g = -1;
+	if (p->markPanel->track(se.trackX, se.trackY, g)) se.trackGeog = g;
+	else { se.trackX.clear(); se.trackY.clear(); se.trackGeog = -1; }
+	pg.chart->RecalculateBounds();
+	if (se.magRole == 1 && pg.mag.barOn) {
+		pg.mag.rerun = true;
+		if (p->markLinkPage == p->curPageIdx) {
+			if (!p->profTimer) {
+				p->profTimer = new QTimer(p->win);
+				p->profTimer->setSingleShot(true);
+				QObject::connect(p->profTimer, &QTimer::timeout, p->win, [p] {
+					if (xyAlive(p) && xyCur(p).mag.rerun) xyMagRerun(p); });
+			}
+			p->profTimer->start(400);
+		}
+	}
+	xyMagRender(p);
+}
+
+// The model parameters — what ecran reads from OPTcontrol.txt's MIR_MAGPROF lines (DEC, INC, SPEED,
+// SPREADIR, ISOC), plus the layer depth and the profile's distance unit that ecran takes from its
+// caller. A synthetic already standing is recomputed: it must describe the model now in force.
+static void xyMagParams(XYPlot *s) {
+	XYMag &m = xyCur(s).mag;
+	QDialog d(s->win);
+	d.setWindowTitle("Magnetic model parameters");
+	QFormLayout *f = new QFormLayout(&d);
+	auto num = [&d](double v, const QString &tip) {
+		QLineEdit *e = new QLineEdit(std::isnan(v) ? QString() : QString::number(v, 'g', 10), &d);
+		e->setToolTip(tip);
+		return e;
+	};
+	QLineEdit *eDec   = num(m.dec, "Declination of the magnetization (degrees).");
+	QLineEdit *eInc   = num(m.inc, "Inclination of the magnetization (degrees). 90 with declination 0 is the reduction to the pole.");
+	QLineEdit *eSpeed = num(m.speed > 0 ? m.speed : std::numeric_limits<double>::quiet_NaN(),
+		"FULL spreading rate in cm/yr. Empty: twice the profile length over the bar code's age span.");
+	QLineEdit *ePdir  = num(m.profDir, "Azimuth of the profile (degrees clockwise from north).");
+	QLineEdit *eSdir  = num(m.spreadDir, "Spreading direction (degrees). Empty: the profile azimuth, i.e. no obliquity.");
+	QLineEdit *eDepth = num(m.depth, "Depth of the top of the magnetized layer (km). The layer is 0.5 km thick.");
+	QComboBox *cUnit = new QComboBox(&d);
+	cUnit->addItems({ "m", "km", "NM" });
+	cUnit->setCurrentIndex(std::clamp(m.unit, 0, 2));
+	cUnit->setToolTip("Unit of the profile's distance (its X). Not used when the profile carries a lon/lat "
+	                  "track: the distance is then measured on the track itself, geodesically.");
+	// The measured profile's own track, when it carries one (a profile from the 3-D viewer): its azimuth
+	// is then read off the track (ecran: azimuth_geo of the first and last points) and a bathymetry grid
+	// can be sampled along it (ecran's BAT).
+	const int dat = xyMagSeries(xyCur(s), 1);
+	const bool hasTrack = dat >= 0 && xyCur(s).series[dat].trackGeog >= 0;
+	if (hasTrack) {
+		ePdir->setEnabled(false);
+		ePdir->setText("(from the track)");
+		if (xyCur(s).series[dat].trackGeog == 1) cUnit->setEnabled(false);   // distance measured on the track
+	}
+	QLineEdit *eBat = new QLineEdit(QString::fromStdString(m.batFile), &d);
+	eBat->setToolTip("A bathymetry grid, sampled along the profile's track for the depth of the magnetized "
+	                 "layer (instead of the constant depth above). Needs a profile drawn in the 3-D viewer.");
+	QPushButton *bBat = new QPushButton("…", &d);
+	bBat->setAutoDefault(false);
+	bBat->setFixedWidth(28);
+	QObject::connect(bBat, &QPushButton::clicked, &d, [&d, eBat] {
+		const QString fn = QFileDialog::getOpenFileName(&d, "Bathymetry grid", prefStartDir(),
+			"Grids (*.grd *.nc *.tif *.tiff *.img);;All files (*)");
+		if (!fn.isEmpty()) { rememberStartDir(fn); eBat->setText(fn); }
+	});
+	QWidget *batRow = new QWidget(&d);
+	QHBoxLayout *batLay = new QHBoxLayout(batRow);
+	batLay->setContentsMargins(0, 0, 0, 0);
+	batLay->addWidget(eBat, 1);
+	batLay->addWidget(bBat, 0);
+	batRow->setEnabled(hasTrack);
+	QLineEdit *eStretch = num(m.barStretch, "Stretch (> 1) or shrink (< 1) the bar code's bricks, to simulate an "
+	                                        "oblique profile and/or oblique spreading. 1 = none.");
+	QLineEdit *eIso = new QLineEdit(QString::fromStdString(m.isocs), &d);
+	eIso->setToolTip("Isochrons to fit, separated by spaces: age[_pad[_stretch]]. pad = Ma either side of the age "
+	                 "the correlation looks at (1.5 when omitted); stretch = the largest % the synthetic is "
+	                 "expanded or shrunk while correlating (0 when omitted). Empty: type one age at a time.");
+	f->addRow("Declination", eDec);
+	f->addRow("Inclination", eInc);
+	f->addRow("Full spreading rate (cm/yr)", eSpeed);
+	f->addRow("Profile azimuth", ePdir);
+	f->addRow("Spreading direction", eSdir);
+	f->addRow("Layer top depth (km)", eDepth);
+	f->addRow("Bathymetry grid", batRow);
+	f->addRow("Distance unit", cUnit);
+	f->addRow("Bar code stretch", eStretch);
+	f->addRow("Isochrons to fit", eIso);
+	QDialogButtonBox *bb = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &d);
+	f->addRow(bb);
+	QObject::connect(bb, &QDialogButtonBox::accepted, &d, &QDialog::accept);
+	QObject::connect(bb, &QDialogButtonBox::rejected, &d, &QDialog::reject);
+	wrapTooltips(&d);
+	if (d.exec() != QDialog::Accepted || !xyAlive(s)) return;
+	auto get = [](QLineEdit *e, double def) {
+		bool ok = false;
+		const double v = e->text().trimmed().toDouble(&ok);
+		return ok ? v : def;
+	};
+	XYMag &mm = xyCur(s).mag;
+	mm.dec = get(eDec, mm.dec);
+	mm.inc = get(eInc, mm.inc);
+	mm.speed = std::max(0.0, get(eSpeed, 0.0));
+	if (!hasTrack) mm.profDir = get(ePdir, mm.profDir);
+	mm.spreadDir = get(eSdir, std::numeric_limits<double>::quiet_NaN());
+	mm.depth = get(eDepth, mm.depth);
+	mm.unit = cUnit->currentIndex();
+	mm.batFile = eBat->text().trimmed().toStdString();
+	const double st = get(eStretch, 1.0);
+	const bool stretchChanged = st > 0 && st != mm.barStretch;
+	if (st > 0) mm.barStretch = st;
+	if (stretchChanged && mm.barOn) {          // the bricks move: the bar is made again (push_magBar_CB)
+		xyRequest(s, QString("magbar:aS=%1:aE=%2:stretch=%3").arg(mm.ageStart, 0, 'g', 17)
+		             .arg(mm.ageEnd, 0, 'g', 17).arg(mm.barStretch, 0, 'g', 17), xyMagSeries(xyCur(s), 1), nullptr);
+	}
+	const std::string iso = eIso->text().trimmed().toStdString();
+	if (iso != mm.isocs) { mm.isocs = iso; mm.ageIdx = 0; mm.starIdx = -1; }
+	xyMagSyncUi(s);
+	if (xyMagSeries(xyCur(s), 2) >= 0) xyMagSynth(s);
+	xyMagRender(s);
+}
+
+// The bar code strip over the chart (ecran's axes2): black normal-polarity bricks on white, spanning
+// the measured profile under the chart's own x mapping, so it follows zoom and pan. Double-click
+// drops a red "pico" marker (bdn_MagBar) with a line down through the plot; drag moves it; a
+// double-click on it removes it (bdn_pico).
+class XYMagBarStrip : public QWidget {
+public:
+	XYPlot *s = nullptr;
+	int drag = -1;
+	explicit XYMagBarStrip(XYPlot *sc, QWidget *parent = nullptr) : QWidget(parent), s(sc) {
+		setFixedHeight(22);
+		setObjectName("xyMagBar");
+	}
+protected:
+	bool span(double &a, double &b) const {
+		if (!xyAlive(s) || s->pages.empty() || !s->widget) return false;
+		vtkAxis *ax = xyCur(s).chart->GetAxis(vtkAxis::BOTTOM);
+		const double dpr = s->widget->devicePixelRatioF();
+		a = ax->GetPoint1()[0] / dpr;
+		b = ax->GetPoint2()[0] / dpr;
+		return b > a;
+	}
+	double halfW() const {
+		double a, b;
+		return span(a, b) ? std::max(2.0, 0.005 * (b - a)) : 2.0;   // ecran: 0.5% of the bar's span
+	}
+	double picoPx(double age) const {
+		double x;
+		return xyMagAgeToX(xyCur(s).mag, age, x) ? xyMagXToPx(s, x) : -1e9;
+	}
+	int picoAt(double px) const {
+		const std::vector<double> &pc = xyCur(s).mag.picos;
+		for (int i = 0; i < (int)pc.size(); ++i)
+			if (std::abs(picoPx(pc[i]) - px) <= halfW() + 2.0) return i;
+		return -1;
+	}
+	bool ageAt(double px, double &age) const {
+		const XYMag &m = xyCur(s).mag;
+		if (!xyMagXToAge(m, xyMagPxToX(s, px), age)) return false;
+		const double lo = std::min(m.ageStart, m.ageEnd), hi = std::max(m.ageStart, m.ageEnd);
+		age = std::clamp(age, lo, hi);           // don't get out of the bar code
+		return true;
+	}
+	void paintEvent(QPaintEvent *) override {
+		QPainter g(this);
+		g.fillRect(rect(), palette().window());
+		double a, b;
+		if (!span(a, b)) return;
+		const XYMag &m = xyCur(s).mag;
+		if (!m.barOn) return;
+		const QRectF box(a, 1.0, b - a, height() - 2.0);
+		g.fillRect(box, Qt::white);
+		g.save();
+		g.setClipRect(box);
+		for (size_t i = 0; i < m.bStart.size(); ++i) {
+			double x0, x1;
+			if (!xyMagAgeToX(m, m.bStart[i], x0) || !xyMagAgeToX(m, m.bEnd[i], x1)) continue;
+			const double p0 = xyMagXToPx(s, x0), p1 = xyMagXToPx(s, x1);
+			g.fillRect(QRectF(std::min(p0, p1), box.top(), std::max(1.0, std::abs(p1 - p0)), box.height()), Qt::black);
+		}
+		const double xw = halfW(), H = box.height(), yb = box.bottom();
+		g.setPen(QPen(Qt::black, 1));
+		g.setBrush(Qt::red);
+		for (double age : m.picos) {
+			const double px = picoPx(age);
+			QPolygonF st;
+			st << QPointF(px, yb) << QPointF(px - xw, yb - 0.32 * H) << QPointF(px - xw, yb - 0.8 * H)
+			   << QPointF(px + xw, yb - 0.8 * H) << QPointF(px + xw, yb - 0.32 * H);
+			g.drawPolygon(st);
+		}
+		g.restore();
+		g.setPen(QPen(Qt::black, 1));
+		g.setBrush(Qt::NoBrush);
+		g.drawRect(box);
+	}
+	void mouseDoubleClickEvent(QMouseEvent *e) override {
+		if (e->button() != Qt::LeftButton || !xyAlive(s)) return;
+		XYMag &m = xyCur(s).mag;
+		const int hit = picoAt(e->position().x());
+		double age;
+		if (hit >= 0) m.picos.erase(m.picos.begin() + hit);
+		else if (ageAt(e->position().x(), age)) m.picos.push_back(age);
+		drag = -1;
+		xyMagRender(s);
+	}
+	void mousePressEvent(QMouseEvent *e) override {
+		if (e->button() == Qt::LeftButton && xyAlive(s)) drag = picoAt(e->position().x());
+	}
+	void mouseMoveEvent(QMouseEvent *e) override {
+		if (drag < 0 || !xyAlive(s)) return;
+		XYMag &m = xyCur(s).mag;
+		double age;
+		if (drag < (int)m.picos.size() && ageAt(e->position().x(), age)) {
+			m.picos[drag] = age;
+			xyMagRender(s);
+		}
+	}
+	void mouseReleaseEvent(QMouseEvent *) override { drag = -1; }
+};
+
+// The picks, drawn by the chart at the end of its own paint (scene px, y up).
+static void xyMagPaint(XYPlot *s, vtkChartXY *chart, vtkContext2D *p) {
+	if (!s || s->pages.empty() || !s->widget) return;
+	XYPage *pg = nullptr;
+	for (auto &q : s->pages) if (q.chart.Get() == chart) { pg = &q; break; }
+	if (!pg) return;
+	const XYMag &m = pg->mag;
+	vtkAxis *ax = chart->GetAxis(vtkAxis::BOTTOM), *ay = chart->GetAxis(vtkAxis::LEFT);
+	const float x0 = ax->GetPoint1()[0], x1 = ax->GetPoint2()[0];
+	const float y0 = ay->GetPoint1()[1], y1 = ay->GetPoint2()[1];
+	const float dpr = (float)s->widget->devicePixelRatioF();
+	auto vline = [&](double x, unsigned char r, unsigned char g, unsigned char b, float w, int ltype) {
+		const double sx = xyAxisToScene(ax, x, 0);
+		if (!std::isfinite(sx) || sx < x0 - 0.5 || sx > x1 + 0.5) return;
+		p->GetPen()->SetColor(r, g, b, 255);
+		p->GetPen()->SetWidth(w * dpr);
+		p->GetPen()->SetLineType(ltype);
+		p->DrawLine((float)sx, y0, (float)sx, y1);
+		p->GetPen()->SetLineType(vtkPen::SOLID_LINE);
+	};
+	const bool tool = s->actMag && s->actMag->isChecked();
+	if (tool && m.barOn) {
+		// The chron names, at the top of the plot (ecran writes them in axes1 at ylim(2), 'top')
+		const bool rev = m.ageStart > m.ageEnd;
+		p->GetTextProp()->SetColor(0.0, 0.0, 0.0);
+		p->GetTextProp()->SetFontSize(11);
+		p->GetTextProp()->SetVerticalJustificationToTop();
+		if (rev) p->GetTextProp()->SetJustificationToRight();
+		else     p->GetTextProp()->SetJustificationToLeft();
+		for (size_t i = 0; i < m.bStart.size() && i < m.bTxt.size(); ++i) {
+			double x;
+			if (m.bTxt[i] == "a" || !xyMagAgeToX(m, m.bStart[i], x)) continue;
+			const double sx = xyAxisToScene(ax, x, 0);
+			if (sx < x0 - 0.5 || sx > x1 + 0.5) continue;
+			p->DrawString((float)sx + (rev ? -2.0f : 2.0f) * dpr, y1 - 2.0f * dpr, m.bTxt[i]);
+		}
+		for (double age : m.picos) {           // each pico's line down through the profile
+			double x;
+			if (xyMagAgeToX(m, age, x)) vline(x, 0, 0, 255, 1.0f, vtkPen::SOLID_LINE);
+		}
+	}
+	for (double x : m.pinned) vline(x, 179, 179, 179, 3.0f, vtkPen::SOLID_LINE);     // pinned isochrons
+	if (!std::isnan(m.ageLineX)) vline(m.ageLineX, 0, 0, 255, 1.0f, vtkPen::DASH_LINE);   // the fitted one
+	// the red star on the synthetic at the chosen age
+	const int syn = xyMagSeries(*pg, 2);
+	if (syn >= 0 && m.starIdx >= 0 && pg->series[syn].table && m.starIdx < pg->series[syn].table->GetNumberOfRows()) {
+		double x, y, sx, sy;
+		xyRowXY(pg->series[syn].table, m.starIdx, x, y);
+		if (xyDataToScene(*pg, x, y, sx, sy)) {
+			const float R = 7.0f * dpr, r = 2.8f * dpr;
+			float pts[22];
+			for (int k = 0; k < 10; ++k) {
+				const double a = vtkMath::Pi() / 2 + k * vtkMath::Pi() / 5;
+				const float rr = (k % 2) ? r : R;
+				pts[2 * k] = (float)sx + rr * (float)std::cos(a);
+				pts[2 * k + 1] = (float)sy + rr * (float)std::sin(a);
+			}
+			pts[20] = pts[0]; pts[21] = pts[1];
+			p->GetBrush()->SetColor(255, 0, 0, 255);
+			p->GetPen()->SetColor(255, 0, 0, 255);
+			for (int k = 0; k < 10; k += 2) {      // five kites, each convex: centre, inner, tip, inner
+				const int a = (k + 9) % 10, c = (k + 1) % 10;
+				float q[8] = { (float)sx, (float)sy, pts[2 * a], pts[2 * a + 1], pts[2 * k], pts[2 * k + 1], pts[2 * c], pts[2 * c + 1] };
+				p->DrawQuad(q);
+			}
+			p->GetPen()->SetColor(0, 0, 0, 255);
+			p->GetPen()->SetWidth(1.0f * dpr);
+			p->DrawPoly(pts, 11);
+		}
+	}
+	// the "Guide me" first guess on the measured profile
+	const int dat = xyMagSeries(*pg, 1);
+	if (dat >= 0 && m.guessIdx >= 0 && pg->series[dat].table && m.guessIdx < pg->series[dat].table->GetNumberOfRows()) {
+		double x, y, sx, sy;
+		xyRowXY(pg->series[dat].table, m.guessIdx, x, y);
+		if (xyDataToScene(*pg, x, y, sx, sy)) {
+			p->GetPen()->SetColor(0, 0, 0, 255);
+			p->GetPen()->SetWidth(1.0f * dpr);
+			p->GetBrush()->SetColor(0, 153, 0, 255);
+			p->DrawEllipse((float)sx, (float)sy, 4.0f * dpr, 4.0f * dpr);
+		}
+	}
+}
+
+// Mouse on the chart for the picks: right-click on the red star -> "Guide me", on the fitted isochron
+// -> "Pin-point me", on a pinned one -> "Delete me"; after "Guide me" the next left click on the
+// measured profile sets the first guess (setFirstGuessForCorrelation / add_firstGuesssMarker).
+// Installed after XYMarkFilter so it sees the press first; consumes only what is its own.
+class XYMagFilter : public QObject {
+public:
+	XYPlot *s = nullptr;
+	explicit XYMagFilter(XYPlot *sc, QObject *parent) : QObject(parent), s(sc) {}
+protected:
+	bool eventFilter(QObject *obj, QEvent *ev) override {
+		if (ev->type() != QEvent::MouseButtonPress || !s || !xyAlive(s) || s->pages.empty())
+			return QObject::eventFilter(obj, ev);
+		QMouseEvent *me = static_cast<QMouseEvent *>(ev);
+		XYPage &pg = xyCur(s);
+		XYMag &m = pg.mag;
+		double sx, sy;
+		xyQtToScene(s, me->position(), sx, sy);
+		const double dpr = s->widget->devicePixelRatioF();
+		if (s->magGuiding && me->button() == Qt::LeftButton) {
+			s->magGuiding = false;
+			s->widget->unsetCursor();
+			s->win->statusBar()->clearMessage();
+			const int dat = xyMagSeries(pg, 1);
+			int sel = -1;
+			double u = 0.0;
+			if (dat >= 0 && xyCurveNearest(pg, dat, sx, sy, 1e9, sel, u))
+				m.guessIdx = std::clamp((int)std::lround(u), 0, (int)pg.series[dat].table->GetNumberOfRows() - 1);
+			xyMagRender(s);
+			return true;
+		}
+		if (me->button() != Qt::RightButton) return QObject::eventFilter(obj, ev);
+		vtkAxis *ax = pg.chart->GetAxis(vtkAxis::BOTTOM), *ay = pg.chart->GetAxis(vtkAxis::LEFT);
+		const bool inY = sy >= ay->GetPoint1()[1] && sy <= ay->GetPoint2()[1];
+		int kind = 0, pin = -1;
+		const int syn = xyMagSeries(pg, 2);
+		if (syn >= 0 && m.starIdx >= 0 && m.starIdx < pg.series[syn].table->GetNumberOfRows()) {
+			double x, y, tx, ty;
+			xyRowXY(pg.series[syn].table, m.starIdx, x, y);
+			if (xyDataToScene(pg, x, y, tx, ty) && (tx - sx) * (tx - sx) + (ty - sy) * (ty - sy) <= 81.0 * dpr * dpr) kind = 1;
+		}
+		if (!kind && inY && !std::isnan(m.ageLineX) && std::abs(xyAxisToScene(ax, m.ageLineX, 0) - sx) <= 5.0 * dpr) kind = 2;
+		for (int i = 0; !kind && inY && i < (int)m.pinned.size(); ++i)
+			if (std::abs(xyAxisToScene(ax, m.pinned[i], 0) - sx) <= 5.0 * dpr) { kind = 3; pin = i; }
+		if (!kind) return QObject::eventFilter(obj, ev);
+		QMenu menu(s->win);
+		QAction *a = menu.addAction(kind == 1 ? "Guide me" : kind == 2 ? "Pin-point me" : "Delete me");
+		if (menu.exec(me->globalPosition().toPoint()) == a && xyAlive(s)) {
+			if (kind == 1) {
+				s->magGuiding = true;
+				s->widget->setCursor(Qt::CrossCursor);
+				s->win->statusBar()->showMessage("Click the measured profile where this isochron should roughly be");
+			}
+			else if (kind == 2) {
+				xyMagPin(s);
+			}
+			else {
+				XYMag &mm = xyCur(s).mag;
+				if (pin < (int)mm.pinned.size()) mm.pinned.erase(mm.pinned.begin() + pin);
+				xyMagRender(s);
+			}
+		}
+		return true;
+	}
+};
+
+// The control strip under the chart (ecran's uicontrols at the bottom of the figure).
+static QWidget *xyMagBuildCtl(XYPlot *s) {
+	QWidget *w = new QWidget();
+	w->setObjectName("xyMagCtl");
+	QHBoxLayout *l = new QHBoxLayout(w);
+	l->setContentsMargins(6, 2, 6, 2);
+	l->setSpacing(6);
+	auto edit = [w](const char *name, const char *tip) {
+		QLineEdit *e = new QLineEdit(w);
+		e->setObjectName(name);
+		e->setFixedWidth(55);
+		e->setToolTip(tip);
+		return e;
+	};
+	auto button = [w](const char *name, const char *text, const char *tip) {
+		QPushButton *b = new QPushButton(text, w);
+		b->setObjectName(name);
+		b->setAutoDefault(false);
+		if (tip) b->setToolTip(tip);
+		return b;
+	};
+	s->magStart = edit("xyMagStart", "Age at which we start plotting the bars. If older than \"End age\" "
+	                   "the bar code is plotted reversed. That is, from older to younger ages");
+	s->magEnd = edit("xyMagEnd", "Age at which we stop plotting the bars.");
+	s->magBtnBar = button("xyMagCreateBar", "Create Mag Bar", "Create a magnetic code bar on top of figure");
+	s->magBtnSynth = button("xyMagSynthetic", "Synthetic RTP", "Create a synthetic profile reduced to the Pole");
+	s->magBtnParams = button("xyMagParams", "Parameters…",
+		"The magnetic model: declination, inclination, spreading rate and direction, layer depth, "
+		"distance unit and the isochrons to fit");
+	s->magSlider = new QSlider(Qt::Horizontal, w);
+	s->magSlider->setObjectName("xyMagContam");
+	s->magSlider->setRange(50, 100);
+	s->magSlider->setFixedWidth(121);
+	s->magSlider->setToolTip("Contamination factor ([0.5 1])");
+	s->magAgeCombo = new QComboBox(w);
+	s->magAgeCombo->setObjectName("xyMagAgeList");
+	s->magAgeCombo->setMinimumWidth(70);
+	s->magAgeCombo->setToolTip("Isochron age to fit (the Parameters list)");
+	s->magAgeEdit = edit("xyMagAge", "Fit synthetic curve at this age by correlation to measured profile.");
+	s->magBtnFit = button("xyMagFit", "Fit", "Fit the synthetic at this age to the measured profile by correlation");
+	l->addWidget(new QLabel("Start age", w));
+	l->addWidget(s->magStart);
+	l->addWidget(new QLabel("End age", w));
+	l->addWidget(s->magEnd);
+	l->addWidget(s->magBtnBar);
+	l->addWidget(s->magBtnSynth);
+	l->addWidget(s->magBtnParams);
+	l->addWidget(s->magSlider);
+	l->addWidget(s->magAgeCombo);
+	l->addWidget(s->magAgeEdit);
+	l->addWidget(s->magBtnFit);
+	l->addStretch(1);
+	wrapTooltips(w);
+
+	QObject::connect(s->magStart, &QLineEdit::editingFinished, w, [s] {   // edit_startAge_CB
+		if (s->magSyncing || !xyAlive(s)) return;
+		bool ok = false;
+		double v = s->magStart->text().trimmed().toDouble(&ok);
+		if (!ok) { v = std::numeric_limits<double>::quiet_NaN(); s->magStart->clear(); }
+		else if (v < 0) { v = 0.0; s->magStart->setText("0"); }
+		xyCur(s).mag.ageStart = v;
+	});
+	QObject::connect(s->magEnd, &QLineEdit::editingFinished, w, [s] {     // edit_ageEnd_CB
+		if (s->magSyncing || !xyAlive(s)) return;
+		bool ok = false;
+		double v = s->magEnd->text().trimmed().toDouble(&ok);
+		if (!ok) { v = std::numeric_limits<double>::quiet_NaN(); s->magEnd->clear(); }
+		xyCur(s).mag.ageEnd = v;
+	});
+	QObject::connect(s->magBtnBar, &QPushButton::clicked, w, [s] { xyMagCreateBar(s); });
+	QObject::connect(s->magBtnSynth, &QPushButton::clicked, w, [s] { xyMagSynth(s); });
+	QObject::connect(s->magBtnParams, &QPushButton::clicked, w, [s] { xyMagParams(s); });
+	QObject::connect(s->magSlider, &QSlider::sliderReleased, w, [s] {   // slider_filter_CB
+		if (s->magSyncing || !xyAlive(s)) return;
+		xyCur(s).mag.contam = s->magSlider->value() / 100.0;
+		xyMagSynth(s);
+	});
+	QObject::connect(s->magAgeCombo, &QComboBox::currentIndexChanged, w, [s](int i) {   // popup_ageFit_CB
+		if (s->magSyncing || !xyAlive(s)) return;
+		XYMag &m = xyCur(s).mag;
+		m.ageIdx = std::max(0, i);
+		m.guessIdx = -1;                       // a new age: the old first guess means nothing
+		xyMagPlaceStar(s);
+		xyMagRender(s);
+	});
+	QObject::connect(s->magAgeEdit, &QLineEdit::editingFinished, w, [s] {   // edit_ageFit_CB
+		if (s->magSyncing || !xyAlive(s)) return;
+		bool ok = false;
+		const double v = std::abs(s->magAgeEdit->text().trimmed().toDouble(&ok));
+		if (!ok) s->magAgeEdit->clear();
+		XYMag &m = xyCur(s).mag;
+		m.ageTyped = ok ? v : std::numeric_limits<double>::quiet_NaN();
+		m.guessIdx = -1;
+		xyMagPlaceStar(s);
+		xyMagRender(s);
+	});
+	QObject::connect(s->magBtnFit, &QPushButton::clicked, w, [s] { xyMagFit(s); });
+	w->setVisible(false);
+	return w;
+}
+
+// The toolbar icon: a little bar code.
+static QIcon xyMagIcon() {
+	QPixmap pm(18, 18);
+	pm.fill(Qt::transparent);
+	QPainter g(&pm);
+	g.fillRect(QRect(1, 4, 16, 10), Qt::white);
+	const int bars[][2] = { { 1, 2 }, { 4, 1 }, { 6, 3 }, { 11, 1 }, { 13, 3 } };
+	for (const auto &b : bars) g.fillRect(QRect(b[0], 4, b[1], 10), Qt::black);
+	g.setPen(QPen(Qt::black, 1));
+	g.drawRect(QRect(1, 4, 15, 9));
+	return QIcon(pm);
+}
+
+// ---- Reference a curve to another (ecran's pick_onLines2reference / add_refMarkers / do_reference) ----
+// Two curves of the same thing on different x scales: points are picked ALTERNATELY on the two, and
+// "Reference me" stretches the first, piece by piece, so each of its picked points lands on the x of
+// its partner on the second. The stretching is Julia's (xyanalysis.jl `_xy_reference`, "reference:" op).
+
+// ecran's get_pointOnLine: the row of curve `k` nearest the click, looking only at points within
+// 1/20 of the plot width either side of it, distance measured in plot-size units on both axes.
+// Returns -1 when the curve has none there; `dist` is that normalized distance.
+static int xyRefNearest(XYPlot *s, int k, double sx, double sy, double &dist) {
+	XYPage &pg = xyCur(s);
+	dist = std::numeric_limits<double>::infinity();
+	if (k < 0 || k >= (int)pg.series.size() || !pg.series[k].table) return -1;
+	vtkAxis *ax = pg.chart->GetAxis(vtkAxis::BOTTOM), *ay = pg.chart->GetAxis(vtkAxis::LEFT);
+	const double W = std::abs((double)ax->GetPoint2()[0] - ax->GetPoint1()[0]);
+	const double H = std::abs((double)ay->GetPoint2()[1] - ay->GetPoint1()[1]);
+	if (!(W > 0) || !(H > 0)) return -1;
+	vtkTable *t = pg.series[k].table;
+	int best = -1;
+	for (vtkIdType r = 0; r < t->GetNumberOfRows(); ++r) {
+		double x, y, px, py;
+		xyRowXY(t, r, x, y);
+		if (!xyDataToScene(pg, x, y, px, py) || std::abs(px - sx) > W / 20) continue;
+		const double d = std::hypot((px - sx) / W, (py - sy) / H);
+		if (d < dist) { dist = d; best = (int)r; }
+	}
+	return best;
+}
+
+// add_refMarkers: a click goes to the nearer of the two curves. A NEW marker while the two counts stay
+// within one of each other and the click is on the other curve than the last one; otherwise it
+// REPLACES the last marker on that curve (a corrected pick).
+static void xyRefClick(XYPlot *s, double sx, double sy) {
+	XYPage &pg = xyCur(s);
+	double d0, d1;
+	const int r0 = xyRefNearest(s, pg.refLine[0], sx, sy, d0), r1 = xyRefNearest(s, pg.refLine[1], sx, sy, d1);
+	if (r0 < 0 && r1 < 0) return;
+	const int k = (d0 <= d1) ? 0 : 1;
+	const int row = k == 0 ? r0 : r1;
+	std::vector<int> &v = pg.refRows[k];
+	const int dp = std::abs((int)pg.refRows[0].size() - (int)pg.refRows[1].size());
+	if (dp < 2 && k != pg.refLast) v.push_back(row);
+	else if (v.empty()) v.push_back(row);
+	else v.back() = row;
+	pg.refLast = k;
+	if (s->widget->renderWindow()) s->widget->renderWindow()->Render();
+}
+
+// The picks: filled circles, red on the curve to reference, green on the reference (ecran's colours).
+static void xyRefPaint(XYPlot *s, vtkChartXY *chart, vtkContext2D *p) {
+	if (!s || s->pages.empty() || !s->widget) return;
+	XYPage *pg = nullptr;
+	for (auto &q : s->pages) if (q.chart.Get() == chart) { pg = &q; break; }
+	if (!pg) return;
+	const float dpr = (float)s->widget->devicePixelRatioF();
+	const unsigned char col[2][3] = { { 200, 0, 0 }, { 0, 200, 0 } };
+	for (int k = 0; k < 2; ++k) {
+		const int li = pg->refLine[k];
+		if (li < 0 || li >= (int)pg->series.size() || !pg->series[li].table) continue;
+		for (int row : pg->refRows[k]) {
+			if (row < 0 || row >= pg->series[li].table->GetNumberOfRows()) continue;
+			double x, y, sx, sy;
+			xyRowXY(pg->series[li].table, row, x, y);
+			if (!xyDataToScene(*pg, x, y, sx, sy)) continue;
+			p->GetPen()->SetColor(0, 0, 0, 255);
+			p->GetPen()->SetWidth(1.0f * dpr);
+			p->GetBrush()->SetColor(col[k][0], col[k][1], col[k][2], 255);
+			p->DrawEllipse((float)sx, (float)sy, 3.5f * dpr, 3.5f * dpr);
+		}
+	}
+}
+
+// do_reference: hand the picks to Julia, which stretches the curve and puts the result on a page of
+// its own ("Referenced", ecran's new figure).
+static void xyRefDo(XYPlot *s) {
+	XYPage &pg = xyCur(s);
+	const std::vector<int> &a = pg.refRows[0], &b = pg.refRows[1];
+	if (a.size() != b.size() || a.size() < 2) {
+		QMessageBox::warning(s->win, "Reference",
+			QString("Pick the same number of points on the two curves, at least two each (now %1 and %2).")
+			.arg(a.size()).arg(b.size()));
+		return;
+	}
+	const int ref = pg.refLine[1];
+	QStringList offs, xm;
+	for (size_t i = 0; i < a.size(); ++i) {
+		double x, y;
+		xyRowXY(pg.series[ref].table, b[i], x, y);
+		offs << QString::number(a[i]);
+		xm << QString::number(x, 'g', 17);
+	}
+	const QString xl = QString::fromStdString(pg.chart->GetAxis(vtkAxis::BOTTOM)->GetTitle());
+	const QString yl = QString::fromStdString(pg.chart->GetAxis(vtkAxis::LEFT)->GetTitle());
+	xyRequest(s, QString("reference:offs=%1:xm=%2:xl=%3:yl=%4").arg(offs.join(' '), xm.join(' '), xyOpEsc(xl), xyOpEsc(yl)),
+	          pg.refLine[0], nullptr);
+}
+
+// The tool's switch (ecran's toggle button). On: the Object Manager's current curve is the one to
+// reference; the other curve of a two-curve page is the reference, else the user names it. Off (also
+// reached by a right- or double-click while picking): the picks stay, for "Reference me".
+static void xyRefSetPicking(XYPlot *s, bool on) {
+	XYPage &pg = xyCur(s);
+	if (!on) {
+		pg.refPicking = false;
+		if (s->actRef && s->actRef->isChecked()) { QSignalBlocker b(s->actRef); s->actRef->setChecked(false); }
+		s->widget->unsetCursor();
+		if (!pg.refRows[0].empty())
+			s->win->statusBar()->showMessage("Right-click a red marker -> Reference me", 6000);
+		return;
+	}
+	std::vector<int> lines;
+	for (int i = 0; i < (int)pg.series.size(); ++i)
+		if (pg.series[i].kind == 0 && !pg.series[i].nowCross && pg.series[i].table && pg.series[i].table->GetNumberOfRows() >= 2)
+			lines.push_back(i);
+	int sel = xyCurrentSel(s);
+	if (std::find(lines.begin(), lines.end(), sel) == lines.end() || lines.size() < 2) {
+		QMessageBox::warning(s->win, "Reference", "This needs two curves on the page; select the one to reference "
+		                                          "in the Object Manager.");
+		xyRefSetPicking(s, false);
+		return;
+	}
+	int other = -1;
+	if (lines.size() == 2) other = lines[0] == sel ? lines[1] : lines[0];
+	else {
+		QStringList names;
+		std::vector<int> idx;
+		for (int i : lines) if (i != sel) { names << QString::fromStdString(pg.series[i].name); idx.push_back(i); }
+		bool ok = false;
+		const QString pick = QInputDialog::getItem(s->win, "Reference",
+			QString("Reference \"%1\" to which curve?").arg(QString::fromStdString(pg.series[sel].name)), names, 0, false, &ok);
+		if (!ok) { xyRefSetPicking(s, false); return; }
+		other = idx[names.indexOf(pick)];
+	}
+	if (pg.refLine[0] != sel || pg.refLine[1] != other) {      // another pair: the old picks mean nothing
+		pg.refRows[0].clear(); pg.refRows[1].clear(); pg.refLast = -1;
+	}
+	pg.refLine[0] = sel; pg.refLine[1] = other;
+	pg.refPicking = true;
+	if (s->actRef && !s->actRef->isChecked()) { QSignalBlocker b(s->actRef); s->actRef->setChecked(true); }
+	s->widget->setCursor(Qt::CrossCursor);
+	s->win->statusBar()->showMessage("Pick points alternately on the two lines (red: the one to reference); "
+	                                 "right- or double-click to finish");
+}
+
+// Mouse for the tool: while picking, a left click adds/replaces a marker and a right- or double-click
+// ends picking; afterwards a right-click on a red marker offers "Reference me". Installed last, so it
+// sees the press first; it consumes only its own.
+class XYRefFilter : public QObject {
+public:
+	XYPlot *s = nullptr;
+	explicit XYRefFilter(XYPlot *sc, QObject *parent) : QObject(parent), s(sc) {}
+protected:
+	bool eventFilter(QObject *obj, QEvent *ev) override {
+		const QEvent::Type t = ev->type();
+		if ((t != QEvent::MouseButtonPress && t != QEvent::MouseButtonDblClick && t != QEvent::MouseButtonRelease) ||
+		    !s || !xyAlive(s) || s->pages.empty())
+			return QObject::eventFilter(obj, ev);
+		XYPage &pg = xyCur(s);
+		QMouseEvent *me = static_cast<QMouseEvent *>(ev);
+		if (pg.refPicking) {
+			if (t == QEvent::MouseButtonRelease) return true;
+			if (t == QEvent::MouseButtonDblClick || me->button() != Qt::LeftButton) { xyRefSetPicking(s, false); return true; }
+			double sx, sy;
+			xyQtToScene(s, me->position(), sx, sy);
+			xyRefClick(s, sx, sy);
+			return true;
+		}
+		if (t != QEvent::MouseButtonPress || me->button() != Qt::RightButton || pg.refRows[0].empty()) return QObject::eventFilter(obj, ev);
+		const int li = pg.refLine[0];
+		if (li < 0 || li >= (int)pg.series.size() || !pg.series[li].table) return QObject::eventFilter(obj, ev);
+		double sx, sy;
+		xyQtToScene(s, me->position(), sx, sy);
+		const double tol = 8.0 * s->widget->devicePixelRatioF();
+		for (int row : pg.refRows[0]) {
+			if (row < 0 || row >= pg.series[li].table->GetNumberOfRows()) continue;
+			double x, y, px, py;
+			xyRowXY(pg.series[li].table, row, x, y);
+			if (!xyDataToScene(pg, x, y, px, py) || std::hypot(px - sx, py - sy) > tol) continue;
+			QMenu m(s->win);
+			QAction *a = m.addAction("Reference me");
+			if (m.exec(me->globalPosition().toPoint()) == a && xyAlive(s)) xyRefDo(s);
+			return true;
+		}
+		return QObject::eventFilter(obj, ev);
+	}
+};
+
+// ---- X,Y session (ecran's File > Session: Save / Open) ----------------------------------------------
+// The whole window as a `[section] key=value` manifest — the SAME layout session.jl's manifest uses —
+// with [session] kind=xyplot, then [window], and per page a [page] followed by its [series]. Values are
+// one line (newlines escaped); number lists space-separated; NaN written "nan". The series' DATA is not
+// in here: xysession.jl writes one binary file per series beside the manifest in the .igmtz zip, and
+// on Open rebuilds the pages and series first, then hands this text back to xySessionApply.
+
+static QString xyEsc(const QString &v) {
+	QString o = v;
+	o.replace("\\", "\\\\").replace("\n", "\\n").replace("\r", "\\r");
+	return o;
+}
+static QString xyUnesc(const QString &v) {
+	QString o;
+	for (int i = 0; i < v.size(); ++i) {
+		if (v[i] == '\\' && i + 1 < v.size()) {
+			const QChar c = v[++i];
+			o += (c == 'n') ? QChar('\n') : (c == 'r') ? QChar('\r') : c;
+		}
+		else {
+			o += v[i];
+		}
+	}
+	return o;
+}
+static QString xyNum(double v) { return std::isnan(v) ? QString("nan") : QString::number(v, 'g', 17); }
+static double xyToNum(const QString &v) {
+	bool ok = false;
+	const double d = v.trimmed().toDouble(&ok);
+	return ok ? d : std::numeric_limits<double>::quiet_NaN();
+}
+static QString xyNums(const std::vector<double> &v) {
+	QStringList l;
+	for (double d : v) l << xyNum(d);
+	return l.join(' ');
+}
+static std::vector<double> xyToNums(const QString &v) {
+	std::vector<double> o;
+	for (const QString &t : v.split(' ', Qt::SkipEmptyParts)) o.push_back(xyToNum(t));
+	return o;
+}
+
+static std::string xySessionState(XYPlot *s) {
+	QString o;
+	auto kv = [&o](const char *k, const QString &v) { o += QString::fromLatin1(k) + "=" + v + "\n"; };
+	o += "[session]\n";
+	kv("kind", "xyplot");
+	kv("version", "1");
+	o += "[window]\n";
+	kv("title", xyEsc(s->win->windowTitle()));
+	kv("legend", QString::number(s->legendVisible ? 1 : 0));
+	kv("legendfont", xyNum(s->legendFontPt));
+	kv("info", xyEsc(s->infoLabel ? s->infoLabel->text() : QString()));
+	kv("infofont", xyNum(s->infoFontPt));
+	kv("infovisible", QString::number(s->infoLabel && s->infoLabel->isVisible() ? 1 : 0));
+	kv("grid", QString::number(s->actGrid && s->actGrid->isChecked() ? 1 : 0));
+	kv("magtool", QString::number(s->actMag && s->actMag->isChecked() ? 1 : 0));
+	kv("curpage", QString::number(s->curPageIdx));
+	kv("npages", QString::number((int)s->pages.size()));
+	for (int pi = 0; pi < (int)s->pages.size(); ++pi) {
+		const XYPage &pg = s->pages[pi];
+		vtkAxis *ax = pg.chart->GetAxis(vtkAxis::BOTTOM), *ay = pg.chart->GetAxis(vtkAxis::LEFT);
+		o += "[page]\n";
+		kv("name", xyEsc(QString::fromStdString(pg.name)));
+		kv("xlabel", xyEsc(QString::fromStdString(ax->GetTitle())));
+		kv("ylabel", xyEsc(QString::fromStdString(ay->GetTitle())));
+		kv("xtime", QString::number(pg.xTimeFmt));
+		kv("logx", QString::number(ax->GetLogScale() ? 1 : 0));
+		kv("logy", QString::number(ay->GetLogScale() ? 1 : 0));
+		kv("xfixed", QString::number(ax->GetBehavior() == vtkAxis::FIXED ? 1 : 0));
+		kv("yfixed", QString::number(ay->GetBehavior() == vtkAxis::FIXED ? 1 : 0));
+		kv("xrange", xyNum(ax->GetUnscaledMinimum()) + " " + xyNum(ax->GetUnscaledMaximum()));
+		kv("yrange", xyNum(ay->GetUnscaledMinimum()) + " " + xyNum(ay->GetUnscaledMaximum()));
+		kv("nseries", QString::number((int)pg.series.size()));
+		const XYMag &m = pg.mag;
+		QStringList txt;
+		for (const std::string &t : m.bTxt) txt << QString::fromStdString(t);
+		kv("mag.ageStart", xyNum(m.ageStart));
+		kv("mag.ageEnd", xyNum(m.ageEnd));
+		kv("mag.barOn", QString::number(m.barOn ? 1 : 0));
+		kv("mag.bStart", xyNums(m.bStart));
+		kv("mag.bEnd", xyNums(m.bEnd));
+		kv("mag.bTxt", xyEsc(txt.join(' ')));
+		kv("mag.barX", xyNum(m.barX0) + " " + xyNum(m.barX1));
+		kv("mag.picos", xyNums(m.picos));
+		kv("mag.dec", xyNum(m.dec));
+		kv("mag.inc", xyNum(m.inc));
+		kv("mag.speed", xyNum(m.speed));
+		kv("mag.profDir", xyNum(m.profDir));
+		kv("mag.spreadDir", xyNum(m.spreadDir));
+		kv("mag.depth", xyNum(m.depth));
+		kv("mag.unit", QString::number(m.unit));
+		kv("mag.contam", xyNum(m.contam));
+		kv("mag.isocs", xyEsc(QString::fromStdString(m.isocs)));
+		kv("mag.batFile", xyEsc(QString::fromStdString(m.batFile)));
+		kv("mag.barStretch", xyNum(m.barStretch));
+		kv("mag.lastSpeed", xyNum(m.lastSpeed));
+		kv("mag.ageLine", xyNums(m.ageLine));
+		kv("mag.ageIdx", QString::number(m.ageIdx));
+		kv("mag.ageTyped", xyNum(m.ageTyped));
+		kv("mag.starIdx", QString::number(m.starIdx));
+		kv("mag.guessIdx", QString::number(m.guessIdx));
+		kv("mag.ageLineX", xyNum(m.ageLineX));
+		kv("mag.pinned", xyNums(m.pinned));
+		std::vector<double> sg;                       // kept Spector-Grant lines, 11 numbers each
+		for (const XYSGLine &l : pg.sgLines)
+			sg.insert(sg.end(), { l.x0, l.y0, l.x1, l.y1, l.m, l.b, l.depth, l.unit, l.r, l.g, l.bl });
+		kv("sglines", xyNums(sg));
+		for (int i = 0; i < (int)pg.series.size(); ++i) {
+			const XYSeries &se = pg.series[i];
+			o += "[series]\n";
+			kv("page", QString::number(pi));             // page + idx FIRST: xySessionApply keys on them
+			kv("idx", QString::number(i));
+			kv("name", xyEsc(QString::fromStdString(se.name)));
+			kv("kind", QString::number(se.kind));
+			kv("nowcross", QString::number(se.nowCross ? 1 : 0));
+			kv("rgb", xyNum(se.r) + " " + xyNum(se.g) + " " + xyNum(se.b));
+			kv("width", xyNum(se.width));
+			kv("ltype", QString::number(se.lineType));
+			kv("marker", QString::number(se.marker));
+			kv("msize", xyNum(se.markerSize));
+			kv("visible", QString::number(se.visible ? 1 : 0));
+			kv("barwidth", xyNum(se.barWidth));
+			kv("cross", xyNum(se.crossCenterX) + " " + xyNum(se.crossCenterY) + " " + xyNum(se.crossSizePx));
+			kv("magrole", QString::number(se.magRole));
+			kv("trackgeog", QString::number(se.trackGeog));
+			kv("trackx", xyNums(se.trackX));
+			kv("tracky", xyNums(se.trackY));
+			kv("npoints", QString::number(se.table ? (int)se.table->GetNumberOfRows() : 0));
+		}
+	}
+	return o.toStdString();
+}
+
+// Put the saved state onto a window whose pages and series xysession.jl has just rebuilt (same count,
+// same order). Everything the data files do not carry comes from here.
+static void xySessionApply(XYPlot *s, const char *text) {
+	if (!xyAlive(s) || !text) return;
+	QString sec;
+	int pi = -1, sp = -1, si = -1, cur = 0;
+	bool grid = true;
+	auto pageOk = [s](int p) { return p >= 0 && p < (int)s->pages.size(); };
+	for (const QString &raw : QString::fromUtf8(text).split('\n')) {
+		const QString line = raw.endsWith('\r') ? raw.chopped(1) : raw;
+		if (line.isEmpty()) continue;
+		if (line.startsWith('[') && line.endsWith(']')) {
+			sec = line.mid(1, line.size() - 2);
+			if (sec == "page") ++pi;
+			if (sec == "series") { sp = -1; si = -1; }
+			continue;
+		}
+		const int eq = line.indexOf('=');
+		if (eq < 0) continue;
+		const QString k = line.left(eq), v = line.mid(eq + 1);
+		if (sec == "window") {
+			if (k == "title") s->win->setWindowTitle(xyUnesc(v));
+			else if (k == "legend") s->legendVisible = v.toInt() != 0;
+			else if (k == "legendfont") s->legendFontPt = xyToNum(v);
+			else if (k == "info" && s->infoLabel) s->infoLabel->setText(xyUnesc(v));
+			else if (k == "infofont") { s->infoFontPt = xyToNum(v); xyApplyInfoStyle(s); }
+			else if (k == "infovisible" && s->infoLabel) s->infoLabel->setVisible(v.toInt() != 0 && !s->infoLabel->text().isEmpty());
+			else if (k == "grid") grid = v.toInt() != 0;
+			else if (k == "magtool" && s->actMag) s->actMag->setChecked(v.toInt() != 0);
+			else if (k == "curpage") cur = v.toInt();
+		}
+		else if (sec == "page" && pageOk(pi)) {
+			XYPage &pg = s->pages[pi];
+			XYMag &m = pg.mag;
+			vtkAxis *ax = pg.chart->GetAxis(vtkAxis::BOTTOM), *ay = pg.chart->GetAxis(vtkAxis::LEFT);
+			if (k == "name") xyRenamePage(s, pi, xyUnesc(v));
+			else if (k == "xlabel") ax->SetTitle(xyUnesc(v).toStdString());
+			else if (k == "ylabel") ay->SetTitle(xyUnesc(v).toStdString());
+			else if (k == "xtime") pg.xTimeFmt = v.toInt();
+			else if (k == "logx") ax->SetLogScale(v.toInt() != 0);
+			else if (k == "logy") ay->SetLogScale(v.toInt() != 0);
+			else if (k == "xfixed" || k == "yfixed") (k == "xfixed" ? ax : ay)->SetBehavior(v.toInt() ? vtkAxis::FIXED : vtkAxis::AUTO);
+			else if (k == "xrange" || k == "yrange") {
+				vtkAxis *a = (k == "xrange") ? ax : ay;
+				const std::vector<double> r = xyToNums(v);
+				if (r.size() == 2 && a->GetBehavior() == vtkAxis::FIXED && std::isfinite(r[0]) && std::isfinite(r[1]))
+					a->SetUnscaledRange(r[0], r[1]);
+			}
+			else if (k == "mag.ageStart") m.ageStart = xyToNum(v);
+			else if (k == "mag.ageEnd") m.ageEnd = xyToNum(v);
+			else if (k == "mag.barOn") m.barOn = v.toInt() != 0;
+			else if (k == "mag.bStart") m.bStart = xyToNums(v);
+			else if (k == "mag.bEnd") m.bEnd = xyToNums(v);
+			else if (k == "mag.bTxt") {
+				m.bTxt.clear();
+				for (const QString &t : xyUnesc(v).split(' ', Qt::SkipEmptyParts)) m.bTxt.push_back(t.toStdString());
+				m.bTxt.resize(m.bStart.size(), "a");
+			}
+			else if (k == "mag.barX") { const std::vector<double> r = xyToNums(v); if (r.size() == 2) { m.barX0 = r[0]; m.barX1 = r[1]; } }
+			else if (k == "mag.picos") m.picos = xyToNums(v);
+			else if (k == "mag.dec") m.dec = xyToNum(v);
+			else if (k == "mag.inc") m.inc = xyToNum(v);
+			else if (k == "mag.speed") m.speed = xyToNum(v);
+			else if (k == "mag.profDir") m.profDir = xyToNum(v);
+			else if (k == "mag.spreadDir") m.spreadDir = xyToNum(v);
+			else if (k == "mag.depth") m.depth = xyToNum(v);
+			else if (k == "mag.unit") m.unit = v.toInt();
+			else if (k == "mag.contam") m.contam = xyToNum(v);
+			else if (k == "mag.isocs") m.isocs = xyUnesc(v).toStdString();
+			else if (k == "mag.batFile") m.batFile = xyUnesc(v).toStdString();
+			else if (k == "mag.barStretch") m.barStretch = xyToNum(v);
+			else if (k == "mag.lastSpeed") m.lastSpeed = xyToNum(v);
+			else if (k == "mag.ageLine") m.ageLine = xyToNums(v);
+			else if (k == "mag.ageIdx") m.ageIdx = v.toInt();
+			else if (k == "mag.ageTyped") m.ageTyped = xyToNum(v);
+			else if (k == "mag.starIdx") m.starIdx = v.toInt();
+			else if (k == "mag.guessIdx") m.guessIdx = v.toInt();
+			else if (k == "mag.ageLineX") m.ageLineX = xyToNum(v);
+			else if (k == "mag.pinned") m.pinned = xyToNums(v);
+			else if (k == "sglines") {
+				const std::vector<double> a = xyToNums(v);
+				for (size_t j = 0; j + 11 <= a.size(); j += 11) {
+					XYSGLine l;
+					l.x0 = a[j]; l.y0 = a[j + 1]; l.x1 = a[j + 2]; l.y1 = a[j + 3]; l.m = a[j + 4]; l.b = a[j + 5];
+					l.depth = a[j + 6]; l.unit = a[j + 7]; l.r = a[j + 8]; l.g = a[j + 9]; l.bl = a[j + 10];
+					xySGAddLine(pg, l);
+				}
+			}
+		}
+		else if (sec == "series") {
+			if (k == "page") { sp = v.toInt(); continue; }
+			if (k == "idx")  { si = v.toInt(); continue; }
+			if (!pageOk(sp) || si < 0 || si >= (int)s->pages[sp].series.size()) continue;
+			XYSeries &se = s->pages[sp].series[si];
+			if (k == "name") { se.name = xyUnesc(v).toStdString(); if (se.plot) se.plot->SetLabel(se.name); }
+			else if (k == "rgb") { const std::vector<double> c = xyToNums(v); if (c.size() == 3) { se.r = c[0]; se.g = c[1]; se.b = c[2]; } }
+			else if (k == "width") se.width = xyToNum(v);
+			else if (k == "ltype") se.lineType = v.toInt();
+			else if (k == "marker") se.marker = v.toInt();
+			else if (k == "msize") se.markerSize = xyToNum(v);
+			else if (k == "visible") { se.visible = v.toInt() != 0; if (se.plot) se.plot->SetVisible(se.visible); }
+			else if (k == "barwidth") se.barWidth = xyToNum(v);
+			else if (k == "magrole") se.magRole = v.toInt();
+			else if (k == "trackgeog") se.trackGeog = v.toInt();
+			else if (k == "trackx") se.trackX = xyToNums(v);
+			else if (k == "tracky") se.trackY = xyToNums(v);
+			if (se.plot) xyApplyStyle(s, se);
+		}
+	}
+	for (XYPage &pg : s->pages) {
+		pg.chart->SetShowLegend(s->legendVisible);
+		if (vtkChartLegend *lg = pg.chart->GetLegend()) lg->GetLabelProperties()->SetFontSize((int)s->legendFontPt);
+		pg.chart->GetAxis(vtkAxis::BOTTOM)->SetGridVisible(grid);
+		pg.chart->GetAxis(vtkAxis::LEFT)->SetGridVisible(grid);
+		pg.chart->RecalculateBounds();
+	}
+	if (s->actGrid) { QSignalBlocker b(s->actGrid); s->actGrid->setChecked(grid); }
+	xySwitchPage(s, std::clamp(cur, 0, (int)s->pages.size() - 1));   // remounts, rebuilds the panels + mag UI
+	xyMagRender(s);
+}
+
+// The X,Y window as the owner of a "Plot with GMT.jl" editor — the SAME editor the 3-D viewer opens.
+// It parks in the viewer this plot belongs to (where the plot itself parks); the script is built from
+// the current page by xyscript.jl.
+static ScriptHost scriptHostXY(XYPlot *p) {
+	ScriptHost h;
+	h.key = p;
+	h.parent = p ? p->win : nullptr;
+	h.parkIn = (p && p->owner && sceneAlive(p->owner)) ? p->owner : nullptr;
+	h.parkLabel = "GMT.jl script (X,Y)";
+	h.openCall = "InteractiveGMT._xy_script_open_editor";
+	h.alive = [p]() { return xyAlive(p); };
+	h.logError = [p](const QString &m) { if (xyAlive(p)) xyLog(p, m, true); };
+	h.status = [p](const QString &m, int ms) { if (xyAlive(p) && p->win) p->win->statusBar()->showMessage(m, ms); };
+	return h;
 }
 
 // ---- window builder --------------------------------------------------------
@@ -2016,7 +3747,12 @@ static XYPlot *buildXYPlot(const char *title) {
 	centralLayout->setContentsMargins(0, 0, 0, 0);
 	centralLayout->setSpacing(0);
 	centralLayout->addWidget(s->infoLabel, 0);          // header strip, hugs the top
+	s->magBar = new XYMagBarStrip(s);                  // geomagnetic bar code, over the chart (hidden until made)
+	s->magBar->setVisible(false);
+	centralLayout->addWidget(s->magBar, 0);
 	centralLayout->addWidget(s->widget, 1);            // chart takes all the stretch
+	s->magCtl = xyMagBuildCtl(s);                      // its controls, under the chart (toolbar toggle)
+	centralLayout->addWidget(s->magCtl, 0);
 	centralLayout->addWidget(tabRow, 0);               // page tabs just under the chart
 	centralLayout->addWidget(s->consolePanel, 0);      // console hugs the bottom
 	s->win->setCentralWidget(central);
@@ -2045,6 +3781,30 @@ static XYPlot *buildXYPlot(const char *title) {
 	QAction *aNew  = mFile->addAction("New");
 	QAction *aOpen = mFile->addAction("Open…");
 	QAction *aSave = mFile->addAction("Save…");
+	// ecran's File > Session: the whole window (pages, series, styles, axes, magnetic modelling) in the
+	// same .igmtz container the 3-D viewer's Save Session writes (xysession.jl).
+	QMenu *mSes = mFile->addMenu("Session");
+	QAction *aSesOpen = mSes->addAction("Open…");
+	QAction *aSesSave = mSes->addAction("Save…");
+	QObject::connect(aSesOpen, &QAction::triggered, s->win, [s]{
+		const QString fn = QFileDialog::getOpenFileName(s->win, "Open X,Y session", prefStartDir(),
+			"i'GMT session (*.igmtz);;All files (*)");
+		if (fn.isEmpty()) return;
+		rememberStartDir(fn);
+		xyRequest(s, "session_open", -1, nullptr, true, fn); });   // the session loader shows its own progress
+	QObject::connect(aSesSave, &QAction::triggered, s->win, [s]{
+		QString fn = QFileDialog::getSaveFileName(s->win, "Save X,Y session", prefStartDir("xyplot.igmtz"),
+			"i'GMT session (*.igmtz)");
+		if (fn.isEmpty()) return;
+		if (!fn.endsWith(".igmtz", Qt::CaseInsensitive)) fn += ".igmtz";
+		rememberStartDir(fn);
+		if (xyRequest(s, "session_save", -1, "Saving the X,Y session…", true, fn))
+			s->win->statusBar()->showMessage("Session saved to " + fn, 5000); });
+	mFile->addSeparator();
+	// File > Plot with GMT.jl… — the main window's own item, the same editor (Run, Save…, Standalone).
+	QAction *aScript = mFile->addAction("Plot with GMT.jl…");
+	aScript->setObjectName("xyPlotWithGMT");
+	QObject::connect(aScript, &QAction::triggered, s->win, [s]{ showScriptEditor(scriptHostXY(s)); });
 	mFile->addSeparator();
 	// Ctrl+V: the clipboard's numeric text becomes new series here. Shared paste action
 	// (makePasteAction, 30_app.cpp) — same key, same text-entry hand-back, as the 3-D viewer's.
@@ -2157,9 +3917,31 @@ static XYPlot *buildXYPlot(const char *title) {
 	}
 	addAna("Bar graph", "bargraph");
 	{
+		// ecran's "Sound Velocity Profile" (Chen & Millero / UNESCO 1983) -> page "SVP diagram".
+		QAction *a = mAna->addAction("Sound Velocity Profile…");
+		QObject::connect(a, &QAction::triggered, s->win, [s] {
+			if (xyCur(s).series.empty()) { xyLog(s, "Sound Velocity Profile: this page has no data"); return; }
+			QString args;
+			if (!xyAskSVP(s->win, s, args)) return;
+			xyRequest(s, QString("svp:%1").arg(args), 0, "Computing the sound velocity profile...");
+		});
+	}
+	{
+		// ecran's "Reference me": pick points alternately on two curves, then stretch the selected one
+		// so its points land on the other's (xyRefSetPicking / XYRefFilter).
+		s->actRef = mAna->addAction("Reference a curve to another…");
+		s->actRef->setObjectName("xyReference");
+		s->actRef->setCheckable(true);
+		s->actRef->setToolTip("Pick points alternately on the selected curve and on another one, then right-click "
+		                      "a red marker -> Reference me: the selected curve is stretched, piece by piece, so "
+		                      "each red point lands on the x of its green partner");
+		QObject::connect(s->actRef, &QAction::toggled, s->win, [s](bool on) { xyRefSetPicking(s, on); });
+	}
+	{
 		// Spector & Grant (interactive): on a (wavenumber, power) spectrum, LEFT-DRAG a band and the
 		// slope of ln(power) gives the depth to the magnetic source ensemble — live fit line + readout.
 		QAction *a = mAna->addAction("Depth to sources (Spector-Grant)");
+		a->setObjectName("xySpectorGrant");
 		a->setCheckable(true);
 		QObject::connect(a, &QAction::toggled, s->win, [s, a](bool on) {
 			XYPage &pg = xyCur(s);
@@ -2169,7 +3951,10 @@ static XYPlot *buildXYPlot(const char *title) {
 				double xf;
 				if (!xyAskFreqUnit(s->win, xf)) { a->setChecked(false); return; }
 				pg.sgSel = sel; pg.sgUnit = xf; pg.sgActive = true;
-				s->win->statusBar()->showMessage("Spector-Grant: left-drag a frequency band on the spectrum");
+				xySGShowLines(pg, true);                     // the lines kept earlier come back (dynSlope_CB)
+				if (s->widget->renderWindow()) s->widget->renderWindow()->Render();
+				s->win->statusBar()->showMessage("Spector-Grant: left-drag a frequency band on the spectrum; "
+				                                 "drag a fit line's end to edit it, right-click it for its menu");
 			}
 			else {
 				pg.sgActive = false; pg.sgDragging = false;
@@ -2209,6 +3994,7 @@ static XYPlot *buildXYPlot(const char *title) {
 		QAction *a = tMenu->addAction(label);
 		a->setCheckable(true); a->setChecked(on);
 		tGroup->addAction(a);
+		if (code >= 0 && code < 6) s->actTime[code] = a;
 		QObject::connect(a, &QAction::triggered, s->win, [s, code] { xySetXTime(s, code); });
 	};
 	addTime("Linear (numbers)", 0, true);
@@ -2220,9 +4006,11 @@ static XYPlot *buildXYPlot(const char *title) {
 	// Log scaling (X / Y). Independent checkable toggles. Data must be positive.
 	QAction *aLogX = mMisc->addAction("Log X axis");
 	aLogX->setCheckable(true);
+	s->actLogX = aLogX;
 	QObject::connect(aLogX, &QAction::toggled, s->win, [s](bool on){ xySetLog(s, 0, on); });
 	QAction *aLogY = mMisc->addAction("Log Y axis");
 	aLogY->setCheckable(true);
+	s->actLogY = aLogY;
 	QObject::connect(aLogY, &QAction::toggled, s->win, [s](bool on){ xySetLog(s, 1, on); });
 	QObject::connect(s->actGrid, &QAction::toggled, s->win, [s](bool on){
 		xyCur(s).chart->GetAxis(vtkAxis::BOTTOM)->SetGridVisible(on);
@@ -2241,6 +4029,12 @@ static XYPlot *buildXYPlot(const char *title) {
 		xyCur(s).chart->GetAxis(vtkAxis::LEFT)->SetBehavior(vtkAxis::AUTO);
 		if (s->widget->renderWindow()) s->widget->renderWindow()->Render(); });
 	tb->addAction(s->actGrid);
+	tb->addSeparator();
+	s->actMag = tb->addAction(xyMagIcon(), "Geomagnetic bar code");
+	s->actMag->setObjectName("xyMagTool");
+	s->actMag->setCheckable(true);
+	s->actMag->setToolTip("Enter ages & plot a geomagnetic barcode");
+	QObject::connect(s->actMag, &QAction::toggled, s->win, [s](bool) { xyMagSyncUi(s); xyMagRender(s); });
 
 	// --- Object Manager interactions ---
 	QObject::connect(s->objMgr, &QTreeWidget::itemChanged, s->win, [s](QTreeWidgetItem *it, int){
@@ -2282,6 +4076,20 @@ static XYPlot *buildXYPlot(const char *title) {
 	s->widget->installEventFilter(new XYSGFilter(s, s->win));
 	// --- curve marker: click a curve, drag along it, double-click it away ---
 	s->widget->installEventFilter(new XYMarkFilter(s, s->win));
+	// --- magnetic picks (Guide me / Pin-point me / Delete me, the first-guess click). Installed LAST so
+	// it sees a press before the marker does; it consumes only its own. ---
+	s->widget->installEventFilter(new XYMagFilter(s, s->win));
+	// --- "Reference a curve to another": its picks, and "Reference me" on them (sees a press first) ---
+	s->widget->installEventFilter(new XYRefFilter(s, s->win));
+	// --- the bar code strip follows every chart render (zoom / pan / resize move its mapping) ---
+	{
+		vtkNew<vtkCallbackCommand> cb;
+		cb->SetClientData(s);
+		cb->SetCallback([](vtkObject *, unsigned long, void *cd, void *) {
+			XYPlot *p = static_cast<XYPlot *>(cd);
+			if (xyAlive(p) && p->magBar) p->magBar->update(); });
+		rw->AddObserver(vtkCommand::EndEvent, cb);
+	}
 
 	// --- the X PARKS the window, it does not destroy it -------------------------------------------
 	// Same contract as the Aquamoto control window: closing hides, and the plot lives on as a handle
@@ -2391,6 +4199,15 @@ static XYPlot *openSeriesInXYTool(const std::vector<double> &x, const std::vecto
 		QPointer<ProfilePanel> pan(markFrom);
 		QObject::connect(p->win, &QObject::destroyed, [pan, p]() { if (pan) pan->removeMarkerListener(p); });
 		xyMarkFromPanel(p, markFrom->markerX());
+		// A Ctrl-drag profile hands over its TRACK too (the magnetic model's azimuth and bathymetry),
+		// and the copy follows the track when it is redrawn (ecran's freshFig == false path).
+		XYSeries &se = xyCur(p).series[p->markLinkSel];
+		int g = -1;
+		if (markFrom->track(se.trackX, se.trackY, g)) {
+			se.trackGeog = g;
+			markFrom->addDataListener(p, [p]() { xyProfileUpdated(p); });
+			QObject::connect(p->win, &QObject::destroyed, [pan, p]() { if (pan) pan->removeDataListener(p); });
+		}
 	}
 	return p;
 }

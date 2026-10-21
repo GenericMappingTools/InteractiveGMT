@@ -27,13 +27,19 @@ public:
 	// `gridName` is the label of the grid that was sampled: it becomes the title, so a profile window is
 	// named "Profile <grid name>" and nothing longer.
 	void setProfile(const std::vector<double> &s, const std::vector<double> &z,
-	                const QString &gridName = QString()) {
+	                const QString &gridName = QString(), const QString &xlabel = QString()) {
 		m_s = s; m_z = z;
 		if (z.empty()) setMark(std::numeric_limits<double>::quiet_NaN());   // no curve -> no marker
 		m_title = z.empty() ? QString() : (gridName.isEmpty() ? QString("Profile")
 		                                                      : QString("Profile %1").arg(gridName));
-		m_xlabel = "Distance"; m_ylabel = "Elevation"; m_isDate = false;
+		m_xlabel = xlabel.isEmpty() ? QString("Distance") : xlabel; m_ylabel = "Elevation"; m_isDate = false;
+		m_isProfile = !z.empty();
 		update();
+		// A redrawn track reaches every X,Y window opened from this panel (they re-run their tools on it).
+		if (m_isProfile) {
+			const auto ls = m_dataListeners;          // a listener may remove itself
+			for (const auto &l : ls) l.second();
+		}
 	}
 	// Generic (x,y) series (e.g. a downloaded tide gauge: x = epoch seconds, y = sea level).
 	// isDate -> the x ticks are painted as date/time labels instead of plain numbers.
@@ -42,6 +48,7 @@ public:
 		m_s = x; m_z = y;
 		setMark(std::numeric_limits<double>::quiet_NaN());   // a different series: the old marker means nothing
 		m_title = title; m_xlabel = xlabel; m_ylabel = ylabel; m_isDate = isDate;
+		m_isProfile = false;                                 // not a track: it has no lon/lat to hand over
 		update();
 	}
 	// A SECOND curve over the same axes -- a reference/analytic solution beside the modelled one.
@@ -77,7 +84,23 @@ public:
 	QString seriesTitle()  const { return m_title; }
 	QString seriesXLabel() const { return m_xlabel; }
 	QString seriesYLabel() const { return m_ylabel; }
+	// The TRACK under a Ctrl-drag profile: one (x, y) per sample of seriesX/Y, and whether x,y are
+	// lon/lat (1) or not (0). Set by the window that owns the panel (it holds the track); false when
+	// the panel shows no profile (empty, or a generic series such as a tide record).
+	std::function<bool(std::vector<double> &, std::vector<double> &, int &)> trackFn;
+	bool track(std::vector<double> &tx, std::vector<double> &ty, int &geog) const {
+		return m_isProfile && trackFn && trackFn(tx, ty, geog) && tx.size() == m_s.size();
+	}
+	// Told every time a NEW track is drawn (a fresh Ctrl-drag or an end handle moved), keyed like the
+	// marker listeners so a closing X,Y window can leave.
+	void addDataListener(const void *key, std::function<void()> fn) { m_dataListeners.push_back({ key, std::move(fn) }); }
+	void removeDataListener(const void *key) {
+		m_dataListeners.erase(std::remove_if(m_dataListeners.begin(), m_dataListeners.end(),
+		                      [key](const auto &l) { return l.first == key; }), m_dataListeners.end());
+	}
 protected:
+	bool m_isProfile = false;            // the panel shows a Ctrl-drag track (setProfile), not a series
+	std::vector<std::pair<const void *, std::function<void()>>> m_dataListeners;
 	std::vector<double> m_s, m_z;
 	std::vector<double> m_s2, m_z2;      // optional second curve (a reference/analytic solution)
 	QString m_name2;                     // its legend text
@@ -594,29 +617,68 @@ static bool pickSurfaceXY(Scene *s, int dx, int dy, double &tx, double &ty) {
 // line + the 2D panel. Arc length is in metres (geographic) / data units (cartesian).
 // keepStyle: an EDIT of an existing track (end handle dragged) keeps its dashed/dotted look; a
 // fresh Ctrl+drag track starts solid.
+// The distance along the track's samples, measured by THE app's distance engine — the one the ruler,
+// "Line length…" and "Azimuth(s)…" use (measure.jl `_profile_distances` -> `_seg_dist_azim`), so the
+// Preferences "Dist/Azim type" and "Measure units" apply: geodesic on a lon/lat track, data units on a
+// cartesian one. `unit` comes back as the label ("m", "km", "units"…). The per-leg ruler fallback is
+// the FALLBACK ONLY (no Julia side).
+static double rulerFallbackLeg(Scene *s, const std::array<double,3> &a, const std::array<double,3> &b, QString &unit);
+static bool profileDistances(Scene *s, const std::vector<std::array<double,3>> &pts, std::vector<double> &sv, QString &unit) {
+	sv.assign(pts.size(), 0.0);
+	if (pts.size() < 2) return true;
+	if (g_juliaEval) {
+		const QString tmp = QDir::tempPath() + "/igmt_profile_" + QString::number(QDateTime::currentMSecsSinceEpoch()) + ".txt";
+		std::vector<std::vector<std::array<double,3>>> one{ pts };
+		if (lineWriteTable(s, one, false, tmp)) {
+			const QString cmd = QString("InteractiveGMT._profile_distances(raw\"%1\",raw\"%2\",raw\"%3\",raw\"%4\")")
+				.arg(tmp).arg(QString::fromStdString(s->crsProj4)).arg(prefDistAzimType()).arg(prefMeasureUnits());
+			std::vector<char> buf(64 * 1024 + 32 * pts.size());
+			const int n = g_juliaEval(s, cmd.toStdString().c_str(), buf.data(), (int)buf.size());
+			QFile::remove(tmp);
+			if (n > 0) {
+				const QStringList q = QString::fromUtf8(buf.data(), n).split('|');
+				const QStringList v = q.size() == 2 ? q[1].split(' ', Qt::SkipEmptyParts) : QStringList();
+				if (v.size() == (int)pts.size()) {
+					bool ok = true;
+					for (int i = 0; i < v.size() && ok; ++i) sv[i] = v[i].toDouble(&ok);
+					if (ok) { unit = q[0]; return true; }
+				}
+			}
+			else if (n < 0) {
+				sceneLogError(s, QString::fromUtf8(buf.data(), -n));
+			}
+		}
+	}
+	for (size_t i = 1; i < pts.size(); ++i) {          // fallback: leg by leg
+		std::array<double,3> a = pts[i - 1], b = pts[i];
+		a[2] = b[2] = 0.0;                             // the horizontal distance
+		sv[i] = sv[i - 1] + rulerFallbackLeg(s, a, b, unit);
+	}
+	return true;
+}
+
 static void computeProfile(Scene *s, double ax, double ay, double bx, double by, bool keepStyle = false) {
 	if (!s || (s->gridZ.empty() && !(s->actZ && !s->actZ->empty())))   // need a data layer (active grid or base)
 		return;
 	const int N = 300;
-	const double m_per_base = (s->zfac > 0.0) ? (1.0 / s->zfac) : 1.0;  // base horiz unit -> metres
 
 	std::vector<double> sv, zv;
+	std::vector<std::array<double,3>> pts;
 	vtkNew<vtkPoints> line; line->SetDataTypeToDouble();
-	double lastx = ax, lasty = ay, sdist = 0.0; bool have = false;
 	for (int i = 0; i < N; ++i) {
 		const double t = (N == 1) ? 0.0 : double(i) / (N - 1);
 		const double x = ax + t * (bx - ax), y = ay + t * (by - ay);
 		const double z = sampleActiveZ(s, x, y);       // bilinear on the ACTIVE grid, full-res, LOD independent
 		if (std::isnan(z))
 			continue;                                  // off-grid / NaN sample -> skip
-		if (have) {
-			const double ddx = (x - lastx) * s->xfac, ddy = (y - lasty);
-			sdist += std::sqrt(ddx * ddx + ddy * ddy) * m_per_base;
-		}
-		lastx = x; lasty = y; have = true;
 		line->InsertNextPoint(x, y, z);
-		sv.push_back(sdist); zv.push_back(z);
+		pts.push_back({ x, y, z });
+		zv.push_back(z);
 	}
+	// The distance along it, in a real unit (it used to be degrees times a vertical normaliser).
+	QString dunit;
+	profileDistances(s, pts, sv, dunit);
+	s->profDistUnit = dunit;
 
 	const vtkIdType np = line->GetNumberOfPoints();
 	vtkNew<vtkCellArray> ca;
@@ -651,16 +713,17 @@ static void computeProfile(Scene *s, double ax, double ay, double bx, double by,
 	}
 
 	if (s->prof) {
-		s->prof->setProfile(sv, zv, QString::fromStdString(activeGridName(s)));
+		s->prof->setProfile(sv, zv, QString::fromStdString(activeGridName(s)),
+		                    dunit.isEmpty() || dunit == "units" ? QString("Distance") : QString("Distance (%1)").arg(dunit));
 		profMarkSync(s, s->prof->markerX());       // the 3-D marker rides the re-sampled track
 	}
 	if (s->win && np >= 2)
 		s->win->statusBar()->showMessage(
-			QString("Profile: 2D distance %1   elevation %2 .. %3   (%4 samples)")
+			QString("Profile: 2D distance %1 %5   elevation %2 .. %3   (%4 samples)")
 			.arg(sv.back(), 0, 'f', 2)
 			.arg(*std::min_element(zv.begin(), zv.end()), 0, 'f', 2)
 			.arg(*std::max_element(zv.begin(), zv.end()), 0, 'f', 2)
-			.arg((int)np));
+			.arg((int)np).arg(dunit));
 	if (s->widget && s->widget->renderWindow())
 		s->widget->renderWindow()->Render();
 }

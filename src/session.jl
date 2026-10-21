@@ -1113,7 +1113,9 @@ function _on_load_session(scene::Ptr{Cvoid}, path::String)
 		entries = _zip_read(path)
 		haskey(entries, "session.manifest") || error("session: '$path' has no session.manifest")
 		ccall(_fn(:gmtvtk_progress_update), Cvoid, (Cint,), 10)
-		_, display, recipes = _session_read_manifest(String(entries["session.manifest"]))
+		meta, display, recipes = _session_read_manifest(String(copy(entries["session.manifest"])))
+		# An X,Y tool session (its File > Session > Save, xysession.jl): same container, its own window.
+		get(meta, "kind", "") == "xyplot" && return _xy_load_session(path, entries)
 		fig = nothing
 		# Replay RASTERS first (grids/images/basemap), then vector/menu layers — vectors are always drawn on
 		# top of grids/images, and the shared draw-order pile ranks by add order, so vectors must be added

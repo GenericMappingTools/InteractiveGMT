@@ -110,16 +110,15 @@ function _clip_stats(zmat::AbstractMatrix, pct::Union{Nothing,Float64},
 end
 
 # g_juliaEval round-trip for the dialog's "UP" button: prints "low/up" (or nothing when no stat box
-# is filled). `params` = "pct;nstd;nmad". The grid is this window's loaded grid (resolved via _FIGREG,
-# same "the window already holds it" convention rtp3d.jl uses).
+# is filled). `params` = "pct;nstd;nmad". The grid is the one ON DISPLAY in this window (`_active_grid`).
 function _clip_stats_str(scene::Ptr{Cvoid}, params::AbstractString)
 	p = split(params, ';')
 	pct  = length(p) >= 1 ? _clip_parse_stat(p[1]) : nothing
 	nstd = length(p) >= 2 ? _clip_parse_stat(p[2]) : nothing
 	nmad = length(p) >= 3 ? _clip_parse_stat(p[3]) : nothing
-	fig = get(_FIGREG, scene, nothing)
-	(fig isa QtFigure) || error("No grid loaded in this window")
-	r = _clip_stats(fig.G.z, pct, nstd, nmad)
+	G = _active_grid(scene)                      # the grid ON DISPLAY (savefile.jl), not the base
+	G isa GMTgrid || error("No grid loaded in this window")
+	r = _clip_stats(G.z, pct, nstd, nmad)
 	r === nothing && return nothing
 	print(r[1], "/", r[2])
 	return nothing
@@ -148,9 +147,8 @@ function _on_clipgrid(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		in_between = p[5] == "1"
 		stretch    = p[6] == "1"
 
-		fig = get(_FIGREG, scene, nothing)
-		(fig isa QtFigure) || error("No grid loaded in this window")
-		G = fig.G
+		G = _active_grid(scene)                  # the grid ON DISPLAY (savefile.jl), not the base
+		G isa GMTgrid || error("No grid loaded in this window")
 
 		# Stretch histogram (Mirone scaleto8(Z,[below above])): a DISPLAY contrast remap, NOT a data
 		# change. scaleto8 maps [below,above] linearly onto the colour range, clamping outside — so the

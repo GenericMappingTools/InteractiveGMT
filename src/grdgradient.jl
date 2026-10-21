@@ -11,9 +11,8 @@
 function _on_grdgradient(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 	try
 		d = _nswing_parse(unsafe_string(cparams))
-		fig = get(_FIGREG, scene, nothing)
-		(fig isa QtFigure) || error("no grid loaded in this window")
-		G = fig.G
+		G = _active_grid(scene)                  # the grid ON DISPLAY (savefile.jl), not the base
+		G isa GMTgrid || error("no grid loaded in this window")
 
 		kw = Dict{Symbol,Any}()
 		# Mirone adds -M whenever the grid is geographic (grdgradient_mir.m: `if (handles.geog)`), which

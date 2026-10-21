@@ -227,8 +227,8 @@ function _on_rtp3d(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		mirror = p[9] == "1"
 
 		G = if fieldFile == "selected"
-			fig = get(_FIGREG, scene, nothing)
-			fig isa QtFigure ? fig.G : error("No grid loaded in this window")
+			Ga = _active_grid(scene)                 # the grid ON DISPLAY (savefile.jl), not the base
+			Ga isa GMTgrid ? Ga : error("No grid loaded in this window")
 		else
 			_gmtread_trb(fieldFile)      # grids are READ in "TRB" — THE reader, never a plain GMT.gmtread
 		end

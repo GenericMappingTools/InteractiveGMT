@@ -17,12 +17,12 @@ function _on_grdredpol(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 	try
 		d = _nswing_parse(unsafe_string(cparams))
 
-		# "selected" = the grid already loaded in this window (same sentinel/resolution as the other
-		# dialogs); anything else is a path to read.
+		# "selected" = the grid ON DISPLAY in this window (`_active_grid`, savefile.jl — the one answer
+		# every tool gives); anything else is a path to read.
 		spec = _get(d, "input", "selected")
 		G = if spec == "selected"
-			fig = get(_FIGREG, scene, nothing)
-			(fig isa QtFigure) ? fig.G : error("no grid loaded in this window")
+			Ga = _active_grid(scene)
+			Ga isa GMTgrid ? Ga : error("no grid loaded in this window")
 		else
 			isfile(spec) || error("grid file not found: $spec")
 			_gmtread_trb(String(spec))      # grids are READ in "TRB" — THE reader

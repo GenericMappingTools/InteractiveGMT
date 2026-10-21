@@ -1331,10 +1331,15 @@ GMTVTK_API void gmtvtk_progress_update(int value) {
 
 // File > Plot with GMT.jl… — the script editor's text, in memory both ways (no file behind it).
 // show: open (or refresh) this window's editor holding `text` (UTF-8). Returns 1 when shown.
+// `handle` is a 3-D viewer or an X,Y plot — both get the one editor (buildScriptEditor).
 GMTVTK_API int gmtvtk_script_editor_show_h(void *handle, const char *text) {
-	Scene *s = static_cast<Scene*>(handle);
-	if (!sceneAlive(s) || !text) return 0;
-	buildScriptEditor(s, QString::fromUtf8(text));
+	if (!text) return 0;
+	if (sceneAlive(static_cast<Scene*>(handle)))
+		buildScriptEditor(scriptHostScene(static_cast<Scene*>(handle)), QString::fromUtf8(text));
+	else if (xyAlive(static_cast<XYPlot*>(handle)))
+		buildScriptEditor(scriptHostXY(static_cast<XYPlot*>(handle)), QString::fromUtf8(text));
+	else
+		return 0;
 	return 1;
 }
 
@@ -1359,9 +1364,8 @@ GMTVTK_API int gmtvtk_axes_props_h(void *handle, const char *name, char *buf, in
 // the byte count, then with a buffer of at least count+1. Returns the byte count, 0 when there is no
 // editor for this window.
 GMTVTK_API int gmtvtk_script_editor_text_h(void *handle, char *buf, int cap) {
-	Scene *s = static_cast<Scene*>(handle);
-	if (!sceneAlive(s)) return 0;
-	QDialog *d = scriptEditorRegistry().value(s, nullptr);
+	if (!sceneAlive(static_cast<Scene*>(handle)) && !xyAlive(static_cast<XYPlot*>(handle))) return 0;
+	QDialog *d = scriptEditorRegistry().value(handle, nullptr);
 	QPlainTextEdit *ed = d ? d->findChild<QPlainTextEdit *>() : nullptr;
 	if (!ed) return 0;
 	const QByteArray u = ed->toPlainText().toUtf8();
@@ -7818,6 +7822,226 @@ GMTVTK_API int gmtvtk_xyplot_mark_test(void *handle, double x, double y, int ges
 	return pg.markSel;
 }
 
+// test hooks for the X,Y "Geomagnetic bar code" tools (65_xyplot.cpp) — the user's gestures, through
+// Qt's own event delivery to the real widgets, so the handlers run exactly where they run for real.
+// Like gmtvtk_xyplot_mark_test they never call xyAlive (g_xyplots is per-DLL).
+//  - CLICK the button (or toolbar action) whose object name is `name`. 1 = clicked, 0 = no such
+//    visible widget.
+GMTVTK_API int gmtvtk_xyplot_click_test(void *handle, const char *name) {
+	XYPlot *p = static_cast<XYPlot*>(handle);
+	if (!p || !p->win || !name) return 0;
+	QWidget *w = p->win->findChild<QAbstractButton *>(QString::fromUtf8(name));
+	if (!w)
+		for (QToolBar *tb : p->win->findChildren<QToolBar *>())
+			for (QAction *a : tb->actions())
+				if (a->objectName() == QString::fromUtf8(name)) w = tb->widgetForAction(a);
+	if (!w || !w->isVisible()) return 0;
+	const QPointF c = QRectF(w->rect()).center();
+	QMouseEvent press(QEvent::MouseButtonPress, c, w->mapToGlobal(c), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+	QApplication::sendEvent(w, &press);
+	QMouseEvent rel(QEvent::MouseButtonRelease, c, w->mapToGlobal(c), Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+	QApplication::sendEvent(w, &rel);
+	for (int i = 0; i < 5; ++i) QApplication::processEvents();
+	return 1;
+}
+//  - CHOOSE the menu item whose object name is `name` (its triggered(), as a menu click delivers it).
+//    1 = triggered, 0 = no such enabled item.
+GMTVTK_API int gmtvtk_xyplot_menu_test(void *handle, const char *name) {
+	XYPlot *p = static_cast<XYPlot*>(handle);
+	if (!p || !p->win || !name) return 0;
+	for (QAction *a : p->win->findChildren<QAction *>())
+		if (a->objectName() == QString::fromUtf8(name) && a->isEnabled()) {
+			a->trigger();
+			for (int i = 0; i < 5; ++i) QApplication::processEvents();
+			return 1;
+		}
+	return 0;
+}
+//  - TYPE `text` into the line edit `name` and press Enter; for a combo box, pick item number `text`.
+GMTVTK_API int gmtvtk_xyplot_type_test(void *handle, const char *name, const char *text) {
+	XYPlot *p = static_cast<XYPlot*>(handle);
+	if (!p || !p->win || !name || !text) return 0;
+	if (auto *e = p->win->findChild<QLineEdit *>(QString::fromUtf8(name))) {
+		if (!e->isVisible()) return 0;
+		e->setFocus();
+		e->selectAll();
+		QKeyEvent del(QEvent::KeyPress, Qt::Key_Delete, Qt::NoModifier);
+		QApplication::sendEvent(e, &del);
+		QKeyEvent typed(QEvent::KeyPress, 0, Qt::NoModifier, QString::fromUtf8(text));
+		QApplication::sendEvent(e, &typed);
+		QKeyEvent ret(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
+		QApplication::sendEvent(e, &ret);
+		for (int i = 0; i < 5; ++i) QApplication::processEvents();
+		return 1;
+	}
+	if (auto *cb = p->win->findChild<QComboBox *>(QString::fromUtf8(name))) {
+		if (!cb->isVisible()) return 0;
+		cb->setCurrentIndex(QString::fromUtf8(text).toInt());
+		for (int i = 0; i < 5; ++i) QApplication::processEvents();
+		return 1;
+	}
+	return 0;
+}
+//  - RIGHT-CLICK the chart at data point (x,y) of the current page and, when a menu comes up, click
+//    its item `item` with the mouse (inside the menu's own loop, under its grab, as the user does).
+//    1 = the item was clicked, 0 = no menu / no such item.
+GMTVTK_API int gmtvtk_xyplot_rclick_test(void *handle, double x, double y, const char *item) {
+	XYPlot *p = static_cast<XYPlot*>(handle);
+	if (!p || !p->widget || p->pages.empty() || !item) return 0;
+	p->widget->renderWindow()->Render();
+	double sx, sy;
+	if (!xyDataToScene(xyCur(p), x, y, sx, sy)) return 0;
+	const double dpr = p->widget->devicePixelRatioF();
+	const int H = p->widget->renderWindow()->GetSize()[1];
+	const QPointF at(sx / dpr, (H - sy) / dpr);
+	auto clicked = std::make_shared<int>(0);
+	struct Clicker : QObject {
+		QString want; std::shared_ptr<int> clicked;
+		bool eventFilter(QObject *o, QEvent *e) override {
+			auto *m = qobject_cast<QMenu *>(o);
+			if (m && e->type() == QEvent::Show && *clicked == 0) {
+				QPointer<QMenu> pm(m);
+				QString w = want; auto c = clicked;
+				auto tries = std::make_shared<int>(0);
+				auto step = std::make_shared<std::function<void()>>();
+				*step = [pm, w, c, tries, step]() {
+					if (!pm || *c) return;
+					QAction *hit = nullptr;
+					for (QAction *a : pm->actions()) if (a->text() == w) { hit = a; break; }
+					if (!(pm->isVisible() && hit && pm->actionGeometry(hit).isValid())) {
+						if (++*tries < 100) QTimer::singleShot(30, pm, *step);
+						else { *c = -2; pm->close(); }
+						return;
+					}
+					const QPoint q = pm->actionGeometry(hit).center();
+					QMouseEvent press(QEvent::MouseButtonPress, q, pm->mapToGlobal(QPointF(q)), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+					QApplication::sendEvent(pm, &press);
+					QMouseEvent rel(QEvent::MouseButtonRelease, q, pm->mapToGlobal(QPointF(q)), Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+					QApplication::sendEvent(pm, &rel);
+					*c = 1;
+				};
+				QTimer::singleShot(30, pm, *step);
+			}
+			return QObject::eventFilter(o, e);
+		}
+	};
+	auto *f = new Clicker;
+	f->want = QString::fromUtf8(item); f->clicked = clicked;
+	qApp->installEventFilter(f);
+	QMouseEvent press(QEvent::MouseButtonPress, at, p->widget->mapToGlobal(at), Qt::RightButton, Qt::RightButton, Qt::NoModifier);
+	QApplication::sendEvent(p->widget, &press);
+	QMouseEvent rel(QEvent::MouseButtonRelease, at, p->widget->mapToGlobal(at), Qt::RightButton, Qt::NoButton, Qt::NoModifier);
+	QApplication::sendEvent(p->widget, &rel);
+	qApp->removeEventFilter(f);
+	delete f;
+	for (int i = 0; i < 5; ++i) QApplication::processEvents();
+	return *clicked == 1 ? 1 : 0;
+}
+//  - DOUBLE-CLICK the bar code strip at `age` (drops a pico there, or removes the one under it).
+//    Returns the number of picos after it, -1 when the strip is not showing.
+GMTVTK_API int gmtvtk_xyplot_magbar_dblclick_test(void *handle, double age) {
+	XYPlot *p = static_cast<XYPlot*>(handle);
+	if (!p || !p->magBar || !p->magBar->isVisible() || p->pages.empty()) return -1;
+	p->widget->renderWindow()->Render();
+	double x;
+	if (!xyMagAgeToX(xyCur(p).mag, age, x)) return -1;
+	const QPointF at(xyMagXToPx(p, x), p->magBar->height() / 2.0);
+	for (QEvent::Type t : { QEvent::MouseButtonPress, QEvent::MouseButtonRelease, QEvent::MouseButtonDblClick, QEvent::MouseButtonRelease }) {
+		QMouseEvent ev(t, at, p->magBar->mapToGlobal(at), Qt::LeftButton,
+		               t == QEvent::MouseButtonRelease ? Qt::NoButton : Qt::LeftButton, Qt::NoModifier);
+		QApplication::sendEvent(p->magBar, &ev);
+	}
+	return (int)xyCur(p).mag.picos.size();
+}
+//  - the current page's magnetic state: out[0] bar on, [1] bricks, [2] measured / [3] synthetic /
+//    [4] fit series index (-1 none), [5] star row, [6] first-guess row, [7] fitted isochron x, [8]
+//    pinned lines, [9] picos, [10] control strip / [11] bar strip / [12] "Synthetic RTP" / [13] "Fit"
+//    / [14] age list / [15] age box visible, [16] last spreading rate, [17] contamination, [18] ages
+//    in the age line, [19] series on the page, [20] current page, [21] pages. Returns the count filled.
+GMTVTK_API int gmtvtk_xyplot_mag_state_test(void *handle, double *out, int cap) {
+	XYPlot *p = static_cast<XYPlot*>(handle);
+	if (!p || !out || p->pages.empty()) return 0;
+	const XYPage &pg = xyCur(p);
+	const XYMag &m = pg.mag;
+	auto vis = [](QWidget *w) { return (w && w->isVisible()) ? 1.0 : 0.0; };
+	const double v[] = {
+		m.barOn ? 1.0 : 0.0, (double)m.bStart.size(), (double)xyMagSeries(pg, 1), (double)xyMagSeries(pg, 2),
+		(double)xyMagSeries(pg, 3), (double)m.starIdx, (double)m.guessIdx, m.ageLineX, (double)m.pinned.size(),
+		(double)m.picos.size(), vis(p->magCtl), vis(p->magBar), vis(p->magBtnSynth), vis(p->magBtnFit),
+		vis(p->magAgeCombo), vis(p->magAgeEdit), m.lastSpeed, m.contam, (double)m.ageLine.size(),
+		(double)pg.series.size(), (double)p->curPageIdx, (double)p->pages.size() };
+	const int n = std::min(cap, (int)(sizeof(v) / sizeof(v[0])));
+	for (int i = 0; i < n; ++i) out[i] = v[i];
+	return n;
+}
+
+//  - LEFT-DRAG on the chart from data point (x0,y0) to (x1,y1) of the current page, through Qt's mouse
+//    events (press, moves, release) — the Spector-Grant band, or a fit line's end. 1 = sent.
+GMTVTK_API int gmtvtk_xyplot_drag_test(void *handle, double x0, double y0, double x1, double y1) {
+	XYPlot *p = static_cast<XYPlot*>(handle);
+	if (!p || !p->widget || p->pages.empty()) return 0;
+	p->widget->renderWindow()->Render();
+	double ax, ay, bx, by;
+	if (!xyDataToScene(xyCur(p), x0, y0, ax, ay) || !xyDataToScene(xyCur(p), x1, y1, bx, by)) return 0;
+	const double dpr = p->widget->devicePixelRatioF();
+	const int H = p->widget->renderWindow()->GetSize()[1];
+	auto q = [&](double sx, double sy) { return QPointF(sx / dpr, (H - sy) / dpr); };
+	auto send = [&](QEvent::Type t, const QPointF &at, Qt::MouseButtons bs) {
+		QMouseEvent ev(t, at, p->widget->mapToGlobal(at), t == QEvent::MouseMove ? Qt::NoButton : Qt::LeftButton, bs, Qt::NoModifier);
+		QApplication::sendEvent(p->widget, &ev);
+	};
+	send(QEvent::MouseButtonPress, q(ax, ay), Qt::LeftButton);
+	for (int k = 1; k <= 5; ++k)
+		send(QEvent::MouseMove, q(ax + (bx - ax) * k / 5.0, ay + (by - ay) * k / 5.0), Qt::LeftButton);
+	send(QEvent::MouseButtonRelease, q(bx, by), Qt::NoButton);
+	for (int i = 0; i < 3; ++i) QApplication::processEvents();
+	return 1;
+}
+//  - switch the Spector-Grant tool on for series `sel` with wavenumber unit factor `unit` (what its
+//    toggle does after the unit question, which a test cannot answer), or off (sel < 0).
+GMTVTK_API int gmtvtk_xyplot_sg_on_test(void *handle, int sel, double unit) {
+	XYPlot *p = static_cast<XYPlot*>(handle);
+	if (!p || !p->win || p->pages.empty()) return 0;
+	XYPage &pg = xyCur(p);
+	if (sel >= 0) {
+		pg.sgSel = sel; pg.sgUnit = unit; pg.sgActive = true;
+		xySGShowLines(pg, true);
+	}
+	else {
+		pg.sgActive = false; pg.sgDragging = false;
+		if (pg.sgFit) { pg.chart->RemovePlotInstance(pg.sgFit); pg.sgFit = nullptr; }
+		pg.sgFitTable = nullptr;
+		xySGShowLines(pg, false);
+	}
+	p->widget->renderWindow()->Render();
+	return 1;
+}
+//  - the current page's kept Spector-Grant lines: out[0] = count, then 7 per line (x0 y0 x1 y1 m b
+//    depth). Returns the numbers filled.
+GMTVTK_API int gmtvtk_xyplot_sg_state_test(void *handle, double *out, int cap) {
+	XYPlot *p = static_cast<XYPlot*>(handle);
+	if (!p || !out || cap < 1 || p->pages.empty()) return 0;
+	const XYPage &pg = xyCur(p);
+	int n = 0;
+	out[n++] = (double)pg.sgLines.size();
+	for (const XYSGLine &l : pg.sgLines)
+		for (double v : { l.x0, l.y0, l.x1, l.y1, l.m, l.b, l.depth })
+			if (n < cap) out[n++] = v;
+	return n;
+}
+
+// test hook: what the X,Y Misc menu SHOWS — out[0] "Log X axis" checked, out[1] "Log Y axis"
+// checked, out[2] the checked "Time axis (X)" item (its xTimeFmt code, -1 none). Returns 1, 0 if no menu.
+GMTVTK_API int gmtvtk_xyplot_misc_state_test(void *handle, int *out) {
+	XYPlot *p = static_cast<XYPlot*>(handle);
+	if (!p || !out || !p->actLogX || !p->actLogY) return 0;
+	out[0] = p->actLogX->isChecked() ? 1 : 0;
+	out[1] = p->actLogY->isChecked() ? 1 : 0;
+	out[2] = -1;
+	for (int i = 0; i < 6; ++i) if (p->actTime[i] && p->actTime[i]->isChecked()) out[2] = i;
+	return 1;
+}
+
 // test hook: the Profile panel's curve marker of window `handle` — set it to `setX` unless that is
 // NaN (through the panel's own setMarker, so every linked view follows), and return where it is.
 GMTVTK_API double gmtvtk_profile_marker_test(void *handle, double setX) {
@@ -10690,6 +10914,25 @@ GMTVTK_API int gmtvtk_aqua_arrow_screen_test(void *scene, int dir, int *outX, in
 	if (outX) *outX = (int)std::lround(g.x() * dpr);
 	if (outY) *outY = (int)std::lround(g.y() * dpr);
 	return 1;
+}
+
+// test hook: is the arrow `dir` the widget under the OS cursor right now? 1 yes, 0 no (another widget or
+// none), <0 no slider/arrow. Qt's own answer, from the cursor where the window system has put it: the
+// window-title check only says the cursor is somewhere on Aquamoto, and a window still settling after
+// it was brought back on screen puts the arrow elsewhere than gmtvtk_aqua_arrow_screen_test read it.
+GMTVTK_API int gmtvtk_aqua_arrow_under_cursor_test(void *scene, int dir) {
+	(void)scene;
+	QScrollBar *slider = nullptr;
+	for (QWidget *tl : QApplication::topLevelWidgets())
+		if (QScrollBar *sb = tl->findChild<QScrollBar *>("sliceSlider")) slider = sb;
+	if (!slider) return -2;
+	QToolButton *btn = nullptr;
+	if (QWidget *row = slider->parentWidget())
+		for (QToolButton *b : row->findChildren<QToolButton *>())
+			if (b->arrowType() == (dir < 0 ? Qt::LeftArrow : Qt::RightArrow)) { btn = b; break; }
+	if (!btn) return -4;
+	QApplication::processEvents();
+	return QApplication::widgetAt(QCursor::pos()) == btn ? 1 : 0;
 }
 
 // test hook: the arrow's press state as Qt sees it — "down|qtButtons|grabber|activeWindow|popup" in
@@ -14600,6 +14843,151 @@ GMTVTK_API void gmtvtk_xyplot_set_analysis_callback(JuliaXYAnaFn fn) {
 	g_juliaXYAna = fn;
 }
 
+// A request the X,Y window sent to Julia failed: `msg` is shown in a message box in front of the user
+// when the request returns (xyRequest, 65_xyplot.cpp), not only in the Errors tab. No-op on a dead handle.
+GMTVTK_API void gmtvtk_xyplot_request_failed(void *handle, const char *msg) {
+	XYPlot *p = static_cast<XYPlot*>(handle);
+	if (!xyAlive(p)) return;
+	p->reqErr = QString::fromUtf8(msg && msg[0] ? msg : "The request failed.");
+}
+
+// Magnetic modelling (65_xyplot.cpp "Geomagnetic bar code", xymag.jl). The CURRENT page's bar code:
+// `n` normal-polarity bricks [a0[i], a1[i]] (Ma, ascending), their anomaly names joined by '\x1f'
+// ("a" = unnamed), and the two ages as typed (start > end = the bar runs old -> young).
+GMTVTK_API void gmtvtk_xyplot_mag_set_bar(void *handle, const double *a0, const double *a1, int n,
+                                          const char *labels, double ageStart, double ageEnd) {
+	XYPlot *p = static_cast<XYPlot*>(handle);
+	if (!xyAlive(p) || n < 0 || (n > 0 && (!a0 || !a1))) return;
+	xyMagSetBar(p, a0, a1, n, labels, ageStart, ageEnd);
+}
+
+// The current page's synthetic RTP profile: (x, y) of `n` points, the age under each point, and the
+// full spreading rate (cm/yr) it was computed with. Adds the "Synthetic RTP" series or updates it.
+GMTVTK_API void gmtvtk_xyplot_mag_set_synth(void *handle, const double *x, const double *y,
+                                            const double *ageLine, int n, double speed) {
+	XYPlot *p = static_cast<XYPlot*>(handle);
+	if (!xyAlive(p) || !x || !y || !ageLine || n < 2) return;
+	xyMagSetSynth(p, x, y, ageLine, n, speed);
+}
+
+// The current page's fitted isochron: the synthetic chunk at its best-correlation place (x, y, `n`
+// points, drawn dashed as series `name`) and the x where the chosen age now falls (the dashed line).
+GMTVTK_API void gmtvtk_xyplot_mag_set_fit(void *handle, const double *x, const double *y, int n,
+                                          double ageX, const char *name) {
+	XYPlot *p = static_cast<XYPlot*>(handle);
+	if (!xyAlive(p) || !x || !y || n < 1) return;
+	xyMagSetFit(p, x, y, n, ageX, name);
+}
+
+// The age under every point of the current page's synthetic, into `buf` (capacity `cap`). Returns the
+// number of ages (call with buf = null for the size), -1 on a dead handle.
+GMTVTK_API int gmtvtk_xyplot_mag_ageline(void *handle, double *buf, int cap) {
+	XYPlot *p = static_cast<XYPlot*>(handle);
+	if (!xyAlive(p)) return -1;
+	const std::vector<double> &a = xyCur(p).mag.ageLine;
+	if (buf) std::copy_n(a.begin(), std::min((int)a.size(), std::max(cap, 0)), buf);
+	return (int)a.size();
+}
+
+// X,Y session (File > Session, xysession.jl). The whole window's state as a manifest text (no series
+// data), into `buf` (capacity `cap`, NUL-terminated when it fits). Returns its length in bytes (call
+// with buf = null for the size), -1 on a dead handle.
+GMTVTK_API int gmtvtk_xyplot_session_state(void *handle, char *buf, int cap) {
+	XYPlot *p = static_cast<XYPlot*>(handle);
+	if (!xyAlive(p)) return -1;
+	const std::string st = xySessionState(p);
+	if (buf && cap > 0) {
+		const int n = std::min((int)st.size(), cap - 1);
+		std::memcpy(buf, st.data(), (size_t)n);
+		buf[n] = '\0';
+	}
+	return (int)st.size();
+}
+
+// Put a saved state (gmtvtk_xyplot_session_state's text) back on a window whose pages and series were
+// just rebuilt in the same order.
+GMTVTK_API void gmtvtk_xyplot_session_apply(void *handle, const char *text) {
+	xySessionApply(static_cast<XYPlot*>(handle), text);
+}
+
+// Number of pages of an X,Y window (-1 on a dead handle).
+GMTVTK_API int gmtvtk_xyplot_page_count(void *handle) {
+	XYPlot *p = static_cast<XYPlot*>(handle);
+	return xyAlive(p) ? (int)p->pages.size() : -1;
+}
+
+// Points of series `sel` on page `page` (any page, not only the current one); -1 on a bad handle/index.
+GMTVTK_API int gmtvtk_xyplot_page_series_npoints(void *handle, int page, int sel) {
+	XYPlot *p = static_cast<XYPlot*>(handle);
+	if (!xyAlive(p) || page < 0 || page >= (int)p->pages.size()) return -1;
+	const std::vector<XYSeries> &series = p->pages[page].series;
+	if (sel < 0 || sel >= (int)series.size() || !series[sel].table) return -1;
+	return (int)series[sel].table->GetNumberOfRows();
+}
+
+// The track under series `sel` of the current page (one (x,y) per row; a profile from the 3-D viewer
+// carries it): copied into `x`,`y` (capacity `cap`; null for the size only), `*geog` = 1 lon/lat, 0
+// cartesian. Returns the number of track points, 0 when the series has none, -1 on a bad handle/index.
+GMTVTK_API int gmtvtk_xyplot_series_track(void *handle, int sel, double *x, double *y, int cap, int *geog) {
+	XYPlot *p = static_cast<XYPlot*>(handle);
+	if (!xyAlive(p)) return -1;
+	const std::vector<XYSeries> &series = xyCur(p).series;
+	if (sel < 0 || sel >= (int)series.size()) return -1;
+	const XYSeries &se = series[sel];
+	if (geog) *geog = se.trackGeog;
+	if (se.trackGeog < 0) return 0;
+	const int n = (int)se.trackX.size();
+	if (x && y && cap > 0) {
+		std::copy_n(se.trackX.begin(), std::min(n, cap), x);
+		std::copy_n(se.trackY.begin(), std::min(n, cap), y);
+	}
+	return n;
+}
+
+// Give series `sel` of the current page its track (`n` points, one per row; `geog` 1 = lon/lat). n = 0
+// removes it. Returns 1, 0 when n does not match the series' row count, -1 on a bad handle/index.
+GMTVTK_API int gmtvtk_xyplot_set_track(void *handle, int sel, const double *x, const double *y, int n, int geog) {
+	XYPlot *p = static_cast<XYPlot*>(handle);
+	if (!xyAlive(p)) return -1;
+	std::vector<XYSeries> &series = xyCur(p).series;
+	if (sel < 0 || sel >= (int)series.size() || !series[sel].table) return -1;
+	XYSeries &se = series[sel];
+	if (n <= 0 || !x || !y) { se.trackX.clear(); se.trackY.clear(); se.trackGeog = -1; return 1; }
+	if (n != (int)se.table->GetNumberOfRows()) return 0;
+	se.trackX.assign(x, x + n);
+	se.trackY.assign(y, y + n);
+	se.trackGeog = geog ? 1 : 0;
+	return 1;
+}
+
+// The Spector-Grant fit's answer (xyanalysis.jl `_xy_sgfit`, GMT trend1d): ln(power) = m*k + b.
+GMTVTK_API void gmtvtk_xyplot_sg_set_fit(void *handle, double m, double b) {
+	XYPlot *p = static_cast<XYPlot*>(handle);
+	if (!xyAlive(p)) return;
+	p->sgFitM = m; p->sgFitB = b; p->sgFitGot = std::isfinite(m) && std::isfinite(b);
+}
+
+// The 3-D viewer this X,Y window belongs to (its spectra came from that viewer's grids), or null.
+GMTVTK_API void *gmtvtk_xyplot_owner(void *handle) {
+	XYPlot *p = static_cast<XYPlot*>(handle);
+	return (xyAlive(p) && p->owner && sceneAlive(p->owner)) ? p->owner : nullptr;
+}
+
+// Copy series `sel` of page `page` into `x`,`y` (at least `maxn` each). Returns the count copied.
+GMTVTK_API int gmtvtk_xyplot_page_get_series(void *handle, int page, int sel, double *x, double *y, int maxn) {
+	XYPlot *p = static_cast<XYPlot*>(handle);
+	if (!xyAlive(p) || !x || !y || maxn < 1 || page < 0 || page >= (int)p->pages.size()) return -1;
+	const std::vector<XYSeries> &series = p->pages[page].series;
+	if (sel < 0 || sel >= (int)series.size() || !series[sel].table) return -1;
+	vtkTable *t = series[sel].table;
+	const int n = std::min(maxn, (int)t->GetNumberOfRows());
+	for (int r = 0; r < n; ++r) {
+		x[r] = t->GetValue(r, 0).ToDouble();
+		y[r] = t->GetValue(r, 1).ToDouble();
+	}
+	return n;
+}
+
 // ============================================================================
 //  gmtedit — the MGD77 track editor (67_gmtedit.cpp). Its opaque handle is a
 //  GmtEdit* (NOT a Scene*), like the X,Y tool's. Julia owns the data: it reads
@@ -14750,3 +15138,4 @@ GMTVTK_API void gmtvtk_xyplot_set_new_callback(JuliaXYNewFn fn) {
 GMTVTK_API void *gmtvtk_open_xyplot_from_host(void) {
 	return xyOpenBlankFromHost();
 }
+

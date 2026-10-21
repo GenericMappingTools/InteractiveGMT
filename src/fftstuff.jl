@@ -396,12 +396,12 @@ end
 # and what Mirone does there (`cvlib_mex('color', Z, 'rgb2gray')` in GridToolsSectrum_CB).
 function _fft_grid_arg(scene::Ptr{Cvoid}, spec::String)
 	data = if spec == "selected"
-		# THE resolver for "what is this window showing" (`_find_object_named`, savefile.jl): it
-		# answers for BOTH kinds and falls back to the window's own registry entry. A grid first —
-		# an image window that also carries a grid is a grid window for this purpose — then the
+		# The grid ON DISPLAY (`_active_grid`, savefile.jl — THE "which grid does a tool work on"
+		# answer; the first-registered grid it used to take is the base, not what is on screen). A grid
+		# first — an image window that also carries a grid is a grid window for this purpose — then the
 		# picture, which is what Image > FFT Spectrum runs on.
-		_, g = _find_object_named(scene, :grid)
-		if g === nothing
+		g = _active_grid(scene)
+		if !(g isa GMTgrid)
 			_, g = _find_object_named(scene, :image)
 		end
 		g === nothing ? error("this window has no grid or image to transform") : g
@@ -448,4 +448,22 @@ fft_analytic_signal(G::GMTgrid, o::FFTOpts) =
 		kmod = sqrt.(KX .^ 2 .+ KY .^ 2)
 		dTdz = _fft_inv(F .* kmod) .^ 2
 		return sqrt.(dTdx .+ dTdy .+ dTdz)
+	end; split = true)
+
+# Band-pass — fft_stuff.m's 'bpass' mode, reached from the X,Y tool's Spector & Grant fit line ("Bandpass
+# Filter", ecran's do_bandFilter). Keeps the frequencies between `flo` and `fhi` (cycles per metre — the
+# unit fft_stuff.m's handles.bandpass is in): what lies inside the square |fx|,|fy| < flo and outside
+# the square |fx|,|fy| > fhi is zeroed, the same two roipoly squares the .m builds. The mean is kept
+# (fft_stuff.m takes it off before the transform and adds it back after).
+fft_bandpass(G::GMTgrid, o::FFTOpts, flo::Real, fhi::Real) =
+	_fft_transform(G, o, "Bandpass filtered", function (Z, K)
+		KX, KY = K
+		F = _fft_fwd(Z)
+		dc = F[1, 1]
+		for i in eachindex(F)
+			f = max(abs(KX[i]), abs(KY[i])) / 2pi
+			(f < flo || f > fhi) && (F[i] = 0)
+		end
+		F[1, 1] = dc
+		return _fft_inv(F)
 	end; split = true)

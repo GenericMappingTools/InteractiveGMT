@@ -47,7 +47,7 @@ end
 
 # Does the window hold anything to trace? (An image or a grid; the same lookups _vw_source makes.)
 _vw_has_source(scene::Ptr{Cvoid})::Bool =
-	_find_object_named(scene, :image)[2] isa GMTimage || _find_object_named(scene, :grid)[2] isa GMTgrid
+	_find_object_named(scene, :image)[2] isa GMTimage || _active_grid(scene) isa GMTgrid
 
 # The picture to trace: the image the caller named, else the window's image, else its grid. The
 # window's PRIMARY raster is registered unnamed; its Scene Objects name ("surf_name") is what the
@@ -60,7 +60,8 @@ function _vw_source(scene::Ptr{Cvoid}, wanted::String)
 	primary() = try String(get(_scene_state(scene), "surf_name", "")) catch; "" end
 	nm, I = _find_object_named(scene, :image)
 	(I isa GMTimage) && return (isempty(nm) ? primary() : nm), I, "image"
-	nm, G = _find_object_named(scene, :grid)      # nm as registered: the recipe lookup keys on it
+	nm = _active_grid_name(scene)                # the grid ON DISPLAY (savefile.jl); "" = the base surface
+	G = _active_grid(scene, nm)
 	(G isa GMTgrid) && return (isempty(nm) ? primary() : nm), _vw_grid_picture(scene, nm, G), "grid"
 	error("this window has no image or grid to trace")
 end

@@ -25,6 +25,35 @@ using InteractiveGMT
 InteractiveGMT.install_gmtsar_plugin()
 ```
 
+## Using the modules
+
+Once loaded, the GMTSAR modules run in the GMT session of GMT.jl, like GMT's own. They take
+GMT-style options instead of the positional arguments of the GMTSAR programs, e.g.
+`make_s1a_tops -As1a.xml -Bs1a.tiff -GS1_20150121_ALL_F1 -M0` for
+`make_s1a_tops s1a.xml s1a.tiff S1_20150121_ALL_F1 0`. A module given no options prints its usage,
+with every option. The options otherwise mean what the GMTSAR documentation
+([wiki](https://github.com/gmtsar/gmtsar/wiki/GMTSAR-Wiki-Page),
+[manual](http://topex.ucsd.edu/gmtsar/tar/GMTSAR_2ND_TEX.pdf)) says the arguments of the programs
+mean.
+
+GMT.jl's `gmt()` adds its own output options to the command it runs, so call the modules through
+`GMT_Call_Module`, with files for input and output:
+
+```julia
+using GMT
+api = GMT.G_API[]
+gmtsar_call(m, args) = GC.@preserve args GMT.GMT_Call_Module(api, m, GMT.GMT_MODULE_CMD, pointer(args))
+
+gmtsar_call("nearest_grid", "in.grd -Gout.grd")     # status 0 on success
+gmtsar_call("SAT_baseline", "")                     # prints the usage
+```
+
+For whole workflows, the gmtsar repository has Julia ports of the csh processing scripts
+(`gmtsar/julia`, see its README.md) and a complete Sentinel-1 stack run with them
+(`gmtsar/tests/s1a_stack_T173.jl`). Those scripts run the `gmt` program, a separate process,
+which does not see the plugin loaded here: it needs the plugin in `GMT_CUSTOM_LIBS` of its own
+`gmt.conf`, and `GMTSAR_SHAREDIR` set to `<InteractiveGMT>/gmtsar/share/gmtsar`.
+
 ## The archive
 
 It is built by the `plugin` and `plugin-windows` jobs of the gmtsar repository's CI

@@ -137,6 +137,9 @@ end
 	for (btn, want) in cases
 		@test GmtvtkTest.fft_click(fig.h, btn) == 1
 		sleep(0.4)
+		# A missing row says nothing about WHY: the tool's own error is in the sink, so show it.
+		occursin(want, GmtvtkTest.objrows(fig.h)) ||
+			println("FFT $btn added no \"$want\" row; tool errors:\n  ", join(copy(IG._TOOL_ERRORS), "\n  "))
 		@test occursin(want, GmtvtkTest.objrows(fig.h))
 	end
 	# ... and the panel really grew by one row per operation (the empty-window bug grew none).

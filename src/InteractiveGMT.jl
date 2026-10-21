@@ -52,6 +52,9 @@ include("package_recipes.jl")   # recipe functions for Rasters, ...
 include("xyplot.jl")     # standalone X,Y plot tool (vtkChartXY); evolution of the Profile
 include("xyanalysis.jl") # X,Y Analysis menu (remove mean/trend, derivatives, FFT, autocorr)
 include("xystick.jl")    # stick (vector) diagrams for the X,Y tool (ecran 'stick')
+include("xymag.jl")      # X,Y magnetic modelling: bar code, synthetic RTP, isochron age fit (ecran)
+include("xysession.jl")  # X,Y File > Session: Save / Open (.igmtz, kind=xyplot)
+include("xyscript.jl")   # X,Y File > Plot with GMT.jl (the 3-D viewer's own script editor + emitter)
 include("drop.jl")
 include("importxy.jl")  # File > Open xy(z): Mirone point/arrow/scaled-symbol/text table imports
 include("paste.jl")      # Ctrl+V: clipboard image / numeric table -> the SAME builders drop.jl uses

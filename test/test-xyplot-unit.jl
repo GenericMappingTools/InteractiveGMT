@@ -100,6 +100,16 @@ end
 	@test abs(fr[ipk] - f0) < 0.5
 end
 
+@testitem "Sound Velocity Profile (ecran AnalysisSVP_CB)" tags=[:unit, :fast] begin
+	IG = InteractiveGMT
+	# UNESCO (1983) check value for Chen & Millero: S=40, T=40 °C, P=1000 bar (=10000 dbar) -> 1731.995 m/s
+	@test isapprox(IG._svp_chen_millero([40.0], [40.0], [10000.0])[1], 1731.995; atol=1e-3)
+	# depth from pressure: zero at the surface, ~1 m per dbar, negative downward
+	z = IG._z_from_p([0.0, 1000.0], 30.0)
+	@test z[1] == 0
+	@test -1000 < z[2] < -980
+end
+
 @testitem "Butterworth low-pass attenuates a high tone" tags=[:unit, :fast] begin
 	IG = InteractiveGMT
 	t = collect(0.0:0.01:10.23)                     # N=1024
@@ -109,6 +119,11 @@ end
 	# interior (dodge FFT edge ringing): filtered follows the slow signal, raw does not
 	mid = (length(t) ÷ 4):(3 * length(t) ÷ 4)
 	@test sum(abs2, filt[mid] .- slow[mid]) < 0.2 * sum(abs2, raw[mid] .- slow[mid])
+	# edges: a trend makes the two ends jump; reflection padding keeps it from ringing in
+	tr   = slow .+ 0.3 .* t
+	ftr  = IG._butter(t, tr .+ 0.5 .* sin.(2π * 20.0 .* t), 2.0, "low")
+	e    = vcat(1:50, length(t)-49:length(t))
+	@test sqrt(sum(abs2, ftr[e] .- tr[e]) / length(e)) < 0.1
 end
 
 @testitem "Spector-Grant depth to sources" tags=[:unit, :fast] begin
@@ -241,4 +256,70 @@ end
 	@test IG._quantile_sorted(s, 0.5) == 3.0
 	@test IG._quantile_sorted(s, 1.0) == 5.0
 	@test isapprox(IG._quantile_sorted(s, 0.25), 2.0; atol=1e-12)
+end
+@testitem "magnetic bar code bricks (push_magBar_CB)" tags=[:unit, :fast] begin
+	IG = InteractiveGMT
+	s, e, t = IG._magbar_bricks(0, 10)
+	@test s[1] == 0.0 && e[1] == 0.78 && t[1] == "1"       # C1n, Brunhes
+	@test issorted(s) && all(e .> s) && e[end] == 10.0     # last brick clipped at the end age
+	s2, e2, t2 = IG._magbar_bricks(10, 0)                  # reversed request: same bricks
+	@test s2 == s && e2 == e
+	s3, e3, t3 = IG._magbar_bricks(0.5, 3)                 # start inside C1n: a clipped first brick
+	@test s3[1] == 0.5 && e3[1] == 0.78 && t3[1] == "a"
+end
+
+@testitem "magnetic synthetic model (magmodel)" tags=[:unit, :fast] begin
+	IG = InteractiveGMT
+	s, _, _ = IG._magbar_bricks(0, 10)
+	x = collect(0.0:1.0:200.0)
+	anom, al, _ = IG._magmodel(s[1], x, fill(2.5, length(x)), 0, 90, 4.0, 0, 0, 0.0, 1.0)
+	@test length(anom) == length(x) && !any(isnan, anom)
+	@test al[1] ≈ 0.0 && al[end] ≈ 10.0                    # 200 km at a 4 cm/yr full rate = 10 Ma
+	@test 100 < maximum(abs, anom) < 1000                   # nT-scale anomaly
+	_, al9, _ = IG._magmodel(s[1], x, fill(2.5, length(x)), 0, 90, 4.0, 0, 0, 0.0, 0.9)
+	@test al9[end] ≈ 9.0                                   # contamination scales the age axis
+	d = copy(fill(2.5, length(x))); d[50:60] .= NaN         # depth gaps are re-invented, not propagated
+	@test !any(isnan, IG._magmodel(s[1], x, d, 0, 90, 4.0, 0, 0, 0.0, 1.0)[1])
+end
+
+@testitem "isochron fit correlation (sanitize_shift)" tags=[:unit, :fast] begin
+	IG = InteractiveGMT
+	s, _, _ = IG._magbar_bricks(0, 10)
+	x = collect(0.0:1.0:200.0)
+	ys = IG._magmodel(s[1], x, fill(2.5, length(x)), 0, 90, 4.0, 0, 0, 0.0, 1.0)[1]
+	nrm(v) = (w = (v .- minimum(v)) ./ (maximum(v) - minimum(v)); w .- sum(w) / length(w))
+	for k in (0, 3, -4, 6)                                 # the measured chunk is the synthetic, k points on
+		@test IG._sanitize_shift(nrm(ys[70:100]), nrm(ys[(70:100) .+ k]), 15) == -k
+	end
+end
+
+@testitem "Spector-Grant band-pass keeps only the band (fft_bandpass)" tags=[:unit, :fast] begin
+	IG = InteractiveGMT; GMT = IG.GMT
+	# two waves along x on a metric grid (dx = 100 m, 64 km wide): 2 km and 32 km wavelength — whole
+	# periods in the window, so neither leaks into the other's band — plus a mean
+	x = collect(0.0:100.0:63_900.0); y = collect(0.0:100.0:3_100.0)
+	z = Float32[5 + sin(2π * xi / 2000) + sin(2π * xi / 32000) for yi in y, xi in x]
+	G = GMT.mat2grid(z; x = x, y = y)
+	o = IG.FFTOpts(length(x), length(y), IG.FFT_METERS, false)
+	Gb, _ = IG.fft_bandpass(G, o, 1 / 4000, 1 / 1000)      # pass 1-4 km: keeps the 2 km wave
+	zb = IG._zmat(Gb)
+	ref = Float64[5 + sin(2π * xi / 2000) for yi in y, xi in x]
+	@test maximum(abs.(zb .- ref)) < 0.05                   # the 20 km wave is gone, the mean kept
+end
+
+@testitem "Reference a curve to another (do_reference)" tags=[:unit, :fast] begin
+	IG = InteractiveGMT
+	# the reference: x in 0..100; the other curve is the same record on a distorted x (piecewise)
+	xr = collect(0.0:1.0:100.0)
+	xd = similar(xr)
+	for i in eachindex(xr)                                  # 0..40 -> 10..30, 40..100 -> 30..150
+		xd[i] = xr[i] <= 40 ? 10 + xr[i] / 2 : 30 + (xr[i] - 40) * 2
+	end
+	offs = [11, 41, 101]                                    # rows picked on the distorted curve
+	xm   = [10.0, 40.0, 100.0]                              # where they are on the reference
+	out = IG._xy_reference(xd, offs, xm)
+	@test out[offs] ≈ xm                                    # every pick lands on its partner
+	@test out[11:end] ≈ xr[11:end]                         # between and after the picks: the reference x
+	@test out[1:10] ≈ xd[1:10] .+ (xm[1] - xd[11])         # before the first pick: shifted with it, not stretched
+	@test_throws ErrorException IG._xy_reference(xd, [11, 41], [10.0])
 end

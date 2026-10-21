@@ -1021,3 +1021,271 @@ end
 		ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), f.h)
 	end
 end
+
+@testitem "X,Y geomagnetic bar code: bar, synthetic RTP, isochron fit, picks, session" tags=[:gui, :xyplot] setup=[GmtvtkTest] begin
+	IG = InteractiveGMT
+	tf = GmtvtkTest._test_fn
+	IG._XY_CURRENT[] = C_NULL   # a sibling item's window close is async -- open a fresh one
+	s, _, _ = IG._magbar_bricks(0, 10)
+	x = collect(0.0:1.0:200.0)
+	ys = IG._magmodel(s[1], x, fill(2.5, length(x)), 0, 90, 4.0, 0, 0, 0.0, 1.0)[1]
+	ym = vcat(fill(ys[1], 5), ys[1:end-5])                # the "measured" profile: the model, 5 km later
+	p = xyplot(x, ym; name="mag anomaly")
+	q = nothing
+	path = joinpath(tempdir(), "igmt_xymag_$(getpid()).igmtz")
+	st(h) = (o = fill(NaN, 22); ccall(tf(:gmtvtk_xyplot_mag_state_test), Cint, (Ptr{Cvoid}, Ptr{Float64}, Cint), h, o, 22); o)
+	click(n) = ccall(tf(:gmtvtk_xyplot_click_test), Cint, (Ptr{Cvoid}, Cstring), p.h, n)
+	typ(n, t) = ccall(tf(:gmtvtk_xyplot_type_test), Cint, (Ptr{Cvoid}, Cstring, Cstring), p.h, n, t)
+	rclick(x, y, it) = ccall(tf(:gmtvtk_xyplot_rclick_test), Cint, (Ptr{Cvoid}, Cdouble, Cdouble, Cstring), p.h, x, y, it)
+	try
+		IG._pump_once()
+		@test click("xyMagTool") == 1                      # the toolbar toggle shows the control strip
+		@test st(p.h)[11] == 1
+		@test typ("xyMagStart", "0") == 1 && typ("xyMagEnd", "10") == 1
+		@test click("xyMagCreateBar") == 1
+		o = st(p.h)
+		@test o[1] == 1 && o[2] == length(s) && o[3] == 0 && o[12] == 1   # bar on, measured = series 0
+		@test click("xyMagSynthetic") == 1
+		o = st(p.h)
+		@test o[4] >= 0 && o[17] ≈ 4.0 && o[19] == length(x)              # synthetic, rate from the profile
+		@test o[14] == 1 && o[16] == 1                                    # Fit + the age box now showing
+		@test typ("xyMagAge", "4.2") == 1
+		@test st(p.h)[6] == 84                                            # star on the synthetic at 4.2 Ma
+		@test click("xyMagFit") == 1
+		o = st(p.h)
+		@test o[5] >= 0 && o[8] ≈ 89.0                                     # the fit finds the 5 km delay
+		@test rclick(89.0, 0.0, "Pin-point me") == 1
+		o = st(p.h)
+		@test o[9] == 1 && isnan(o[8])
+		@test rclick(84.0, ys[85], "Guide me") == 1
+		mk = fill(NaN, 3)
+		ccall(tf(:gmtvtk_xyplot_mark_test), Cint, (Ptr{Cvoid}, Cdouble, Cdouble, Cint, Ptr{Cdouble}), p.h, 95.0, ym[96], 0, mk)
+		@test st(p.h)[7] == 95                                            # the first guess, on the measured curve
+		@test ccall(tf(:gmtvtk_xyplot_magbar_dblclick_test), Cint, (Ptr{Cvoid}, Cdouble), p.h, 3.3) == 1
+		# File > Session: save, reopen through the one session loader, same state
+		IG._xy_save_session(p.h, path)
+		q = IG._on_load_session(C_NULL, path)
+		IG._pump_once()
+		@test q isa QtXYPlot
+		strip_title(t) = replace(t, r"title=.*\n" => "")
+		@test strip_title(IG._xy_session_state(q.h)) == strip_title(IG._xy_session_state(p.h))
+		@test IG._xy_get_series(q.h, 0) == IG._xy_get_series(p.h, 0)
+	finally
+		ccall(IG._fn(:gmtvtk_xyplot_close), Cvoid, (Ptr{Cvoid},), p.h)
+		q === nothing || ccall(IG._fn(:gmtvtk_xyplot_close), Cvoid, (Ptr{Cvoid},), q.h)
+		rm(path; force=true)
+	end
+end
+
+@testitem "X,Y Misc menu shows the page's log / time state, however it was set" tags=[:gui, :xyplot] setup=[GmtvtkTest] begin
+	IG = InteractiveGMT
+	IG._XY_CURRENT[] = C_NULL
+	t = collect(1.0:100.0)
+	p = xyplot(t, t .^ 2; name="sq", yscale=:log)
+	ms() = (o = fill(Cint(-9), 3); ccall(GmtvtkTest._test_fn(:gmtvtk_xyplot_misc_state_test), Cint, (Ptr{Cvoid}, Ptr{Cint}), p.h, o); o)
+	try
+		IG._pump_once()
+		@test ms() == [0, 1, 0]                     # yscale=:log from Julia ticks "Log Y axis"
+		add!(p, t, t .^ 3; name="cube")             # a later add! keeps it
+		@test ms() == [0, 1, 0]
+		xtime!(p, :decyear)
+		@test ms()[3] == 4                          # xtime! from Julia ticks its Time-axis item
+		logscale!(p; x=true, y=false)
+		@test ms() == [1, 0, 4]
+		ccall(IG._fn(:gmtvtk_xyplot_add_page), Cint, (Ptr{Cvoid}, Cstring), p.h, "fresh")
+		@test ms() == [0, 0, 0]                     # a new page shows ITS state, not the last page's
+	finally
+		ccall(IG._fn(:gmtvtk_xyplot_close), Cvoid, (Ptr{Cvoid},), p.h)
+	end
+end
+
+@testitem "X,Y magnetic model reads the 3-D profile's track; a redrawn track re-runs it" tags=[:gui, :xyplot] setup=[GmtvtkTest] begin
+	IG = InteractiveGMT; GMT = IG.GMT; tf = GmtvtkTest._test_fn
+	IG._XY_CURRENT[] = C_NULL
+	G = GMT.mat2grid(Float32[100 * sind(30x) * cosd(10y) for y in -2:0.02:2, x in -3:0.02:3]; x=[-3.0, 3.0], y=[-2.0, 2.0], proj4="+proj=longlat")
+	B = GMT.mat2grid(Float32[-3000 - 200x for y in -2:0.02:2, x in -3:0.02:3]; x=[-3.0, 3.0], y=[-2.0, 2.0], proj4="+proj=longlat")
+	batf = joinpath(tempdir(), "igmt_bat_$(getpid()).grd"); GMT.gmtwrite(batf, B)
+	f = view_grid(G); q = nothing
+	drag(a, b, c, d) = ccall(tf(:gmtvtk_profile_drag_test), Cint, (Ptr{Cvoid}, Cdouble, Cdouble, Cdouble, Cdouble), f.h, a, b, c, d)
+	st() = (o = fill(NaN, 22); ccall(tf(:gmtvtk_xyplot_mag_state_test), Cint, (Ptr{Cvoid}, Ptr{Float64}, Cint), q.h, o, 22); o)
+	GmtvtkTest._register_console_eval_test(true)   # the dragged profile measures as the app does
+	try
+		IG._pump_once()
+		@test drag(0.25, 0.5, 0.75, 0.5) > 2
+		global q = profile_to_xyplot(f); IG._pump_once()
+		tr = IG._xy_series_track(q.h, 0)
+		@test tr !== nothing && tr[3] && length(tr[1]) == length(IG._xy_get_series(q.h, 0)[1])
+		@test isapprox(IG._mag_track_azimuth(tr...), 90; atol=0.5)            # an E-W track
+		# the panel's distance axis is a REAL distance (the measure engine, Preferences unit) — it used
+		# to be degrees times a vertical normaliser (a ~565 km track read 1692)
+		km = IG._mag_track_dist(tr[1], tr[2], true)[end]
+		ratio = IG._xy_get_series(q.h, 0)[1][end] / km
+		@test any(u -> isapprox(ratio, u; rtol=0.01), (1000.0, 1.0, 1 / 1.852, 1 / 1.609344))
+		click(n) = ccall(tf(:gmtvtk_xyplot_click_test), Cint, (Ptr{Cvoid}, Cstring), q.h, n)
+		typ(n, t) = ccall(tf(:gmtvtk_xyplot_type_test), Cint, (Ptr{Cvoid}, Cstring, Cstring), q.h, n, t)
+		click("xyMagTool"); typ("xyMagStart", "0"); typ("xyMagEnd", "10"); click("xyMagCreateBar")
+		@test click("xyMagSynthetic") == 1
+		# rate from the track's length measured EXACTLY as the panel measures it (Preferences type): the
+		# panel's last distance, in whichever Preferences unit, gives the same km to the last digits
+		panelkm(q) = (dpan = IG._xy_get_series(q.h, 0)[1][end];
+		              [dpan / u for u in (1000.0, 1.0, 1 / 1.852, 1 / 1.609344)])
+		@test any(k -> isapprox(st()[17], 2 * k / 10 * 0.1; rtol=1e-6), panelkm(q))
+		# the bathymetry grid along the track changes the synthetic
+		d = Dict("aS"=>"0", "aE"=>"10", "x0"=>"0", "rev"=>"0", "unit"=>"1", "speed"=>"", "pdir"=>"", "sdir"=>"",
+		         "depth"=>"2.5", "dec"=>"0", "inc"=>"90", "contam"=>"1", "bat"=>"")
+		IG._xy_magsynth(q.h, d, 0); y1 = IG._xy_get_series(q.h, 1)[2]
+		d["bat"] = replace(batf, ":" => "%3A"); IG._xy_magsynth(q.h, d, 0); y2 = IG._xy_get_series(q.h, 1)[2]
+		@test maximum(abs.(y1 .- y2)) > 1
+		# redraw the 3-D profile: the X,Y copy takes the new track and the synthetic is computed again
+		@test drag(0.3, 0.3, 0.7, 0.7) > 2
+		for _ in 1:40; IG._pump_once(); sleep(0.025); end
+		tr2 = IG._xy_series_track(q.h, 0)
+		@test !isapprox(IG._mag_track_azimuth(tr2...), 90; atol=5)
+		@test any(k -> isapprox(st()[17], 2 * k / 10 * 0.1; rtol=1e-6), panelkm(q))
+	finally
+		GmtvtkTest._register_console_eval_test(false)
+		q === nothing || ccall(IG._fn(:gmtvtk_xyplot_close), Cvoid, (Ptr{Cvoid},), q.h)
+		ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), f.h)
+		rm(batf; force=true)
+	end
+end
+
+@testitem "X,Y Spector-Grant fit lines: kept, end-edited, recomputed, deleted, band-passed, saved" tags=[:gui, :xyplot] setup=[GmtvtkTest] begin
+	IG = InteractiveGMT; GMT = IG.GMT; tf = GmtvtkTest._test_fn
+	IG._XY_CURRENT[] = C_NULL
+	G = GMT.mat2grid(Float32[sind(30x) for y in -2:0.02:2, x in -3:0.02:3]; x=[-3.0, 3.0], y=[-2.0, 2.0], proj4="+proj=longlat")
+	f = view_grid(G)
+	k = collect(0.02:0.02:2.0); P = 1000 .* exp.(-4π * 0.5 .* k)          # depth 500 m, k in 1/km
+	h = ccall(IG._fn(:gmtvtk_open_xyplot_from_host), Ptr{Cvoid}, ())    # owned by the viewer
+	p = IG._FIGREG[h]
+	sg() = (o = fill(NaN, 30); n = ccall(tf(:gmtvtk_xyplot_sg_state_test), Cint, (Ptr{Cvoid}, Ptr{Float64}, Cint), h, o, 30); o[1:n])
+	dragc(a, b, c, d) = ccall(tf(:gmtvtk_xyplot_drag_test), Cint, (Ptr{Cvoid}, Cdouble, Cdouble, Cdouble, Cdouble), h, a, b, c, d)
+	rclick(x, y, it) = ccall(tf(:gmtvtk_xyplot_rclick_test), Cint, (Ptr{Cvoid}, Cdouble, Cdouble, Cstring), h, x, y, it)
+	path = joinpath(tempdir(), "igmt_sg_$(getpid()).igmtz"); p2 = nothing
+	try
+		Pk = copy(P); Pk[40] *= 50                                            # one spike inside the band
+		add!(p, k, Pk; name="spiky")
+		# the fit is GMT trend1d's ROBUST one (ecran's -N2r): the spike does not move the depth
+		@test isapprox(ccall(IG._fn(:gmtvtk_xyplot_specgrant), Cdouble, (Ptr{Cvoid}, Cint, Cdouble, Cdouble, Cdouble),
+		                     h, 0, 0.4, 1.2, 1000.0), 500; rtol=1e-3)
+		ccall(IG._fn(:gmtvtk_xyplot_clear), Cvoid, (Ptr{Cvoid},), h)
+		add!(p, k, P; name="PSD"); logscale!(p; y=true); IG._pump_once()
+		ccall(tf(:gmtvtk_xyplot_sg_on_test), Cint, (Ptr{Cvoid}, Cint, Cdouble), h, 0, 1000.0)
+		dragc(0.4, P[20], 1.2, P[60])
+		s1 = sg()
+		@test s1[1] == 1 && isapprox(s1[8], 500; rtol=1e-3)                  # kept, depth 500 m
+		dragc(s1[4], s1[5], s1[4], s1[5] * 10)                                # its right end, dragged up
+		s2 = sg()
+		@test isapprox(s2[5], s1[5] * 10; rtol=0.05) && s2[8] == s1[8]        # moved; not refitted yet
+		@test rclick((s2[2] + s2[4]) / 2, sqrt(s2[3] * s2[5]), "Recomp Slope/Intercept") == 1
+		s3 = sg()
+		@test isapprox(s3[6], log(s2[5] / s2[3]) / (s2[4] - s2[2]); rtol=1e-6)
+		@test isapprox(s3[8], abs(s3[6]) / 4π * 1000; rtol=1e-6)
+		# the band on the viewer's grid -> a new derived grid there
+		IG._xy_sg_bandpass(h, Dict("flo" => "1e-6", "fhi" => "1e-5")); IG._pump_once()
+		@test any(n -> startswith(n, "Bandpass filtered"), [n for (k_, n, _) in IG._SCENE_OBJS[f.h]])
+		# saved and reopened, the line comes back
+		IG._xy_save_session(h, path); p2 = IG._on_load_session(C_NULL, path); IG._pump_once()
+		ln(t) = match(r"sglines=(.*)", t).captures[1]
+		@test ln(IG._xy_session_state(p2.h)) == ln(IG._xy_session_state(h))
+		@test rclick((s3[2] + s3[4]) / 2, sqrt(s3[3] * s3[5]), "Delete this line") == 1
+		@test sg()[1] == 0
+	finally
+		ccall(IG._fn(:gmtvtk_xyplot_close), Cvoid, (Ptr{Cvoid},), h)
+		p2 === nothing || ccall(IG._fn(:gmtvtk_xyplot_close), Cvoid, (Ptr{Cvoid},), p2.h)
+		ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), f.h)
+		rm(path; force=true)
+	end
+end
+
+@testitem "Grid Tools work on the grid ON DISPLAY, never the base under it" tags=[:gui, :law] begin
+	IG = InteractiveGMT; GMT = IG.GMT
+	G1 = GMT.mat2grid(Float32[x + y for y in 0:20, x in 0:30]; x=[0.0, 30.0], y=[0.0, 20.0])
+	G2 = GMT.mat2grid(Float32[1000 + x * y for y in 0:10, x in 0:15]; x=[5.0, 20.0], y=[5.0, 15.0])
+	f = view_grid(G1)
+	try
+		IG._pump_once()
+		IG._add_grid_to_scene(f.h, G2, "second"; promote=false)
+		IG._adopt_derived!(f.h, "second", G2); IG._pump_once()
+		@test IG._active_grid_name(f.h) == "second"
+		# every "selected" door resolves the displayed layer (they took the base grid, 2026-10-21)
+		@test size(IG._fft_grid_arg(f.h, "selected").z) == size(G2.z)          # FFT tool
+		@test size(IG._grdgm3d_grid(f.h, "selected").z) == size(G2.z)          # grdgravmag3d
+		tmp, io = mktemp()
+		redirect_stdout(() -> IG._clip_stats_str(f.h, "50;;"), io)              # Clip Grid's stats
+		close(io)
+		lo, hi = parse.(Float64, split(read(tmp, String), '/'))
+		rm(tmp; force=true)
+		@test lo >= 1000 && hi <= 1150                                         # G2's values, not G1's
+		req = "azim=45"
+		GC.@preserve req IG._on_grdgradient(f.h, Base.unsafe_convert(Cstring, req))   # grdgradient
+		IG._pump_once()
+		Gg = last([d for (k, n, d) in IG._SCENE_OBJS[f.h] if k === :grid])
+		@test size(Gg.z) == size(G2.z)
+	finally
+		ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), f.h)
+	end
+end
+
+@testitem "X,Y File > Plot with GMT.jl: the viewer's editor, a script that redraws the page, Standalone" tags=[:gui, :xyplot] setup=[GmtvtkTest] begin
+	IG = InteractiveGMT
+	IG._XY_CURRENT[] = C_NULL
+	t = collect(1.0:50)
+	p = xyplot(t, t .^ 2; name="squares", xlabel="distance", ylabel="value", yscale=:log)
+	add!(p, t, t .^ 1.5; name="pow 1.5", color=:red, linestyle=:dash, marker=:circle)
+	zipf = joinpath(tempdir(), "igmt_xyscript_$(getpid()).zip")
+	png = joinpath(tempdir(), "igmt_xyscript_$(getpid()).png")
+	try
+		IG._pump_once()
+		@test ccall(GmtvtkTest._test_fn(:gmtvtk_xyplot_menu_test), Cint, (Ptr{Cvoid}, Cstring), p.h, "xyPlotWithGMT") == 1
+		IG._pump_once()
+		txt = IG._script_editor_text(p.h)                     # the SAME editor the 3-D viewer opens
+		@test occursin("plot(D1", txt) && occursin("plot!(D2", txt)
+		@test occursin("const PROJ    = \"X15.0/10.0l\"", txt)   # the log Y axis
+		@test occursin("xlabel=\"distance\"", txt) && occursin("legend=\"pow 1.5\"", txt)
+		@test occursin("dashed", txt) && occursin("marker=:circle", txt)
+		# the script really draws: run it (to a PNG instead of a viewer)
+		src = replace(txt, "showfig()" => "showfig(savefig=$(repr(png)), show=false)")
+		M = Module(:XYScriptTest); Core.eval(M, :(using InteractiveGMT)); include_string(M, src)
+		@test isfile(png) && filesize(png) > 10_000
+		# Standalone: the curves travel in the zip, the script no longer needs InteractiveGMT
+		IG._script_save_standalone(p.h, zipf)
+		e = IG._zip_read(zipf)
+		@test haskey(e, "data/squares.txt") && haskey(e, "data/pow_1.5.txt")
+		js = String(copy(e[splitext(basename(zipf))[1] * ".jl"]))
+		@test !occursin("InteractiveGMT.", js) && !occursin("using InteractiveGMT", js)
+		@test occursin("gmtread(joinpath(@__DIR__, \"data\", \"squares.txt\"))", js)
+	finally
+		ccall(IG._fn(:gmtvtk_xyplot_close), Cvoid, (Ptr{Cvoid},), p.h)
+		rm(zipf; force=true); rm(png; force=true)
+	end
+end
+
+@testitem "X,Y Reference a curve to another: alternate picks, Reference me, a new page" tags=[:gui, :xyplot] setup=[GmtvtkTest] begin
+	IG = InteractiveGMT; tf = GmtvtkTest._test_fn
+	IG._XY_CURRENT[] = C_NULL
+	xr = collect(0.0:1.0:100.0); y = sin.(xr ./ 8)
+	xd = [x <= 40 ? 10 + x / 2 : 30 + (x - 40) * 2 for x in xr]     # the same record, distorted x
+	p = xyplot(xd, y; name="distorted")                               # the Object Manager's current curve
+	add!(p, xr, y; name="reference")
+	click(x, yy) = (o = fill(NaN, 3); ccall(tf(:gmtvtk_xyplot_mark_test), Cint, (Ptr{Cvoid}, Cdouble, Cdouble, Cint, Ptr{Cdouble}), p.h, x, yy, 0, o))
+	rclick(x, yy, it) = ccall(tf(:gmtvtk_xyplot_rclick_test), Cint, (Ptr{Cvoid}, Cdouble, Cdouble, Cstring), p.h, x, yy, it)
+	st() = (o = fill(NaN, 22); ccall(tf(:gmtvtk_xyplot_mag_state_test), Cint, (Ptr{Cvoid}, Ptr{Float64}, Cint), p.h, o, 22); o)
+	try
+		IG._pump_once()
+		@test ccall(tf(:gmtvtk_xyplot_menu_test), Cint, (Ptr{Cvoid}, Cstring), p.h, "xyReference") == 1
+		# alternately: distorted (red) then its partner on the reference (green), three pairs
+		for (i_d, i_r) in ((11, 11), (41, 41), (101, 101))
+			click(xd[i_d], y[i_d]); click(xr[i_r], y[i_r])
+		end
+		rclick(50.0, 0.0, "")                                          # right-click ends the picking
+		@test rclick(xd[41], y[41], "Reference me") == 1
+		IG._pump_once()
+		o = st()
+		@test o[21] == 1 && o[22] == 2                                 # a new page, the window's second
+		xo, yo = IG._xy_get_series(p.h, 0)
+		@test isapprox(xo[11:end], xr[11:end]; atol=1e-6) && yo ≈ Float32.(y)   # from the first pick on
+	finally
+		ccall(IG._fn(:gmtvtk_xyplot_close), Cvoid, (Ptr{Cvoid},), p.h)
+	end
+end

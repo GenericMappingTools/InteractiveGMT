@@ -43,7 +43,7 @@ function xyplot(x::AbstractVector, y::AbstractVecOrMat; name::AbstractString="",
                 linewidth::Real=0, linestyle=nothing, marker=nothing, markersize::Real=0,
                 title::AbstractString="",
                 xlabel::AbstractString="X", ylabel::AbstractString="Y", xtime::Union{Symbol,Bool}=:linear,
-                xscale::Symbol=:linear, yscale::Symbol=:linear)
+                xscale::Symbol=:linear, yscale::Symbol=:linear, track=nothing, trackgeog::Bool=true)
 	local p::QtXYPlot
 	if _XY_CURRENT[] != C_NULL &&
 	   ccall(_fn(:gmtvtk_xyplot_is_alive), Cint, (Ptr{Cvoid},), _XY_CURRENT[]) != 0
@@ -62,9 +62,9 @@ function xyplot(x::AbstractVector, y::AbstractVecOrMat; name::AbstractString="",
 	_xy_set_labels(p, xlabel, ylabel)
 	xt = xtime === true ? :date : xtime === false ? :linear : xtime   # true = "X is epoch seconds"
 	xt === :linear || xtime!(p, xt)
-	_xy_add(p, x, y; name, color, linewidth, linestyle, marker, markersize)
-	xscale === :log && logscale!(p; x=true)
-	yscale === :log && logscale!(p; y=true)
+	_xy_add(p, x, y; name, color, linewidth, linestyle, marker, markersize, track, trackgeog)
+	xscale in (:log, :log10) && logscale!(p; x=true)    # :log10 is what fftstuff.jl's radial spectrum asks for
+	yscale in (:log, :log10) && logscale!(p; y=true)
 	return p
 end
 
@@ -168,15 +168,19 @@ end
 
 Add another `(x, y)` series to an open X,Y plot window. Same keyword semantics as xyplot.
 
+`track=(lon, lat)` (or an n×2 matrix) gives the curve the track it was measured along, one point per
+sample (`trackgeog=false` for cartesian x, y): the magnetic tools read the profile azimuth and a
+bathymetry grid along it from there.
+
 `kind=:bar` draws it as a BAR graph (what the Analysis menu's Histogram / Bar graph items use)
 instead of a polyline; `barwidth` is then the bar width in **x data units** (0 = derive it from the
 data: 90% of the median x spacing), and `linewidth` becomes the bars' outline thickness in px.
 """
 function add!(p::QtXYPlot, x::AbstractVector, y::AbstractVecOrMat; name::AbstractString="",
               color=nothing, linewidth::Real=0, linestyle=nothing, marker=nothing, markersize::Real=0,
-              kind::Symbol=:line, barwidth::Real=0)
+              kind::Symbol=:line, barwidth::Real=0, track=nothing, trackgeog::Bool=true)
 	isalive(p) || error("add!: the X,Y plot window is closed")
-	_xy_add(p, x, y; name, color, linewidth, linestyle, marker, markersize, kind, barwidth)
+	_xy_add(p, x, y; name, color, linewidth, linestyle, marker, markersize, kind, barwidth, track, trackgeog)
 	return p
 end
 
@@ -249,10 +253,21 @@ function xyinfo!(p::QtXYPlot, html::AbstractString)
 end
 
 # Push one (vector) or several (matrix-column) series to the window + the Julia-side copy.
+# Attach a track (one (x, y) per row of series `idx`) — what the magnetic model reads the profile
+# azimuth and the bathymetry along the track from.
+function _xy_set_track(p::QtXYPlot, idx::Integer, track, geog::Bool, n::Int)
+	tx, ty = track isa AbstractMatrix ? (track[:, 1], track[:, 2]) : track
+	(length(tx) == n && length(ty) == n) || error("add!: track must have one (x, y) per point ($n)")
+	ccall(_fn(:gmtvtk_xyplot_set_track), Cint, (Ptr{Cvoid}, Cint, Ptr{Float64}, Ptr{Float64}, Cint, Cint),
+	      p.h, Cint(idx), collect(Float64, tx), collect(Float64, ty), Cint(n), Cint(geog))
+	return
+end
+
 function _xy_add(p::QtXYPlot, x::AbstractVector, y::AbstractVecOrMat;
                  name, color, linewidth, linestyle=nothing, marker=nothing, markersize::Real=0,
-                 kind::Symbol=:line, barwidth::Real=0)
+                 kind::Symbol=:line, barwidth::Real=0, track=nothing, trackgeog::Bool=true)
 	kind in (:line, :bar) || error("add!: kind must be :line or :bar (got :$kind)")
+	(track !== nothing && !(y isa AbstractVector)) && error("add!: a track goes with ONE series (y a vector)")
 	xv = collect(Float64, x)
 	(r, g, b) = color === nothing ? (-1.0, 0.0, 0.0) : _ovl_color(color, :lines)
 	lt = _style_code(_LINESTYLE, linestyle, "linestyle")
@@ -271,11 +286,12 @@ function _xy_add(p::QtXYPlot, x::AbstractVector, y::AbstractVecOrMat;
 			      p.h, xv, yv, length(xv), nm, Float64(r), Float64(g), Float64(b),
 			      Float64(linewidth), Float64(barwidth))
 		else
-			ccall(_fn(:gmtvtk_xyplot_add_series), Cint,
+			idx = ccall(_fn(:gmtvtk_xyplot_add_series), Cint,
 			      (Ptr{Cvoid}, Ptr{Float64}, Ptr{Float64}, Cint, Cstring,
 			       Float64, Float64, Float64, Float64, Cint, Cint, Float64),
 			      p.h, xv, yv, length(xv), nm, Float64(r), Float64(g), Float64(b), Float64(linewidth),
 			      Cint(lt), Cint(mk), Float64(markersize))
+			track === nothing || _xy_set_track(p, idx, track, trackgeog, length(xv))
 		end
 		push!(p.series, (xv, yv, nm))
 	end
@@ -373,6 +389,16 @@ function _on_xy(plot::Ptr{Cvoid}, caction::Cstring, sel::Cint, cpath::Cstring)::
 		elseif action == "save"
 			p = get(_FIGREG, plot, nothing)
 			(p isa QtXYPlot) && _xy_save(p, Int(sel), path)
+		elseif action == "session_save" || action == "session_open"
+			# File > Session (xysession.jl). Its failures are answered in a box in front of the user
+			# (the C door, xyRequest), not only in the Errors tab.
+			try
+				action == "session_save" ? _xy_save_session(plot, path) : _xy_open_session(path)
+			catch e
+				_dbg("xy", action, "ERR", sprint(showerror, e))
+				_xy_request_failed(plot, "Session $(action == "session_save" ? "save" : "open") failed: " *
+				                         (e isa ErrorException ? e.msg : sprint(showerror, e)))
+			end
 		elseif action == "paste"
 			# Ctrl+V in an X,Y window: `path` carries the clipboard TEXT (not a file name). Parsed by
 			# the SAME clipboard-table reader the 3-D viewer's paste uses (paste.jl) and added through

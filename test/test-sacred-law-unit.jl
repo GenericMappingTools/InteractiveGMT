@@ -119,6 +119,24 @@
 	report("Grid Tool on the BASE grid: _find_object(scene, :grid, \"\") (use _active_grid)", h)
 	@test isempty(h)
 
+	#     The same question asked two more ways, both answering with the base / first-registered grid:
+	#     the window's own `fig.G` (_FIGREG — the "selected" sentinel of the FFT, grdsample, RTP 3D,
+	#     grdgravmag3d, grdredpol dialogs) and `_find_object_named(scene, :grid)` (the FFT tool, ROI crop,
+	#     the vector wizard). Found 2026-10-21: every one of them transformed the bathymetry under a
+	#     displayed derived layer. Exempt where the base IS what is meant: the registry internals
+	#     (savefile.jl), Okada's sampling grid (SACRED_LAW.md: the window's own grid object, the
+	#     bathymetry it is added to), hillshade's documented fallback to the primary, and the Julia
+	#     API that takes a FIGURE and so means that figure's own surface (recolor!, add_curtain!,
+	#     replace_grid!, an overlay's z source, its info, the grid calculator's object list, the Tiles
+	#     tool's in-place frame test) — no layer is "displayed" there, the caller named the figure.
+	ok_fig = r"^(function (_elastic_sample_grid|_hs_restore_original|_recolor|add_curtain!|_densify_xy|_add_overlay!|_gridcalc_objects|replace_grid!|_tiles_inplace)\(|_info_object\()"
+	h = filter(x -> !occursin(ok_fig, x[3]) && !startswith(x[1], joinpath("src", "savefile.jl")) &&
+	                !startswith(x[1], joinpath("src", "transplant.jl")),
+	           vcat(hits(jl, r"\bfig\.G\b"; strip = code_jl),
+	                hits(jl, r"_find_object_named\(\s*\w+\s*,\s*:grid\s*\)"; strip = code_jl)))
+	report("Grid Tool on the base / first grid: fig.G or _find_object_named(scene, :grid) (use _active_grid)", h)
+	@test isempty(h)
+
 	# --- A symbol's look is the symbol code's (50_scene.cpp: addSymbols, its kind rebuild, its own
 	#     properties menu). A tool that places a symbol through a shared draw tool and then repaints it
 	#     makes that one symbol behave differently: the TTT source painted yellow hid the yellow

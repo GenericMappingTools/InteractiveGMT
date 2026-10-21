@@ -415,6 +415,10 @@ endif()
 # default target is "all") — no build.bat edit needed.
 add_library(gmtvtk_test SHARED ${GMTVTK_SRC})
 target_compile_definitions(gmtvtk_test PRIVATE GMTVTK_TEST_API)
+if(WIN32)
+  # a native crash in the GUI tier prints its whole stack (own TU: it needs <windows.h>)
+  target_sources(gmtvtk_test PRIVATE src/test_crashstack.cpp)
+endif()
 target_link_libraries(gmtvtk_test PRIVATE Qt6::Widgets Qt6::UiTools TBB::tbb ${VTK_LIBRARIES} ${CMAKE_DL_LIBS})
 vtk_module_autoinit(TARGETS gmtvtk_test MODULES ${VTK_LIBRARIES})
 

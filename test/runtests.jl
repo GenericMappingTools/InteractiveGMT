@@ -141,6 +141,13 @@ if _RUN_GUI && !_SHOW_GUI
 		ok || @warn "tests: the GUI windows will be ON SCREEN this run"
 	end
 end
+# A native crash in the GUI tier prints its whole symbolized stack (gmtvtk_crash_stack_test, the test
+# DLL), not just the faulting frame Julia's handler names.
+if _RUN_GUI && Sys.iswindows() && _TEST_LIB[] != C_NULL
+	let f = InteractiveGMT.Libdl.dlsym(_TEST_LIB[], :gmtvtk_crash_stack_test; throw_error = false)
+		f === nothing || ccall(f, Cint, (Cint,), 1)
+	end
+end
 
 # THE RUN LOG. Every run writes test/last_run.log BY ITSELF (gitignored, *.log), however it was
 # started: the selectors it ran with, each progress line below, every Fail/Error the moment it is

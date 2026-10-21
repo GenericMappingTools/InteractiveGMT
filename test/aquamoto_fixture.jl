@@ -326,12 +326,23 @@ function aqf_realpress(h, dir, down)
 	if down
 		aqf_os_prepare()
 		x = Ref{Cint}(0); y = Ref{Cint}(0)
-		@assert ccall(GmtvtkTest._test_fn(:gmtvtk_aqua_arrow_screen_test), Cint,
-		              (Ptr{Cvoid}, Cint, Ptr{Cint}, Ptr{Cint}), h, Cint(dir), x, y) == 1
-		aqf_pump(10)
-		aqf_os_move(x[], y[])
-		sleep(0.6)                                # the foreground switch finishes before the press lands
-		@test aqf_os_title_at(x[], y[]) == "Aquamoto"   # the click lands on the arrow, not on another app
+		# Aim, then ask Qt what is under the cursor; re-aim while it is not the arrow. A window just
+		# brought back on screen (aqf_on_screen) can still be settling when the arrow's place is read,
+		# and a press that lands beside the arrow moves nothing — the item then failed with the title
+		# check green, because the cursor was still somewhere on Aquamoto.
+		under = 0
+		for _ in 1:10
+			@assert ccall(GmtvtkTest._test_fn(:gmtvtk_aqua_arrow_screen_test), Cint,
+			              (Ptr{Cvoid}, Cint, Ptr{Cint}, Ptr{Cint}), h, Cint(dir), x, y) == 1
+			aqf_pump(10)
+			aqf_os_move(x[], y[])
+			sleep(0.3)                            # the foreground switch finishes before the press lands
+			under = Int(ccall(GmtvtkTest._test_fn(:gmtvtk_aqua_arrow_under_cursor_test), Cint,
+			                  (Ptr{Cvoid}, Cint), h, Cint(dir)))
+			under == 1 && break
+		end
+		@test aqf_os_title_at(x[], y[]) == "Aquamoto"   # the click lands on Aquamoto, not on another app
+		@test under == 1                                 # …and on the arrow itself, by Qt's own account
 		v = Int(ccall(GmtvtkTest._test_fn(:gmtvtk_aqua_slider_value_test), Cint, (Ptr{Cvoid},), h))
 		aqf_os_button(true)
 		return v

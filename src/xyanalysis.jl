@@ -199,9 +199,16 @@ end
 # `fc` = cutoff (same 1/x units as the FFT frequency), `ftype` = "low" or "high", fixed order 4.
 # Returns the filtered y (length N). dt is the (uniform) sample spacing from the x endpoints.
 function _butter(x, y, fc::Float64, ftype)
-	yv = collect(Float64, y); N = length(yv)
-	N < 2 && return yv
-	dt = (x[end] - x[1]) / (N - 1)
+	y0 = collect(Float64, y); N0 = length(y0)
+	N0 < 3 && return y0
+	dt = (x[end] - x[1]) / (N0 - 1)
+	# EDGES: the FFT treats the series as periodic, so a jump between its two ends rings through the
+	# filtered result. Extended first, both ends, by the "reflection method" Mirone's filtfilt uses
+	# (filter_butter.m): 2*y(1) - y(reversed start), 2*y(end) - y(reversed end) — slopes match at the
+	# joins — then filtered, and the extension cut off again.
+	m = N0 - 1
+	yv = vcat(2y0[1] .- y0[m+1:-1:2], y0, 2y0[end] .- y0[end-1:-1:end-m])
+	N = length(yv)
 	F = _gmt_fft(yv)                                  # forward transform via GMT
 	order = 4
 	@inbounds for k in 0:N-1
@@ -214,7 +221,7 @@ function _butter(x, y, fc::Float64, ftype)
 		end
 		F[k+1] *= H
 	end
-	return real.(_gmt_ifft(F))                        # inverse transform via GMT (already 1/N-normalised)
+	return real.(_gmt_ifft(F))[m+1:m+N0]              # inverse via GMT (1/N-normalised), extension removed
 end
 
 # Spector & Grant depth-to-sources: on a radially-averaged (or 1-D) magnetic POWER spectrum the
@@ -333,6 +340,54 @@ function _detrend(x, y)
 	return y .- (a .+ b .* x)
 end
 
+# Sound Velocity Profile — port of ecran's AnalysisSVP_CB (Mirone; code from FEX:35916, Chad Greene,
+# BSD), UNESCO (1983) technical papers in marine science 44, Chen & Millero (1977) JASA 62, 1129-1135.
+# T = temperature (°C), S = salinity, P = pressure in DECIBARS (as stored); returns sound speed (m/s).
+function _svp_chen_millero(T, S, Pdbar)
+	T = Float64.(T); S = Float64.(S)
+	P  = Float64.(Pdbar) ./ 10                                     # Chen-Millero wants bars
+	SR = sqrt.(abs.(S))
+	# S^2 TERM
+	D  = 1.727e-3 .- 7.9836e-6 .* P
+	# S^3/2 TERM
+	B1 =  7.3637e-5 .+ 1.7945e-7 .* T
+	B0 = -1.922e-2  .- 4.42e-5   .* T
+	B  = B0 .+ B1 .* P
+	# S^1 TERM
+	A3 = (-3.389e-13    .* T .+ 6.649e-12)  .* T .+ 1.100e-10
+	A2 = ((7.988e-12    .* T .- 1.6002e-10) .* T .+ 9.1041e-9) .* T .- 3.9064e-7
+	A1 = (((-2.0122e-10 .* T .+ 1.0507e-8)  .* T .- 6.4885e-8) .* T .- 1.2580e-5) .* T .+ 9.4742e-5
+	A0 = (((-3.21e-8    .* T .+ 2.006e-6)   .* T .+ 7.164e-5)  .* T .- 1.262e-2)  .* T .+ 1.389
+	A  = ((A3 .* P .+ A2) .* P .+ A1) .* P .+ A0
+	# S^0 TERM
+	C3 = (-2.3643e-12   .* T .+ 3.8504e-10) .* T .- 9.7729e-9
+	C2 = (((1.0405e-12  .* T .- 2.5335e-10) .* T .+ 2.5974e-8) .* T .- 1.7107e-6)  .* T .+ 3.1260e-5
+	C1 = (((-6.1185e-10 .* T .+ 1.3621e-7)  .* T .- 8.1788e-6) .* T .+ 6.8982e-4)  .* T .+ 0.153563
+	C0 = ((((3.1464e-9  .* T .- 1.47800e-6) .* T .+ 3.3420e-4) .* T .- 5.80852e-2) .* T .+ 5.03711) .* T .+ 1402.388
+	C  = ((C3 .* P .+ C2) .* P .+ C1) .* P .+ C0
+	return C .+ (A .+ B .* SR .+ D .* S) .* S
+end
+
+# ecran's get_z_from_p (stripped down from TEOS-10): height z (m, NEGATIVE below the sea surface) from
+# sea pressure p (dbar) at latitude lat (degrees north).
+function _z_from_p(p, lat::Real)
+	gamma = 2.26e-7
+	sin2  = sind(lat)^2
+	B = 9.780327 * (1 + (5.2792e-3 + (2.32e-5 * sin2)) * sin2)
+	A = -0.5 * gamma * B
+	C = _enthalpy_SSO_0(Float64.(p))
+	return -2 .* C ./ (B .+ sqrt.(B .* B .- 4 .* A .* C))
+end
+
+# ecran's gsw_enthalpy_SSO_0 (TEOS-10).
+function _enthalpy_SSO_0(p)
+	z = p .* 1e-4
+	h006 = -2.1078768810e-9; h007 = 2.8019291329e-10
+	dyn = z .* (9.726613854843870e-4 .+ z .* (-2.252956605630465e-5 .+ z .* (2.376909655387404e-6 .+
+	      z .* (-1.664294869986011e-7 .+ z .* (-5.988108894465758e-9 .+ z .* (h006 .+ h007 .* z))))))
+	return dyn .* 1e8                                             # 1e8 = db2Pa*1e4
+end
+
 # Ops whose result lives on a DIFFERENT y- or x-scale than the source -> land on a fresh, self-scaled
 # PAGE (Excel-like tab) in the same window instead of overlaying. Derivatives keep the same x (time)
 # but their y is d/dx (e.g. m/s): on the source's shared y-axis a tide-rate of ~5e-5 collapses to a
@@ -441,6 +496,27 @@ function _xy_col(plot::Ptr{Cvoid}, code::Int)
 	return (xy[2], xy[1], nm)
 end
 
+# Analysis > Sound Velocity Profile (ecran AnalysisSVP_CB): the dialog names the Temperature, Salinity
+# and Pressure (dbar) columns (Data-Viewer codes, as _xy_col reads them) and the latitude. The result
+# lands on its own "SVP diagram" page: X = sound speed, Y = depth, as ecran plots it.
+function _xy_svp(plot::Ptr{Cvoid}, p::QtXYPlot, args::AbstractString)
+	d = _parse_kv(args)
+	cols = map(k -> _xy_col(plot, parse(Int, d[k])), ("T", "S", "P"))
+	for (c, k) in zip(cols, ("Temperature", "Salinity", "Pressure"))
+		c === nothing && error("Sound Velocity Profile: could not read the $k column")
+	end
+	T, S, P = (c[1] for c in cols)
+	length(T) == length(S) == length(P) ||
+		error("Sound Velocity Profile: Temperature, Salinity and Pressure columns differ in length " *
+		      "($(length(T)), $(length(S)), $(length(P)))")
+	lat = parse(Float64, d["lat"])
+	svp = _svp_chen_millero(T, S, P)
+	z   = _z_from_p(Float64.(P), lat)
+	_xy_addpage!(plot, p, "SVP diagram", svp, z, "SVP"; xlabel="Sound speed (m/s)", ylabel="Depths (m)")
+	_xy_log(plot, "Analysis: Sound Velocity Profile → page 'SVP diagram' ($(length(svp)) pts)")
+	return
+end
+
 # Run GMT.spectrum1d on the chosen column (input X(t)) and, for cross-spectra, a second column
 # (output Y(t)); land each requested output component on its own self-scaled page. `args` is the
 # encoded dialog payload "S=…:D=…:L=…:C=<flags>:y1=<code>:y2=<code>:W=<0|1>" where the column codes
@@ -524,6 +600,92 @@ function _xy_spectrum1d(plot::Ptr{Cvoid}, p::QtXYPlot, args::AbstractString, sel
 	return
 end
 
+# ecran's wbm_dynSlope fit: ln(power) vs k over the band [xa, xb] of series `sel`, by GMT's trend1d —
+# ROBUST (`-N2r` in ecran's GMT 4 spelling, `-Np1+r` now) above two points, plain with exactly two.
+# The model column (-Fxm) carries the line, so the slope/intercept are read off it (GMT.jl's own -Fp
+# coefficient output errors on a Matrix input). Answers through gmtvtk_xyplot_sg_set_fit.
+function _xy_sgfit(plot::Ptr{Cvoid}, d::Dict{String,String}, sel::Int)
+	xa = parse(Float64, d["xa"]); xb = parse(Float64, d["xb"])
+	x, y = _xy_get_series(plot, sel)
+	k = [i for i in eachindex(x) if xa <= x[i] <= xb && y[i] > 0]
+	length(k) < 2 && return
+	xy = hcat(x[k], log.(y[k]))
+	(xy[end, 1] == xy[1, 1]) && return
+	D = GMT.trend1d(xy; N = (length(k) > 2 ? "p1+r" : "p1"), F = "xm")
+	M = (D isa AbstractVector ? D[1] : D).data
+	m = (M[end, 2] - M[1, 2]) / (M[end, 1] - M[1, 1])
+	ccall(_fn(:gmtvtk_xyplot_sg_set_fit), Cvoid, (Ptr{Cvoid}, Cdouble, Cdouble), plot, m, M[1, 2] - m * M[1, 1])
+	return
+end
+
+"""
+    _xy_reference(x, offs, xm) -> Vector{Float64}
+
+ecran's `do_reference`: stretch the abscissa `x` of a curve piece by piece so that its picked rows
+`offs` (1-based, in pick order) land on `xm`, the x of their partners on the reference curve. Each
+segment between two picks is scaled to its partner segment; everything after a segment is shifted with
+it, and the part before the first pick is shifted onto the first partner.
+"""
+function _xy_reference(x::AbstractVector{<:Real}, offs::Vector{Int}, xm::Vector{Float64})
+	x = Float64.(x)
+	n = length(x)
+	(length(offs) == length(xm) && length(offs) >= 2) || error("Reference: the two curves need the same number of picks, at least two")
+	all(1 .<= offs .<= n) || error("Reference: a pick lies outside the curve")
+	lead = xm[1] - x[offs[1]]                            # how far the first pick moves (before it moves)
+	for k in 1:length(xm)-1
+		a, b = offs[k], offs[k+1]
+		x[b] == x[a] && error("Reference: two picks on the same point of the curve")
+		dx = xm[k+1] - x[b]                              # the segment's end, relative to its partner
+		f  = (xm[k+1] - xm[k]) / (x[b] - x[a])          # piecewise factor
+		lo, hi = minmax(a, b)
+		x0 = x[a]
+		x[lo:hi] .= (x[lo:hi] .- x0) .* f .+ xm[k]
+		b < n && (x[b+1:end] .+= dx)                     # shift all the points after it by the same DX
+	end
+	# The chunk before the first pick moves with it (ecran's own comment says so, but its line moves one
+	# point, `x(1, offset-1)`, by a distance taken after the loop has already put that pick in place —
+	# i.e. by zero).
+	offs[1] > 1 && (x[1:offs[1]-1] .+= lead)
+	return x
+end
+
+# The Analysis op "reference:offs=…:xm=…:xl=…:yl=…" (xyRefDo, 65_xyplot.cpp): the referenced curve on
+# a page of its own, named after it.
+function _xy_reference_op(plot::Ptr{Cvoid}, p::QtXYPlot, d::Dict{String,String}, sel::Int)
+	x, y = _xy_get_series(plot, sel)
+	isempty(x) && error("Reference: could not read the curve")
+	offs = [parse(Int, v) + 1 for v in split(d["offs"])]          # 0-based rows -> 1-based
+	xm = parse.(Float64, split(d["xm"]))
+	xr = _xy_reference(x, offs, xm)
+	nm = _xy_series_name(plot, sel); isempty(nm) && (nm = "curve")
+	_xy_addpage!(plot, p, "Referenced", xr, y, "$nm referenced";
+	             xlabel = _mag_unesc(get(d, "xl", "")), ylabel = _mag_unesc(get(d, "yl", "")))
+	_xy_log(plot, "Reference: '$nm' stretched onto $(length(offs)) picks -> page 'Referenced'")
+	return
+end
+
+# ecran's do_bandFilter: the frequency band [flo, fhi] (cycles per metre) of a Spector-Grant fit line,
+# passed on the grid of the 3-D viewer this X,Y window belongs to (the one its radial spectrum was
+# computed from), through the FFT tool's own engine (fftstuff.jl). The result is a new derived grid
+# in that viewer, through the ONE derived-variable transition.
+function _xy_sg_bandpass(plot::Ptr{Cvoid}, d::Dict{String,String})
+	flo = parse(Float64, d["flo"]); fhi = parse(Float64, d["fhi"])
+	(0 <= flo < fhi) || error("the pass band is empty")
+	scene = ccall(_fn(:gmtvtk_xyplot_owner), Ptr{Cvoid}, (Ptr{Cvoid},), plot)
+	scene == C_NULL && error("this X,Y window belongs to no 3-D viewer, so there is no grid to filter " *
+	                         "(the spectrum must come from a viewer's Grid Tools > FFT > Radial average)")
+	G = _active_grid(scene)                     # the layer ON DISPLAY in that viewer (the one-question rule)
+	G isa GMTgrid || error("the viewer this window belongs to shows no grid to filter")
+	nx, ny = _grid_dims(G)
+	o = FFTOpts(nx, ny, _isgeographic(G) ? FFT_GEOG : FFT_METERS, false)
+	Gout, name = fft_bandpass(G, o, flo, fhi)
+	name = "$name ($(round(1 / fhi; sigdigits=4)) - $(round(1 / max(flo, eps()); sigdigits=4)) m)"
+	_add_grid_to_scene(scene, Gout, name; promote = false, record = false) || error("window closed, grid not added")
+	_adopt_derived!(scene, name, Gout)
+	_xy_log(plot, "Bandpass: '$name' added to the viewer")
+	return
+end
+
 function _on_xy_analysis(plot::Ptr{Cvoid}, cop::Cstring, sel::Cint)::Cvoid
 	op = unsafe_string(cop)
 	try
@@ -535,6 +697,49 @@ function _on_xy_analysis(plot::Ptr{Cvoid}, cop::Cstring, sel::Cint)::Cvoid
 		# GMT-module front-ends (GMT menu) carry their own multi-output / multi-series logic.
 		if startswith(op, "spectrum1d:")
 			_xy_spectrum1d(plot, p, op[12:end], Int(sel))
+			return
+		end
+		if startswith(op, "svp:")
+			try
+				_xy_svp(plot, p, op[5:end])
+			catch e
+				_dbg("xy-svp", op, "ERR", sprint(showerror, e))
+				_xy_request_failed(plot, e isa ErrorException ? e.msg : sprint(showerror, e))
+			end
+			return
+		end
+		# The "Geomagnetic bar code" strip (bar, synthetic RTP, age fit) — xymag.jl.
+		if startswith(op, "mag")
+			_xy_mag(plot, op, Int(sel))
+			return
+		end
+		# The Spector-Grant fit (live, on every drag move): GMT trend1d on the band.
+		if startswith(op, "sgfit:")
+			try
+				_xy_sgfit(plot, _parse_kv(op[7:end]), Int(sel))
+			catch e
+				_dbg("xy-sg", op, "ERR", sprint(showerror, e))     # no fit: the C side keeps the last one
+			end
+			return
+		end
+		# "Reference me" (the reference picks): the stretched curve on its own page.
+		if startswith(op, "reference:")
+			try
+				_xy_reference_op(plot, p, _parse_kv(op[11:end]), Int(sel))
+			catch e
+				_dbg("xy-ref", op, "ERR", sprint(showerror, e))
+				_xy_request_failed(plot, e isa ErrorException ? e.msg : sprint(showerror, e))
+			end
+			return
+		end
+		# A Spector-Grant fit line's "Bandpass Filter": the band on the grid the spectrum came from.
+		if startswith(op, "sgbandpass:")
+			try
+				_xy_sg_bandpass(plot, _parse_kv(op[12:end]))
+			catch e
+				_dbg("xy-sg", op, "ERR", sprint(showerror, e))
+				_xy_request_failed(plot, "Bandpass: " * (e isa ErrorException ? e.msg : sprint(showerror, e)))
+			end
 			return
 		end
 		s = Int(sel)

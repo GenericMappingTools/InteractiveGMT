@@ -267,6 +267,14 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_xyplot_log, :gmtvtk_xyplot_run_analysis,
 	:gmtvtk_xyplot_add_page, :gmtvtk_xyplot_series_count, :gmtvtk_xyplot_series_npoints,
 	:gmtvtk_xyplot_get_series, :gmtvtk_xyplot_series_name, :gmtvtk_xyplot_get_xtime,
+	:gmtvtk_xyplot_request_failed,                               # a failed request -> message box (xyRequest)
+	:gmtvtk_xyplot_mag_set_bar, :gmtvtk_xyplot_mag_set_synth,    # magnetic modelling (xymag.jl)
+	:gmtvtk_xyplot_mag_set_fit, :gmtvtk_xyplot_mag_ageline,
+	:gmtvtk_xyplot_session_state, :gmtvtk_xyplot_session_apply,  # File > Session (xysession.jl)
+	:gmtvtk_xyplot_page_count, :gmtvtk_xyplot_page_series_npoints, :gmtvtk_xyplot_page_get_series,
+	:gmtvtk_xyplot_series_track, :gmtvtk_xyplot_set_track,      # a series' lon/lat track (xymag.jl)
+	:gmtvtk_xyplot_owner,                                        # the viewer it belongs to (S&G band-pass)
+	:gmtvtk_xyplot_sg_set_fit,                                   # the S&G fit from GMT trend1d
 	:gmtvtk_gmtedit_open, :gmtvtk_gmtedit_is_alive, :gmtvtk_gmtedit_close, :gmtvtk_gmtedit_raise,
 	:gmtvtk_set_gmtedit_callback, :gmtvtk_gmtedit_set_title, :gmtvtk_gmtedit_set_varlist,
 	:gmtvtk_gmtedit_set_parent,
