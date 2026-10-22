@@ -18,6 +18,10 @@ deps/build/
 # MB-System GMT plugin (Geophysics > MB-System > Install as plugin, src/mbplugin.jl)
 /mbsystem/
 
+# VectorCraft / PhotoCraft (Plot with GMT.jl > Install, src/craftapps.jl)
+/vectorcraft/
+/photocraft/
+
 # OpenWolf local context (not shared)
 .wolf/
 

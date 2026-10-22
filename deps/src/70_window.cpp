@@ -29301,6 +29301,128 @@ static void showScriptEditor(Scene *s, QMainWindow *win) {
 	showScriptEditor(scriptHostScene(s));
 }
 
+// ── The external editors: VectorCraft gets the figure's PostScript, PhotoCraft a PNG (src/craftapps.jl).
+// ONE button per program, ONE click handler for both; its label follows g_craftState (30_app.cpp).
+static const char *craftTitle(int id) { return id == GMTVTK_CRAFT_PHOTOCRAFT ? "PhotoCraft" : "VectorCraft"; }
+
+static void craftButtonSync(QPushButton *b, int id) {
+	if (!b) return;
+	const QString app = craftTitle(id);
+	const int st = g_craftState[id];
+	b->setVisible(st != 3);
+	b->setText(st == 0 ? QString("Install %1…").arg(app) : st == 2 ? QString("Update %1…").arg(app)
+	                                                                : QString("Edit in %1…").arg(app));
+	const QString what = id == GMTVTK_CRAFT_PHOTOCRAFT ? "as a PNG image" : "as PostScript";
+	b->setToolTip(st == 0 ? QString("Download the portable %1 from its GitHub releases and install it into "
+	                                "iGMT's own folder. Once installed, this button runs the script and opens "
+	                                "the figure %2 in %1.").arg(app, what)
+	                      : QString("Run the script, save the figure %2 to a file you choose, and open it in %1 "
+	                                "to edit.%3").arg(app, what, st == 2 ? " A newer release is available: you are "
+	                                "asked first whether to update." : ""));
+}
+
+// Every open (or parked) editor's buttons follow a state change pushed by the host.
+static void craftRefreshEditors() {
+	for (QDialog *d : scriptEditorRegistry())
+		for (int id = 0; id < GMTVTK_CRAFT_COUNT; id++)
+			craftButtonSync(d->findChild<QPushButton *>(QString("craftBtn%1").arg(id)), id);
+}
+
+// The button's click. Not installed: say what would be downloaded, ask, install. Newer release known: ask
+// whether to update first (No just edits). Installed: ask where the figure goes (PhotoCraft: its DPI and
+// background too), and have the host run the script into that file and open it in the program.
+static void craftClicked(const ScriptHost &host, QDialog *dlg, int id) {
+	if (!g_juliaEval || !host.alive()) return;
+	const QString app = craftTitle(id);
+	const qulonglong key = (qulonglong)(quintptr)host.key;
+	std::vector<char> buf(1 << 16);
+	auto eval = [&](const QString &cmd, const QString &busy) {
+		if (!busy.isEmpty()) showBusyDialog(busy.toUtf8().constData());
+		const int r = g_juliaEval(host.key, cmd.toStdString().c_str(), buf.data(), (int)buf.size());
+		if (!busy.isEmpty()) closeBusyDialog();
+		return std::make_pair(r >= 0, QString::fromUtf8(buf.data(), r < 0 ? -r : r).trimmed());
+	};
+	const int st = g_craftState[id];
+	if (st == 0 || st == 2) {
+		auto [ok, offer] = eval(QString("InteractiveGMT._craft_offer(%1)").arg(id),
+		                        QString("Looking up the latest %1 release...").arg(app));
+		if (!ok) {
+			QMessageBox::warning(dlg, app, offer);
+			if (st == 0) return;                                    // installed (st 2): edit with what is there
+		}
+		else {
+			QMessageBox::StandardButton a;
+			if (st == 0)
+				a = QMessageBox::question(dlg, QString("Install %1").arg(app),
+				                          QString("Download and install %1?\n\n%2").arg(app, offer));
+			else
+				a = QMessageBox::question(dlg, QString("Update %1").arg(app),
+				                          QString("A newer %1 is available.\n\n%2\n\nUpdate it now? "
+				                                  "(No opens the figure in the installed one.)").arg(app, offer),
+				                          QMessageBox::Yes | QMessageBox::No | QMessageBox::Cancel);
+			if (a == QMessageBox::Cancel || (st == 0 && a != QMessageBox::Yes)) return;
+			if (a == QMessageBox::Yes) {
+				auto [iok, txt] = eval(QString("InteractiveGMT.install_craft_app(%1)").arg(id),
+				                       QString("Downloading and installing %1...").arg(app));
+				if (!iok) { QMessageBox::warning(dlg, app, txt); return; }
+				if (st == 2) {                                      // an update: the desktop icon, if any, still points right
+					QMessageBox::information(dlg, app, txt);
+					return;
+				}
+				// A first install: offer a desktop icon, so the program starts outside iGMT too.
+				if (QMessageBox::question(dlg, app, QString("%1\n\nAlso put a %2 icon on the desktop, to start it "
+				                                            "outside iGMT?").arg(txt, app)) == QMessageBox::Yes) {
+					auto [sok, stxt] = eval(QString("InteractiveGMT._craft_shortcut(%1)").arg(id), QString());
+					if (!sok) QMessageBox::warning(dlg, app, stxt);
+				}
+				return;                                             // the button now reads "Edit in"
+			}
+		}
+	}
+	const bool png = id == GMTVTK_CRAFT_PHOTOCRAFT;
+	static int s_dpi = 300;                                         // showfig's own default (psconvert's)
+	static bool s_transparent = false;
+	if (png) {
+		QDialog opt(dlg);
+		opt.setWindowTitle(QString("Figure for %1").arg(app));
+		QFormLayout *fl = new QFormLayout(&opt);
+		QSpinBox *sbDpi = new QSpinBox(&opt);
+		sbDpi->setRange(50, 2400);
+		sbDpi->setValue(s_dpi);
+		sbDpi->setSuffix(" dpi");
+		QCheckBox *cbT = new QCheckBox("Transparent background", &opt);
+		cbT->setChecked(s_transparent);
+		fl->addRow("Resolution:", sbDpi);
+		fl->addRow(cbT);
+		fl->addRow(new QLabel("The figure is cropped to its own extent, as showfig does.", &opt));
+		QDialogButtonBox *bb = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &opt);
+		QObject::connect(bb, &QDialogButtonBox::accepted, &opt, &QDialog::accept);
+		QObject::connect(bb, &QDialogButtonBox::rejected, &opt, &QDialog::reject);
+		fl->addRow(bb);
+		if (opt.exec() != QDialog::Accepted) return;
+		s_dpi = sbDpi->value();
+		s_transparent = cbT->isChecked();
+	}
+	const QString ext = png ? ".png" : ".ps";
+	QString dest = QFileDialog::getSaveFileName(dlg, QString("Save the figure for %1").arg(app),
+	                                            prefStartDir("igmt_figure" + ext),
+	                                            png ? "PNG image (*.png)" : "PostScript (*.ps)");
+	if (dest.isEmpty()) return;
+	if (!dest.endsWith(ext, Qt::CaseInsensitive)) dest += ext;
+	rememberStartDir(dest);
+	host.status(QString("Running the script for %1…").arg(app), 2000);
+	// `_script_run` (inside `_craft_edit`) raises its own status window naming each statement.
+	auto [ok, txt] = eval(QString("InteractiveGMT._craft_edit(Ptr{Nothing}(UInt(%1)), %2, raw\"%3\", %4, %5)")
+	                      .arg(key).arg(id).arg(QDir::toNativeSeparators(dest)).arg(png ? s_dpi : 0)
+	                      .arg(png && s_transparent ? "true" : "false"), QString());
+	if (!ok) {
+		host.logError(txt);
+		QMessageBox::warning(dlg, app, txt);
+		return;
+	}
+	host.status(txt, 4000);
+}
+
 // The editor itself, holding `text`. Called by gmtvtk_script_editor_show_h with what Julia generated.
 static void buildScriptEditor(const ScriptHost &host, const QString &text) {
 	if (!host.alive() || !host.parent) return;
@@ -29341,6 +29463,15 @@ static void buildScriptEditor(const ScriptHost &host, const QString &text) {
 	                         "affected.");
 	row->addWidget(cbStandalone);
 	row->addStretch(1);
+	// The external editors, before Run / Save….
+	for (int id = 0; id < GMTVTK_CRAFT_COUNT; id++) {
+		QPushButton *b = new QPushButton(dlg);
+		b->setObjectName(QString("craftBtn%1").arg(id));
+		b->setAutoDefault(false);
+		craftButtonSync(b, id);
+		QObject::connect(b, &QPushButton::clicked, [host, dlg, id]() { craftClicked(host, dlg, id); });
+		row->addWidget(b);
+	}
 	row->addWidget(bRun);
 	row->addWidget(bSave);
 	lay->addLayout(row);

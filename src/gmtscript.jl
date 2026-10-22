@@ -1820,8 +1820,12 @@ end
 The dialog's Run: execute the editor's text statement by statement, in `Main`, while a status window
 names the statement being executed and how far along the script is. A GMT call can take seconds; the
 user sees which one it is, never a dead window.
+
+With `savefig` (the external-editor handoff, craftapps.jl) the script's last `showfig` writes that file
+instead of showing the figure — see `_script_handoff!`. Only the statements run are changed, never the
+text in the box.
 """
-function _script_run(scene::Ptr{Cvoid})::Nothing
+function _script_run(scene::Ptr{Cvoid}; savefig::String = "", dpi::Int = 0)::Nothing
 	src   = _script_editor_text(scene)
 	lines = split(src, '\n')
 	fname = "Plot with GMT.jl"                  # what an error's stack trace names: there is no file
@@ -1830,6 +1834,7 @@ function _script_run(scene::Ptr{Cvoid})::Nothing
 	for a in Meta.parseall(src; filename = fname).args
 		a isa LineNumberNode ? (loc = a) : push!(stmts, (loc, a))
 	end
+	isempty(savefig) || _script_handoff!(stmts, savefig, dpi)
 	n = length(stmts)
 	ccall(_fn(:gmtvtk_progress_show_async), Cint, (Cint, Cstring), Cint(n), "Plot with GMT.jl")
 	try
@@ -1843,6 +1848,31 @@ function _script_run(scene::Ptr{Cvoid})::Nothing
 		ccall(_fn(:gmtvtk_progress_close), Cvoid, ())
 	end
 	return nothing
+end
+
+_is_showfig(ex) = ex isa Expr && ex.head === :call && (ex.args[1] === :showfig || ex.args[1] == :(GMT.showfig))
+
+# The handoff: the LAST `showfig(…)` statement becomes `showfig(…; show=false, savefig=file[, dpi])` —
+# GMT.jl's own way to finish the figure into a file without displaying it — keeping the user's other
+# keywords. A script with no showfig gets one appended.
+function _script_handoff!(stmts::Vector{Tuple{LineNumberNode,Any}}, savefig::String, dpi::Int)
+	isempty(stmts) && error("Plot with GMT.jl: the script editor is empty")
+	ours = Any[Expr(:kw, :show, false), Expr(:kw, :savefig, savefig)]
+	dpi > 0 && push!(ours, Expr(:kw, :dpi, dpi))
+	# A dpi means nothing to a PostScript file (GMT.jl warns that it was not consumed).
+	taken = (:show, :savefig, :figname, :name, (dpi > 0 || endswith(lowercase(savefig), ".ps") ? (:dpi, :DPI) : ())...)
+	k = findlast(s -> _is_showfig(s[2]), stmts)
+	kept = Any[]
+	if k !== nothing
+		for x in stmts[k][2].args[2:end]
+			for y in (x isa Expr && x.head === :parameters ? x.args : Any[x])
+				y isa Expr && y.head === :kw && !(y.args[1] in taken) && push!(kept, y)
+			end
+		end
+	end
+	call = Expr(:call, GMT.showfig, Expr(:parameters, kept..., ours...))
+	k === nothing ? push!(stmts, (stmts[end][1], call)) : (stmts[k] = (stmts[k][1], call))
+	return stmts
 end
 
 # ── Save with "Standalone" checked: a zip that runs with GMT.jl alone ────────────────────────

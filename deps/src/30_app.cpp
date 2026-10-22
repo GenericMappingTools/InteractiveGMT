@@ -214,6 +214,14 @@ static bool g_pluginOffered[GMTVTK_PLUGIN_COUNT] = {true, true};
 static bool g_pluginOffered[GMTVTK_PLUGIN_COUNT] = {false, false};
 #endif
 
+// The external editors the Plot with GMT.jl dialog hands its figure to (src/craftapps.jl), by the
+// index the host uses for them. Each one's state (via gmtvtk_set_craft_state): 0 = not installed
+// ("Install <App>…"), 1 = installed ("Edit in <App>…"), 2 = installed and a newer release exists
+// ("Update <App>…", which still edits when the update is declined), 3 = no download for this system
+// and none found (no button).
+enum { GMTVTK_CRAFT_VECTORCRAFT = 0, GMTVTK_CRAFT_PHOTOCRAFT = 1, GMTVTK_CRAFT_COUNT };
+static int g_craftState[GMTVTK_CRAFT_COUNT] = {0, 0};
+
 // File drag-and-drop: a window receives a dropped file and hands its local path to Julia
 // (g_juliaDrop), which reads it (gmtread) and views it in a NEW window. Set via
 // gmtvtk_set_drop_callback. nullptr -> drops ignored.

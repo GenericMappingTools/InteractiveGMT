@@ -17,6 +17,10 @@
  *       bundle on macOS. Run by _ensure_desktop_shortcut() (src/InteractiveGMT.jl) at
  *       precompile time, which knows both paths for certain and passes them as hints.
  *
+ *   igmt --shortcut --name=NAME --target=PATH [--icon=PATH] [--comment=TEXT]
+ *       A desktop entry for a program iGMT installed -- VectorCraft, PhotoCraft, see
+ *       src/craftapps.jl -- so it also starts outside iGMT. See shortcut_mode.
+ *
  * WHERE THE BINARY LIVES: the PACKAGE ROOT, beside iview_app.jl and igmt.ico — that is what the
  * desktop entry points at. A release zip unpacks it into <depot>/gmtvtk_runtime/deps/build, so
  * --install-shortcut copies it up into the package root from there. <home>/.gmt is for SETTINGS
@@ -1902,6 +1906,122 @@ static int install_shortcut(const char *root, const char *julia)
 }
 #endif
 
+/* ------------------------------------------------------ desktop entry for ANOTHER program */
+
+/* igmt --shortcut --name=NAME --target=PATH [--icon=PATH] [--comment=TEXT]
+ *
+ * A desktop entry for a program iGMT installed for the user (src/craftapps.jl: VectorCraft,
+ * PhotoCraft), so it can be started outside iGMT too. Same places, same mechanisms as iGMT's own
+ * entry (install_shortcut above): the shell's real Desktop on Windows, the per-user applications
+ * dir plus ~/Desktop on Linux, a symlink on ~/Desktop on macOS. Needs no package root and no julia,
+ * and puts nothing on screen: the caller reports the exit status. */
+#ifdef _WIN32
+static int install_app_shortcut(const char *name, const char *target, const char *icon, const char *comment)
+{
+	char desk[MAXP], lnk[MAXP], dir[MAXP], leaf[MAXP];
+	IShellLinkW *sl = NULL;
+	IPersistFile *pf = NULL;
+	HRESULT hr;
+	wchar_t *w;
+
+	if (!file_exists(target) || !desktop_dir(desk, sizeof(desk))) return -1;
+	snprintf(dir, sizeof(dir), "%s", target);
+	parent_of(dir);
+
+	CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+	hr = CoCreateInstance(&CLSID_ShellLink, NULL, CLSCTX_INPROC_SERVER, &IID_IShellLinkW, (void **)&sl);
+	if (FAILED(hr)) { CoUninitialize(); return -1; }
+
+	w = wide(target);   sl->lpVtbl->SetPath(sl, w);              free(w);
+	w = wide(dir);      sl->lpVtbl->SetWorkingDirectory(sl, w);  free(w);
+	sl->lpVtbl->SetArguments(sl, L"");
+	if (comment && *comment) { w = wide(comment); sl->lpVtbl->SetDescription(sl, w); free(w); }
+	/* No icon given: the shortcut shows the program's own (the one built into its .exe). */
+	if (icon && *icon) { w = wide(icon); sl->lpVtbl->SetIconLocation(sl, w, 0); free(w); }
+
+	hr = sl->lpVtbl->QueryInterface(sl, &IID_IPersistFile, (void **)&pf);
+	if (SUCCEEDED(hr)) {
+		snprintf(leaf, sizeof(leaf), "%s.lnk", name);
+		joinp(lnk, sizeof(lnk), desk, leaf);
+		w = wide(lnk);
+		hr = pf->lpVtbl->Save(pf, w, TRUE);
+		free(w);
+		pf->lpVtbl->Release(pf);
+	}
+	sl->lpVtbl->Release(sl);
+	CoUninitialize();
+	return SUCCEEDED(hr) ? 0 : -1;
+}
+
+#elif defined(__APPLE__)
+/* The target is an .app bundle, which carries its own name and icon: a symlink on the Desktop. */
+static int install_app_shortcut(const char *name, const char *target, const char *icon, const char *comment)
+{
+	char desk[MAXP];
+	(void)icon; (void)comment;
+	if (!dir_exists(target) && !file_exists(target)) return -1;
+	snprintf(desk, sizeof(desk), "%s/Desktop/%s.app", home_dir(), name);
+	unlink(desk);
+	return symlink(target, desk) == 0 ? 0 : -1;
+}
+
+#else
+static int write_app_desktop_file(const char *path, const char *name, const char *comment, const char *exe,
+                                  const char *icon)
+{
+	FILE *f = fopen(path, "w");
+	if (!f) return -1;
+	fprintf(f,
+	        "[Desktop Entry]\n"
+	        "Type=Application\n"
+	        "Version=1.0\n"
+	        "Name=%s\n"
+	        "Comment=%s\n"
+	        "Exec=\"%s\" %%F\n"
+	        "Icon=%s\n"
+	        "Terminal=false\n"
+	        "StartupNotify=true\n"
+	        "Categories=Graphics;\n",
+	        name, comment ? comment : "", exe, (icon && *icon) ? icon : "applications-graphics");
+	fclose(f);
+	chmod(path, 0755);
+	return 0;
+}
+
+static int install_app_shortcut(const char *name, const char *target, const char *icon, const char *comment)
+{
+	char apps[MAXP], entry[MAXP], desk[MAXP];
+	if (!file_exists(target)) return -1;
+	snprintf(apps, sizeof(apps), "%s/.local/share/applications", home_dir());
+	make_dirs(apps);
+	snprintf(entry, sizeof(entry), "%s/%s.desktop", apps, name);
+	if (write_app_desktop_file(entry, name, comment, target, icon) != 0) return -1;
+
+	snprintf(desk, sizeof(desk), "%s/Desktop", home_dir());
+	if (dir_exists(desk)) {
+		char d2[MAXP];
+		snprintf(d2, sizeof(d2), "%s/%s.desktop", desk, name);
+		write_app_desktop_file(d2, name, comment, target, icon);
+	}
+	return 0;
+}
+#endif
+
+/* The --shortcut mode: 0 = made, 1 = failed, 2 = bad command line. */
+static int shortcut_mode(int argc, char **argv)
+{
+	const char *name = NULL, *target = NULL, *icon = NULL, *comment = NULL;
+	int i;
+	for (i = 2; i < argc; i++) {
+		if (strncmp(argv[i], "--name=", 7) == 0)           name = argv[i] + 7;
+		else if (strncmp(argv[i], "--target=", 9) == 0)    target = argv[i] + 9;
+		else if (strncmp(argv[i], "--icon=", 7) == 0)      icon = argv[i] + 7;
+		else if (strncmp(argv[i], "--comment=", 10) == 0)  comment = argv[i] + 10;
+	}
+	if (!name || !*name || !target || !*target) return 2;
+	return install_app_shortcut(name, target, icon, comment) == 0 ? 0 : 1;
+}
+
 /* ------------------------------------------------------------------------------------- main */
 
 static int run(int argc, char **argv)
@@ -1910,6 +2030,8 @@ static int run(int argc, char **argv)
 	const char *hint_root = NULL, *hint_julia = NULL;
 	char **files;
 	int nfiles = 0, install = 0, i;
+
+	if (argc > 1 && strcmp(argv[1], "--shortcut") == 0) return shortcut_mode(argc, argv);
 
 	files = (char **)calloc((size_t)argc + 1, sizeof(char *));
 	for (i = 1; i < argc; i++) {

@@ -165,6 +165,7 @@ include("gmtedit.jl")    # Geophysics > Magnetics > gmtedit: the MGD77 track edi
 # deps/CMakeLists.txt; its exports are optional (_LIB_OPTIONAL), so either side may be off alone.
 isfile(joinpath(@__DIR__, "mbedit.jl")) && include("mbedit.jl")
 include("gmtplugin.jl")  # Geophysics > MB-System / GMTSAR > Install as plugin: their GMT supplements from GitHub
+include("craftapps.jl")  # Plot with GMT.jl > Edit in VectorCraft / PhotoCraft: external editors from their GitHub releases
 include("gmtcli.jl")     # the `gmtjl` command line launcher (GMT.gmt_cli), written once the first window is up
 include("mbprocess.jl")  # Geophysics > MB-System > Process swath data: mbset + mbprocess behind a dialog
 # EXPERIMENTAL sound velocity tool (MB-System's mbvelocitytool, deps/src/mbvelocitytool/), switched the
@@ -300,6 +301,12 @@ function __init__()
 	try
 		_load_library()
 		_plugin_push_ready()        # activated above, before the viewer existed (gmtplugin.jl)
+		try
+			_craft_push_state()      # the script editor's Install / Edit / Update buttons (craftapps.jl)
+			_craft_schedule_update_check()
+		catch e
+			@tool_error "InteractiveGMT: could not check VectorCraft / PhotoCraft." exception=(e,)
+		end
 		# Global UI assets the viewer bakes into every window's toolbar at build time, so they must be
 		# set BEFORE the first window opens — cheap static path pushes, no GMT inference (unlike the
 		# callbacks, which stay lazy in _ensure_callbacks). Guarded: a DLL missing the export must not

@@ -3683,6 +3683,14 @@ GMTVTK_API void gmtvtk_set_plugin_state(int which, int state) {
 	g_pluginState[which] = (state >= 0 && state <= 3) ? state : 0;
 }
 
+// VectorCraft / PhotoCraft (src/craftapps.jl; `which` = GMTVTK_CRAFT_VECTORCRAFT / _PHOTOCRAFT): what the
+// Plot with GMT.jl dialog's button offers, see g_craftState. Every open editor's button follows at once.
+GMTVTK_API void gmtvtk_set_craft_state(int which, int state) {
+	if (which < 0 || which >= GMTVTK_CRAFT_COUNT) return;
+	g_craftState[which] = (state >= 0 && state <= 3) ? state : 0;
+	craftRefreshEditors();
+}
+
 // Is that plugin offered here at all (Windows: only with GMT_jll's GMT)? 1 = yes.
 GMTVTK_API void gmtvtk_set_plugin_offered(int which, int on) {
 	if (which < 0 || which >= GMTVTK_PLUGIN_COUNT) return;
