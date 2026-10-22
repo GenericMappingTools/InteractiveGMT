@@ -1823,9 +1823,10 @@ user sees which one it is, never a dead window.
 
 With `savefig` (the external-editor handoff, craftapps.jl) the script's last `showfig` writes that file
 instead of showing the figure — see `_script_handoff!`. Only the statements run are changed, never the
-text in the box.
+text in the box. `what` heads the status window ("Creating the figure for VectorCraft..."), so a caller
+that runs the script on the way to something else says so.
 """
-function _script_run(scene::Ptr{Cvoid}; savefig::String = "", dpi::Int = 0)::Nothing
+function _script_run(scene::Ptr{Cvoid}; savefig::String = "", dpi::Int = 0, what::String = "")::Nothing
 	src   = _script_editor_text(scene)
 	lines = split(src, '\n')
 	fname = "Plot with GMT.jl"                  # what an error's stack trace names: there is no file
@@ -1836,12 +1837,12 @@ function _script_run(scene::Ptr{Cvoid}; savefig::String = "", dpi::Int = 0)::Not
 	end
 	isempty(savefig) || _script_handoff!(stmts, savefig, dpi)
 	n = length(stmts)
-	ccall(_fn(:gmtvtk_progress_show_async), Cint, (Cint, Cstring), Cint(n), "Plot with GMT.jl")
+	ccall(_fn(:gmtvtk_progress_show_async), Cint, (Cint, Cstring), Cint(n), isempty(what) ? "Plot with GMT.jl" : what)
 	try
 		for (k, (loc, ex)) in enumerate(stmts)
 			stop = k < n ? stmts[k + 1][1].line - 1 : length(lines)
 			ccall(_fn(:gmtvtk_progress_status), Cvoid, (Cint, Cstring), Cint(k - 1),
-			      "Step $k of $n\n" * _script_stmt_text(lines, loc.line, stop))
+			      (isempty(what) ? "" : what * "\n") * "Step $k of $n\n" * _script_stmt_text(lines, loc.line, stop))
 			Core.eval(Main, Expr(:toplevel, loc, ex))
 		end
 	finally
@@ -1859,8 +1860,9 @@ function _script_handoff!(stmts::Vector{Tuple{LineNumberNode,Any}}, savefig::Str
 	isempty(stmts) && error("Plot with GMT.jl: the script editor is empty")
 	ours = Any[Expr(:kw, :show, false), Expr(:kw, :savefig, savefig)]
 	dpi > 0 && push!(ours, Expr(:kw, :dpi, dpi))
-	# A dpi means nothing to a PostScript file (GMT.jl warns that it was not consumed).
-	taken = (:show, :savefig, :figname, :name, (dpi > 0 || endswith(lowercase(savefig), ".ps") ? (:dpi, :DPI) : ())...)
+	# A dpi means nothing to a PostScript/EPS file (GMT.jl warns that it was not consumed).
+	vec = endswith(lowercase(savefig), ".ps") || endswith(lowercase(savefig), ".eps")
+	taken = (:show, :savefig, :figname, :name, (dpi > 0 || vec ? (:dpi, :DPI) : ())...)
 	k = findlast(s -> _is_showfig(s[2]), stmts)
 	kept = Any[]
 	if k !== nothing

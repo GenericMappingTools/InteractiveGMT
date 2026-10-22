@@ -2,7 +2,7 @@
 # script makes, handed to an external editor. ONE mechanism for both programs (the SACRED LAW: same
 # operation, same function); a program is only its description, a CraftApp below.
 #
-#   VectorCraft  storytold/vectorcraft  vector illustration  gets the figure's PostScript (.ps)
+#   VectorCraft  storytold/vectorcraft  vector illustration  gets the figure as EPS (.eps)
 #   PhotoCraft   storytold/photocraft   photo editor         gets the figure as a PNG (.png)
 #
 # INSTALL. Both publish portable builds on their GitHub releases, so nothing is built: the latest
@@ -17,11 +17,14 @@
 # FINDING THE PROGRAM, in order: the INTERACTIVEGMT_<NAME> environment variable, `[<name>] path=` in
 # ~/.gmt/iGMT.ini, the install folder, the PATH.
 #
-# HANDOFF. "Edit in X" runs the editor's CURRENT text through `_script_run` — the very Run — with its
-# closing `showfig()` asked to write the file the user picked instead of showing it (GMT.jl's own
-# `showfig(show=false, savefig=…)`). The text in the box is not changed. The file is the user's, chosen
-# in a Save dialog: nothing temporary, and GMT.jl's PS in its temp dir is never pointed at. The program
-# is then started on it as a separate process.
+# HANDOFF. "Run and Edit in X" runs the editor's CURRENT text through `_script_run` — the very Run — with
+# its closing `showfig()` asked to write a figure file instead of showing it (GMT.jl's own
+# `showfig(show=false, savefig=…)`, which crops with psconvert -A). The text in the box is not changed.
+# No question is asked: the viewer names the file, igmt_figure_<date_time>.eps / .png in the default
+# directory (or ~/.gmt/craftapps/figures). It is a kept file, not a temporary one, and GMT.jl's PS in its
+# temp dir is never pointed at. EPS, not PS, for VectorCraft: GMT.jl's .ps is the raw PostScript on its
+# oversized page (a 32767 pt bounding box, all white around the figure); .eps goes through psconvert -A.
+# The program is then started on the file as a separate process.
 
 struct CraftApp
 	id::Cint                          # the viewer's index (GMTVTK_CRAFT_* in deps/src/30_app.cpp)
@@ -36,6 +39,9 @@ const PHOTOCRAFT  = CraftApp(1, "PhotoCraft",  "photocraft",  "storytold/photocr
 const _CRAFT_APPS = (VECTORCRAFT, PHOTOCRAFT)
 
 _craft_app(id::Integer)::CraftApp = _CRAFT_APPS[id + 1]
+
+# The figure file the last "Run and Edit" wrote (the viewer names it; the test suite reads it here).
+const _CRAFT_LAST = Ref("")
 
 _craft_dir(a::CraftApp)::String = joinpath(homedir(), ".gmt", "craftapps", a.name)
 _craft_tagfile(a::CraftApp, dir::String = _craft_dir(a))::String = joinpath(dir, "INSTALLED_TAG")
@@ -303,11 +309,31 @@ function _craft_shortcut(id::Integer)::Nothing
 	return nothing
 end
 
-# Start `exe` on `file` as a separate program; returns at once.
-function _craft_launch(exe::String, file::String)
+# Start `exe` on `file` as a separate program; returns the process at once.
+function _craft_launch(exe::String, file::String)::Base.Process
 	cmd = (Sys.isapple() && endswith(exe, ".app")) ? `open -a $exe $file` :
 	      Cmd(`$exe $file`; dir = dirname(exe), detach = true)
-	run(cmd; wait = false)
+	return run(cmd; wait = false)
+end
+
+# NO DEAD TIME while the program starts (a 100+ MB app takes seconds to put its window up): the busy
+# notice stays until the program is ready for input. Windows only, by WaitForInputIdle in short slices
+# so the notice keeps being painted; capped at 30 s, and left at once when the process ends or is not a
+# GUI program (WaitForInputIdle then fails). Elsewhere the program is a child that starts on its own
+# (macOS `open`) and there is no portable "window is up" to wait for.
+function _craft_wait_ready(p::Base.Process)
+	Sys.iswindows() || return nothing
+	h = ccall((:OpenProcess, "kernel32"), Ptr{Cvoid}, (UInt32, Cint, UInt32), 0x00100400, 0, getpid(p))
+	h == C_NULL && return nothing          # SYNCHRONIZE | PROCESS_QUERY_INFORMATION refused
+	try
+		t0 = time()
+		while time() - t0 < 30 && process_running(p)
+			ccall((:WaitForInputIdle, "user32"), UInt32, (Ptr{Cvoid}, UInt32), h, 100) == 0x00000102 || break
+			ccall(_fn(:gmtvtk_progress_status), Cvoid, (Cint, Cstring), -1, C_NULL)   # repaint the notice
+		end
+	finally
+		ccall((:CloseHandle, "kernel32"), Cint, (Ptr{Cvoid},), h)
+	end
 	return nothing
 end
 
@@ -315,20 +341,28 @@ end
     _craft_edit(scene, id, dest, dpi, transparent) -> nothing
 
 "Edit in VectorCraft / PhotoCraft": run the editor's script with its closing `showfig` writing `dest`
-(PostScript for VectorCraft; a PNG at `dpi`, optionally with a transparent background, for PhotoCraft),
+(EPS for VectorCraft; a PNG at `dpi`, optionally with a transparent background, for PhotoCraft),
 then open `dest` in the program.
 """
 function _craft_edit(scene::Ptr{Cvoid}, id::Integer, dest::String, dpi::Integer, transparent::Bool)::Nothing
 	a = _craft_app(id)
 	exe = _craft_exe(a)
 	isempty(exe) && error("$(a.title) is not installed.")
-	isfile(dest) && rm(dest)              # the Save dialog asked; a stale copy must not pass for the new figure
+	isfile(dest) && rm(dest)              # a stale copy must not pass for the new figure
 	# GMT.jl's savefig picks the format by extension; ".PNG" (upper case) is its transparent PNG (-TG),
 	# written as .png.
 	fig = (transparent && endswith(lowercase(dest), ".png")) ? splitext(dest)[1] * ".PNG" : dest
-	_script_run(scene; savefig = fig, dpi = Int(dpi))
+	# One notice from click to program window: the script's status window ("Creating the figure for X")
+	# while the figure is made, then "Starting X" until the program is up.
+	_script_run(scene; savefig = fig, dpi = Int(dpi), what = "Creating the figure for $(a.title)...")
 	isfile(dest) || error("The script ran but did not write $dest.")
-	_craft_launch(exe, dest)
+	_CRAFT_LAST[] = dest
+	ccall(_fn(:gmtvtk_progress_show_async), Cint, (Cint, Cstring), 0, "Starting $(a.title)...")
+	try
+		_craft_wait_ready(_craft_launch(exe, dest))
+	finally
+		ccall(_fn(:gmtvtk_progress_close), Cvoid, ())
+	end
 	println("Opened $dest in $(a.title).")
 	return nothing
 end

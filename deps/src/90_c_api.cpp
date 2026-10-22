@@ -7415,6 +7415,29 @@ GMTVTK_API int gmtvtk_crs_select(void *handle, const char *initial, char *out, i
 // The production gmtvtk.dll never sees these symbols at all — not hidden, not exported.
 #ifdef GMTVTK_TEST_API
 
+// test hook: a button (push or tool), by objectName, inside a top-level dialog, by window title -- searched over
+// QApplication::topLevelWidgets(), which both dlls share, so it reaches a dialog the PRODUCTION dll built
+// (the Plot with GMT.jl editor lives in its file-static registry, out of this dll's sight). Writes the
+// button's text to `out`; with `click` != 0 the button is then clicked, as the mouse would. Returns 1
+// when found, 0 otherwise.
+GMTVTK_API int gmtvtk_dialog_button_test(const char *title, const char *name, int click, char *out, int cap) {
+	if (!title || !name) return 0;
+	for (QWidget *w : QApplication::topLevelWidgets()) {
+		if (w->windowTitle() != QString::fromUtf8(title)) continue;
+		QAbstractButton *b = w->findChild<QAbstractButton *>(QString::fromUtf8(name));
+		if (!b) continue;
+		if (out && cap > 0) {
+			const QByteArray t = b->text().toUtf8();
+			const int n = std::min((int)t.size(), cap - 1);
+			memcpy(out, t.constData(), n);
+			out[n] = 0;
+		}
+		if (click) { b->click(); QApplication::processEvents(); }
+		return 1;
+	}
+	return 0;
+}
+
 // test hook: WHERE a line overlay is and HOW it is drawn, read off the live actor -- what the grid-
 // independence tests need to tell "the row is checked but nothing is on screen" apart into its causes.
 // Writes "key=value;" pairs: visibility, which renderer holds it (main / the depth-cleared top layer),

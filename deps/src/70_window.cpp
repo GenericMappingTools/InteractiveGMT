@@ -29301,7 +29301,7 @@ static void showScriptEditor(Scene *s, QMainWindow *win) {
 	showScriptEditor(scriptHostScene(s));
 }
 
-// ── The external editors: VectorCraft gets the figure's PostScript, PhotoCraft a PNG (src/craftapps.jl).
+// ── The external editors: VectorCraft gets the figure as EPS, PhotoCraft a PNG (src/craftapps.jl).
 // ONE button per program, ONE click handler for both; its label follows g_craftState (30_app.cpp).
 static const char *craftTitle(int id) { return id == GMTVTK_CRAFT_PHOTOCRAFT ? "PhotoCraft" : "VectorCraft"; }
 
@@ -29311,14 +29311,16 @@ static void craftButtonSync(QPushButton *b, int id) {
 	const int st = g_craftState[id];
 	b->setVisible(st != 3);
 	b->setText(st == 0 ? QString("Install %1…").arg(app) : st == 2 ? QString("Update %1…").arg(app)
-	                                                                : QString("Edit in %1…").arg(app));
-	const QString what = id == GMTVTK_CRAFT_PHOTOCRAFT ? "as a PNG image" : "as PostScript";
-	b->setToolTip(st == 0 ? QString("Download the portable %1 from its GitHub releases and install it into "
-	                                "iGMT's own folder. Once installed, this button runs the script and opens "
-	                                "the figure %2 in %1.").arg(app, what)
-	                      : QString("Run the script, save the figure %2 to a file you choose, and open it in %1 "
-	                                "to edit.%3").arg(app, what, st == 2 ? " A newer release is available: you are "
-	                                "asked first whether to update." : ""));
+	                                                                : QString("Run and Edit in %1").arg(app));
+	const QString what = id == GMTVTK_CRAFT_PHOTOCRAFT ? "as a PNG image (300 dpi)" : "as EPS";
+	b->setToolTip(st == 0 ? QString("Download the portable %1 from its GitHub releases and install it. Once "
+	                                "installed, this button runs the script and opens the figure %2 in %1.")
+	                                .arg(app, what)
+	                      : QString("Run the script and open the figure, cropped to its extent, %2 in %1. The file "
+	                                "is written to the default directory (Preferences) as igmt_figure_<date_time>, "
+	                                "or to ~/.gmt/craftapps/figures when none is set.%3")
+	                                .arg(app, what, st == 2 ? " A newer release is available: you are asked first "
+	                                "whether to update." : ""));
 }
 
 // Every open (or parked) editor's buttons follow a state change pushed by the host.
@@ -29329,8 +29331,8 @@ static void craftRefreshEditors() {
 }
 
 // The button's click. Not installed: say what would be downloaded, ask, install. Newer release known: ask
-// whether to update first (No just edits). Installed: ask where the figure goes (PhotoCraft: its DPI and
-// background too), and have the host run the script into that file and open it in the program.
+// whether to update first (No just edits). Installed: run the script into a figure file and open it in
+// the program, with no questions asked.
 static void craftClicked(const ScriptHost &host, QDialog *dlg, int id) {
 	if (!g_juliaEval || !host.alive()) return;
 	const QString app = craftTitle(id);
@@ -29379,48 +29381,57 @@ static void craftClicked(const ScriptHost &host, QDialog *dlg, int id) {
 			}
 		}
 	}
+	// Run and Edit asks nothing: the figure goes to the default directory (Preferences, the head of the
+	// directory MRU) under a time-stamped name, so a new run never overwrites a figure still open in the
+	// program. No default directory yet: ~/.gmt/craftapps/figures. VectorCraft gets a tight EPS (GMT.jl's
+	// plain .ps keeps its whole oversized page); PhotoCraft a PNG at 300 dpi, psconvert's own default.
 	const bool png = id == GMTVTK_CRAFT_PHOTOCRAFT;
-	static int s_dpi = 300;                                         // showfig's own default (psconvert's)
-	static bool s_transparent = false;
-	if (png) {
-		QDialog opt(dlg);
-		opt.setWindowTitle(QString("Figure for %1").arg(app));
-		QFormLayout *fl = new QFormLayout(&opt);
-		QSpinBox *sbDpi = new QSpinBox(&opt);
-		sbDpi->setRange(50, 2400);
-		sbDpi->setValue(s_dpi);
-		sbDpi->setSuffix(" dpi");
-		QCheckBox *cbT = new QCheckBox("Transparent background", &opt);
-		cbT->setChecked(s_transparent);
-		fl->addRow("Resolution:", sbDpi);
-		fl->addRow(cbT);
-		fl->addRow(new QLabel("The figure is cropped to its own extent, as showfig does.", &opt));
-		QDialogButtonBox *bb = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &opt);
-		QObject::connect(bb, &QDialogButtonBox::accepted, &opt, &QDialog::accept);
-		QObject::connect(bb, &QDialogButtonBox::rejected, &opt, &QDialog::reject);
-		fl->addRow(bb);
-		if (opt.exec() != QDialog::Accepted) return;
-		s_dpi = sbDpi->value();
-		s_transparent = cbT->isChecked();
-	}
-	const QString ext = png ? ".png" : ".ps";
-	QString dest = QFileDialog::getSaveFileName(dlg, QString("Save the figure for %1").arg(app),
-	                                            prefStartDir("igmt_figure" + ext),
-	                                            png ? "PNG image (*.png)" : "PostScript (*.ps)");
-	if (dest.isEmpty()) return;
-	if (!dest.endsWith(ext, Qt::CaseInsensitive)) dest += ext;
-	rememberStartDir(dest);
-	host.status(QString("Running the script for %1…").arg(app), 2000);
-	// `_script_run` (inside `_craft_edit`) raises its own status window naming each statement.
-	auto [ok, txt] = eval(QString("InteractiveGMT._craft_edit(Ptr{Nothing}(UInt(%1)), %2, raw\"%3\", %4, %5)")
-	                      .arg(key).arg(id).arg(QDir::toNativeSeparators(dest)).arg(png ? s_dpi : 0)
-	                      .arg(png && s_transparent ? "true" : "false"), QString());
+	QString dir = prefStartDir();
+	if (dir.isEmpty() || !QDir(dir).exists()) dir = QDir::home().filePath(".gmt/craftapps/figures");
+	QDir().mkpath(dir);
+	const QString dest = QDir(dir).filePath(QString("igmt_figure_%1%2")
+	                                        .arg(QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss"),
+	                                             png ? ".png" : ".eps"));
+	// NO DEAD TIME: the busy notice is up from the click, before Julia compiles or parses anything; inside
+	// `_craft_edit` the script's status window (each statement) and then "Starting <App>..." (until its
+	// window is up) take over the same notice slot.
+	auto [ok, txt] = eval(QString("InteractiveGMT._craft_edit(Ptr{Nothing}(UInt(%1)), %2, raw\"%3\", %4, false)")
+	                      .arg(key).arg(id).arg(QDir::toNativeSeparators(dest)).arg(png ? 300 : 0),
+	                      QString("Creating the figure for %1...").arg(app));
 	if (!ok) {
 		host.logError(txt);
 		QMessageBox::warning(dlg, app, txt);
 		return;
 	}
 	host.status(txt, 4000);
+}
+
+// The "?" beside the Craft buttons.
+static void craftShowHelp(QWidget *parent) {
+	QMessageBox m(parent);
+	m.setWindowTitle("VectorCraft and PhotoCraft");
+	m.setIcon(QMessageBox::Information);
+	m.setTextFormat(Qt::RichText);
+	m.setText(
+		"<p>Two free, open-source editors for the <b>finishing touches</b> of the figure this script draws: "
+		"<b>VectorCraft</b> (vector illustration: move, restyle and annotate every line and label) and "
+		"<b>PhotoCraft</b> (photo editing: retouch the figure as an image).</p>"
+		"<p><b>Install…</b> downloads the program's portable release from its GitHub page (about 120 MB for "
+		"VectorCraft, 80 MB for PhotoCraft; you are asked first) into <code>~/.gmt/craftapps</code>, and "
+		"offers a desktop icon so it can also be started on its own. When a newer release appears the button "
+		"reads <b>Update…</b>.</p>"
+		"<p><b>Run and Edit in …</b> runs the script as it is in the box, your edits included, and opens the "
+		"figure in the program. Nothing is asked: the figure is cropped to its own extent and written as "
+		"<code>igmt_figure_&lt;date_time&gt;</code> &mdash; an <b>EPS</b> for VectorCraft, a <b>PNG</b> "
+		"(300 dpi) for PhotoCraft &mdash; in the default directory (Preferences), or in "
+		"<code>~/.gmt/craftapps/figures</code> when none is set. The script text is not changed.</p>"
+		"<p>The editing is done, and <b>saved</b>, in the program (VectorCraft: SVG, PDF, AI, PNG…; "
+		"PhotoCraft: PNG, JPEG, PSD…). Nothing comes back into the script: running again makes a new "
+		"figure.</p>"
+		"<p>To use a copy you installed yourself, set the <code>INTERACTIVEGMT_VECTORCRAFT</code> / "
+		"<code>INTERACTIVEGMT_PHOTOCRAFT</code> environment variable, or <code>path=</code> under "
+		"<code>[vectorcraft]</code> / <code>[photocraft]</code> in <code>~/.gmt/iGMT.ini</code>.</p>");
+	m.exec();
 }
 
 // The editor itself, holding `text`. Called by gmtvtk_script_editor_show_h with what Julia generated.
@@ -29463,7 +29474,8 @@ static void buildScriptEditor(const ScriptHost &host, const QString &text) {
 	                         "affected.");
 	row->addWidget(cbStandalone);
 	row->addStretch(1);
-	// The external editors, before Run / Save….
+	// The external editors, in the MIDDLE of the row, apart from Run / Save…: they are an alternative
+	// to those (run, then edit elsewhere), not two more of them.
 	for (int id = 0; id < GMTVTK_CRAFT_COUNT; id++) {
 		QPushButton *b = new QPushButton(dlg);
 		b->setObjectName(QString("craftBtn%1").arg(id));
@@ -29472,6 +29484,22 @@ static void buildScriptEditor(const ScriptHost &host, const QString &text) {
 		QObject::connect(b, &QPushButton::clicked, [host, dlg, id]() { craftClicked(host, dlg, id); });
 		row->addWidget(b);
 	}
+	// "?" beside them: what the two Craft buttons do. The app's help-disk look (makeHelpDiskIcon), but
+	// a local text, not the GMT manual page the module dialogs' disks open.
+	{
+		const int px = 18;
+		auto *help = new QToolButton(dlg);
+		help->setObjectName("craftHelp");
+		help->setIcon(makeHelpDiskIcon(px));
+		help->setIconSize(QSize(px, px));
+		help->setAutoRaise(true);
+		help->setCursor(Qt::PointingHandCursor);
+		help->setFocusPolicy(Qt::NoFocus);
+		help->setToolTip("What the VectorCraft / PhotoCraft buttons do");
+		QObject::connect(help, &QToolButton::clicked, dlg, [dlg]() { craftShowHelp(dlg); });
+		row->addWidget(help);
+	}
+	row->addStretch(1);
 	row->addWidget(bRun);
 	row->addWidget(bSave);
 	lay->addLayout(row);

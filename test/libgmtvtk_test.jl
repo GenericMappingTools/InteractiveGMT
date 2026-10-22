@@ -128,6 +128,7 @@ const _TEST_SYMBOLS = (
 	:gmtvtk_xyplot_drag_test, :gmtvtk_xyplot_sg_state_test,   # a left-drag on the chart; the kept S&G lines
 	:gmtvtk_xyplot_sg_on_test,        # the S&G tool on/off without its unit question
 	:gmtvtk_xyplot_menu_test,         # an X,Y menu item chosen
+	:gmtvtk_dialog_button_test,       # a dialog's push button by objectName: its text, and a click
 	:gmtvtk_set_remotes_callback,     # NOT test-only -- mirrored: this dll's Remote sensing dialogs call Julia too
 )
 
