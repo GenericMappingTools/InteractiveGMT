@@ -1085,6 +1085,50 @@ static void digitizeWhitesUI(Scene *s, const std::string &name) {
 	if (n < 0) sceneLogError(s, QString::fromUtf8(buf.data(), -n));
 }
 
+// The PhotoCraft round trip on a raster's Scene Objects menu (src/craftapps.jl: _pc_send / _pc_back):
+// "Edit in PhotoCraft" sends the picture, "Get back from PhotoCraft" puts the edited one in place of
+// the original. ONE pair of entries for every raster menu that offers it -- an image extra, the
+// window's own image, the base grid -- added by photoCraftItems and answered by photoCraftChosen, so
+// the three menus cannot drift apart. The menus compare exec()'s action against their own, so the
+// two actions are handed back and checked first (a `triggered` slot would leave exec() returning an
+// action the menu's own dispatch does not know).
+struct PhotoCraftActs { QAction *send = nullptr, *back = nullptr; };
+
+static PhotoCraftActs photoCraftItems(QMenu &m) {
+	PhotoCraftActs a;
+	if (g_craftState[GMTVTK_CRAFT_PHOTOCRAFT] == 3) return a;   // no PhotoCraft for this system
+	a.send = m.addAction("Edit in PhotoCraft");
+	a.back = m.addAction("Get back from PhotoCraft");
+	a.send->setToolTip("Open this picture in PhotoCraft to edit it");
+	a.back->setToolTip("Bring the picture edited in PhotoCraft back, in place of this one");
+	m.addSeparator();
+	return a;
+}
+
+// `kind` "image" | "grid"; `name` the element's name ("" = the window's own image). Returns true when
+// `c` was one of the two entries (then it has been run).
+static bool photoCraftChosen(QAction *c, const PhotoCraftActs &a, Scene *s, const char *kind, const QString &name) {
+	if (!c || (c != a.send && c != a.back)) return false;
+	if (!g_juliaEval || !sceneAlive(s)) return true;
+	const bool back = (c == a.back);
+	QString nm = name;
+	nm.replace("\"", "\\\"");
+	const QString cmd = QString("InteractiveGMT.%1(Ptr{Nothing}(UInt(%2)), \"%3\", raw\"%4\")")
+	                    .arg(back ? "_pc_back" : "_pc_send").arg((qulonglong)(quintptr)s).arg(kind).arg(nm);
+	std::vector<char> buf(1 << 14);
+	// No dead time: up from the click; the host's own notices ("Starting PhotoCraft...") take over.
+	showBusyDialog(back ? "Getting the picture back from PhotoCraft..." : "Sending the picture to PhotoCraft...");
+	const int r = g_juliaEval(s, cmd.toStdString().c_str(), buf.data(), (int)buf.size());
+	closeBusyDialog();
+	const QString txt = QString::fromUtf8(buf.data(), r < 0 ? -r : r).trimmed();
+	if (r < 0) {
+		sceneLogError(s, txt);
+		QMessageBox::warning(s->win, "PhotoCraft", txt);
+	}
+	else if (s->win) s->win->statusBar()->showMessage(txt, 6000);
+	return true;
+}
+
 static void imageObjectMenu(Scene *s, vtkProp3D *actor, const QPoint &g) {
 	int idx = extraIndexOfActor(s, actor);
 	if (idx < 0) return;
@@ -1123,6 +1167,8 @@ static void imageObjectMenu(Scene *s, vtkProp3D *actor, const QPoint &g) {
 	// A MASK (two states, 0/1 — a tsunami file's inundation footprint, a beach) can be DIGITIZED: the
 	// outline of its whites, as vector geometry. Offered only for a handle Julia flagged as a mask.
 	QAction *aDigit = s->maskNames.count(s->extras[idx].name) ? m.addAction("Digitize whites") : nullptr;
+	m.addSeparator();
+	const PhotoCraftActs pc = photoCraftItems(m);
 	QAction *aSave = m.addAction("Save image…");
 	QAction *aClip = m.addAction("Copy to Clipboard");
 	// Same move a grid row offers (gridObjectMenu): re-open this image in a fresh iGMT window, then
@@ -1131,6 +1177,7 @@ static void imageObjectMenu(Scene *s, vtkProp3D *actor, const QPoint &g) {
 	QAction *aDel = m.addAction("Remove");
 	QAction *c = m.exec(g);
 	if (!c) return;
+	if (photoCraftChosen(c, pc, s, "image", QString::fromStdString(s->extras[idx].name))) return;
 	if (aDigit && c == aDigit) { digitizeWhitesUI(s, s->extras[idx].name); return; }
 	if (aHisto && c == aHisto) { g_showImageHisto(s, s->extras[idx].name.c_str()); return; }
 	if (aResize && c == aResize) { g_showImageResize(s, s->extras[idx].name.c_str()); return; }
@@ -2124,11 +2171,15 @@ static void surfaceObjectMenu(Scene *s, const QPoint &gp) {
 	if (g_aquamotoReopen && g_aquamotoHasWindow && g_aquamotoHasWindow(s))
 		aAqua = m.addAction("Aquamoto viewer…");             // re-show the hidden Aquamoto control window
 	m.addSeparator();
+	// The base grid's picture out to PhotoCraft; back, it is draped on this grid (the only one a
+	// picture can be draped on -- imageRebuildActor drapes onto the base's nodes).
+	const PhotoCraftActs pc = photoCraftItems(m);
 	addGridStackActions(s, m, &s->surfStack);
 	m.addSeparator();
 	QAction *aRem = m.addAction("Remove");                   // removes surface + colorbar + axes; window stays open
 	QAction *c = m.exec(gp);
 	if (!c) return;
+	if (photoCraftChosen(c, pc, s, "grid", nm)) return;
 	if (c == aSave) { saveObjectDialog(s, "grid", nm); return; }
 	if (c == aInfo) { runGridInfo(s, nm); return; }
 	if (aTransplant && c == aTransplant) { runNestedTransplant(s, nm); return; }
@@ -3226,6 +3277,8 @@ static void rebuildSceneObjects(Scene *s) {
 			// Same entry the extra-image handles carry (imageObjectMenu), for the window's OWN image:
 			// a mask is a mask whichever door it came in by.
 			QAction *aDigit    = s->maskNames.count(std::string()) ? m.addAction("Digitize whites") : nullptr;
+			m.addSeparator();
+			const PhotoCraftActs pc = photoCraftItems(m);
 			QAction *aSave = m.addAction("Save image…");
 			QAction *aClip = m.addAction("Copy to Clipboard");
 			// Same move a grid row offers, for the window's own image: re-open it in a fresh iGMT
@@ -3235,6 +3288,7 @@ static void rebuildSceneObjects(Scene *s) {
 			QAction *aRem  = m.addAction("Remove"); // removes image + axes; window stays open
 			QAction *c = m.exec(g);
 			if (!c) return;
+			if (photoCraftChosen(c, pc, s, "image", QString())) return;     // "" = the window's own image
 			if (aStretch && c == aStretch) stretchImageObject(s, nm);
 			else if (aDigit && c == aDigit) digitizeWhitesUI(s, std::string());
 			else if (aHisto && c == aHisto) g_showImageHisto(s, "");

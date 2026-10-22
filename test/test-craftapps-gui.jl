@@ -67,3 +67,73 @@ end
 		ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), f.h)
 	end
 end
+
+@testitem "PhotoCraft round trip: MCP replies are read, the edited picture keeps the original's limits" tags=[:unit, :fast] begin
+	IG = InteractiveGMT; GMT = IG.GMT
+	ok = """{"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"text","text":"{\\"path\\":\\"a.png\\",\\"warnings\\":[]}"}],"isError":false}}"""
+	@test IG._pc_text(ok, "doc_save") == """{"path":"a.png","warnings":[]}"""
+	bad = """{"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"text","text":"no document open"}],"isError":true}}"""
+	@test_throws ErrorException IG._pc_text(bad, "doc_save")
+	@test IG._pc_stem("my image (1).tif") == "my_image__1_.tif"
+	# a resampled picture (other size) over the SAME limits; gridline originals are not widened
+	R = GMT.mat2img(zeros(UInt8, 20, 30, 3); x = [-10.0, 20.0], y = [30.0, 50.0])
+	J = IG._pc_georef!(GMT.mat2img(zeros(UInt8, 45, 70, 3)), R)
+	@test J.range[1:4] == R.range[1:4] && J.registration == 1 && length(J.x) == 71 && length(J.y) == 46
+	G = GMT.mat2grid(zeros(Float32, 5, 5); x = [0.0, 4.0], y = [0.0, 4.0])      # gridline
+	@test IG._pc_georef!(GMT.mat2img(zeros(UInt8, 9, 9, 3)), G).range[1:4] == [0.0, 4.0, 0.0, 4.0]
+end
+
+@testitem "craftapps: every system's release unpacks to the program, its CLI and (Linux) its icon" tags=[:unit, :fast] begin
+	IG = InteractiveGMT
+	mktempdir() do t
+		# a release archive laid out like the Linux tarball: one top folder, bin/ + share/icons
+		top = joinpath(t, "src", "photocraft-9.9.9-linux-x86_64")
+		for f in ("bin/photocraft", "bin/photocraft-cli", "share/icons/hicolor/16x16/apps/p.png",
+		          "share/icons/hicolor/256x256/apps/p.png")
+			mkpath(dirname(joinpath(top, f))); write(joinpath(top, f), f)
+		end
+		cd(() -> run(`$(IG._craft_tar()) -czf ../rel.tar.gz photocraft-9.9.9-linux-x86_64`), joinpath(t, "src"))
+		dest = joinpath(t, "dest")
+		IG._craft_unpack(joinpath(t, "rel.tar.gz"), dest, mktempdir(t))
+		@test sort(readdir(joinpath(dest, "bin"))) == ["photocraft", "photocraft-cli"]
+		IG._craft_linux_icon(IG.PHOTOCRAFT, dest)
+		@test read(joinpath(dest, "photocraft.png"), String) == "share/icons/hicolor/256x256/apps/p.png"   # the largest
+		# macOS: the program to start is the one inside the .app
+		app = joinpath(t, "PhotoCraft.app")
+		mkpath(joinpath(app, "Contents", "MacOS")); write(joinpath(app, "Contents", "MacOS", "photocraft"), "")
+		@test IG._craft_binary(app) == joinpath(app, "Contents", "MacOS", "photocraft")
+		@test IG._craft_binary("/usr/bin/x") == "/usr/bin/x"
+	end
+end
+
+@testitem "PhotoCraft round trip: get back replaces the image in place, drapes on the grid" tags=[:gui] begin
+	IG = InteractiveGMT; GMT = IG.GMT
+	# no PhotoCraft here: the edited picture is handed straight to the replacement step
+	A = zeros(UInt8, 60, 90, 3); A[:, :, 1] .= 200
+	f = iview(GMT.mat2img(A; x = [-10.0, 20.0], y = [30.0, 50.0]))
+	g = view_grid(GMT.mat2grid(Float32[ix * iy for iy in 0:20, ix in 0:30]; x = [0.0, 30.0], y = [0.0, 20.0]))
+	try
+		IG._pump_once()
+		key, I0 = IG._find_object_named(f.h, :image)
+		E = GMT.mat2img(fill(UInt8(77), 120, 180, 3))                    # edited, resampled x2
+		IG._pc_put_back!(f.h, "image", "", String(key), I0, E)
+		_, I1 = IG._find_object_named(f.h, :image)
+		@test I1 === I0                                                  # the same image, in place
+		@test I1.range[1:4] == [-10.0, 20.0, 30.0, 50.0] && all(==(0x4d), I1.image)
+		@test IG._scene_state(f.h)["alive"] == 1
+		# a grid: the picture comes back DRAPED on it, and a second get-back replaces that drape
+		G = IG._find_object(g.h, :grid, "")
+		IG._pc_put_back!(g.h, "grid", "base", "base", G, GMT.mat2img(fill(UInt8(10), 40, 60, 3)))
+		IG._pump_once()
+		D = IG._find_object_exact(g.h, :image, "base (PhotoCraft)")
+		@test D isa GMT.GMTimage && D.range[1:4] == G.range[1:4]
+		IG._pc_put_back!(g.h, "grid", "base", "base", G, GMT.mat2img(fill(UInt8(20), 40, 60, 3)))
+		IG._pump_once()
+		st = IG._scene_state(g.h)
+		@test count(e -> e[2] == "base (PhotoCraft)", st["extras"]) == 1
+		@test all(==(0x14), IG._find_object_exact(g.h, :image, "base (PhotoCraft)").image)
+	finally
+		ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), f.h)
+		ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), g.h)
+	end
+end

@@ -29428,6 +29428,10 @@ static void craftShowHelp(QWidget *parent) {
 		"<p>The editing is done, and <b>saved</b>, in the program (VectorCraft: SVG, PDF, AI, PNG…; "
 		"PhotoCraft: PNG, JPEG, PSD…). Nothing comes back into the script: running again makes a new "
 		"figure.</p>"
+		"<p>PhotoCraft also round-trips a single picture: right-click an image (or the base grid) in "
+		"Scene Objects and choose <b>Edit in PhotoCraft</b>, edit it there, then <b>Get back from "
+		"PhotoCraft</b> on the same row puts the edited picture in place of the original (on a grid, "
+		"draped over it).</p>"
 		"<p>To use a copy you installed yourself, set the <code>INTERACTIVEGMT_VECTORCRAFT</code> / "
 		"<code>INTERACTIVEGMT_PHOTOCRAFT</code> environment variable, or <code>path=</code> under "
 		"<code>[vectorcraft]</code> / <code>[photocraft]</code> in <code>~/.gmt/iGMT.ini</code>.</p>");
