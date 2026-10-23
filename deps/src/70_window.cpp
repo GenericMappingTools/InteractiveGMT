@@ -31730,6 +31730,37 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		if (n < 0) sceneLogError(s, QString::fromUtf8(buf.data(), -n));
 	});
 
+	// T & L — teaching & learning demos. A NEW top-level menu, added on the user's explicit instruction.
+	QMenu *mTL = win->menuBar()->addMenu("T && L");
+	QMenu *mDayLen = mTL->addMenu("Day length");   // both day-length demos
+	// The first demo: GMT.jl-drawn base + per-day overlay (74_daylength_gmt.cpp, src/daylength.jl). Its Julia side is
+	// wired the first time it is opened (warmupTool), never at start-up.
+	mDayLen->addAction("Axial tilt…", [win, s]() {
+		if (dayLengthPicWired()) {
+			dayLengthPicOpen(win, s);
+			return;
+		}
+		warmupTool("daylength");
+		QApplication::setOverrideCursor(Qt::WaitCursor);
+		auto tries = std::make_shared<int>(0);
+		auto step = std::make_shared<std::function<void()>>();
+		*step = [win, s, tries, step]() {
+			if (!dayLengthPicWired() && ++*tries < 200) {   // ~10 s, then say so instead of hanging
+				QTimer::singleShot(50, win, *step);
+				return;
+			}
+			QApplication::restoreOverrideCursor();
+			if (dayLengthPicWired())
+				dayLengthPicOpen(win, sceneAlive(s) ? s : nullptr);
+			else
+				QMessageBox::warning(win, "Day length & axial tilt",
+				                     "The day-length demo's Julia side did not answer (src/daylength.jl).");
+		};
+		QTimer::singleShot(0, win, *step);
+	});
+	// Earth round the Sun and the day length it makes (74_daylength.cpp): all C++, no host round-trip.
+	mDayLen->addAction("Earth orbit…", [win, s]() { dayLengthOpen(win, s); });
+
 	QMenu *mHelp = win->menuBar()->addMenu("&Help");
 	// The project's own manual, in the user's browser. The address is NOT chosen here: it is the
 	// `canonical` Documenter is told to build the site under (docs/make.jl), i.e. where deploydocs

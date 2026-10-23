@@ -232,6 +232,7 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_set_magfield_coast_callback,
 	:gmtvtk_set_magfield_mask_callback,
 	:gmtvtk_set_okada_inset_callback,
+	:gmtvtk_daylength_test, :gmtvtk_set_daylength_callback,
 	:gmtvtk_set_crs_select_callback, :gmtvtk_crs_select,
 	:gmtvtk_set_focal_callback, :gmtvtk_add_meca_h, :gmtvtk_set_meca_infos_h, :gmtvtk_add_text_h, :gmtvtk_add_texts_h, :gmtvtk_add_texts_ex_h,
 	:gmtvtk_set_meca_props_callback, :gmtvtk_remove_meca_group_h,

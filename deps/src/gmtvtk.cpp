@@ -24,6 +24,8 @@
 //   72_mbprocess   MB-System > Process swath data: mbset + mbprocess over the host (src/mbprocess.jl);
 //                  included BEFORE 70_window.cpp for the same reason
 //   73_crsselect   Coordinate Reference System selector (modal picker, PROJ catalogue via src/crsselect.jl)
+//   74_daylength   T & L > Day length & axial tilt: Earth round the Sun in VTK + day-length chart (after 69_magfield, whose globe it uses)
+//   74_daylength_gmt  T & L > Day length & axial tilt: GMT.jl base picture + per-day overlay list (src/daylength.jl)
 //   70_window     buildAndShow — the Qt main window
 //   69_magfield    Magnetic field lines (3-D): IGRF streamlines traced round a textured globe
 //   80_rubberband  Ctrl+right-drag point-cloud selection
@@ -49,9 +51,14 @@ static void axesPropsOpen(Scene *s, AxesSet *A);   // 56_axesprops.cpp (the Axes
 #include "73_crsselect.cpp"
 static QDialog *faultDemoOpen(QWidget *parent, Scene *scene);
 static QDialog *magFieldOpen(QWidget *parent, Scene *scene);
+static bool dayLengthOpen(QWidget *parent, Scene *scene);
+static bool dayLengthPicOpen(QWidget *parent, Scene *scene);
+static bool dayLengthPicWired();
 #include "70_window.cpp"
 #include "68_faultdemo.cpp"
 #include "69_magfield.cpp"
+#include "74_daylength.cpp"
+#include "74_daylength_gmt.cpp"
 #include "80_rubberband.cpp"
 #include "85_polygon.cpp"
 #include "87_vtkio.cpp"

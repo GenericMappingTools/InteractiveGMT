@@ -5309,6 +5309,46 @@ GMTVTK_API void gmtvtk_set_okada_inset_callback(JuliaOkadaInsetFn fn) {
 	g_juliaOkadaInset = fn;
 }
 
+// T & L > "Day length & axial tilt" (74_daylength_gmt.cpp): the host draws the base picture with GMT.jl
+// (src/daylength.jl) and hands over each day's overlay as a display list. nullptr to detach.
+GMTVTK_API void gmtvtk_set_daylength_callback(JuliaDayLengthBaseFn baseFn, JuliaDayLengthListFn listFn) {
+	g_juliaDayLengthBase = baseFn;
+	g_juliaDayLengthList = listFn;
+}
+
+// Drive / read the "Earth orbit & day length" demo (74_daylength.cpp; tests). `action`: "" = read only,
+// "day:N" = day N, "tilt:T" = axial tilt T, "lat:L" = latitude L, "play" = one Play frame, "close" =
+// close (= park). out[0..7] = dialog exists, visible, day, declination, latitude, its day length (h),
+// Earth's x on the orbit, parked row in window `handle`. Returns 1, or 0 with no dialog.
+GMTVTK_API int gmtvtk_daylength_test(void *handle, const char *action, double *out) {
+	DayLengthDialog *m = g_dayLength;
+	if (!m || !m->dlg) return 0;
+	const QString a = QString::fromUtf8(action ? action : "");
+	if (a.startsWith("day:")) m->slider->setValue(a.mid(4).toInt());
+	else if (a.startsWith("tilt:")) m->tilt->setValue(a.mid(5).toDouble());
+	else if (a.startsWith("lat:")) m->lat->setValue(a.mid(4).toDouble());
+	else if (a == "play") m->tick();
+	else if (a == "close") m->dlg->close();
+	Scene *s = static_cast<Scene *>(handle);
+	bool row = false;
+	if (sceneAlive(s))
+		for (auto &pt : s->parkedTools)
+			if (pt.win == m->dlg) row = true;
+	if (out) {
+		const int d = m->slider->value();
+		const double dec = m->chart->decl.empty() ? 0.0 : m->chart->decl[size_t(d - 1)];
+		out[0] = 1;
+		out[1] = m->dlg->isVisible() ? 1 : 0;
+		out[2] = d;
+		out[3] = dec;
+		out[4] = m->lat->value();
+		out[5] = dlDayLength(m->lat->value(), dec);
+		out[6] = m->earthPos[0];
+		out[7] = row ? 1 : 0;
+	}
+	return 1;
+}
+
 // "Magnetic field lines (3-D)" (69_magfield.cpp): the IGRF streamline tracer and the Earth texture,
 // both computed on the Julia side (src/magfield.jl).
 GMTVTK_API void gmtvtk_set_magfield_callback(JuliaMagLinesFn linesFn, JuliaMagTexFn texFn) {
