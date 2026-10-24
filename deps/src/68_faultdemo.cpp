@@ -1070,6 +1070,19 @@ static QDialog *faultDemoOpen(QWidget *parent, Scene *scene) {
 	auto *trueWidth    = ui->findChild<QLineEdit *>("trueWidth");
 	auto *trueDepthTop = ui->findChild<QLineEdit *>("trueDepthTop");
 	auto *trueSlip     = ui->findChild<QLineEdit *>("trueSlip");
+	// Live Mw under the True size boxes, at the elastic dialog's default rigidity (3×10^10 Pa): this
+	// dialog has no mu box, and the Okada request above sends none either.
+	if (auto *trueMw = ui->findChild<QLabel *>("trueMwLabel"); trueMw && trueLength && trueWidth && trueSlip) {
+		auto updateMw = [trueMw, trueLength, trueWidth, trueSlip]() {
+			const double mw = faultMomentMagnitude(trueLength->text().trimmed().toDouble(),
+			                                       trueWidth->text().trimmed().toDouble(),
+			                                       trueSlip->text().trimmed().toDouble(), 3.0);
+			if (!std::isnan(mw)) trueMw->setText(QString("Mw Magnitude = %1").arg(mw, 0, 'f', 1));
+		};
+		for (QLineEdit *le : { trueLength, trueWidth, trueSlip })
+			QObject::connect(le, &QLineEdit::textChanged, trueMw, [updateMw](const QString &) { updateMw(); });
+		updateMw();
+	}
 	auto *rXmin = ui->findChild<QLineEdit *>("regionXmin"), *rXmax = ui->findChild<QLineEdit *>("regionXmax");
 	auto *rYmin = ui->findChild<QLineEdit *>("regionYmin"), *rYmax = ui->findChild<QLineEdit *>("regionYmax");
 	auto *rXinc = ui->findChild<QLineEdit *>("regionXinc"), *rYinc = ui->findChild<QLineEdit *>("regionYinc");

@@ -24431,18 +24431,12 @@ public:
 		return ps.join("|");
 	}
 
-	// Live Mw from the seismic moment M0 = mu·L·W·slip (mu in 1e10 Pa, L/W in km -> m, slip in m):
-	// Mw = (2/3)·log10(M0) − 6.07. Shown as "--" until L/W/slip/mu are all positive numbers.
+	// Live Mw through faultMomentMagnitude (68_faultdemo.cpp), the ONE Mw of the app. A box that does
+	// not hold a usable number leaves the last computed value standing.
 	void updateMw() {
-		bool a, b, c, d;
-		double L = fLen->text().toDouble(&a), W = fWid->text().toDouble(&b);
-		double slip = dSlip->text().toDouble(&c), mu = muEdit->text().toDouble(&d);
-		if (a && b && c && d && L > 0 && W > 0 && slip > 0 && mu > 0) {
-			double M0 = mu * 1e10 * (L * 1e3) * (W * 1e3) * slip;     // N·m
-			mwLabel->setText(QString("Mw Magnitude = %1").arg((2.0 / 3.0) * std::log10(M0) - 6.07, 0, 'f', 1));
-		} else {
-			mwLabel->setText("Mw Magnitude = --");
-		}
+		const double mw = faultMomentMagnitude(fLen->text().toDouble(), fWid->text().toDouble(),
+		                                       dSlip->text().toDouble(), muEdit->text().toDouble());
+		if (!std::isnan(mw)) mwLabel->setText(QString("Mw Magnitude = %1").arg(mw, 0, 'f', 1));
 	}
 
 	void refreshBeachball() {
@@ -30518,6 +30512,25 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		[s, actNestedGridsTsu](bool on) { polygonToolToggled(s, actNestedGridsTsu, Scene::SH_RectN, on); });
 	s->shapeActs.push_back(actNestedGridsTsu);
 
+	// The two demos that ALSO live in T & L (built further down). ONE QAction each, parented to win
+	// like actNestedGridsTsu above, so mGphy->clear() never deletes them and both menus fire the SAME
+	// action: Geophysics > Magnetics / Seismology re-add it on every discipline switch, T & L once.
+	// The IGRF field itself, in 3-D: streamlines of B traced round a textured globe for a chosen
+	// date (69_magfield.cpp; the tracing is src/magfield.jl, through the same GMT.jl `magref`
+	// the IGRF dialog uses).
+	QAction *actMagField3D = new QAction("Magnetic field lines (3-D)", win);
+	QObject::connect(actMagField3D, &QAction::triggered, win, [win, s]() {
+		warmupTool("magfield");          // compile the tracer while the window is being built
+		magFieldOpen(win, s);
+	});
+	QAction *actFaultDemo = new QAction("Fault plane demo", win);
+	QObject::connect(actFaultDemo, &QAction::triggered, win, [win, s]() {
+		// The dialog's first act is a full mesh cut in Julia, on this thread. Start compiling it
+		// while the window is still being built — see warmupTool (30_app.cpp).
+		warmupTool("faultdemo");
+		faultDemoOpen(win, s);
+	});
+
 	auto *fGroup  = new std::function<void()>();   // show the discipline chooser
 	auto *fTsu    = new std::function<void()>();    // show Tsunamis
 	auto *fSeis   = new std::function<void()>();    // show Seismology
@@ -30726,7 +30739,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	};
 
 	// Magnetics discipline — IGRF Calculator (port of Mirone's igrf_options.m, GMT.jl magref).
-	*fMag = [mGphy, win, s, backItem, reopen]() {
+	*fMag = [mGphy, win, s, backItem, reopen, actMagField3D]() {
 		mGphy->clear();
 		mGphy->setTitle("Magnetics ▾");
 		backItem("Magnetics");
@@ -30734,13 +30747,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 			auto *w = new IgrfDialog(win, s);   // self-deletes when its QDialog closes (WA_DeleteOnClose)
 			if (w->dlg) w->dlg->show();
 		});
-		// The IGRF field itself, in 3-D: streamlines of B traced round a textured globe for a chosen
-		// date (69_magfield.cpp; the tracing is src/magfield.jl, through the same GMT.jl `magref`
-		// the IGRF dialog above uses).
-		mGphy->addAction("Magnetic field lines (3-D)", [win, s]() {
-			warmupTool("magfield");          // compile the tracer while the window is being built
-			magFieldOpen(win, s);
-		});
+		mGphy->addAction(actMagField3D);   // shared with T & L (built once, above)
 		mGphy->addAction("Geomagnetic Bar Code", [win]() {
 			auto *w = new MagBarcodeDialog(win);
 			if (w->dlg) w->dlg->show();
@@ -30825,7 +30832,8 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 
 	// Seismology discipline — Seismicity (earthquakes.m port) + TODO stubs (geoTODO) + the
 	// Elastic deformation submenu.
-	*fSeis = [mGphy, mElastic, geoTODO, backItem, reopen, s, win, openSeismicity, sendSeismicity, visibleRegion]() {
+	*fSeis = [mGphy, mElastic, geoTODO, backItem, reopen, s, win, openSeismicity, sendSeismicity, visibleRegion,
+	          actFaultDemo]() {
 		mGphy->clear();
 		mGphy->setTitle("Seismology ▾");
 		backItem("Seismology");
@@ -30880,12 +30888,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 			QObject::connect(dlg, &QObject::destroyed, s->win, [s]{ s->focalStudioDlg = nullptr; });
 			dlg->show();
 		});
-		mGphy->addAction("Fault plane demo", [win, s]() {
-			// The dialog's first act is a full mesh cut in Julia, on this thread. Start compiling it
-			// while the window is still being built — see warmupTool (30_app.cpp).
-			warmupTool("faultdemo");
-			faultDemoOpen(win, s);
-		});
+		mGphy->addAction(actFaultDemo);    // shared with T & L (built once, above)
 		mGphy->addSeparator();
 		mGphy->addAction("Ground motions", geoTODO("Ground motions"));
 		mGphy->addSeparator();
@@ -31760,6 +31763,9 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	});
 	// Earth round the Sun and the day length it makes (74_daylength.cpp): all C++, no host round-trip.
 	mDayLen->addAction("Earth orbit…", [win, s]() { dayLengthOpen(win, s); });
+	// Same QActions Geophysics > Magnetics / Seismology show: a second door, not a move.
+	mTL->addAction(actFaultDemo);
+	mTL->addAction(actMagField3D);
 
 	QMenu *mHelp = win->menuBar()->addMenu("&Help");
 	// The project's own manual, in the user's browser. The address is NOT chosen here: it is the

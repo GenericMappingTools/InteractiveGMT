@@ -32,6 +32,14 @@ end
 	# tested is what the button does before the launch -- no question asked, a cropped figure written.
 	keys = ("INTERACTIVEGMT_VECTORCRAFT", "INTERACTIVEGMT_PHOTOCRAFT")
 	old = Dict(k => get(ENV, k, nothing) for k in keys)
+	# A REAL install on this machine (~/.gmt/craftapps) plus the start-up update check, which runs in
+	# the background and may land at any moment, turns the button into "Update …" and the click into an
+	# "Update it now?" box. That is the release check's business, not this item's: for the length of the
+	# item the home folder is an empty one, so no installed copy exists to be offered an update.
+	homes = ("USERPROFILE", "HOME")
+	oldhome = Dict(k => get(ENV, k, nothing) for k in homes)
+	tmphome = mktempdir()
+	foreach(k -> ENV[k] = tmphome, homes)
 	G = GMT.mat2grid(Float32[sin(ix / 3) * cos(iy / 4) for iy in 0:29, ix in 0:29]; x=[0.0, 29.0], y=[0.0, 29.0])
 	f = view_grid(G)
 	made = String[]
@@ -61,6 +69,9 @@ end
 	finally
 		for k in keys
 			old[k] === nothing ? delete!(ENV, k) : (ENV[k] = old[k])
+		end
+		for k in homes
+			oldhome[k] === nothing ? delete!(ENV, k) : (ENV[k] = oldhome[k])
 		end
 		IG._craft_push_state()
 		foreach(p -> rm(p; force = true), made)

@@ -477,6 +477,16 @@ static void symTouchSource(SymbolLayer &sl) {         // mark the glyph pipeline
 	if (sl.glyph)       sl.glyph->Modified();
 }
 
+// Moment magnitude of a fault from its size: M0 = mu·L·W·slip (mu in 1e10 Pa, L/W in km -> m, slip
+// in m), Mw = (2/3)·log10(M0) − 6.07. THE Mw of the app: the "Vertical elastic deformation" dialog
+// (70_window.cpp) and the Fault plane demo (68_faultdemo.cpp) both call it. NaN unless L, W, slip
+// and mu are all positive.
+static double faultMomentMagnitude(double L, double W, double slip, double mu) {
+	if (!(L > 0 && W > 0 && slip > 0 && mu > 0)) return std::numeric_limits<double>::quiet_NaN();
+	const double M0 = mu * 1e10 * (L * 1e3) * (W * 1e3) * slip;     // N·m
+	return (2.0 / 3.0) * std::log10(M0) - 6.07;
+}
+
 // THE size of ONE symbol, on screen, in px: the layer's base size times THAT point's own factor (the
 // "symScale" array a scaled layer carries — see symbolSetPipeline). `sl.sizePx` alone is the base,
 // which on a scaled layer is the size of the BIGGEST symbol only; reading it per point is what makes

@@ -35,6 +35,10 @@ const _ONLYTAG = strip(get(ENV, "INTERACTIVEGMT_TEST_TAG", ""), [' ', '"', '\'']
 # Resume a run: only items whose test FILE sorts at or after this name (files run alphabetically), so
 # the ones a stopped run already passed are not run again. e.g. INTERACTIVEGMT_TEST_FROM=test-sacred-law
 const _FROMFILE = strip(get(ENV, "INTERACTIVEGMT_TEST_FROM", ""), [' ', '"', '\x27'])
+# A SHARD of a parallel run (test/runparallel.jl): exactly these test files, by basename, ';'-separated,
+# and the run log written where the driver reads it. Both empty = an ordinary run.
+const _SHARDFILES = Set(filter(!isempty, strip.(split(strip(get(ENV, "INTERACTIVEGMT_TEST_FILES", ""), [' ', '"', '\'']), ';'))))
+const _SHARDLOG = strip(get(ENV, "INTERACTIVEGMT_TEST_LOG", ""), [' ', '"', '\''])
 
 # macOS/arm64: GMT picks Accelerate's vDSP for its FFT and SEGFAULTS (signal 11) inside
 # vDSP_fft2d_zip — vDSP_fft2d_zip <- gmtfft_2d_vDSP <- GMT_FFT_2D, all inside libgmt — which kills
@@ -158,7 +162,8 @@ end
 # swapped around a GMT call. A run killed by a crash still leaves every line up to its last item.
 # A FILTERED run (any selector set) writes its own file, so re-running one item never overwrites the
 # full run's log it is being checked against.
-const _LOG_PATH = joinpath(@__DIR__, all(isempty, (_ONLY, _ONLYFILE, _ONLYTAG, _FROMFILE)) ?
+const _LOG_PATH = !isempty(_SHARDLOG) ? _SHARDLOG :
+                  joinpath(@__DIR__, all(isempty, (_ONLY, _ONLYFILE, _ONLYTAG, _FROMFILE)) && isempty(_SHARDFILES) ?
                                      "last_run.log" : "last_run_filtered.log")
 const _LOG = open(_LOG_PATH, "w")
 _log(xs...) = (println(_LOG, xs...); flush(_LOG))
@@ -198,6 +203,9 @@ const _SUMMARY_DONE = Ref(false)
 function _log_summary()
 	_SUMMARY_DONE[] && return
 	_SUMMARY_DONE[] = true
+	# Closes the last file's time span: test/runparallel.jl balances its shards on these stamps.
+	t = round(Int, time() - _PROGRESS_T0[])
+	_log("── END ", t ÷ 60, "m", lpad(t % 60, 2, '0'), "s")
 	if isempty(_FAILED)
 		_log("\nNO FAILED ITEMS")
 	else
@@ -237,7 +245,8 @@ function _progress_filter(ti)
 	      (isempty(_ONLY) || occursin(_ONLY, ti.name)) &&
 	      (isempty(_ONLYFILE) || occursin(_ONLYFILE, ti.filename)) &&
 	      (isempty(_ONLYTAG) || Symbol(_ONLYTAG) in ti.tags) &&
-	      (isempty(_FROMFILE) || basename(ti.filename) >= _FROMFILE)
+	      (isempty(_FROMFILE) || basename(ti.filename) >= _FROMFILE) &&
+	      (isempty(_SHARDFILES) || basename(ti.filename) in _SHARDFILES)
 	run && (push!(_PROGRESS_ITEMS, ti.name); _ITEM_FILE[ti.name] = basename(ti.filename))
 	return run
 end
