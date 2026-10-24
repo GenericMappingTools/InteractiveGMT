@@ -62,6 +62,31 @@ end
 # which costs nothing but a less specific caption.
 const IGMT_ID = try Base.identify_package("InteractiveGMT") catch; nothing end
 
+# Startup died: append to iview_app.log and write the failure flag the launcher polls — it kills the
+# splash the moment the flag appears and shows the text. First line is the log path so the box can
+# point at the full history.
+function fail(txt::String)
+    try
+        open(APP_LOG, "a") do io
+            println(io, "[", Dates.now(), "] ", txt)
+        end
+    catch
+    end
+    try write(FAIL_FLAG, string("LOG: ", APP_LOG, "\n", txt)) catch; end
+    nothing
+end
+
+# THIS julia has no InteractiveGMT. The launcher starts the first julia on PATH, so a user who
+# switched Julia version lands here; say so in plain words instead of `using`'s bare
+# "Package InteractiveGMT not found in current path".
+if IGMT_ID === nothing
+    fail(string("InteractiveGMT is not installed for this Julia (version ", VERSION, ").\n\n",
+                "Install it from that Julia:\n",
+                "    using Pkg; Pkg.develop(path=raw\"", @__DIR__, "\")\n\n",
+                "or put the Julia that has iGMT first on PATH."))
+    exit(1)
+end
+
 function stale(name::String)
     try
         id = name == "InteractiveGMT" ? IGMT_ID :
@@ -119,16 +144,7 @@ try
     wait_windows()    # block (yielding, so the Qt pump runs) until the window(s) close
 catch e
     WATCH[] = false
-    txt = sprint(showerror, e, catch_backtrace())
-    try
-        open(APP_LOG, "a") do io
-            println(io, "[", Dates.now(), "] ", txt)
-        end
-    catch
-    end
-    # The launcher polls this file: it kills the splash the moment it appears and shows the text.
-    # First line is the log path so the box can point at the full history.
-    try write(FAIL_FLAG, string("LOG: ", APP_LOG, "\n", txt)) catch; end
+    fail(sprint(showerror, e, catch_backtrace()))
     rethrow()
 finally
     WATCH[] = false
