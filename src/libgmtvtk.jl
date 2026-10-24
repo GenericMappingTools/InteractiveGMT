@@ -540,7 +540,10 @@ end
 # system-wide install, with the library path) and GMT.jl's own version.
 function _about_info()
 	src = GMT.isJLL ? "GMT_jll" : "system-wide, " * string(GMT.libgmt)
-	return "GMT " * string(GMT.GMTver) * " (" * src * ")\nGMT.jl " * string(pkgversion(GMT))
+	# Which julia this is: the desktop launcher takes the first one on PATH, so a version switch
+	# changes it — the About box is where the user checks.
+	jl = joinpath(Sys.BINDIR, Sys.iswindows() ? "julia.exe" : "julia")
+	return "Julia " * string(VERSION) * " (" * jl * ")\nGMT " * string(GMT.GMTver) * " (" * src * ")\nGMT.jl " * string(pkgversion(GMT))
 end
 
 # Load the viewer: try each candidate in preference order, first one that FULLY loads wins.

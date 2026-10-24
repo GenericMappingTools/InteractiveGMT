@@ -25,9 +25,9 @@
  * desktop entry points at. A release zip unpacks it into <depot>/gmtvtk_runtime/deps/build, so
  * --install-shortcut copies it up into the package root from there. <home>/.gmt is for SETTINGS
  * (iGMT.ini) and receives nothing but igmt_launcher.ini: never a binary, never an icon copy.
- * The ini records root + julia so a launch needs no searching; it is rewritten by every
- * --install-shortcut run (i.e. every precompile), and if it ever goes stale the resolver falls
- * back to a live search — the same search the old .vbs did.
+ * The ini records root + julia; every --install-shortcut run, that is every precompile, rewrites
+ * it. A launch takes the first julia on PATH and uses the ini's julia only when PATH has none
+ * (see find_julia); if that is stale too it falls back to a live search, the old .vbs's search.
  *
  * Pure C, no Qt, no VTK, no dependency on gmtvtk.dll: this must run BEFORE Julia exists in the
  * process, and must still put a readable error on screen on a machine where nothing works.
@@ -500,36 +500,49 @@ static int scan_julia_roots(char *out, size_t n)
 }
 #endif
 
+/* Whatever a terminal `julia` would run: the first julia on PATH. */
+static int path_julia(char *out, size_t n)
+{
+	const char *p = getenv("PATH");
+	if (!p) return 0;
+	while (*p) {
+		const char *sep = strchr(p, ENVSEP);
+		size_t len = sep ? (size_t)(sep - p) : strlen(p);
+		if (len && len < MAXP - 32) {
+			char dir[MAXP], cand[MAXP];
+			memcpy(dir, p, len);
+			dir[len] = 0;
+			joinp(cand, sizeof(cand), dir, "julia" EXESUF);
+			if (file_exists(cand)) { snprintf(out, n, "%s", cand); return 1; }
+		}
+		if (!sep) break;
+		p = sep + 1;
+	}
+	return 0;
+}
+
+/* The julia on PATH comes BEFORE the one the ini saved: the ini records whichever julia last
+ * precompiled the package, so a test precompile on another version (or the user changing version)
+ * silently re-pointed every launch at it. The ini is only the fallback for a PATH with no julia. */
+/* Where find_julia took its answer from, for the startup-failure box: a julia that cannot load
+ * InteractiveGMT must be named WITH the reason it was picked, or the user cannot tell what to fix. */
+static const char *g_julia_from = "";
+
 static int find_julia(char *out, size_t n, const char *hint)
 {
 	char buf[MAXP];
-	const char *env, *path;
+	const char *env;
 
-	if (julia_ok(hint)) { snprintf(out, n, "%s", hint); return 1; }
+	if (julia_ok(hint)) { g_julia_from = "given with --julia="; snprintf(out, n, "%s", hint); return 1; }
+	if (path_julia(out, n)) { g_julia_from = "the first julia on PATH"; return 1; }
+	g_julia_from = "saved in ~/.gmt/igmt_launcher.ini (no julia on PATH)";
 	if (ini_get("julia", buf, sizeof(buf)) && julia_ok(buf)) { snprintf(out, n, "%s", buf); return 1; }
 
+	g_julia_from = "from $JULIA_EXE (no julia on PATH)";
 	env = getenv("JULIA_EXE");
 	if (julia_ok(env)) { snprintf(out, n, "%s", env); return 1; }
 
-	/* Whatever a terminal `julia` would run. */
-	path = getenv("PATH");
-	if (path && *path) {
-		const char *p = path;
-		while (*p) {
-			const char *sep = strchr(p, ENVSEP);
-			size_t len = sep ? (size_t)(sep - p) : strlen(p);
-			if (len && len < sizeof(buf) - 32) {
-				char dir[MAXP], cand[MAXP];
-				memcpy(dir, p, len);
-				dir[len] = 0;
-				joinp(cand, sizeof(cand), dir, "julia" EXESUF);
-				if (file_exists(cand)) { snprintf(out, n, "%s", cand); return 1; }
-			}
-			if (!sep) break;
-			p = sep + 1;
-		}
-	}
-
+	g_julia_from = "found by searching the usual install folders (no julia on PATH)";
 	/* juliaup's shim. */
 #ifdef _WIN32
 	{
@@ -1521,10 +1534,11 @@ static void error_popup(const char *title, const char *text)
 #endif
 }
 
-/* Called by run() when a splash loop reported a failure. */
-static void report_startup_failure(const char *root)
+/* Called by run() when a splash loop reported a failure. `julia` is the executable that was
+ * started; the box names it and why it was chosen (g_julia_from). */
+static void report_startup_failure(const char *root, const char *julia)
 {
-	char txt[4096], log[MAXP], msg[4600], line[MAXP];
+	char txt[4096], log[MAXP], msg[6000], line[MAXP];
 	FILE *f;
 	size_t k;
 
@@ -1560,7 +1574,8 @@ static void report_startup_failure(const char *root)
 		snprintf(txt, sizeof(txt),
 				 "julia exited before the viewer window appeared, and wrote nothing to the log.");
 
-	snprintf(msg, sizeof(msg), "iGMT could not start.\n\n%s\n\nFull log: %s", txt, log);
+	snprintf(msg, sizeof(msg), "iGMT could not start.\n\n%s\n\nJulia used: %s\n(%s)\n\nFull log: %s",
+	         txt, julia, g_julia_from, log);
 	error_popup("iGMT", msg);
 	delete_file(g_fail);
 }
@@ -2088,7 +2103,7 @@ static int run(int argc, char **argv)
 	splash_run(root);   /* returns when the window is up - or when startup died */
 	free(files);
 	if (g_failed || launch_failed()) {
-		report_startup_failure(root);
+		report_startup_failure(root, julia);
 		return 1;
 	}
 	return 0;
