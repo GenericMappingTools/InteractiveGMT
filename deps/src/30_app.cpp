@@ -198,6 +198,400 @@ static double prefLineWidthPx(Scene *s) {
 // if no callback registered). Set from Julia via gmtvtk_set_julia_eval.
 typedef int (*JuliaEvalFn)(void *scene, const char *cmd, char *outbuf, int outcap);
 static JuliaEvalFn g_juliaEval = nullptr;
+// Is `cmd` a COMPLETE Julia input? 1 = yes (run it), 0 = an open block / bracket / string (the
+// console keeps reading lines). Same test the Julia REPL makes. Set via gmtvtk_set_julia_complete;
+// with none registered every input counts as complete.
+typedef int (*JuliaCompleteFn)(const char *cmd);
+static JuliaCompleteFn g_juliaComplete = nullptr;
+
+// The Julia console's command history, KEPT ACROSS SESSIONS, in THE JULIA REPL'S OWN HISTORY FILE
+// (repl_history.jl; the host hands its path over, see gmtvtk_set_console_history_path), so the
+// console and the terminal REPL recall each other's commands. Its format: a "# time:" / "# mode:"
+// header, then each line of the command tab-indented, so a multi-line command comes back as one
+// entry; only "julia" mode entries are recalled (not shell/help/pkg). ONE list for the whole
+// process: every console (each 3-D window's, each X,Y tool's) reads and adds to it. Each command is
+// APPENDED the moment it runs, so a crash loses nothing. The file is the REPL's: it is NEVER
+// rewritten or trimmed here; only the newest kConsoleHistMax entries are kept in memory.
+static constexpr size_t kConsoleHistMax = 1000;
+static QString              g_consoleHistPath;    // "" = no saved history; set by gmtvtk_set_console_history_path
+static std::vector<QString> g_consoleHist;        // the one list (oldest first)
+static bool                 g_consoleHistLoaded = false;
+
+static void consoleHistoryWriteEntry(QTextStream &ts, const QString &cmd) {
+	const QDateTime now = QDateTime::currentDateTime();
+	ts << "# time: " << now.toString("yyyy-MM-dd HH:mm:ss") << ' ' << now.timeZoneAbbreviation() << "\n# mode: julia\n";
+	for (const QString &ln : cmd.split('\n'))
+		ts << '\t' << ln << '\n';
+}
+
+static std::vector<QString> &consoleHistory() {
+	std::vector<QString> &hist = g_consoleHist;
+	if (g_consoleHistLoaded) return hist;
+	g_consoleHistLoaded = true;
+	hist.clear();
+	if (g_consoleHistPath.isEmpty()) return hist;
+	QFile f(g_consoleHistPath);
+	if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) return hist;
+	QTextStream in(&f);
+	in.setEncoding(QStringConverter::Utf8);
+	QString cur;
+	bool inEntry = false, isJulia = true;
+	auto flush = [&]() {
+		if (inEntry && isJulia && !cur.trimmed().isEmpty() && (hist.empty() || hist.back() != cur))
+			hist.push_back(cur);
+		cur.clear();
+		inEntry = false;
+		isJulia = true;
+	};
+	while (!in.atEnd()) {
+		const QString ln = in.readLine();
+		if (ln.startsWith("# time:")) { flush(); continue; }
+		if (ln.startsWith("# mode:")) { isJulia = ln.mid(7).trimmed() == "julia"; continue; }
+		if (ln.startsWith('\t')) {
+			if (inEntry) cur += '\n';
+			cur += ln.mid(1);
+			inEntry = true;
+		}
+	}
+	flush();
+	f.close();
+	if (hist.size() > kConsoleHistMax)           // memory only: the REPL's file is never cut
+		hist.erase(hist.begin(), hist.end() - (std::ptrdiff_t)kConsoleHistMax);
+	return hist;
+}
+
+static void consoleHistoryAppend(const QString &cmd) {
+	if (g_consoleHistPath.isEmpty()) return;
+	QDir().mkpath(QFileInfo(g_consoleHistPath).absolutePath());
+	QFile f(g_consoleHistPath);
+	if (!f.open(QIODevice::WriteOnly | QIODevice::Append)) return;   // no Text: the REPL's file is LF, never CRLF
+	QTextStream ts(&f);
+	ts.setEncoding(QStringConverter::Utf8);
+	consoleHistoryWriteEntry(ts, cmd);
+}
+
+// GRAPHICAL ELEMENT: the in-window Julia console -- ONE text pane, the way a terminal REPL is: the
+// "julia> " prompt, what was typed and what it printed all sit in the same flow. It used to be a
+// read-only output pane over a separate input line, and any click in the output (to scroll, to copy)
+// took the keys away from the line, so typing went nowhere.
+//  - Everything above the current prompt is read-only. Clicking/selecting/copying there works; a
+//    printable key or a paste there first moves the cursor to the end of the input.
+//  - Enter runs the input when it is a complete expression (g_juliaComplete); an open `for`, `begin`,
+//    bracket or string gets a continuation line instead. Shift/Alt+Enter always add a line.
+//  - Up/Down on the first/last input line walk the history (Julia REPL behaviour: back through what
+//    ran, forward again, and past the newest the half-typed draft comes back). The history is the
+//    process-wide, saved one (consoleHistory), so it holds the previous sessions' commands too.
+//  - Esc clears the input, Ctrl+L clears the pane.
+//  - After a command the keys come back here, whatever the command did to the focus meanwhile.
+// One widget for BOTH consoles -- the 3-D viewer's Panels tab (70_window.cpp) and the X,Y plot tool's
+// Julia tab (65_xyplot.cpp) -- never a second implementation (SACRED_LAW: same operation, same
+// function). `owner` is what g_juliaEval gets as its first argument (the window whose `fig` it binds).
+// (No Q_OBJECT: this TU has no moc; we override virtuals only.)
+struct ReplConsole : QPlainTextEdit {
+	static constexpr const char *kPrompt = "julia> ";
+	static constexpr int kPromptLen = 7;
+	static constexpr int kContState = 1;         // block user state: a continuation line we indented
+	void   *owner = nullptr;
+	int     inStart = 0;                         // document position where the current input begins
+	bool    busy = false;                        // a command is running (re-entrancy guard)
+	std::vector<QString> &hist = consoleHistory();   // oldest first, as run; shared and saved
+	int     pos = -1;                           // history index being shown; -1 = editing a fresh input
+	QString draft;                               // the fresh input, stashed while walking the history
+	QTextCharFormat fmtPlain, fmtPrompt, fmtErr, fmtNote;
+
+	ReplConsole(void *own, const QString &banner, int pointSize, QWidget *parent = nullptr)
+		: QPlainTextEdit(parent), owner(own) {
+		setFont(QFont("Consolas", pointSize));
+		setUndoRedoEnabled(false);
+		setLineWrapMode(QPlainTextEdit::WidgetWidth);
+		setFocusPolicy(Qt::StrongFocus);
+		fmtPrompt.setForeground(QColor(0, 140, 0));
+		fmtPrompt.setFontWeight(QFont::Bold);
+		fmtErr.setForeground(QColor(200, 0, 0));
+		fmtNote.setForeground(QColor(120, 120, 120));
+		if (!banner.isEmpty()) {
+			QTextCursor c(document());
+			c.insertText(banner, fmtNote);
+		}
+		newPrompt();
+	}
+
+	// Record a command that was just run -- never a line the user abandoned.
+	void pushHistory(const QString &cmd) {
+		const QString c = cmd.trimmed();
+		if (c.isEmpty()) return;
+		if (hist.empty() || hist.back() != c) {     // no run of identical repeats
+			hist.push_back(c);
+			consoleHistoryAppend(c);                 // on disk now: the next session recalls it
+		}
+		if (hist.size() > kConsoleHistMax) hist.erase(hist.begin());   // bounded, like HISTSIZE
+		pos = -1;
+		draft.clear();
+	}
+
+	// The current input, prompt and continuation indents taken off, lines joined by '\n'.
+	QString input() const {
+		QString out;
+		for (QTextBlock b = document()->findBlock(inStart); b.isValid(); b = b.next()) {
+			QString t = b.text();
+			if (b.contains(inStart))
+				t = t.mid(inStart - b.position());
+			else {
+				out += '\n';
+				if (b.userState() == kContState && t.startsWith(QString(kPromptLen, ' ')))
+					t = t.mid(kPromptLen);
+			}
+			out += t;
+		}
+		return out;
+	}
+
+	// Replace the current input with `t` (multi-line allowed), cursor at its end.
+	void setInput(const QString &t) {
+		QTextCursor c(document());
+		c.setPosition(inStart);
+		c.movePosition(QTextCursor::End, QTextCursor::KeepAnchor);
+		c.removeSelectedText();
+		const QStringList lines = t.split('\n');
+		for (int i = 0; i < lines.size(); ++i) {
+			if (i > 0) contLine(c);
+			c.insertText(lines[i], fmtPlain);
+		}
+		setTextCursor(c);
+		ensureCursorVisible();
+	}
+
+	// Run the input in Julia and show what it printed under it, then a fresh prompt.
+	void submit(const QString &cmd) {
+		pushHistory(cmd);
+		QTextCursor c(document());
+		c.movePosition(QTextCursor::End);
+		int n = 0;
+		static std::vector<char> buf(1 << 16);       // 64 KB result buffer (shared, reused)
+		if (!g_juliaEval) {
+			c.insertBlock();
+			c.insertText("(no Julia eval callback registered)", fmtErr);
+		}
+		else {
+			const std::string s = cmd.toStdString();
+			busy = true;
+			QApplication::setOverrideCursor(Qt::WaitCursor);   // the UI thread is Julia's until it returns
+			// _console_eval returns the byte count; NEGATIVE flags a Julia error (still |n| bytes of text).
+			n = g_juliaEval(owner, s.c_str(), buf.data(), (int)buf.size());
+			QApplication::restoreOverrideCursor();
+			busy = false;
+			const int len = n < 0 ? -n : n;
+			c.movePosition(QTextCursor::End);
+			if (len > 0) {
+				QString out = QString::fromUtf8(buf.data(), len);
+				while (out.endsWith('\n')) out.chop(1);
+				c.insertBlock();
+				c.insertText(out, n < 0 ? fmtErr : fmtPlain);
+			}
+		}
+		trimHistoryPane();
+		newPrompt();
+		takeKeysBack();
+	}
+
+protected:
+	void keyPressEvent(QKeyEvent *e) override {
+		if (busy) return;                            // a command is running; its output is still to come
+		const int  k    = e->key();
+		const auto mods = e->modifiers();
+		QTextCursor c = textCursor();
+
+		if (e->matches(QKeySequence::Copy) || e->matches(QKeySequence::SelectAll)) {
+			QPlainTextEdit::keyPressEvent(e);
+			return;
+		}
+		if (e->matches(QKeySequence::Cut)) {         // cut out of the history is a copy
+			if (c.selectionStart() < inStart) { copy(); return; }
+			QPlainTextEdit::keyPressEvent(e);
+			return;
+		}
+		if (k == Qt::Key_L && (mods & Qt::ControlModifier)) {   // clear the pane, keep the input
+			const QString keep = input();
+			clear();
+			newPrompt();
+			setInput(keep);
+			return;
+		}
+		if (k == Qt::Key_Escape) {
+			pos = -1;
+			setInput(QString());
+			return;
+		}
+		if (k == Qt::Key_Return || k == Qt::Key_Enter) {
+			if (mods & (Qt::ShiftModifier | Qt::AltModifier)) {
+				toInput(c);
+				contLine(c);
+				setTextCursor(c);
+				return;
+			}
+			const QString cmd = input();
+			if (cmd.trimmed().isEmpty()) {           // empty Enter: just a new prompt, as a REPL does
+				newPrompt();
+				return;
+			}
+			const std::string s = cmd.toStdString();
+			if (g_juliaComplete && g_juliaComplete(s.c_str()) == 0) {   // open block: read on
+				c.movePosition(QTextCursor::End);
+				contLine(c);
+				setTextCursor(c);
+				ensureCursorVisible();
+				return;
+			}
+			submit(cmd);
+			return;
+		}
+		if ((k == Qt::Key_Up || k == Qt::Key_Down) && !(mods & Qt::ShiftModifier) && c.position() >= inStart) {
+			const QTextBlock first = document()->findBlock(inStart);
+			const QTextBlock last  = document()->lastBlock();
+			const bool atEdge = (k == Qt::Key_Up) ? c.block() == first : c.block() == last;
+			if (atEdge && !hist.empty()) {
+				if (pos >= (int)hist.size()) pos = (int)hist.size() - 1;   // shared list: another console may have trimmed it
+				if (k == Qt::Key_Up) {
+					if (pos == -1) { draft = input(); pos = (int)hist.size() - 1; }   // start the walk
+					else if (pos > 0) --pos;
+					setInput(hist[(size_t)pos]);
+					return;
+				}
+				if (pos != -1) {
+					if (pos + 1 < (int)hist.size()) setInput(hist[(size_t)++pos]);
+					else { pos = -1; setInput(draft); }                           // past the newest: the draft
+					return;
+				}
+			}
+			QPlainTextEdit::keyPressEvent(e);
+			return;
+		}
+		if (k == Qt::Key_Home && !(mods & Qt::ControlModifier) && c.position() >= inStart
+		    && c.block().contains(inStart)) {        // Home stops after the prompt, not before it
+			c.setPosition(inStart, (mods & Qt::ShiftModifier) ? QTextCursor::KeepAnchor : QTextCursor::MoveAnchor);
+			setTextCursor(c);
+			return;
+		}
+		if (k == Qt::Key_Backspace || k == Qt::Key_Delete) {
+			if (c.hasSelection()) {
+				if (c.selectionStart() < inStart) {  // never delete into the history
+					if (c.selectionEnd() <= inStart) { toInput(c); setTextCursor(c); return; }
+					const int end = c.selectionEnd();
+					c.setPosition(inStart);
+					c.setPosition(end, QTextCursor::KeepAnchor);
+					setTextCursor(c);
+				}
+				QPlainTextEdit::keyPressEvent(e);
+				return;
+			}
+			if (c.position() < inStart || (k == Qt::Key_Backspace && c.position() == inStart)) {
+				if (c.position() < inStart) { toInput(c); setTextCursor(c); }
+				return;
+			}
+			// Backspace at the start of a continuation line's text takes the indent AND the line break.
+			if (k == Qt::Key_Backspace && c.block().userState() == kContState
+			    && c.position() - c.block().position() == kPromptLen) {
+				c.setPosition(c.block().position() - 1, QTextCursor::KeepAnchor);
+				c.removeSelectedText();
+				setTextCursor(c);
+				return;
+			}
+			if (k == Qt::Key_Backspace && (mods & Qt::ControlModifier)) {   // word delete, stopped at the prompt
+				c.movePosition(QTextCursor::PreviousWord, QTextCursor::KeepAnchor);
+				if (c.position() < inStart) c.setPosition(inStart, QTextCursor::KeepAnchor);
+				c.removeSelectedText();
+				setTextCursor(c);
+				return;
+			}
+			QPlainTextEdit::keyPressEvent(e);
+			return;
+		}
+		if (k == Qt::Key_Tab) {                      // no completion yet: an indent, in the input
+			toInputIfBefore(c);
+			c.insertText("    ", fmtPlain);
+			setTextCursor(c);
+			return;
+		}
+		// Anything else that edits (typing, Ctrl+K, ...): into the input, never into the history.
+		const bool nav = k == Qt::Key_Left || k == Qt::Key_Right || k == Qt::Key_Up || k == Qt::Key_Down
+		              || k == Qt::Key_Home || k == Qt::Key_End || k == Qt::Key_PageUp || k == Qt::Key_PageDown
+		              || k == Qt::Key_Shift || k == Qt::Key_Control || k == Qt::Key_Alt || k == Qt::Key_Meta;
+		if (!nav) {
+			toInputIfBefore(c);
+			setCurrentCharFormat(fmtPlain);
+		}
+		QPlainTextEdit::keyPressEvent(e);
+	}
+
+	// Paste (Ctrl+V, the context menu, a drop): plain text, into the input, continuation-indented.
+	void insertFromMimeData(const QMimeData *src) override {
+		if (busy || !src || !src->hasText()) return;
+		QTextCursor c = textCursor();
+		if (c.selectionStart() < inStart) toInput(c);
+		c.removeSelectedText();
+		QString t = src->text();
+		t.replace("\r\n", "\n");
+		t.replace('\r', '\n');
+		const QStringList lines = t.split('\n');
+		for (int i = 0; i < lines.size(); ++i) {
+			if (i > 0) contLine(c);
+			c.insertText(lines[i], fmtPlain);
+		}
+		setTextCursor(c);
+		ensureCursorVisible();
+	}
+
+private:
+	// The cursor, put at the end of the input (no selection).
+	void toInput(QTextCursor &c) {
+		c.clearSelection();
+		c.movePosition(QTextCursor::End);
+	}
+	void toInputIfBefore(QTextCursor &c) {
+		if (c.selectionStart() >= inStart) return;
+		toInput(c);
+		setTextCursor(c);
+	}
+	// A new input line, indented under the prompt and marked so input() strips that indent again.
+	void contLine(QTextCursor &c) {
+		c.insertBlock();
+		c.block().setUserState(kContState);
+		c.insertText(QString(kPromptLen, ' '), fmtPlain);
+	}
+	void newPrompt() {
+		QTextCursor c(document());
+		c.movePosition(QTextCursor::End);
+		if (!document()->isEmpty()) c.insertBlock();
+		c.block().setUserState(-1);
+		c.insertText(kPrompt, fmtPrompt);
+		c.setCharFormat(fmtPlain);
+		inStart = c.position();
+		setTextCursor(c);
+		setCurrentCharFormat(fmtPlain);
+		ensureCursorVisible();
+	}
+	// Bounded scrollback. Trimmed by hand, between commands, rather than with setMaximumBlockCount:
+	// that drops blocks under a typed input and would move it out from under `inStart`.
+	void trimHistoryPane() {
+		const int over = document()->blockCount() - 5000;
+		if (over <= 0) return;
+		QTextCursor c(document());
+		c.movePosition(QTextCursor::Start);
+		c.movePosition(QTextCursor::NextBlock, QTextCursor::KeepAnchor, over);
+		c.removeSelectedText();
+	}
+	// A command may open windows, rebuild panels or move the focus anywhere. When this window is still
+	// the active one, the keys come back to the console -- now, and once more after anything the
+	// command queued for the next event-loop turn.
+	void takeKeysBack() {
+		auto grab = [this]() {
+			if (window()->isActiveWindow() || QApplication::activeWindow() == nullptr)
+				setFocus(Qt::OtherFocusReason);
+		};
+		grab();
+		QTimer::singleShot(0, this, grab);           // `this` as context: dropped if the console dies first
+	}
+};
 
 // The GMT plugins iGMT installs (src/gmtplugin.jl), by the index the host uses for them: their
 // Geophysics page offers "Install as plugin" (70_window.cpp, pluginEntry).

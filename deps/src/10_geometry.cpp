@@ -98,52 +98,6 @@ static int objDockOpenWidthPx(QWidget *w) {
 	return qRound(3.0 / 2.54 * dpi);
 }
 
-// GRAPHICAL ELEMENT: the "julia>" console input line, with REPL-style command history on the Up /
-// Down arrows. Up walks back through what was run in THIS window, Down walks forward again and past
-// the newest entry returns the half-typed line that was stashed when the walk started -- the same
-// behaviour Julia's own REPL has, which is what makes a console usable at all.
-//
-// Defined here (shared, early fragment) because there are TWO consoles -- the 3-D viewer's Panels
-// tab (70_window.cpp) and the X,Y plot tool's Julia tab (65_xyplot.cpp) -- and they get the same
-// input widget, not a second implementation of the same recall (SACRED_LAW: same operation, same
-// function). (No Q_OBJECT: this TU has no moc; we override virtuals only.)
-struct ConsoleLineEdit : QLineEdit {
-	std::vector<QString> hist;      // oldest first, as typed
-	int     pos = -1;               // index being shown; -1 = editing a fresh line
-	QString draft;                  // the fresh line, stashed while walking the history
-	using QLineEdit::QLineEdit;
-
-	// Record a command that was just run. Called by the console's own returnPressed handler, so the
-	// history holds what actually executed -- never a line the user abandoned.
-	void pushHistory(const QString &cmd) {
-		const QString c = cmd.trimmed();
-		if (c.isEmpty()) return;
-		if (hist.empty() || hist.back() != c) hist.push_back(c);   // no run of identical repeats
-		if (hist.size() > 500) hist.erase(hist.begin());           // bounded, like HISTSIZE
-		pos = -1;
-		draft.clear();
-	}
-	void showEntry(const QString &t) { setText(t); setCursorPosition(t.size()); }
-
-	void keyPressEvent(QKeyEvent *e) override {
-		const int k = e->key();
-		if ((k != Qt::Key_Up && k != Qt::Key_Down) || hist.empty()) {
-			QLineEdit::keyPressEvent(e);
-			return;
-		}
-		if (k == Qt::Key_Up) {
-			if (pos == -1) { draft = text(); pos = (int)hist.size() - 1; }   // start the walk
-			else if (pos > 0) --pos;
-			showEntry(hist[(size_t)pos]);
-		}
-		else {
-			if (pos == -1) { QLineEdit::keyPressEvent(e); return; }          // not walking: plain Down
-			if (pos + 1 < (int)hist.size()) showEntry(hist[(size_t)++pos]);
-			else { pos = -1; showEntry(draft); }                             // past the newest: the draft
-		}
-	}
-};
-
 // A QLabel that opens something on a plain LEFT click — used for the Scene Objects row labels:
 // left-clicking the element description pops its properties menu (onClick gets the GLOBAL point).
 struct ClickableLabel : QLabel {

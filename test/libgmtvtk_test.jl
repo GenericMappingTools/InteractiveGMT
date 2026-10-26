@@ -114,6 +114,8 @@ const _TEST_SYMBOLS = (
 	                                  # callback registration into this dll's own global.
 	:gmtvtk_set_euler_callback, :gmtvtk_euler_result,   # same, for the Plates dialogs.
 	:gmtvtk_set_julia_eval,           # same, for the console-eval bridge (the measure engine the profile uses)
+	:gmtvtk_set_julia_complete,       # ...and the console's "is the input complete?" test (continuation lines)
+	:gmtvtk_console_history_test,     # the Julia console driven with real key presses
 	:gmtvtk_set_ui_dir,               # ditto: the .ui directory is a file-static override per dll.
 	:gmtvtk_tile_mesh_test,           # the grid mesh's NaN contract, counted off makeGridTile's output
 	:gmtvtk_cloud_select_box_test,    # a Shift+left-drag box over a point cloud (rbAreaPick), as the mouse ends one
@@ -236,6 +238,8 @@ function _register_console_eval_test(on::Bool = true)
 	fptr = on ? @cfunction((s, c, b, n) -> Base.invokelatest(InteractiveGMT._console_eval, s, c, b, n),
 	                       Cint, (Ptr{Cvoid}, Cstring, Ptr{UInt8}, Cint)) : C_NULL
 	ccall(_test_fn(:gmtvtk_set_julia_eval), Cvoid, (Ptr{Cvoid},), fptr)
+	cptr = on ? @cfunction(c -> Base.invokelatest(InteractiveGMT._console_complete, c), Cint, (Cstring,)) : C_NULL
+	ccall(_test_fn(:gmtvtk_set_julia_complete), Cvoid, (Ptr{Cvoid},), cptr)
 	return
 end
 

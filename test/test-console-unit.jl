@@ -51,3 +51,41 @@ end
 	@test parse(Int, m[1]) > 0                    # a plain result, not an error
 	@test occursin("42", m[2])                    # ...and it is the command's own answer
 end
+
+@testitem "console: InteractiveUtils is there, as in the REPL (versioninfo)" tags=[:unit] begin
+	# A session with NO REPL (the desktop launcher) never gets `using InteractiveUtils` in Main; the
+	# console answered `versioninfo()` with an UndefVarError. Run in a CHILD started with -e, which is
+	# exactly such a session.
+	script = """
+	using InteractiveGMT
+	print(stderr, "BEFORE=", isdefined(Main, :versioninfo), " ")
+	buf = zeros(UInt8, 1 << 16)
+	n = InteractiveGMT._console_eval(Ptr{Cvoid}(C_NULL),
+		Base.unsafe_convert(Cstring, Base.cconvert(Cstring, "versioninfo()")), pointer(buf), Cint(length(buf)))
+	print(stderr, "RESULT n=\$n txt=", unsafe_string(pointer(buf)))
+	"""
+	err = IOBuffer()
+	run(pipeline(`$(Base.julia_cmd()) --startup-file=no -e $script`; stdout = devnull, stderr = err))
+	out = String(take!(err))
+	@test occursin("BEFORE=false", out)            # the condition is real: no InteractiveUtils in Main
+	m = match(r"RESULT n=(-?\d+) txt=(.*)"s, out)
+	@test m !== nothing
+	@test parse(Int, m[1]) > 0                     # not an error
+	@test occursin("Julia Version", m[2])          # ...and it is versioninfo's own report
+end
+
+@testitem "console: `ans` is the last result, as in the REPL" tags=[:unit] begin
+	IG = InteractiveGMT
+	buf = zeros(UInt8, 4096)
+	call(code) = IG._console_eval(Ptr{Cvoid}(C_NULL),
+		Base.unsafe_convert(Cstring, Base.cconvert(Cstring, code)), pointer(buf), Cint(length(buf)))
+	@test call("6 * 7") > 0
+	@test call("ans + 1") > 0
+	@test occursin("43", unsafe_string(pointer(buf)))
+	@test call("error(\"boom\")") < 0               # a failure leaves `ans` alone
+	@test call("ans") > 0
+	@test occursin("43", unsafe_string(pointer(buf)))
+	@test call(":sym") > 0                          # a Symbol is stored, not evaluated
+	@test call("ans === :sym") > 0
+	@test occursin("true", unsafe_string(pointer(buf)))
+end

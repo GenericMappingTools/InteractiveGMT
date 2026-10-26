@@ -117,10 +117,7 @@ end
 function _craft_release(a::CraftApp)::Tuple{String,String,Int,String}
 	suf = _craft_asset_suffix()
 	isempty(suf) && error("$(a.title) has no download for this system ($(Sys.KERNEL) $(Sys.ARCH)).")
-	io = IOBuffer()
-	GMT.Downloads.download("https://api.github.com/repos/$(a.repo)/releases/latest", io;
-	                       headers = ["Accept" => "application/vnd.github+json"], timeout = 20)
-	json = String(take!(io))
+	json = _github_json("https://api.github.com/repos/$(a.repo)/releases/latest")   # gmtplugin.jl
 	m = match(r"\"tag_name\"\s*:\s*\"([^\"]+)\"", json)
 	m === nothing && error("GitHub did not report a release of $(a.title) (github.com/$(a.repo)).")
 	tag = String(m.captures[1])
@@ -159,12 +156,14 @@ function _craft_schedule_update_check()
 	Timer(1.0; interval = 1.0) do t
 		_PUMP[] === nothing && return                   # no window on screen yet
 		close(t)
-		@async for a in installed
-			try
-				_craft_release(a)
-				_craft_push_state(a)
-			catch e
-				@debug "InteractiveGMT: $(a.title) update check failed (harmless)" exception = (e,)
+		_bg_check() do
+			for a in installed
+				try
+					_craft_release(a)
+					_craft_push_state(a)
+				catch e
+					@debug "InteractiveGMT: $(a.title) update check failed (harmless)" exception = (e,)
+				end
 			end
 		end
 	end

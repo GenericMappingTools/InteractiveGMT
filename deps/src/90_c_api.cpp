@@ -1973,6 +1973,24 @@ GMTVTK_API void gmtvtk_set_julia_eval(JuliaEvalFn fn) {
 	g_juliaEval = fn;
 }
 
+// Register the console's "is this input complete?" test (signature JuliaCompleteFn), which lets
+// Enter on an open block add a continuation line instead of running it. nullptr = every input is
+// complete. Called once after dlopen, next to gmtvtk_set_julia_eval.
+GMTVTK_API void gmtvtk_set_julia_complete(JuliaCompleteFn fn) {
+	g_juliaComplete = fn;
+}
+
+// The Julia console's saved command history file: the host passes the Julia REPL's own history file
+// at start-up (NULL or "" = nothing saved). Read lazily, when the first console needs it; if a
+// console already holds the list, it is read again now, so every open console recalls the new file.
+// The test suite uses it to keep its commands out of the user's own history.
+GMTVTK_API void gmtvtk_set_console_history_path(const char *path) {
+	g_consoleHistPath = (path && path[0]) ? QString::fromUtf8(path) : QString();
+	const bool wasLoaded = g_consoleHistLoaded;
+	g_consoleHistLoaded = false;
+	if (wasLoaded) consoleHistory();
+}
+
 // Register the file-drop callback. `fn` is a Julia @cfunction (signature JuliaDropFn) called
 // with each dropped file's path; Julia reads + views it. Pass nullptr to detach.
 GMTVTK_API void gmtvtk_set_drop_callback(JuliaDropFn fn) {
@@ -7812,28 +7830,37 @@ GMTVTK_API int gmtvtk_solar_test(void *handle, int action, char *buf, int cap) {
 	return 1;
 }
 
-// test hook: drive the Julia console's command history. Types `cmd` and presses Enter (when given),
-// then sends `ups` Up presses and `downs` Down presses, and reports the line's resulting text -- so
-// REPL-style recall is proved by the widget's own key handling, not by reading the code.
+// test hook: drive the Julia console with REAL key presses. Types `cmd` one character at a time
+// ('\n' = an Enter press, so a multi-line input is typed exactly as a user would) and presses Enter
+// (when given), then sends `ups` Up presses and `downs` Down presses, and reports the console's
+// current INPUT (prompt and continuation indents stripped) -- so REPL-style recall and continuation
+// lines are proved by the widget's own key handling, not by reading the code. With `ups` = -1 it
+// reports the WHOLE pane's text instead (what the user sees).
 GMTVTK_API int gmtvtk_console_history_test(void *handle, const char *cmd, int ups, int downs,
                                            char *buf, int cap) {
 	Scene *s = static_cast<Scene*>(handle);
 	if (!s || !s->win) return 0;
-	// findChild<ConsoleLineEdit*> is not available (no Q_OBJECT -- this TU has no moc), so walk the
-	// QLineEdits and dynamic_cast: the console line is the only one of this type in the window.
-	ConsoleLineEdit *le = nullptr;
-	for (QLineEdit *e : s->win->findChildren<QLineEdit*>())
-		if ((le = dynamic_cast<ConsoleLineEdit*>(e))) break;
-	if (!le) return 0;
-	auto key = [&](int k) {
-		QKeyEvent press(QEvent::KeyPress, k, Qt::NoModifier);
-		QCoreApplication::sendEvent(le, &press);
+	// findChild<ReplConsole*> is not available (no Q_OBJECT -- this TU has no moc), so walk the
+	// QPlainTextEdits and dynamic_cast: the console is the only one of this type in the window.
+	ReplConsole *rc = nullptr;
+	for (QPlainTextEdit *e : s->win->findChildren<QPlainTextEdit*>())
+		if ((rc = dynamic_cast<ReplConsole*>(e))) break;
+	if (!rc) return 0;
+	auto key = [&](int k, const QString &txt = QString()) {
+		QKeyEvent press(QEvent::KeyPress, k, Qt::NoModifier, txt);
+		QCoreApplication::sendEvent(rc, &press);
 	};
-	if (cmd && cmd[0]) { le->setText(QString::fromUtf8(cmd)); key(Qt::Key_Return); }
+	if (cmd && cmd[0]) {
+		for (const QChar ch : QString::fromUtf8(cmd)) {
+			if (ch == '\n') key(Qt::Key_Return, "\r");
+			else            key(ch.toUpper().unicode(), QString(ch));
+		}
+		key(Qt::Key_Return, "\r");
+	}
 	for (int i = 0; i < ups;   ++i) key(Qt::Key_Up);
 	for (int i = 0; i < downs; ++i) key(Qt::Key_Down);
 	if (buf && cap > 0) {
-		const QByteArray t = le->text().toUtf8();
+		const QByteArray t = (ups < 0 ? rc->toPlainText() : rc->input()).toUtf8();
 		const int c = (t.size() < cap - 1) ? t.size() : cap - 1;
 		memcpy(buf, t.constData(), c); buf[c] = '\0';
 	}

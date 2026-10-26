@@ -32359,41 +32359,11 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// Tab 1 — Julia console: the viewer runs in-process in Julia, so a typed command is handed
 	// straight back to Julia (g_juliaEval) and eval'd in Main. The callback binds `fig` to THIS
 	// window, so `add!(fig, D)`, `view_points(...)`, etc. reach the figure with no handle typing.
-	QWidget     *conPanel = new QWidget(tabs);
-	QVBoxLayout *conLay   = new QVBoxLayout(conPanel);
-	conLay->setContentsMargins(2, 2, 2, 2);
-	QPlainTextEdit *conOut = new QPlainTextEdit(conPanel);
-	conOut->setReadOnly(true);
-	conOut->setFont(QFont("Consolas", 10));
-	conOut->setPlaceholderText("Julia output appears here. `fig` is this window. e.g.  add!(fig, [x y z]; mode=:points)");
-	// ConsoleLineEdit, not a plain QLineEdit: Up / Down recall this window's previous commands, the
-	// same way the Julia REPL does (10_geometry.cpp; the X,Y plot tool's console uses the same one).
-	ConsoleLineEdit *conIn = new ConsoleLineEdit(conPanel);
-	conIn->setFont(QFont("Consolas", 10));
-	conIn->setPlaceholderText("julia>  (Enter to run, Up/Down for history)");
-	conLay->addWidget(conOut, 1);
-	conLay->addWidget(conIn, 0);
-	conPanel->setLayout(conLay);
-	tabs->addTab(conPanel, "Julia Console");
-	s->console = conOut;
-	QObject::connect(conIn, &QLineEdit::returnPressed, [s, conOut, conIn]() {
-		const std::string cmd = conIn->text().toStdString();
-		if (cmd.empty())
-			return;
-		conIn->pushHistory(conIn->text());     // what RAN goes into the Up/Down history
-		conIn->clear();
-		conOut->appendPlainText(QString("julia> ") + QString::fromStdString(cmd));
-		if (!g_juliaEval) {
-			conOut->appendPlainText("(no Julia eval callback registered — re-include bridge.jl)");
-			return;
-		}
-		static std::vector<char> buf(1 << 16);   // 64 KB result buffer (shared, reused)
-		// _console_eval returns the byte count; NEGATIVE flags a Julia error (still |n| bytes of text).
-		int n   = g_juliaEval(s, cmd.c_str(), buf.data(), (int)buf.size());
-		int len = n < 0 ? -n : n;
-		if (len > 0)
-			conOut->appendPlainText(QString::fromUtf8(buf.data(), len));
-	});
+	// ReplConsole (30_app.cpp): prompt, input and output in ONE pane, as in a terminal REPL; the X,Y
+	// plot tool's console is the same widget.
+	ReplConsole *con = new ReplConsole(s, "`fig` is this window.  e.g.  add!(fig, [x y z]; mode=:points)", 10, tabs);
+	tabs->addTab(con, "Julia Console");
+	s->console = con;
 
 	// The MESSAGE LOG: a READ-ONLY sink for execution errors from background callbacks (drop, coastlines,
 	// basemap, tides, recolour, …). Those used to vanish into the REPL's stderr; Julia ccalls
@@ -32519,7 +32489,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		if (s->bottomTabs) s->bottomTabs->setCurrentWidget(page);
 	};
 	mView->addAction("&Profile Panel",       [showTab, s]()        { showTab(s->prof); });
-	mView->addAction("Julia &Console Panel", [showTab, conPanel]() { showTab(conPanel); });
+	mView->addAction("Julia &Console Panel", [showTab, con]()      { showTab(con); con->setFocus(Qt::OtherFocusReason); });
 	// No "Messages Panel" row (removed by request). The log is still reachable: the status corner's
 	// message bubble opens the same dock through the same sceneShowMessages.
 	// No "Data Viewer Panel" entry: there is no such tab any more. A table of numbers pops up in THE

@@ -187,7 +187,17 @@ function _console_capture()
 	end
 end
 
+# The Julia REPL puts InteractiveUtils (versioninfo, @which, @edit, subtypes, ...) into Main when it
+# starts. A session with no REPL -- the desktop launcher -- never gets it, and the console answered
+# `versioninfo()` with "UndefVarError: `versioninfo` not defined in `Main`". So the console does what
+# the REPL does, with the REPL's own call, before its first command.
+const _CONSOLE_IUTILS = Ref(false)
+
 function _console_eval_run(scene::Ptr{Cvoid}, cmd::Cstring, buf::Ptr{UInt8}, cap::Cint)::Cint
+	if !_CONSOLE_IUTILS[]
+		try Base.load_InteractiveUtils(Main) catch end
+		_CONSOLE_IUTILS[] = true
+	end
 	code = unsafe_string(cmd)
 	fig  = get(_FIGREG, scene, nothing)
 	fig !== nothing && Core.eval(Main, :(fig = $fig))   # console's `fig` = this window
@@ -206,6 +216,10 @@ function _console_eval_run(scene::Ptr{Cvoid}, cmd::Cstring, buf::Ptr{UInt8}, cap
 	val = nothing;  err = nothing
 	try
 		val = Core.eval(Main, Meta.parseall(code))
+		# `ans` = the last result, as the REPL keeps it (another REPL-only thing a session with no
+		# REPL never has). Only on success: a failed command leaves the previous `ans` alone, as
+		# there. QuoteNode so a Symbol or Expr result is stored, not evaluated.
+		Core.eval(Main, Expr(:(=), :ans, QuoteNode(val)))
 	catch e
 		err = e
 	finally
@@ -270,10 +284,34 @@ function _viewer_log_info(scene::Ptr{Cvoid}, msg::AbstractString)
 end
 
 
-# Build the C-callable pointer and install it in the DLL. Called once from __init__, after the
-# library loads. One @cfunction for the whole session.
+# Is `cmd` a complete input? 1 = run it, 0 = an open block / bracket / string, so the console's Enter
+# adds a continuation line instead (the Julia REPL's own test: the parse ends in an `:incomplete`).
+# A syntax ERROR is complete -- running it is how the user gets to see the message. Never throws.
+function _console_complete(cmd::Cstring)::Cint
+	try
+		ex = Meta.parseall(unsafe_string(cmd))
+		return any(a -> a isa Expr && a.head === :incomplete, ex.args) ? Cint(0) : Cint(1)
+	catch
+		return Cint(1)
+	end
+end
+
+# Build the C-callable pointers and install them in the DLL. Called once from __init__, after the
+# library loads. One @cfunction each for the whole session.
 function _register_console_eval()
 	fptr = @cfunction((s,c,b,n)->Base.invokelatest(_console_eval,s,c,b,n), Cint, (Ptr{Cvoid}, Cstring, Ptr{UInt8}, Cint))
 	ccall(_fn(:gmtvtk_set_julia_eval), Cvoid, (Ptr{Cvoid},), fptr)
+	cptr = @cfunction(c->Base.invokelatest(_console_complete,c), Cint, (Cstring,))
+	ccall(_fn(:gmtvtk_set_julia_complete), Cvoid, (Ptr{Cvoid},), cptr)
+	ccall(_fn(:gmtvtk_set_console_history_path), Cvoid, (Cstring,), _repl_history_file())
 	return
+end
+
+# The Julia REPL's own history file, found the way REPL.find_hist_file finds it ($JULIA_HISTORY, else
+# <first depot>/logs/repl_history.jl), without loading REPL. The console saves and recalls there, so
+# it and the terminal REPL share one history.
+function _repl_history_file()
+	f = get(ENV, "JULIA_HISTORY", "")
+	isempty(f) || return f
+	return isempty(DEPOT_PATH) ? "" : joinpath(first(DEPOT_PATH), "logs", "repl_history.jl")
 end

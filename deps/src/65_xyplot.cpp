@@ -210,9 +210,8 @@ struct XYPlot {
 	vtkSmartPointer<vtkContextView>     view;
 	QTreeWidget                        *objMgr = nullptr;      // Object Manager (series list)
 	QPlainTextEdit                     *console = nullptr;       // ERRORS tab: read-only execution-error log (xyLog)
-	QPlainTextEdit                     *cmdConsole = nullptr;    // JULIA tab: read-only output of typed commands
-	ConsoleLineEdit                    *consoleInput = nullptr;  // interactive julia> line (shares Main with the 3-D viewer;
-	                                                             // Up/Down history, the same widget the viewer's console uses)
+	QPlainTextEdit                     *cmdConsole = nullptr;    // JULIA tab: the ReplConsole (shares Main with the 3-D
+	                                                             // viewer; the same widget the viewer's console uses)
 	QWidget                            *consolePanel = nullptr;  // collapsible container under the chart
 	QTabWidget                         *xyErrTab = nullptr;      // console body tabs (Errors | Julia); xyLog raises Errors
 	QToolButton                        *consoleToggle = nullptr; // disclosure triangle (collapsed by default)
@@ -4621,41 +4620,10 @@ static XYPlot *buildXYPlot(const char *title) {
 	s->console->setFont(QFont("Consolas", 9));
 	s->console->setPlaceholderText("Execution errors (Analysis / File / callbacks) appear here.");
 
-	s->cmdConsole = new QPlainTextEdit();              // JULIA tab — command output
-	s->cmdConsole->setReadOnly(true);
-	s->cmdConsole->setMaximumBlockCount(2000);
-	s->cmdConsole->setFont(QFont("Consolas", 9));
-	s->cmdConsole->setPlaceholderText("Julia output. `fig` is this window — shared session with the 3-D viewer.");
-
-	s->consoleInput = new ConsoleLineEdit();           // JULIA tab — interactive input (Up/Down history)
-	s->consoleInput->setFont(QFont("Consolas", 9));
-	s->consoleInput->setPlaceholderText("julia>  (Enter to run, Up/Down for history)");
-	QObject::connect(s->consoleInput, &QLineEdit::returnPressed, s->win, [s]() {
-		const std::string cmd = s->consoleInput->text().toStdString();
-		if (cmd.empty())
-			return;
-		s->consoleInput->pushHistory(s->consoleInput->text());   // what RAN goes into the Up/Down history
-		s->consoleInput->clear();
-		if (s->cmdConsole)
-			s->cmdConsole->appendPlainText(QString("julia> ") + QString::fromStdString(cmd));
-		if (!g_juliaEval) {
-			if (s->cmdConsole) s->cmdConsole->appendPlainText("(no Julia eval callback registered)");
-			return;
-		}
-		static std::vector<char> buf(1 << 16);         // 64 KB result buffer (shared, reused)
-		// _console_eval returns the byte count; NEGATIVE flags a Julia error (still |n| bytes of text).
-		int n   = g_juliaEval(s, cmd.c_str(), buf.data(), (int)buf.size());
-		int len = n < 0 ? -n : n;
-		if (len > 0 && s->cmdConsole)                  // command's own error stays inline in the Julia tab
-			s->cmdConsole->appendPlainText(QString::fromUtf8(buf.data(), len));
-	});
-
-	QWidget     *juliaTab = new QWidget();             // JULIA tab = output (stretch) + input line
-	QVBoxLayout *jtLay    = new QVBoxLayout(juliaTab);
-	jtLay->setContentsMargins(0, 0, 0, 0);
-	jtLay->setSpacing(0);
-	jtLay->addWidget(s->cmdConsole, 1);
-	jtLay->addWidget(s->consoleInput, 0);
+	// JULIA tab — the same ReplConsole as the 3-D viewer (30_app.cpp): prompt, input and output in one
+	// pane. A command's own error stays inline here.
+	s->cmdConsole = new ReplConsole(s, "`fig` is this window — shared session with the 3-D viewer.", 9);
+	QWidget *juliaTab = s->cmdConsole;
 
 	QTabWidget *consoleTabs = new QTabWidget();        // the collapsible body: Julia Console | Errors (as in iGMT)
 	consoleTabs->setDocumentMode(true);

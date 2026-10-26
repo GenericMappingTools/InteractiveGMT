@@ -125,12 +125,39 @@ function _plugin_local_time(dir::String)::Union{Nothing,GMT.Dates.DateTime}
 	return tryparse(GMT.Dates.DateTime, strip(read(f, String)), GMT.Dates.dateformat"yyyy-mm-ddTHH:MM:SS")
 end
 
+# A GitHub API reply (release JSON). The start-up update checks (plugins here, VectorCraft/PhotoCraft
+# in craftapps.jl) fetch it on a background task, and Julia 1.10's Downloads CRASHES the process at
+# exit (ACCESS VIOLATION in curl_multi_cleanup) when a transfer is still in flight then. So every
+# fetch takes _BG_DL_STOP, and _bg_check's atexit hook fires it and waits for the checks to end
+# before Downloads' own cleanup runs.
+const _BG_DL_STOP  = Base.Event()
+const _BG_DL_TASKS = Task[]
+
+function _github_json(url::String)::String
+	io = IOBuffer()
+	r = GMT.Downloads.request(url; output = io, headers = ["Accept" => "application/vnd.github+json"],
+	                          timeout = 20, interrupt = _BG_DL_STOP)
+	200 <= r.status < 300 || error("$url: HTTP $(r.status)")
+	return String(take!(io))
+end
+
+# Run a start-up update check `f` in the background, stopped at exit (see _github_json).
+function _bg_check(f::Function)
+	isempty(_BG_DL_TASKS) && atexit(_bg_stop_checks)
+	push!(_BG_DL_TASKS, @async f())
+	return nothing
+end
+
+function _bg_stop_checks()
+	notify(_BG_DL_STOP)
+	foreach(t -> timedwait(() -> istaskdone(t), 5.0), _BG_DL_TASKS)
+	return nothing
+end
+
 # The release asset's updated_at (UTC), from GitHub's API; nothing when it cannot be had.
 function _plugin_remote_time(p::GmtPlugin, asset::String)::Union{Nothing,GMT.Dates.DateTime}
-	io = IOBuffer()
-	GMT.Downloads.download("https://api.github.com/repos/$(p.repo)/releases/tags/$(_plugin_tag(p))", io;
-	                       headers = ["Accept" => "application/vnd.github+json"], timeout = 20)
-	return _plugin_asset_time(String(take!(io)), asset)
+	json = _github_json("https://api.github.com/repos/$(p.repo)/releases/tags/$(_plugin_tag(p))")
+	return _plugin_asset_time(json, asset)
 end
 
 # The updated_at of asset `asset` in a GitHub release JSON: the first one after its "name".
@@ -162,11 +189,13 @@ function _plugin_schedule_update_check()
 	Timer(1.0; interval = 1.0) do t
 		_PUMP[] === nothing && return                   # no window on screen yet
 		close(t)
-		@async for p in installed
-			try
-				_plugin_check_update(p)
-			catch e
-				@debug "InteractiveGMT: $(p.title) plugin update check failed (harmless)" exception = (e,)
+		_bg_check() do
+			for p in installed
+				try
+					_plugin_check_update(p)
+				catch e
+					@debug "InteractiveGMT: $(p.title) plugin update check failed (harmless)" exception = (e,)
+				end
 			end
 		end
 	end

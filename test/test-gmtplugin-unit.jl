@@ -97,3 +97,23 @@ end
 	@test r !== nothing && r < t
 	rm(dirname(dest); recursive = true, force = true)
 end
+
+@testitem "update check: the process can exit while it is still downloading" tags=[:unit, :net] begin
+	# The start-up update checks fetch GitHub's release JSON on a background task. Julia 1.10's
+	# Downloads crashed the process at exit (ACCESS VIOLATION in curl_multi_cleanup) whenever that
+	# transfer was still in flight, e.g. a short test run, or a session closed right after start.
+	# _bg_check stops it at exit. In a CHILD, exiting a moment after the check starts.
+	script = """
+	using InteractiveGMT
+	IG = InteractiveGMT
+	IG._bg_check(() -> try IG._github_json("https://api.github.com/repos/GenericMappingTools/GMT.jl/releases/latest") catch end)
+	sleep(0.05)
+	print(stderr, "EXITING")
+	"""
+	err = IOBuffer()
+	p = run(pipeline(ignorestatus(`$(Base.julia_cmd()) --startup-file=no -e $script`); stdout = devnull, stderr = err))
+	out = String(take!(err))
+	@test occursin("EXITING", out)
+	@test !occursin("ACCESS_VIOLATION", out)
+	@test success(p)
+end
