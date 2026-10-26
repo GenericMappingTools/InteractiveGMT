@@ -67,11 +67,11 @@ function _grdfft_curve(scene::Ptr{Cvoid}, R, title::String, outfile::AbstractStr
 	ylab = names[col]
 	x = Float64.(@view m[:, 1])
 	y = Float64.(@view m[:, col])
-	p = xyplot(x, y; name = ylab, title = title, xlabel = xlab, ylabel = ylab)
+	p = _xyplot(x, y; name = ylab, title = title, xlabel = xlab, ylabel = ylab)
 	if size(m, 2) > col
 		e = Float64.(@view m[:, col + 1])
-		add!(p, x, y .+ e; name = "+1 sigma", linestyle = :dash)
-		add!(p, x, y .- e; name = "-1 sigma", linestyle = :dash)
+		_xyadd!(p, x, y .+ e; name = "+1 sigma", linestyle = :dash)
+		_xyadd!(p, x, y .- e; name = "-1 sigma", linestyle = :dash)
 	end
 	return Cint(1)
 end

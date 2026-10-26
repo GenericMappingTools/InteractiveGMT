@@ -102,7 +102,7 @@ function _on_trend2d(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 			# The layer also CARRIES the fit, one row per point, for "Show data table" — the same table
 			# the dialog just opened, reachable again from the symbols themselves. Data, not graphics:
 			# the fitted columns, never the symbol's size.
-			add_symbols!(scene, view(mat, 1:n, 1), view(mat, 1:n, 2); symbol = :circle, size = 6,
+			_add_symbols!(scene, view(mat, 1:n, 1), view(mat, 1:n, 2); symbol = :circle, size = 6,
 			             fill = :cyan, edge = :black, edgewidth = 0.5,
 			             name = "trend2d (" * basename(String(infile)) * ")", info = infos,
 			             datanames = String.(names),

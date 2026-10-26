@@ -1,6 +1,5 @@
-# Smoke test for the SOLIDS catalogue, dispatched through view_fv(name).
+# Smoke test for the SOLIDS catalogue, dispatched through viz(name).
 using InteractiveGMT
-using GMT
 
 const SOLIDS = InteractiveGMT.SOLIDS          # the named-generator catalogue (unexported)
 
@@ -10,9 +9,9 @@ for nm in ("cube", "sphere", "torus", "icosahedron")
 	println(nm, ": verts=", size(fv.verts, 1), " groups=", length(fv.faces))
 end
 
-fig  = view_fv("torus"; R=8, nx=120, edges=true)
-println("view_fv(\"torus\") -> ", typeof(fig), "  alive=", isalive(fig))
-fig2 = view_fv("cube"; r=3)
-println("view_fv(\"cube\"; r=3) alive=", isalive(fig2))
+fig  = viz("torus"; R=8, nx=120, edges=true)
+println("viz(\"torus\") -> ", typeof(fig), "  alive=", isalive(fig))
+fig2 = viz("cube"; r=3)
+println("viz(\"cube\"; r=3) alive=", isalive(fig2))
 
 abspath(PROGRAM_FILE) == @__FILE__ && wait_windows()

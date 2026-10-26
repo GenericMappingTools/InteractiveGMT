@@ -109,10 +109,10 @@ function _on_grdvolume(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		if _on(d, "plot") && size(m, 1) > 1 && size(m, 2) >= 3
 			x = Float64.(@view m[:, 1])
 			names = D.colnames
-			p = xyplot(x, Float64.(@view m[:, size(m, 2) >= 4 ? 4 : 3]); name = names[end],
+			p = _xyplot(x, Float64.(@view m[:, size(m, 2) >= 4 ? 4 : 3]); name = names[end],
 			           title = "grdvolume", xlabel = names[1], ylabel = names[end])
-			add!(p, x, Float64.(@view m[:, 3]); name = names[3])
-			add!(p, x, Float64.(@view m[:, 2]); name = names[2], linestyle = :dash)
+			_xyadd!(p, x, Float64.(@view m[:, 3]); name = names[3])
+			_xyadd!(p, x, Float64.(@view m[:, 2]); name = names[2], linestyle = :dash)
 		end
 		return Cint(1)
 	catch e

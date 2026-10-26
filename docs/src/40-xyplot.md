@@ -10,45 +10,55 @@ A standalone 2-D plotter for profiles, time series and spectra: its own window, 
 
 Ways to open it:
 
-- from Julia, with `xyplot` (below);
+- from Julia, with `plot` (below);
 - from the 3-D viewer, **Tools > X,Y plot** (an empty window);
 - from a 3-D profile: right-click the profile panel > **Open in X,Y plot tool**;
-- by dropping (or `iview`-ing) a two-column table that is not geographic.
+- by dropping (or `viz`-ing) a two-column table that is not geographic.
 
-One X,Y window serves all `xyplot` calls: while one is open, a new `xyplot` call adds a **page** to
+One X,Y window serves all `plot` calls: while one is open, a new `plot` call adds a **page** to
 it instead of opening a second window.
 
 ## Opening the Plotter
 
-```julia
-using InteractiveGMT, GMT
+`plot` is GMT.jl's `plot`, with GMT.jl's arguments and keywords, drawn in the interactive window.
+As in GMT.jl, a matrix or `GMTdataset` draws column 2 against column 1 only; give `multicol=true`
+to draw every further column as its own line.
 
-# x, y vectors (y may be a matrix: one line per column)
+```julia
+using InteractiveGMT
+
+# x, y vectors (y may be a matrix: one line per column with multicol=true)
 t = collect(0:0.1:10)
-fig = xyplot(t, sin.(t); name="sin", xlabel="time", ylabel="amplitude")
+fig = plot(t, sin.(t); legend="sin", xlabel="time", ylabel="amplitude")
 
 # a matrix: column 1 = X, the others = Y series
-fig = xyplot([t sin.(t) cos.(t)])
+fig = plot([t sin.(t) cos.(t)]; multicol=true)
 
 # y alone: X = 1:length(y)
-fig = xyplot(rand(100))
+fig = plot(rand(100))
 
 # a GMTdataset (column names become the series names) or a multi-segment vector
 D = gmtread("data.txt")
-fig = xyplot(D)
+fig = plot(D; multicol=true)
 ```
 
-Keywords: `name`, `color` (`:red`, `"blue"`, a 0–255 or 0–1 triple), `linewidth`, `linestyle`
-(`:solid`, `:dash`, `:dot`, `:dashdot`, `:dashdotdot`, `:none`), `marker` (`:none`, `:cross`,
-`:plus`, `:square`, `:circle`, `:diamond`), `markersize`, `title`, `xlabel`, `ylabel`, `xtime`,
-`xscale`, `yscale`, `track`.
+Keywords (GMT.jl's): `legend`, `lc` (`:red`, `"blue"`, a 0–255 or 0–1 triple), `lw` (points),
+`ls` (`:solid`, `:dash`, `:dot`, `:dashdot`, `:dashdotdot`, `:none` for markers only, or `"-"`, `"--"`, `":"`, `"-."`, `"-.."`),
+`pen=(width, color, style)`, `marker` (`:cross`, `:plus`, `:square`, `:circle`, `:diamond`), `ms`
+(cm, or a string with its unit like `"6p"`), `mc`, `title`, `xlabel`, `ylabel`, `proj` (`:logx`,
+`:logy`, `:loglog`), `multicol`. iGMT-only: `xtime`, `track`, `trackgeog`. A GMT.jl keyword the
+window cannot honour (`region`, `frame`, `savefig`, ...) is an error; use `GMT.plot` for a static
+figure.
+
+Line plots, with examples: [plot — 2-D Line Plot](@ref).
 
 ## Adding Series
 
 ```julia
-add!(fig, more_data)                                    # a GMTdataset, vector of them, or matrix
-add!(fig, x, y; name="Series 2", linestyle=:dash)      # or one series by hand
-add!(fig, x, y; kind=:bar, barwidth=0.5)                # drawn as bars
+plot!(fig, more_data)                                   # a GMTdataset, vector of them, or matrix
+plot!(fig, x, y; legend="Series 2", ls=:dash)          # or one series by hand
+plot!(x, y; legend="Series 3")                          # into the current X,Y window
+bar!(fig, x, y; width=0.5)                              # drawn as bars (width in x units)
 ```
 
 ## Clearing
@@ -70,7 +80,7 @@ With X in Unix epoch seconds, the X axis can be labelled as dates or times. Tick
 ```julia
 t = time() .+ (0:3600)
 y = rand(length(t))
-fig = xyplot(t, y; xtime=:date)          # xtime=true is the same as :date
+fig = plot(t, y; xtime=:date)            # xtime=true is the same as :date
 ```
 
 or later:
@@ -85,9 +95,9 @@ Modes: `:linear`, `:date` (by span), `:date_ymd`, `:time`, `:decyear`, `:doy`. S
 ## Log Axes
 
 ```julia
-fig = xyplot(x, y; xscale=:log)                     # log X
-fig = xyplot(x, y; yscale=:log)                     # log Y
-fig = xyplot(x, y; xscale=:log, yscale=:log)        # both
+fig = plot(x, y; proj=:logx)                        # log X
+fig = plot(x, y; proj=:logy)                        # log Y
+fig = plot(x, y; proj=:loglog)                      # both
 ```
 
 or later (`true` = log, `false` = linear):
@@ -100,12 +110,15 @@ Same in **Misc > Log X axis / Log Y axis**.
 
 ## Stick Diagrams
 
+`feather` is GMT.jl's `feather`: columns `(x, u, v)`, or `(x, θ, r)` with `rtheta=true`, θ in
+degrees counter-clockwise from +x (GMT convention; a compass azimuth `az` is θ = 90 - az).
+
 ```julia
 t = collect(0:0.1:10)
-fig = stickplot(t, cos.(t), sin.(t))                 # vector components u, v
+fig = feather(t, [cos.(t) sin.(t)])                  # vector components u, v
 
 az  = 360 .* rand(100)
-fig = stickplot(1:100, az; mag=rand(100))           # azimuth (0 = North) + magnitude
+fig = feather(1:100, [90 .- az rand(100)]; rtheta=true)   # angle (from azimuth, 0 = North) + magnitude
 ```
 
 ## Profiles from the 3-D Viewer
@@ -113,7 +126,7 @@ fig = stickplot(1:100, az; mag=rand(100))           # azimuth (0 = North) + magn
 Right-click a 3-D profile > **Open in X,Y plot tool**, or from Julia `profile_to_xyplot(fig)`.
 The profile keeps its track (lon/lat), so the magnetic model below takes its azimuth and distances
 from it. Redrawing the profile in the 3-D window updates the X,Y copy. From Julia, a series gets a
-track with `add!(p, x, y; track=(lon, lat))`.
+track with `plot!(p, x, y; track=(lon, lat))`.
 
 ## File Menu
 

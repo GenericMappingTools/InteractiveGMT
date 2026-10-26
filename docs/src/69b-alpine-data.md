@@ -13,10 +13,10 @@ It brings the topography, the Moho, the seismicity and the GPS velocities of the
 ## 1. Surface topography
 
 ```julia
-using GMT, InteractiveGMT
+using InteractiveGMT
 
 Topo = grdcut("@earth_relief_01m", region=(4, 20, 37, 50))
-fig  = iview(Topo; cmap=:oleron)
+fig  = viz(Topo; cmap=:oleron)
 ```
 
 Switch to **3D** on the toolbar and turn the view with the gizmo:
@@ -98,7 +98,7 @@ GMG shows the topography of the land only, so that what lies under the sea stays
 
 ```julia
 Land = grdclip(Topo, below="0/NaN")
-fig  = iview(Land; cmap=:oleron)
+fig  = viz(Land; cmap=:oleron)
 ```
 
 Then *Geophysics → Seismicity…*: choose *ISF formated catalog (ascii)* and `ISCData.isf`, and tick

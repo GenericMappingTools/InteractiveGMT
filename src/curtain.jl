@@ -116,7 +116,7 @@ function add_curtain!(fig::QtFigure, path; image, zrange, spacing::Symbol=:dista
 	return fig
 end
 
-# Dispatch the `view_grid(; vcurtain=)` kwarg: nothing / one spec NamedTuple / a vector or tuple
+# Dispatch the `_view_grid(; vcurtain=)` kwarg: nothing / one spec NamedTuple / a vector or tuple
 # of specs. A spec is `(; image, path, zrange, spacing=:distance, flipv=false, clip=false, clip_n=300)`.
 _add_curtains!(fig::QtFigure, ::Nothing) = nothing
 _add_curtains!(fig::QtFigure, spec::NamedTuple) = _add_curtain_spec!(fig, spec)

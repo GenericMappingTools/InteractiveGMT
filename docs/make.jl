@@ -13,6 +13,7 @@ const titles = Dict(
     "20-point-clouds.md" => "Point Clouds",
     "30-solids.md" => "Solids and Meshes",
     "40-xyplot.md" => "X,Y Plot Tool",
+    "41-xyplot-plot.md" => "X,Y Plot: plot",
     "50-utilities.md" => "Utilities",
     "60-geography.md" => "Geography Tools",
     "62-elastic-deformation.md" => "Tutorial: Elastic Deformation",

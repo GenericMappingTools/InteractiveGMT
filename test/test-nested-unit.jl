@@ -56,7 +56,7 @@
 	end
 
 	G = GMT.mat2grid(zeros(Float32, 101, 101); x = [0.0, 10.0], y = [0.0, 10.0])
-	f = view_grid(G)
+	f = viz(G)
 	try
 		IG._pump_once()
 		bx0, binc = 0.0, 0.1                      # base grid origin + increment (the level-1 parent)
@@ -161,7 +161,7 @@ end
 	end
 
 	G = GMT.mat2grid(zeros(Float32, 101, 101); x = [0.0, 10.0], y = [0.0, 10.0])
-	f = view_grid(G)
+	f = viz(G)
 	try
 		IG._pump_once()
 		@test addrect(f.h, 2.34, 7.71, 2.16, 7.63, 0.02, 0.02, "Nested rectangle 1") >= 0
@@ -231,7 +231,7 @@ end
 	G = GMT.mat2grid(zeros(Float32, 101, 101); x = [0.0, 10.0], y = [0.0, 10.0])
 
 	# Window A: draw the chain from raw, off-node boxes and let it settle.
-	fa = view_grid(G)
+	fa = viz(G)
 	settled = try
 		IG._pump_once()
 		addrect(fa.h, 2.34, 7.71, 2.16, 7.63, 0.02,  0.02,  "Nested rectangle 1")
@@ -246,7 +246,7 @@ end
 	# Window B: replay the SETTLED limits, the way a session restore does. They must come back
 	# unchanged — each rect's edges are less than half a parent cell off a parent node, so nearest
 	# lands on the same node it came from.
-	fb = view_grid(G)
+	fb = viz(G)
 	try
 		IG._pump_once()
 		for (i, q) in enumerate(settled)

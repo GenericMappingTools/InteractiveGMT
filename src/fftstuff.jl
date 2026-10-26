@@ -350,7 +350,7 @@ function _on_fftstuff(scene::Ptr{Cvoid}, cparams::Cstring, txt::Ptr{UInt8}, txtc
 			freq, power, xlab = fft_radial_power(G, o)
 			# Mirone opens `ecran` for this one; here that is the X,Y tool — and per the standing rule
 			# a second call lands as a NEW PAGE on the one that is already open, never a new window.
-			Base.invokelatest(xyplot, freq, power; name = "Radial average power spectrum",
+			Base.invokelatest(_xyplot, freq, power; name = "Radial average power spectrum",
 			                  title = "Radial average power spectrum", xlabel = xlab,
 			                  ylabel = "Log(Power)", yscale = :log10)
 			return Cint(1)

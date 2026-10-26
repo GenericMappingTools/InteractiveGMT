@@ -538,7 +538,7 @@ end
 		W = (parse(Float64, w[1:1]), parse(Float64, w[2:2]), parse(Float64, w[3:3]))
 		x, y = _pal_cie76(_pal_getrgb(rgb, nrows), W)
 		isempty(y) && return _pal_err(txt, txtcap, "palette too short for CIE76")
-		p = xyplot(x, y; name = W[2] == 0 ? "CIE76 lightness diff" : "CIE76 Delta E*", color = :black)
+		p = _xyplot(x, y; name = W[2] == 0 ? "CIE76 lightness diff" : "CIE76 Delta E*", color = :black)
 		_xy_set_labels(p, "colormap index", W[2] == 0 ? "dL*" : "Delta E*")
 		return Cint(0)
 	end

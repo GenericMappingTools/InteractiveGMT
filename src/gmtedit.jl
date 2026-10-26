@@ -1379,7 +1379,7 @@ function _ge_to_xyplot(edit::Ptr{Cvoid}, slot::Int, whole::Bool, xlo::Float64, x
 	keep = whole ? collect(1:tr.n) : findall(i -> xlo <= tr.xdata[i] <= xhi, 1:tr.n)
 	isempty(keep) && (_ge_log(edit, "Nothing in this window to send to the X,Y plot tool"; err=true); return)
 	ttl = "$(nm)_from_$(splitext(basename(tr.path))[1])"
-	xyplot(tr.xdata[keep], yv[keep]; name=nm, title=ttl,
+	_xyplot(tr.xdata[keep], yv[keep]; name=nm, title=ttl,
 	       xlabel=(tr.xISdist ? "Distance (km)" : "Record #"), ylabel=tr.labels[slot])
 	return
 end
@@ -1519,9 +1519,9 @@ function _on_gmtedit(edit::Ptr{Cvoid}, caction::Cstring, carg::Cstring)::Cvoid
 				delete!(_GE_PARENT, edit)
 				_ge_log(edit, "Link: the parent 3-D window was closed"; err=true); return
 			end
-			# gmtedit.m plots a black filled circle, MarkerSize 6, tagged 'LinkedSymb'. `add_symbols!`
+			# gmtedit.m plots a black filled circle, MarkerSize 6, tagged 'LinkedSymb'. `_add_symbols!`
 			# (symbols.jl) is this project's ONE "stamp a symbol layer on a scene" primitive.
-			add_symbols!(scene, [tr.lon[idx]], [tr.lat[idx]]; symbol=:circle, size=9,
+			_add_symbols!(scene, [tr.lon[idx]], [tr.lat[idx]]; symbol=:circle, size=9,
 			             fill=:black, edge=:white, edgewidth=1.0, srs=_LONLAT,
 			             name="$(splitext(basename(tr.path))[1])  rec $idx")
 			ccall(_fn(:gmtvtk_raise), Cvoid, (Ptr{Cvoid},), scene)

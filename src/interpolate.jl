@@ -198,7 +198,7 @@ function _on_interpolate(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		# dataset that was gridded — not a second read of the file.
 		if ok == Cint(1) && _on(d, "plotpts")
 			mat = D isa Vector ? reduce(vcat, (dd.data for dd in D)) : D.data
-			add_symbols!(scene, view(mat, :, 1), view(mat, :, 2); symbol = :circle, size = 5,
+			_add_symbols!(scene, view(mat, :, 1), view(mat, :, 2); symbol = :circle, size = 5,
 			             fill = :black, edge = :white, edgewidth = 0.5,
 			             name = "Data points (" * basename(String(infile)) * ")")
 		end

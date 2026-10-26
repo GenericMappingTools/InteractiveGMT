@@ -21,7 +21,7 @@ save_png(fig, "output.png")
 ## Waiting for Windows
 
 ```julia
-fig = iview(G)
+fig = viz(G)
 wait_windows()  # Blocks until all windows close
 ```
 
@@ -36,7 +36,7 @@ stereo!(fig, "red-cyan")  # Enable anaglyph stereo
 Auto-detect file type:
 
 ```julia
-fig = iview("data.nc")  # Auto-detects grid/image/dataset
+fig = viz("data.nc")  # Auto-detects grid/image/dataset
 ```
 
 ## Demo

@@ -40,23 +40,36 @@ Drag and drop files on the icon or an empty iGMT display. Or use the normal File
 ## Quick Start from Julia
 
 ```julia
-using InteractiveGMT, GMT
+using InteractiveGMT
 
 # View a grid
 G = GMT.peaks()
-fig = iview(G)
+fig = viz(G)
 
 # View points
 D = GMT.mat2ds(rand(100,3))
-fig = iview(D; color="red")
+fig = viz(D; color="red")
 
 # X,Y plot
 t = 0:0.1:10
 y = sin.(t)
-fig = xyplot([t y])
+fig = plot([t y])
 ```
 
 The window opens immediately. The REPL stays usable.
+
+### One name per job: `using InteractiveGMT` is enough
+
+iGMT uses GMT.jl's own names and keyword syntax for the jobs GMT.jl already has a function for:
+`plot` / `plot!` (the X,Y plot tool), `feather` (stick diagrams), `viz` (the 3-D viewer),
+`scatter!` (symbols on an open window) and `orbits!` (a satellite ground track). `iview` is an alias
+of `viz`.
+
+`using InteractiveGMT` re-exports all of GMT.jl except the names iGMT shadows (`plot`, `plot!`,
+`feather`, `viz`), so do **not** also write `using GMT`: loading both makes `plot`, `viz`, ...
+ambiguous. If you need both, resolve it with `using InteractiveGMT: plot, plot!, feather, viz`. The
+static GMT.jl versions stay reachable qualified: `GMT.plot`, `GMT.viz`, ... A GMT.jl keyword the
+interactive window cannot honour (`region`, `frame`, `savefig`, ...) is an error that names it.
 
 ## Basic Concepts
 
@@ -78,7 +91,7 @@ All viewer calls return immediately. A Julia `Timer` pumps the Qt event loop at 
 In scripts without a REPL, end with `wait_windows()` to keep the process alive:
 
 ```julia
-fig = iview(G)
+fig = viz(G)
 wait_windows()  # Blocks until all windows close
 ```
 

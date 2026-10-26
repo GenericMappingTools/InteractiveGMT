@@ -32,8 +32,8 @@ function _stick_scale(t, u, v)
 end
 
 """
-    stickplot(t, u, v; scale=:auto, color=nothing, title="Stick diagram", kwargs...) -> QtXYPlot
-    stickplot(t, azimuth; mag=nothing, kwargs...) -> QtXYPlot
+    _stickplot(t, u, v; scale=:auto, color=nothing, title="Stick diagram", kwargs...) -> QtXYPlot
+    _stickplot(t, azimuth; mag=nothing, kwargs...) -> QtXYPlot
 
 Draw a **stick (vector) diagram**: at each `t` a vector is plotted from the y=0 baseline. Give the
 vectors as `(u, v)` components, or as `azimuth` degrees (oceanographic: 0° = up/North, clockwise)
@@ -44,23 +44,23 @@ full-magnitude vector). Returns a QtXYPlot; extra keywords (`xlabel`, `ylabel`, 
 ```julia
 t  = collect(0:0.5:48)                 # hours
 az = 90 .+ 60 .* sin.(2π .* t ./ 12)   # tide-turning current direction
-stickplot(t, az; mag=1 .+ 0.3 .* cos.(2π .* t ./ 12), title="Current sticks", xlabel="hour")
+_stickplot(t, az; mag=1 .+ 0.3 .* cos.(2π .* t ./ 12), title="Current sticks", xlabel="hour")
 ```
 """
-function stickplot(t::AbstractVector, u::AbstractVector, v::AbstractVector;
+function _stickplot(t::AbstractVector, u::AbstractVector, v::AbstractVector;
                    scale=:auto, color=nothing, name::AbstractString="sticks",
                    title::AbstractString="Stick diagram", kwargs...)
 	(length(t) == length(u) == length(v)) ||
-		error("stickplot: t, u, v must have equal length")
+		error("feather: t, u, v must have equal length")
 	sc = scale === :auto ? _stick_scale(t, u, v) : Float64(scale)
 	segx, segy = _stick_segments(Float64.(t), Float64.(u), Float64.(v), sc)
-	p = xyplot(segx, segy; name, color, title, kwargs...)
-	add!(p, [float(minimum(t)), float(maximum(t))], [0.0, 0.0]; name="baseline", color=:gray)
+	p = _xyplot(segx, segy; name, color, title, kwargs...)
+	_xyadd!(p, [float(minimum(t)), float(maximum(t))], [0.0, 0.0]; name="baseline", color=:gray)
 	return p
 end
 
-function stickplot(t::AbstractVector, azimuth::AbstractVector; mag=nothing, kwargs...)
+function _stickplot(t::AbstractVector, azimuth::AbstractVector; mag=nothing, kwargs...)
 	m = mag === nothing ? ones(length(t)) : mag
 	u, v = _stick_uv_from_az(azimuth, m)
-	return stickplot(t, u, v; kwargs...)
+	return _stickplot(t, u, v; kwargs...)
 end

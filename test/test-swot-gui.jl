@@ -5,7 +5,7 @@
 @testitem "SWOT: the menu entry builds its dialog" tags=[:gui, :swot] setup=[RemoteSGui, GmtvtkTest] begin
 	IG = InteractiveGMT
 	_test_fn = GmtvtkTest._test_fn
-	f = view_grid(IG.GMT.peaks())
+	f = viz(IG.GMT.peaks())
 	real = IG._RS_TOOLS["swot"]
 	asked = String[]
 	IG._RS_TOOLS["swot"] = (s, d, io) -> (push!(asked, get(d, "what", "")); true)

@@ -6,7 +6,7 @@ The viewer is a small C/C++ shared library (`deps/build/gmtvtk.dll`, built by `d
 driven through a tiny C API; this package is the Julia bridge. Calls are NON-BLOCKING: they
 return a live handle immediately and a Julia `Timer` pumps the Qt loop so the REPL stays usable.
 
-Public API: [`view_grid`](@ref), [`view_points`](@ref), [`view_fv`](@ref), [`iview`](@ref),
+Public API: [`viz`](@ref) (alias `iview`), [`plot`](@ref), [`plot!`](@ref), [`feather`](@ref),
 [`add!`](@ref), [`add_curtain!`](@ref), [`show_table`](@ref), [`selection`](@ref),
 [`poly2fv`](@ref), [`isalive`](@ref), [`save_png`](@ref), [`view_demo`](@ref).
 
@@ -15,7 +15,14 @@ Windows-only (the viewer DLL is a Windows binary).
 module InteractiveGMT
 
 using GMT
-import GMT: movie
+import GMT: movie, scatter!, orbits, orbits!, bar!
+# ONE NAME PER JOB: these are iGMT's OWN functions with GMT.jl's names and syntax (gmtsyntax.jl). Declared
+# before any include so no file can bind the GMT.jl function of the same name by using it first; GMT.jl's
+# static versions stay reachable as GMT.plot etc. Every other GMT.jl export is re-exported at the bottom.
+function plot end
+function plot! end
+function feather end
+function viz end
 using Distributed: addprocs, workers, rmprocs, remotecall, remotecall_eval
 using PrecompileTools: @setup_workload, @compile_workload
 
@@ -197,17 +204,24 @@ include("RemoteS/RemoteS.jl") # submodule InteractiveGMT.RemoteS: port of Remote
 include("swot.jl")      # Satellite > SWOT: PO.DAAC L2 search/download/grid (a Remote sensing dialog tool)
 include("RemoteS/remotes_gui.jl") # Satellite > Remote sensing: the dialogs over that submodule
 include("crsselect.jl")   # the Coordinate Reference System selector (PROJ catalogue; 73_crsselect.cpp)
+include("gmtsyntax.jl")   # ONE NAME PER JOB: plot/plot!/feather/viz/scatter!/orbits! in GMT.jl's syntax
 
 export gmtscript, gmtreplay,
-       view_grid, view_image, view_points, view_fv, view_demo, iview, iview_recipe,
-       add!, setvisible!, setopacity!, add_curtain!, add_isosurface!, add_symbols!, show_table, selection, selection_ids, isalive,
+       plot, plot!, feather, viz, view_demo, iview, iview_recipe,
+       add!, setvisible!, setopacity!, add_curtain!, add_isosurface!, show_table, selection, selection_ids, isalive,
        poly2fv, colorize_by_z!, save_png, wait_windows, stereo!, movie, MovieFrame, orbit!, replace_grid!,
        set_layer!, nlayers, add_label!, add_progress!, remove_annotation!, movie_annotations,
-       xyplot, clear!, profile_to_xyplot, xtime!, logscale!, stickplot, xyinfo!, xynowcross!,
+       clear!, profile_to_xyplot, xtime!, logscale!, xyinfo!, xynowcross!,
        QtFigure, QtPoints, QtFV, QtImage, QtEmpty, QtXYPlot, rtp3d, shapenc, isoc2shapenc, shapenc2isoc,
        gmtedit, mbgrid, cubegrid, cubegrid_all, tsushade, tsupbr, aqua_shade_image,
-       TLE, Satellite, read_tle, propagate, propagate_ecef, subpoint, groundtrack, plot_groundtrack!,
+       TLE, Satellite, read_tle, propagate, propagate_ecef, subpoint, groundtrack,
        crs_select
+
+# Re-export GMT.jl, so `using InteractiveGMT` alone gives the whole of it: every GMT.jl export whose name
+# here is STILL GMT.jl's own function (the names iGMT shadows above are skipped by that same test).
+for n in names(GMT)
+	isdefined(@__MODULE__, n) && getfield(@__MODULE__, n) === getfield(GMT, n) && @eval export $n
+end
 
 # --- precompile (ALL of it lives HERE, via PrecompileTools — never hidden in other files) ---
 # Callbacks are thin invokelatest trampolines registered lazily on first window open

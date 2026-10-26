@@ -61,7 +61,7 @@ _info_to_string(x) = sprint(show, MIME("text/plain"), x)
 # Print the grdinfo / gdalinfo report for the window's active grid/image. `mode` is "grdinfo"
 # (default) or "gdalinfo". Returns nothing — the printed text is what the viewer captures & shows.
 # The grid is THE grid every Grid Tool works on — `_active_grid`, the layer ON DISPLAY — never the
-# figure's own `fig.G`. A window whose grid did not come in through `view_grid` (an Aquamoto tsunami
+# figure's own `fig.G`. A window whose grid did not come in through `_view_grid` (an Aquamoto tsunami
 # above all: its figure carries no grid, the slice on screen is registered under the window's
 # surface name) answered "No grid" here while every tool found the layer. The figure's own object is
 # only the fallback for a window with no grid layer at all (an image).

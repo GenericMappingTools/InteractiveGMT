@@ -647,7 +647,7 @@ function _ce_start(scene::Ptr{Cvoid}, d::Dict{String,String})::Cint
 	if _on(d, "plotres")            # "Plot residues only": no pole is computed
 		lat, dists = _ce_resid_along(st, plon, plat)
 		isempty(lat) && error("no residue survived the weight and azimuth filters")
-		xyplot(lat, dists; name = "residues", title = "Residues along isoc",
+		_xyplot(lat, dists; name = "residues", title = "Residues along isoc",
 		       xlabel = "Latitude", ylabel = "Residue (km)")
 		_euler_result("$(length(lat)) signed residues plotted for pole $plon/$plat/$pang")
 		_ce_push(-1, 1, (NaN, NaN, NaN, NaN), st.area0)

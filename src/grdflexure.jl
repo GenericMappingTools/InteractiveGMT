@@ -243,10 +243,10 @@ function _on_grdflexure(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 				nm = "Te = $te km" * (size(m, 2) > 3 ? " (t = " * _GFLX_TRANSFER_T[1] * ")" : "")
 				x, y = Float64.(@view m[:, 1]), Float64.(@view m[:, 3])
 				if p === nothing
-					p = xyplot(x, y; name = nm, title = "grdflexure transfer function",
+					p = _xyplot(x, y; name = nm, title = "grdflexure transfer function",
 					           xlabel = "Wavelength (km)", ylabel = "Transfer function")
 				else
-					add!(p, x, y; name = nm)
+					_xyadd!(p, x, y; name = nm)
 				end
 			end
 			isempty(made) && error("grdflexure wrote no transfer-function files")

@@ -20,7 +20,7 @@ behind it is an ASCII table on GMG's data share, one row per node: longitude, la
 negative down) and the P-wave velocity anomaly in percent. `gmtread` reads it as it is:
 
 ```julia
-using GMT, InteractiveGMT
+using InteractiveGMT
 
 download("https://seafile.rlp.net/d/a50881f45aa34cdeb3c0/files/?p=%2FZhao_etal_JGR_2016_Pwave_Alps_3D_k60.txt&dl=1",
          "Zhao_etal_JGR_2016_Pwave_Alps_3D_k60.txt")
@@ -71,7 +71,7 @@ imglat = grdimage(lat449, cmap=C, A=true)
 The topography opens the window:
 
 ```julia
-fig = iview(Topo; cmap=:oleron)
+fig = viz(Topo; cmap=:oleron)
 ```
 
 The depth slice is a flat grid 511 km down, wearing its picture. It is a depth on the same vertical

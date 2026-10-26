@@ -60,7 +60,7 @@ function _pack_dataset(D, G::GMTgrid)
 end
 
 """
-	view_grid(G::GMTgrid; cmap=:auto, drape=nothing, outside=:shademesh, outside_color=200,
+	_view_grid(G::GMTgrid; cmap=:auto, drape=nothing, outside=:shademesh, outside_color=200,
 			  title="i'GMT", geographic=nothing)
 
 Show a GMT.jl grid in the Qt + VTK viewer. Returns a `QtFigure` handle immediately; the
@@ -95,13 +95,13 @@ red points). `data_size` sets the line width or point size in px (`0` = default)
 along an XY track through the scene — one spec NamedTuple, or a vector of them:
 `(; image, path, zrange, spacing=:distance, flipv=false, clip=false, clip_n=300)` (same
 fields as [`add_curtain!`](@ref)). E.g.
-`view_grid(G; vcurtain=(; image="sect.jpg", path=track, zrange=(-10000,0), clip=true))`.
+`_view_grid(G; vcurtain=(; image="sect.jpg", path=track, zrange=(-10000,0), clip=true))`.
 
 `geographic` is auto-detected (override with `true`/`false`). For geographic grids
 the vertical exaggeration is referenced to metres (1°lat ≈ 111111 m, 1°lon = that ×
 cos(mid-lat)); z assumed metres.
 """
-function view_grid(G::GMTgrid; cmap=:auto, drape=nothing, outside::Symbol=:shademesh, outside_color=200,
+function _view_grid(G::GMTgrid; cmap=:auto, drape=nothing, outside::Symbol=:shademesh, outside_color=200,
 				   triangulate::Bool=true, data=nothing, mode::Symbol=:lines, data_color=nothing, data_size=0,
 				   vcurtain=nothing, title::AbstractString="i'GMT",
 				   geographic::Union{Bool,Nothing}=nothing)
@@ -177,7 +177,7 @@ function _is_referenced(I::GMTimage)
 end
 
 """
-	view_image(I::GMTimage; title="i'GMT", geographic=nothing, axes=nothing)
+	_view_image(I::GMTimage; title="i'GMT", geographic=nothing, axes=nothing)
 
 Show a bare `GMTimage` (no elevation) in the viewer: a flat plane textured with the image,
 opened maximized in a top-down orthographic map. Returns a `QtImage` handle immediately (the
@@ -185,7 +185,7 @@ window stays live while you use the REPL). The status-bar readout shows the pixe
 (`rgb = R G B`) under the cursor instead of a z value. `geographic` is auto-detected
 (`_isgeographic`: the CRS, else GMT.guessgeog's lon/lat range test); override with `true`/`false`. Also reachable as `iview(I)`.
 """
-function view_image(I::GMTimage; title::String="i'GMT",
+function _view_image(I::GMTimage; title::String="i'GMT",
 					geographic::Union{Bool,Nothing}=nothing, axes::Union{Bool,Nothing}=nothing)
 	ir = I.range
 	geog = geographic === nothing ? _isgeographic(I) : geographic   # THE geographic test (cpt.jl), as every adder
@@ -205,7 +205,7 @@ function view_image(I::GMTimage; title::String="i'GMT",
 		  z, Cint(nx), Cint(ny), ir[1], ir[2], ir[3], ir[4], Cint(geog),
 		  C_NULL, C_NULL, Cint(0), img, Cint(iw), Cint(ih), Cint(ibands),
 		  Cint(0), Cint(1), imode, title, Cint(0))      # edges=0, triangulate=1, image_only=imode; z = own 2x2 plane ("BCB")
-	h == C_NULL && error("view_image: the viewer could not open the window")
+	h == C_NULL && error("viz: the viewer could not open the window")
 	fig = _register_fig!(QtImage(h, I))
 	_remember_object!(h, :image, "", I)               # File>Save / Scene Objects "Save…" can write it
 	_base_name!(h, title, "Image")                    # named like every other door's image (see view_grid)
@@ -215,7 +215,7 @@ function view_image(I::GMTimage; title::String="i'GMT",
 	return fig
 end
 
-# The base surface's name, set where `view_grid`/`view_image` create it: the title the window was
+# The base surface's name, set where `_view_grid`/`_view_image` create it: the title the window was
 # opened under, or `dflt` (the label Scene Objects already shows for an unnamed base) when that is
 # only the generic "i'GMT". The registry key stays "" — `_find_base_named` resolves the base by this
 # live name, and the transplant path relies on the "" key.
@@ -250,7 +250,7 @@ end
 """
 	add!(fig::QtFigure, data; mode=:lines, color=nothing, size=0)
 
-Add elements to an existing viewer window `fig` (returned by `view_grid`). `data` is a
+Add elements to an existing viewer window `fig` (returned by `viz`). `data` is a
 `GMTdataset` (single or multi-segment `Vector{GMTdataset}`), or an `N×2`/`N×3` matrix,
 drawn as `mode=:lines` (default) or `mode=:points`. Elements with no z column are draped
 on the figure's surface. `color` is a name (`:red`, `:black`, ...), a `0-255` grey, an

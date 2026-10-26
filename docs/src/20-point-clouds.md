@@ -7,17 +7,17 @@ CurrentModule = InteractiveGMT
 ## Opening Points
 
 ```julia
-using InteractiveGMT, GMT
+using InteractiveGMT
 
 # Create random points
 D = GMT.mat2ds(rand(100,3))
 
 # View
-fig = iview(D; color="red", size=5)
+fig = viz(D; color="red", size=5)
 
 # From file
 D = gmtread("points.xyz")
-fig = iview(D)
+fig = viz(D)
 ```
 
 ### Options

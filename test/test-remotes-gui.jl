@@ -69,7 +69,7 @@ end # @testmodule
 @testitem "Remote sensing: every submenu entry builds its dialog" tags=[:gui, :remotes] setup=[RemoteSGui, GmtvtkTest] begin
 	IG = InteractiveGMT
 	_test_fn = GmtvtkTest._test_fn
-	f = view_grid(IG.GMT.peaks())
+	f = viz(IG.GMT.peaks())
 	try
 		trig(p) = ccall(_test_fn(:gmtvtk_menu_trigger_test), Cint, (Ptr{Cvoid}, Cstring), f.h, p)
 		# Firing an entry BUILDS its dialog from deps/ui/remotes_<tool>.ui, so a missing or broken .ui
@@ -94,7 +94,7 @@ end
 @testitem "Remote sensing: Enter in a text box never runs the tool (MODIS L2 swath to grid)" tags=[:gui, :remotes] setup=[RemoteSGui, GmtvtkTest] begin
 	IG = InteractiveGMT
 	_test_fn = GmtvtkTest._test_fn
-	f = view_grid(IG.GMT.peaks())
+	f = viz(IG.GMT.peaks())
 	real = IG._RS_TOOLS["modisl2"]
 	asked = String[]
 	IG._RS_TOOLS["modisl2"] = (s, d, io) -> (push!(asked, get(d, "what", "")); true)

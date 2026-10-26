@@ -16,14 +16,14 @@ across the data, plotted below. Geographic grids are shown in UTM. Like the orig
 nothing.
 
 - `file`: a grid (opened in a window of its own) or a swath file (`.mb*`, with its `.inf`).
-- `fig`: edit the grid of this window (a figure returned by `view_grid` and friends).
+- `fig`: edit the grid of this window (a figure returned by `viz`).
 
 It reads swath files and projects with MB-System's MBIO library, found as the swath editor finds
 it (`ENV["INTERACTIVEGMT_MBIO"]`, iGMT.ini, the PATH, or asked); swath files need MB-System 5.8.x.
 It is also on the Tools menu of every window, as "Point cloud editor (pointCloudEditor)".
 
 ```julia
-fig = view_grid(G);  pointcloudeditor(; fig)
+fig = _view_grid(G);  pointcloudeditor(; fig)
 ```
 """
 function pointcloudeditor(file::String=""; fig=nothing, elev::Bool=false)

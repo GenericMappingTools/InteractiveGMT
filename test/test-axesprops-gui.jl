@@ -5,7 +5,7 @@
 @testitem "axes properties: the dialog opens on a grid's own axes with every tab live" tags=[:gui] setup=[GmtvtkTest] begin
 	IG = InteractiveGMT
 	include(joinpath(@__DIR__, "ve_helpers.jl"))
-	fig = IG.view_grid(ve_grid(zspan = 1000.0)); ve_pump()
+	fig = IG.viz(ve_grid(zspan = 1000.0)); ve_pump()
 	h = getfield(fig, :h)
 	png = tempname() * ".png"
 	try
@@ -23,7 +23,7 @@ end
 	IG = InteractiveGMT
 	include(joinpath(@__DIR__, "ve_helpers.jl"))
 	I = IG.GMT.mat2img(rand(UInt8, 32, 32))
-	fig = IG.view_image(I); ve_pump()
+	fig = IG.viz(I); ve_pump()
 	h = getfield(fig, :h)
 	try
 		@test ccall(_test_fn(:gmtvtk_axesprops_open_test), Cint, (Ptr{Cvoid}, Cint), h, Cint(0)) == 9
@@ -41,7 +41,7 @@ end
 @testitem "axes properties: Apply draws the fields on the raster's own axes" tags=[:gui] setup=[GmtvtkTest] begin
 	IG = InteractiveGMT
 	include(joinpath(@__DIR__, "ve_helpers.jl"))
-	fig = IG.view_grid(ve_grid(zspan = 1000.0)); ve_pump()
+	fig = IG.viz(ve_grid(zspan = 1000.0)); ve_pump()
 	h = getfield(fig, :h)
 	apply(k, v) = (o = zeros(3); r = ccall(_test_fn(:gmtvtk_axesprops_apply_test), Cint,
 	              (Ptr{Cvoid}, Cstring, Cstring, Ptr{Cdouble}), h, k, v, o); (r, o))
@@ -64,7 +64,7 @@ end
 @testitem "axes properties: Apply redraws the intervals, sides and grid of the axes on screen" tags=[:gui] setup=[GmtvtkTest] begin
 	IG = InteractiveGMT
 	include(joinpath(@__DIR__, "ve_helpers.jl"))
-	fig = IG.view_grid(ve_grid(zspan = 1000.0)); ve_pump()      # x -15..-10, y 35..40
+	fig = IG.viz(ve_grid(zspan = 1000.0)); ve_pump()      # x -15..-10, y 35..40
 	h = getfield(fig, :h)
 	ccall(_test_fn(:gmtvtk_set_flat2d_test), Cvoid, (Ptr{Cvoid}, Cint), h, 1); ve_pump()
 	apply(k, v) = ccall(_test_fn(:gmtvtk_axesprops_apply_test), Cint,
@@ -100,7 +100,7 @@ end
 @testitem "axes properties: Plot with GMT.jl draws the frame the dialog set" tags=[:gui] setup=[GmtvtkTest] begin
 	IG = InteractiveGMT
 	include(joinpath(@__DIR__, "ve_helpers.jl"))
-	fig = IG.view_grid(ve_grid(zspan = 1000.0)); ve_pump()
+	fig = IG.viz(ve_grid(zspan = 1000.0)); ve_pump()
 	h = getfield(fig, :h)
 	ccall(_test_fn(:gmtvtk_set_flat2d_test), Cvoid, (Ptr{Cvoid}, Cint), h, 1); ve_pump()
 	apply(k, v) = ccall(_test_fn(:gmtvtk_axesprops_apply_test), Cint,
@@ -139,7 +139,7 @@ end
 @testitem "axes properties: a geographic raster's axes carry no lon/lat names" tags=[:gui] setup=[GmtvtkTest] begin
 	IG = InteractiveGMT
 	include(joinpath(@__DIR__, "ve_helpers.jl"))
-	fig = IG.view_grid(ve_grid(zspan = 1000.0)); ve_pump()      # lon/lat grid, opened in 3-D
+	fig = IG.viz(ve_grid(zspan = 1000.0)); ve_pump()      # lon/lat grid, opened in 3-D
 	h = getfield(fig, :h)
 	counts() = (o = zeros(6); ccall(_test_fn(:gmtvtk_axesprops_counts_test), Cint, (Ptr{Cvoid}, Ptr{Cdouble}), h, o); o)
 	try

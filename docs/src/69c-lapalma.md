@@ -18,7 +18,7 @@ published on Zenodo ([10738510](https://zenodo.org/records/10738510)).
 GMG's first figure spans La Palma and La Gomera, from 3″ earth relief:
 
 ```julia
-using GMT, InteractiveGMT
+using InteractiveGMT
 
 Topo = grdcut("@earth_relief_03s", region=(-18.7, -17.1, 28.0, 29.2))
 ```
@@ -38,9 +38,9 @@ magnitude (M −1 to 4.8). As in GMG's figure the topography is half transparent
 show through the sea floor:
 
 ```julia
-fig = iview(Topo; cmap=:oleron)
-add_symbols!(fig, EQ[:, 1], EQ[:, 2]; z=EQ[:, 3], symbol=:sphere, size=1 .+ (EQ[:, 4] .+ 1),
-             fill=:orange, name="Earthquakes 2021")
+fig = viz(Topo; cmap=:oleron)
+scatter!(fig, EQ[:, 1], EQ[:, 2]; z=EQ[:, 3], marker=:sphere, ms=(2 .+ EQ[:, 4]) .* (2.54 / 96),
+         mc=:orange, legend="Earthquakes 2021")
 setopacity!(fig, 0.5)
 ```
 
@@ -106,9 +106,9 @@ its walls as one **curtain** around the block and the cut, and the magma as an *
 the count cube, the surface where it crosses 40:
 
 ```julia
-fig = iview(TopoCut; cmap=:oleron)
-add_symbols!(fig, EQ[:, 1], EQ[:, 2]; z=EQ[:, 3], symbol=:sphere, size=1 .+ (EQ[:, 4] .+ 1),
-             fill=:orange, name="Earthquakes 2021")
+fig = viz(TopoCut; cmap=:oleron)
+scatter!(fig, EQ[:, 1], EQ[:, 2]; z=EQ[:, 3], marker=:sphere, ms=(2 .+ EQ[:, 4]) .* (2.54 / 96),
+         mc=:orange, legend="Earthquakes 2021")
 add!(fig, Crust; name="Lower crust", drape=beige, samezscale=true)
 add_curtain!(fig, [-18.2 28.4; -17.875 28.4; -17.875 28.605; -17.5 28.605; -17.5 29.0; -18.2 29.0; -18.2 28.4];
              image=grey, zrange=(-50000, -15000))

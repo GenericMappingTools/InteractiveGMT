@@ -24,7 +24,7 @@ column on the way in: `2+s-1000` turns it into an elevation in **metres**, the u
 for z over longitude/latitude.
 
 ```julia
-using InteractiveGMT, GMT
+using InteractiveGMT
 
 url = "https://seafile.rlp.net/d/a50881f45aa34cdeb3c0/files/?p=%2FMoho_Map_Data-WesternAlps-SpadaETAL2013_Moho"
 
@@ -36,7 +36,7 @@ Moho3 = gmtread(download(url * "3.txt&dl=1"), data=true, incols="0,1,2+s-1000")
 ## 2. The European Moho as a map
 
 ```julia
-iview(Moho1; cmap=:roma, geographic=true)
+viz(Moho1; cmap=:roma, geographic=true)
 ```
 
 The points form a 3-D cloud coloured by z. Pick **2D** on the toolbar to look straight down.
@@ -46,10 +46,10 @@ This is GMG's first figure, a scatter plot coloured by depth, with a colour bar:
 
 ## 3. The three Mohos in 3-D
 
-`iview` takes the three tables together:
+`viz` takes the three tables together:
 
 ```julia
-iview([Moho1, Moho2, Moho3]; cmap=:roma, geographic=true)
+viz([Moho1, Moho2, Moho3]; cmap=:roma, geographic=true)
 ```
 
 Tilt the view with the mouse and raise the vertical exaggeration with the gizmo's blue ring
@@ -69,7 +69,7 @@ search radius just has to be wide enough to fill every node:
 ```julia
 G = nearneighbor([Moho1, Moho2, Moho3], region=(4.1, 11.9, 42.5, 49), inc=0.1,
                  search_radius="1000k", N=1, f="g")
-iview(G; cmap=:roma)
+viz(G; cmap=:roma)
 ```
 
 `G` has the same 79 × 66 nodes as GMG's grid. Switch to **3D** and set the exaggeration as before:

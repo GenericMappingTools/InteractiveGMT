@@ -40,7 +40,7 @@ GMT.jl's `gmt()` adds its own output options to the command it runs, so call the
 `GMT_Call_Module`, with files for input and output:
 
 ```julia
-using GMT
+using InteractiveGMT
 api = GMT.G_API[]
 gmtsar_call(m, args) = GC.@preserve args GMT.GMT_Call_Module(api, m, GMT.GMT_MODULE_CMD, pointer(args))
 

@@ -18,7 +18,7 @@ The netCDF file has one variable, `Vs` in km/s, on 100 longitudes, 100 latitudes
 from 50 to 350 km:
 
 ```julia
-using GMT, InteractiveGMT
+using InteractiveGMT
 
 download("https://data.earthscope.org/archive/seismology/products/emc/netcdf/El-Sharkawy-etal-G3.2020-MeRE2020-Mediterranean.r0.0-n4c.nc",
          "MeRE2020.nc")
@@ -75,7 +75,7 @@ block's depths in metres, and the top face stands on the same scale (`samezscale
 ```julia
 Topo = grdcut("@earth_relief_05m", region=(-11.3, 46.3, 28.9, 51.1))
 
-fig = iview(Topo; cmap=:oleron)
+fig = viz(Topo; cmap=:oleron)
 add!(fig, top; name="Vs at 50 km", drape=img50, samezscale=true)
 ```
 
@@ -122,7 +122,7 @@ north2 = grdimage(mat2grid(permutedims(C.z[end, :, 151:end])), cmap=cpt, A=true)
 west2  = grdimage(mat2grid(permutedims(C.z[:, 1, 151:end])), cmap=cpt, A=true)
 east2  = grdimage(mat2grid(permutedims(C.z[:, end, 151:end])), cmap=cpt, A=true)
 
-fig2 = iview(Topo; cmap=:oleron)
+fig2 = viz(Topo; cmap=:oleron)
 add!(fig2, top200; name="Vs at 200 km", drape=img200, samezscale=true)
 add_curtain!(fig2, [-11 29; 46 29]; image=south2, zrange=(-350000, -200000), flipv=true)
 add_curtain!(fig2, [-11 51; 46 51]; image=north2, zrange=(-350000, -200000), flipv=true)

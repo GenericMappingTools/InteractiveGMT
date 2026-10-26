@@ -7,7 +7,7 @@
 		ok = ccall(IG._fn(:gmtvtk_daylength_test), Cint, (Ptr{Cvoid}, Cstring, Ptr{Cdouble}), fig.h, action, out);
 		ok == 1 ? out : nothing)
 	G = IG.GMT.mat2grid(Float32[i + j for j in 1:20, i in 1:20], x = collect(1.0:20.0), y = collect(1.0:20.0))
-	fig = IG.view_grid(G; title = "grid")
+	fig = IG.viz(G; title = "grid")
 	pump()
 	try
 		@test ccall(_test_fn(:gmtvtk_menu_trigger_test), Cint, (Ptr{Cvoid}, Cstring), fig.h,

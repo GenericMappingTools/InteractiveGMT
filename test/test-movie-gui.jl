@@ -5,7 +5,7 @@
 @testitem "Make movie dialog: the X parks it, it does not kill it" tags=[:gui, :movie] setup=[GmtvtkTest] begin
 	IG = InteractiveGMT
 	_test_fn = GmtvtkTest._test_fn
-	f = view_grid(IG.GMT.peaks())
+	f = viz(IG.GMT.peaks())
 
 	# Opening it twice must yield ONE dialog: the second call unparks/raises the first.
 	@test ccall(_test_fn(:gmtvtk_movie_open_dialog_test), Cint, (Ptr{Cvoid},), f.h) == 1

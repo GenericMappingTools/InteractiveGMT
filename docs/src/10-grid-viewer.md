@@ -9,10 +9,10 @@ CurrentModule = InteractiveGMT
 View a GMT grid surface:
 
 ```julia
-using InteractiveGMT, GMT
+using InteractiveGMT
 
 G = GMT.peaks()
-fig = iview(G)
+fig = viz(G)
 ```
 
 ### Options
@@ -30,11 +30,11 @@ fig = iview(G)
 
 ```julia
 # With colormap
-fig = iview(G; cmap="relief")
+fig = viz(G; cmap="relief")
 
 # With image drape
 I = gmtread("satellite.tif")
-fig = iview(G; drape=I)
+fig = viz(G; drape=I)
 ```
 
 ## Navigation
@@ -54,7 +54,7 @@ Available named colormaps:
 `relief`, `geo`, `geo2`, `dem`, `mbio`, `world`, `Byrne`, `circular`, `polar`, `etc`, `jet`, `no_green`
 
 ```julia
-fig = iview(G; cmap="my_colors.cpt")  # Custom CPT file
+fig = viz(G; cmap="my_colors.cpt")  # Custom CPT file
 ```
 
 **Right-click "Color Bar"** in Scene Objects to change colormap interactively.
@@ -94,7 +94,7 @@ add!(fig, stations; mode=:points, color="red", size=10)
 Drape a georeferenced image over the terrain:
 
 ```julia
-fig = iview(G; drape=I)
+fig = viz(G; drape=I)
 ```
 
 ## Curtains

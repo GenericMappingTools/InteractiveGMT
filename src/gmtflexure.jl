@@ -191,13 +191,13 @@ function _on_gmtflexure(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 				x = Float64.(@view m[:, 1])
 				nm = length(Ds) == 1 ? names[2] : names[2] * " #" * string(k)
 				if p === nothing
-					p = xyplot(x, Float64.(@view m[:, 2]); name = nm, title = "gmtflexure",
+					p = _xyplot(x, Float64.(@view m[:, 2]); name = nm, title = "gmtflexure",
 					           xlabel = names[1], ylabel = names[2])
 				else
-					add!(p, x, Float64.(@view m[:, 2]); name = nm)
+					_xyadd!(p, x, Float64.(@view m[:, 2]); name = nm)
 				end
 				if size(m, 2) >= 3
-					add!(p, x, Float64.(@view m[:, 3]);
+					_xyadd!(p, x, Float64.(@view m[:, 3]);
 					     name = length(Ds) == 1 ? names[3] : names[3] * " #" * string(k),
 					     linestyle = :dash)
 				end

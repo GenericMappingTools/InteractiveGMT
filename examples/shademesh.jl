@@ -1,6 +1,5 @@
 # Drape smaller than the grid; exercises outside=:shademesh (uncovered area = grey fill + mesh).
 using InteractiveGMT
-using GMT
 
 # Grid LARGER than the drape image so there is an UNCOVERED area to render as mesh.
 nx, ny = 200, 160
@@ -20,8 +19,8 @@ I = mat2img(img; x=[60.0, 140.0], y=[48.0, 112.0])   # central footprint inside 
 println("grid region=", G.range[1:4], "  image region=", I.range[1:4])
 
 # :shademesh (default) — uncovered ring should be grey fill + visible mesh edges.
-fig = view_grid(G; drape=I, geographic=false, outside=:shademesh, outside_color=200,
-                title="shademesh: uncovered = mesh")
+fig = viz(G; drape=I, geographic=false, outside=:shademesh, outside_color=200,
+          title="shademesh: uncovered = mesh")
 
 if abspath(PROGRAM_FILE) == @__FILE__
     sleep(2)

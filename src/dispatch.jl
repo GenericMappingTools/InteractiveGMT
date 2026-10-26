@@ -3,7 +3,6 @@
 # window for) — plus the built-in synthetic demo.
 
 const _POLY2FV_KW = (:cmap, :zscale, :vfrac, :vexag, :isgeog, :ncolor, :triangulate)
-const _XYPLOT_KW  = (:name, :color, :linewidth, :title, :xlabel, :ylabel, :xtime)
 _merge_points(D) = (length(D) == 1) ? D[1] : GMT.mat2ds(reduce(vcat, (d.data for d in D)))
 
 # A plain X,Y curve table: exactly 2 columns, NOT geographic, not a closed polygon. Such a dataset
@@ -14,7 +13,6 @@ function _is_xy_table(D::GMTdataset)
 	_isgeog(D) == 0      || return false       # _isgeog (drop.jl): 1 = geographic
 	return _ds_kind(D) !== :polys
 end
-_xyplot_only(kwargs) = (; (p for p in kwargs if p.first in _XYPLOT_KW)...)
 
 # WKB geometry code -> kind (strip 25D flag bit + fold Z/ZM thousands). 1/4=point, 2/5=line, 3/6=poly.
 _geom_kind(g::Integer) = (c = (g & 0x7fffffff) % 1000;
@@ -28,63 +26,68 @@ function _ds_kind(D::GMTdataset)
 end
 
 """
-	iview(x; kwargs...)
+	viz(x; kwargs...)   # alias: iview
 
-Front-door dispatcher over the Qt + VTK viewers. `x` may be:
-- a `GMTgrid`           -> [`view_grid`](@ref)
-- a `GMTimage`          -> [`view_image`](@ref) (bare image: flat plane, top-down map)
-- a `GMTfv`             -> [`view_fv`](@ref) (faceted z-colour + matching colorbar; `color=:explicit` for baked colours)
-- a `GMTdataset` / `Vector{GMTdataset}` -> points -> [`view_points`](@ref); polygons -> `view_fv(poly2fv(...))`
-- a matrix              -> a grid (`GMT.mat2grid`) -> [`view_grid`](@ref)
-- a `String`            -> `"grid"`/`"peaks"` demo or a grid file -> `view_grid`; else a named
-  solid from SOLIDS -> [`view_fv`](@ref)
+GMT.jl's `viz`, shown in iGMT's interactive Qt + VTK viewer (a live window, not a static figure).
+`x` may be:
+- a `GMTgrid`           -> a 3-D surface (keywords `cmap`, `drape`, `outside`, `vcurtain`, `title`, `geographic`, ...)
+- a `GMTimage`          -> a flat plane, top-down map
+- a `GMTfv`             -> a solid / mesh (faceted z-colour + matching colorbar; `color=:explicit` for baked colours)
+- a `GMTdataset` / `Vector{GMTdataset}` -> points -> a point cloud; polygons -> a mesh (`poly2fv`); a plain
+  2-column table -> the X,Y plot ([`plot`](@ref))
+- a matrix              -> a grid (`GMT.mat2grid`)
+- a `String`            -> `"grid"`/`"peaks"` demo or a data file; else a named solid from SOLIDS
+- any type with an [`iview_recipe`](@ref)
 
-With **no argument**, `iview()` opens an empty drag-and-drop launcher window: drop a grid /
-image / table file (anything `GMT.gmtread` reads) onto it — or onto any open viewer window — to
-open it in a new window.
+A GMT.jl keyword the viewer cannot honour (`shade`, `coast`, ...) is an error that names it; use
+`GMT.viz` for a static figure. With **no argument**, `viz()` opens an empty drag-and-drop launcher
+window: drop a grid / image / table file (anything `GMT.gmtread` reads) onto it — or onto any open
+viewer window — to open it in a new window.
 
-E.g. `iview("torus")`, `iview(GMT.peaks())`, `iview(poly_dataset)`, `iview(torus(R=6))`, `iview()`.
+E.g. `viz("torus")`, `viz(GMT.peaks())`, `viz(poly_dataset)`, `viz(torus(R=6))`, `viz()`.
 Line geometry has no standalone window here — overlay it on a grid with [`add!`](@ref) instead.
 """
-iview(G::GMTgrid; kwargs...) = view_grid(G; kwargs...)
+viz(G::GMTgrid; kwargs...) = (_kwcheck(:viz, _view_grid, Tuple{GMTgrid}, kwargs); _view_grid(G; kwargs...))
 
-iview(fv::GMTfv; kwargs...) = view_fv(fv; kwargs...)   # color=true -> faceted z + matching bar
+viz(fv::GMTfv; kwargs...) = (_kwcheck(:viz, _view_fv, Tuple{GMTfv}, kwargs); _view_fv(fv; kwargs...))   # color=true -> faceted z + matching bar
 
-iview(I::GMTimage; kwargs...) = view_image(I; kwargs...)   # bare image -> flat top-down map
+viz(I::GMTimage; kwargs...) = (_kwcheck(:viz, _view_image, Tuple{GMTimage}, kwargs); _view_image(I; kwargs...))   # bare image -> flat top-down map
 
 # `xy` forces the routing: xy=true -> X,Y tool, xy=false -> the 3-D map path; the default (nothing)
 # auto-routes a plain 2-col non-geographic table to the X,Y tool (see _is_xy_table).
-function iview(D::GMTdataset; xy=nothing, kwargs...)
-	(xy === true || (xy === nothing && _is_xy_table(D))) && return xyplot(D; _xyplot_only(kwargs)...)
+function viz(D::GMTdataset; xy=nothing, kwargs...)
+	(xy === true || (xy === nothing && _is_xy_table(D))) && return plot(D; kwargs...)
 	k = _ds_kind(D)
-	(k === :points) && return view_points(D; kwargs...)
-	(k === :lines)  && error("iview: standalone line viewing is not available in the Qt+VTK viewer; overlay lines on a grid with add!(fig, D), or open it in the X,Y plot tool with xyplot(D)")
+	(k === :points) && return (_kwcheck(:viz, _view_points, Tuple{GMTdataset}, kwargs); _view_points(D; kwargs...))
+	(k === :lines)  && error("viz: standalone line viewing is not available in the Qt+VTK viewer; overlay lines on a grid with add!(fig, D), or open it in the X,Y plot tool with plot(D)")
 	pk = filter(p -> p.first in _POLY2FV_KW, kwargs)        # polys -> mesh
 	vk = filter(p -> !(p.first in _POLY2FV_KW), kwargs)
-	return view_fv(poly2fv([D]; pk...); vk...)
+	_kwcheck(:viz, _view_fv, Tuple{GMTfv}, vk)
+	return _view_fv(poly2fv([D]; pk...); vk...)
 end
 
-function iview(D::Vector{<:GMTdataset}; xy=nothing, kwargs...)
+function viz(D::Vector{<:GMTdataset}; xy=nothing, kwargs...)
 	isempty(D) && error("empty GMTdataset vector")
-	(xy === true || (xy === nothing && _is_xy_table(D[1]))) && return xyplot(D; _xyplot_only(kwargs)...)
+	(xy === true || (xy === nothing && _is_xy_table(D[1]))) && return plot(D; kwargs...)
 	k = _ds_kind(D[1])
-	(k === :points) && return view_points(_merge_points(D); kwargs...)
-	(k === :lines)  && error("iview: standalone line viewing is not available in the Qt+VTK viewer; overlay lines on a grid with add!(fig, D), or open it in the X,Y plot tool with xyplot(D)")
+	(k === :points) && return (_kwcheck(:viz, _view_points, Tuple{GMTdataset}, kwargs); _view_points(_merge_points(D); kwargs...))
+	(k === :lines)  && error("viz: standalone line viewing is not available in the Qt+VTK viewer; overlay lines on a grid with add!(fig, D), or open it in the X,Y plot tool with plot(D)")
 	pk = filter(p -> p.first in _POLY2FV_KW, kwargs)
 	vk = filter(p -> !(p.first in _POLY2FV_KW), kwargs)
-	return view_fv(poly2fv(D; pk...); vk...)
+	_kwcheck(:viz, _view_fv, Tuple{GMTfv}, vk)
+	return _view_fv(poly2fv(D; pk...); vk...)
 end
 
 # A matrix is a grid (GMT.mat2grid), unless its type has an iview_recipe (recipes.jl): a foreign
 # matrix-like type (a package's 2-D array with coordinates of its own) would otherwise never reach it.
 # mat2grid takes a real Array only, so a view / transpose / foreign matrix is copied to one first.
-iview(M::AbstractMatrix{<:Real}; kwargs...) =
+viz(M::AbstractMatrix{<:Real}; kwargs...) =
 	_has_recipe(M) ? _iview_recipe(iview_recipe(M), values(kwargs), typeof(M)) :
-	                 view_grid(GMT.mat2grid(M isa Array ? M : Matrix(M)); kwargs...)
+	                 _view_grid(GMT.mat2grid(M isa Array ? M : Matrix(M)); kwargs...)
 
-function iview(name::AbstractString; kwargs...)
+function viz(name::AbstractString; kwargs...)
 	lname = lowercase(String(name))
-	(lname in ("grid", "peaks")) && return view_grid(GMT.peaks(); kwargs...)
+	(lname in ("grid", "peaks")) && return _view_grid(GMT.peaks(); kwargs...)
 	# A real file -> read it (gmtread auto-detects format), record it in the Recent Files list,
 	# and dispatch by the returned type (grid -> view_grid, image -> view_image, dataset -> points/fv).
 	if isfile(name)
@@ -98,7 +101,7 @@ function iview(name::AbstractString; kwargs...)
 		_record_recent(name, data)
 		# Titlebar shows which file is loaded, unless the caller already asked for a specific title.
 		kw = merge((; title="i'GMT -- $(basename(name))"), NamedTuple(kwargs))
-		fig = try iview(data; kw...) finally _load_dialog_end() end
+		fig = try viz(data; kw...) finally _load_dialog_end() end
 		# The open-once dedup is keyed on the 3-D Scene* alive/raise C API; an X,Y plot window uses a
 		# different handle type, so don't register it there (a repeat open just makes a 2nd window).
 		# The element name is "" here: iview's view_grid/view_image build the window's PRIMARY surface,
@@ -107,7 +110,7 @@ function iview(name::AbstractString; kwargs...)
 		fig isa QtXYPlot || _mark_file_open(name, _fig_handle(fig), "")
 		return fig
 	end
-	return view_fv(name; kwargs...)        # named solid -> the SOLIDS dispatch above
+	return _view_fv(name; kwargs...)        # named solid -> the SOLIDS dispatch above
 end
 
 # Files currently shown in a live viewer window: abspath => (the window's C handle, the Scene Objects

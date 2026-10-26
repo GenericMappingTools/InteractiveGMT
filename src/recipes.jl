@@ -39,9 +39,9 @@ _has_recipe(x) = which(iview_recipe, Tuple{typeof(x)}) !== which(iview_recipe, T
 
 const _RecipeOut =Union{GMTgrid, GMTimage, GMTdataset, AbstractVector{<:GMTdataset}, GMTfv}
 
-iview(x; kwargs...) = _iview_recipe(iview_recipe(x), values(kwargs), typeof(x))
+viz(x; kwargs...) = _iview_recipe(iview_recipe(x), values(kwargs), typeof(x))
 
-_iview_recipe(d::_RecipeOut, kw::NamedTuple, ::Type) = iview(d; kw...)
+_iview_recipe(d::_RecipeOut, kw::NamedTuple, ::Type) = viz(d; kw...)
 _iview_recipe((d, rkw)::Tuple{Any,NamedTuple}, kw::NamedTuple, T::Type) = _iview_recipe(d, merge(rkw, kw), T)
 function _iview_recipe(v::Vector, kw::NamedTuple, T::Type)
 	isempty(v) && throw(ArgumentError("the iview_recipe for $T returned no layers"))
@@ -49,7 +49,7 @@ function _iview_recipe(v::Vector, kw::NamedTuple, T::Type)
 	for e in v[2:end]
 		d, ekw = e isa Tuple ? e : (e, (;))
 		d isa _RecipeOut || _recipe_bad(d, T)
-		add!(fig, d; ekw...)
+		fig isa QtXYPlot ? _xyadd!(fig, d; ekw...) : add!(fig, d; ekw...)
 	end
 	return fig
 end

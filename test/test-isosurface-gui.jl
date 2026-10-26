@@ -11,7 +11,7 @@
 	d  = Float32[sqrt(((x + 12.5) / 2.5)^2 + ((y - 37.5) / 2.5)^2 + ((z + 2500) / 2500)^2)
 	             for y in ys, x in xs, z in zs]
 	C = GMT.mat2grid(d, x = xs, y = ys, v = zs)
-	fig = IG.view_grid(G); ve_pump()
+	fig = IG.viz(G); ve_pump()
 	h = getfield(fig, :h)
 	try
 		IG.add_isosurface!(fig, C; level = 0.6, color = :red, name = "Ball")
@@ -42,7 +42,7 @@ end
 	d  = Float32[sqrt(((x + 12.5) / 2.5)^2 + ((y - 37.5) / 2.5)^2 + ((z + 250000) / 250000)^2)
 	             for y in ys, x in xs, z in zs]
 	C = GMT.mat2grid(d, x = xs, y = ys, v = zs)
-	fig = IG.view_grid(G); ve_pump()
+	fig = IG.viz(G); ve_pump()
 	h = getfield(fig, :h)
 	try
 		IG.add_isosurface!(fig, C; level = 0.6, name = "Deep ball")

@@ -1006,10 +1006,10 @@ function _session_replay!(fig, r::ElementRecipe, obj, display, target::Ptr{Cvoid
 		promote = target != C_NULL && ccall(_fn(:gmtvtk_has_surface), Cint, (Ptr{Cvoid},), target) == 0
 		if r.kind === :basegrid
 			promote && (_add_grid_to_scene(target, obj, r.name; promote=true, source=src); return get(_FIGREG, target, nothing))
-			f = view_grid(obj); _session_set_name!(getfield(f, :h), r.name); return f
+			f = _view_grid(obj); _session_set_name!(getfield(f, :h), r.name); return f
 		elseif r.kind === :image
 			promote && (_add_image_to_scene(target, obj, r.name; promote=true, source=src); return get(_FIGREG, target, nothing))
-			f = view_image(obj); _session_set_name!(getfield(f, :h), r.name); return f
+			f = _view_image(obj); _session_set_name!(getfield(f, :h), r.name); return f
 		end
 		@warn "session: first layer kind=$(r.kind) is not a base grid/image; window not opened"
 		return nothing

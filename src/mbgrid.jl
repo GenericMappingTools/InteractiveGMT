@@ -179,7 +179,7 @@ Returns a `GMTgrid` with `NaN` at every node nothing reached.
 ```julia
 D = gmtread("soundings.xyz")
 G = mbgrid(D; region = (-9.5, -8.5, 36.5, 37.5), inc = 0.002, scale = 1.5, clipmode = :near, clip = 5)
-view_grid(G)
+_view_grid(G)
 ```
 """
 function mbgrid(x, y, z; kwargs...)

@@ -331,7 +331,7 @@ track leaves your view untouched — and the camera only, never the axes.
 The GUI is a thin skin over a normal API.
 
 ```julia
-using InteractiveGMT, GMT
+using InteractiveGMT
 
 # read TLEs — a path, or the text itself
 sats = read_tle("stations.tle")
@@ -340,9 +340,9 @@ s = Satellite(sats[1])              # parse + set the model up once
 println(s)                          # Satellite(ISS (ZARYA), SGP4, 92.9 min, incl 51.64°, epoch …)
 
 # a window to draw in
-fig = view_grid(gmtread("@earth_relief_01d"))
+fig = viz(gmtread("@earth_relief_01d"))
 
-plot_groundtrack!(fig, s; revolutions = 2, step = Second(30))
+orbits!(fig, s; revolutions = 2, step = Second(30))
 ```
 
 Other entry points:

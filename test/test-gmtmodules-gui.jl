@@ -36,7 +36,7 @@ end # @testmodule
 
 @testitem "grdtrend delivers trend / residuals / weights" tags=[:gui] setup=[GmtModules] begin
 	IG = InteractiveGMT
-	f = view_grid(GmtModules.grid())
+	f = viz(GmtModules.grid())
 	call(kv) = GmtModules.send(IG._on_grdtrend, f.h, kv)
 	try
 		@test call(["what=trend", "model=3", "robust=0", "protectnans=0", "axis=", "grid="]) == 1
@@ -69,7 +69,7 @@ end
 @testitem "grdtrend Protect NaNs puts the input's holes back" tags=[:gui] setup=[GmtModules] begin
 	IG = InteractiveGMT
 	G = GmtModules.grid();  G.z[5, 5] = NaN32;  G.z[6, 6] = NaN32;  G.hasnans = 2
-	f = view_grid(G)
+	f = viz(G)
 	call(kv) = GmtModules.send(IG._on_grdtrend, f.h, kv)
 	try
 		# The trend is a polynomial: it covers the input's holes unless we ask for them back.
@@ -84,7 +84,7 @@ end
 
 @testitem "grdlandmask builds a mask and masks the window's grid" tags=[:gui] setup=[GmtModules] begin
 	IG = InteractiveGMT
-	f = view_grid(GmtModules.grid())
+	f = viz(GmtModules.grid())
 	call(kv) = GmtModules.send(IG._on_grdlandmask, f.h, kv)
 	try
 		@test call(["clip=0", "region=-10/-6/36/39", "inc=0.1", "res=l",
@@ -107,7 +107,7 @@ end
 @testitem "grdlandmask dialog: X, minimise and Esc park it, Delete ends it" tags=[:gui] setup=[GmtModules, GmtvtkTest] begin
 	IG = InteractiveGMT
 	_test_fn = GmtvtkTest._test_fn
-	f = view_grid(GmtModules.grid())
+	f = viz(GmtModules.grid())
 	parked() = ccall(_test_fn(:gmtvtk_landmask_parked_test), Cint, (Ptr{Cvoid},), f.h)
 	opened() = ccall(_test_fn(:gmtvtk_landmask_open_dialog_test), Cint, (Ptr{Cvoid},), f.h)
 	leave(how) = ccall(_test_fn(:gmtvtk_landmask_leave_dialog_test), Cvoid, (Ptr{Cvoid}, Cint), f.h, how)
@@ -142,7 +142,7 @@ end
 	a = joinpath(d, "a.grd");  b = joinpath(d, "b.grd")
 	IG.GMT.gmtwrite(a, IG.GMT.grdmath("-R0/5/0/5 -I0.5 X Y ADD"))
 	IG.GMT.gmtwrite(b, IG.GMT.grdmath("-R4/9/1/6 -I0.5 X Y MUL"))
-	f = view_grid(GmtModules.grid())
+	f = viz(GmtModules.grid())
 	call(kv) = GmtModules.send(IG._on_grdblend, f.h, kv)
 	try
 		# the map's header read: one line per path, empty for a non-grid
@@ -217,7 +217,7 @@ end
 	a = joinpath(d, "a.grd");  b = joinpath(d, "b.grd")
 	IG.GMT.gmtwrite(a, IG.GMT.grdmath("-R0/5/0/5 -I0.5 X Y ADD"))
 	IG.GMT.gmtwrite(b, IG.GMT.grdmath("-R4/9/1/6 -I0.25 X Y MUL"))
-	f = view_grid(GmtModules.grid())
+	f = viz(GmtModules.grid())
 	parked() = ccall(_test_fn(:gmtvtk_grdblend_parked_test), Cint, (Ptr{Cvoid},), f.h)
 	opened() = ccall(_test_fn(:gmtvtk_grdblend_open_dialog_test), Cint, (Ptr{Cvoid},), f.h)
 	leave(how) = ccall(_test_fn(:gmtvtk_grdblend_leave_dialog_test), Cvoid, (Ptr{Cvoid}, Cint), f.h, how)
@@ -264,7 +264,7 @@ end
 
 @testitem "grdfilter: every filter family the dialog can build" tags=[:gui] setup=[GmtModules] begin
 	IG = InteractiveGMT
-	f = view_grid(GmtModules.grid())
+	f = viz(GmtModules.grid())
 	call(kv) = GmtModules.send(IG._on_grdfilter, f.h, kv)
 	try
 		r0 = GmtModules.roughness(f.G.z)
@@ -304,7 +304,7 @@ end
 @testitem "grdfilter NaN policy" tags=[:gui] setup=[GmtModules] begin
 	IG = InteractiveGMT
 	G = GmtModules.grid();  G.z[10, 10] = NaN32;  G.hasnans = 2
-	f = view_grid(G)
+	f = viz(G)
 	call(kv) = GmtModules.send(IG._on_grdfilter, f.h, kv)
 	try
 		@test call(["filter=g0.4", "distance=0", "nans=p", "grid="]) == 1
@@ -318,7 +318,7 @@ end
 
 @testitem "grid calculator delivers a derived grid into the window" tags=[:gui] setup=[GmtModules] begin
 	IG = InteractiveGMT
-	f = view_grid(GmtModules.grid())
+	f = viz(GmtModules.grid())
 	try
 		# Two same-geometry grids in one window: the base plus a trend of it.
 		@test GmtModules.send(IG._on_grdtrend, f.h,
@@ -355,7 +355,7 @@ end
 @testitem "the GMT menu really carries the new module entries" tags=[:gui] setup=[GmtModules, GmtvtkTest] begin
 	IG = InteractiveGMT
 	_test_fn = GmtvtkTest._test_fn
-	f = view_grid(GmtModules.grid())
+	f = viz(GmtModules.grid())
 	try
 		trig(p) = ccall(_test_fn(:gmtvtk_menu_trigger_test), Cint, (Ptr{Cvoid}, Cstring), f.h, p)
 		# Firing the entry BUILDS its dialog, so this also proves each .ui still loads through QUiLoader
@@ -429,7 +429,7 @@ end
 	IG = InteractiveGMT
 	G = GmtModules.grid()
 	G.z[10:14, 12:18] .= NaN32                        # one rectangular hole
-	f = view_grid(G)
+	f = viz(G)
 	call(kv) = GmtModules.send(IG._on_grdfill, f.h, kv)
 	try
 		# -L: the hole's bounding box, as a table (no grid delivered).
@@ -448,7 +448,7 @@ end
 
 @testitem "grdhisteq equalizes, and grdfft transforms" tags=[:gui] setup=[GmtModules] begin
 	IG = InteractiveGMT
-	f = view_grid(GmtModules.grid())
+	f = viz(GmtModules.grid())
 	base = GmtModules.names(f.h)[1]
 	try
 		# Equal-area cell indices: the result IS the cell number, so it spans 0..ncells-1.
@@ -485,7 +485,7 @@ end
 	xm = (x[1] + x[end]) / 2;  ym = (y[1] + y[end]) / 2
 	U = GMT.mat2grid(Float32[-(y[iy] - ym) for iy in 1:31, ix in 1:41]; x = x, y = y)
 	V = GMT.mat2grid(Float32[ (x[ix] - xm) for iy in 1:31, ix in 1:41]; x = x, y = y)
-	f = view_grid(G)
+	f = viz(G)
 	call(kv) = GmtModules.send(IG._on_grdvector, f.h, kv)
 	try
 		IG._SCENE_OBJS[f.h] = vcat(get(IG._SCENE_OBJS, f.h, Tuple{Symbol,String,Any}[]),
@@ -531,7 +531,7 @@ end
 	IG = InteractiveGMT; GMT = IG.GMT
 	G = GMT.mat2grid(Float32[ix + iy for iy in 0:9, ix in 0:9];
 	                 x = collect(range(0, 9, length = 10)), y = collect(range(0, 9, length = 10)))
-	f = view_grid(G)
+	f = viz(G)
 	try
 		show_table(f, [1.0 2.0; 3.0 4.0; 5.0 6.0])
 		IG._pump_once()

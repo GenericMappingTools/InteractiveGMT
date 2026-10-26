@@ -9,7 +9,7 @@ CurrentModule = InteractiveGMT
     change in a future release without a deprecation period. Do not build on it yet anything
     you cannot easily update.
 
-`iview` knows how to show the GMT types — `GMTgrid`, `GMTimage`, `GMTdataset` (or a vector of
+`viz` knows how to show the GMT types — `GMTgrid`, `GMTimage`, `GMTdataset` (or a vector of
 them), `GMTfv` — plus a matrix and a file name. A **recipe** teaches it any other type, with
 **one method** of one function:
 
@@ -18,17 +18,17 @@ InteractiveGMT.iview_recipe(x::MyType) = <a GMTgrid, GMTimage, GMTdataset, Vecto
 ```
 
 The recipe only says *what your object is*, in GMT terms. Everything else — the window, the axes,
-the colour bar, the Scene Objects rows, the tools — is what `iview` does for that GMT type anyway.
+the colour bar, the Scene Objects rows, the tools — is what `viz` does for that GMT type anyway.
 A recipe never draws anything itself.
 
-Without a recipe, `iview(x)` on an unknown type stops with an error that shows the line to write.
+Without a recipe, `viz(x)` on an unknown type stops with an error that shows the line to write.
 
 ## Who writes a recipe
 
 Whoever owns the type:
 
 - **a user**, in a script, for a struct of their own;
-- **a package author**, in the package's own code, so that its users can call `iview` on its
+- **a package author**, in the package's own code, so that its users can call `viz` on its
   objects without writing anything.
 
 InteractiveGMT itself ships no recipes.
@@ -38,7 +38,7 @@ InteractiveGMT itself ships no recipes.
 **Data only.**
 
 ```julia
-using InteractiveGMT, GMT
+using InteractiveGMT
 
 struct Survey
     lon::Vector{Float64}
@@ -48,17 +48,17 @@ end
 
 InteractiveGMT.iview_recipe(s::Survey) = mat2grid(s.depth, x=s.lon, y=s.lat)
 
-iview(s)                     # opens exactly as iview(mat2grid(s.depth, x=s.lon, y=s.lat))
+viz(s)                     # opens exactly as viz(mat2grid(s.depth, x=s.lon, y=s.lat))
 ```
 
-**Data and default keywords.** Return a tuple: the data and a `NamedTuple` of `iview` keywords.
-The keywords the user passes to `iview` win over the recipe's.
+**Data and default keywords.** Return a tuple: the data and a `NamedTuple` of `viz` keywords.
+The keywords the user passes to `viz` win over the recipe's.
 
 ```julia
 InteractiveGMT.iview_recipe(s::Survey) = (mat2grid(s.depth, x=s.lon, y=s.lat), (; cmap=:batlow))
 
-iview(s)                     # batlow
-iview(s; cmap=:turbo)        # turbo: the caller's keyword wins
+viz(s)                     # batlow
+viz(s; cmap=:turbo)        # turbo: the caller's keyword wins
 ```
 
 **Several layers in one window.** Return a `Vector`. The first element opens the window, each
@@ -67,7 +67,7 @@ following one is added to it with [`add!`](@ref) — one Scene Objects row each.
 ```julia
 InteractiveGMT.iview_recipe(v::Vector{Survey}) = [mat2grid(s.depth, x=s.lon, y=s.lat) for s in v]
 
-iview([survey2019, survey2023])
+viz([survey2019, survey2023])
 ```
 
 An element of the vector may itself be a `(data, keywords)` tuple, whose keywords go to its own
@@ -134,13 +134,13 @@ function InteractiveGMT.iview_recipe(t::Shapefile.Table)
 end
 ```
 
-A shapefile *on disk* needs no recipe at all: `iview("file.shp")` reads it with GMT.jl. The recipe
+A shapefile *on disk* needs no recipe at all: `viz("file.shp")` reads it with GMT.jl. The recipe
 is for a `Shapefile.Table` already in memory.
 
 ## Matrix-like types
 
 A type that is an `AbstractMatrix` (a 2-D `Raster`, a `DimArray`, …) reaches its recipe as well:
-`iview(M)` asks for one first. A matrix with no recipe is shown as a grid, through `mat2grid`.
+`viz(M)` asks for one first. A matrix with no recipe is shown as a grid, through `mat2grid`.
 
 ## Reference
 

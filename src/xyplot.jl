@@ -7,11 +7,11 @@
 # LAW (still being tuned): a new vector quantity that needs an X,Y display goes to a NEW PAGE on
 # the X,Y tool window that's already open, NOT a second X,Y Tool instance -- one tool, many pages,
 # each page keeping its own axes/time-mode/series, same as an Excel workbook's sheets. `_XY_CURRENT`
-# tracks the most recently opened/seeded X,Y window (from ANY of its spawn paths: `xyplot()` itself,
-# Profile -> X,Y, the 3-D viewer's Tools > X,Y plot, File > New); `xyplot()` checks it and adds a
+# tracks the most recently opened/seeded X,Y window (from ANY of its spawn paths: `_xyplot()` itself,
+# Profile -> X,Y, the 3-D viewer's Tools > X,Y plot, File > New); `_xyplot()` checks it and adds a
 # page instead of a window when it's still alive. Explicit "open a new window" GESTURES (File > New,
 # Tools > X,Y plot) still always create a fresh window on request -- they just also become the new
-# `_XY_CURRENT` target for whatever `xyplot()` call comes next.
+# `_XY_CURRENT` target for whatever `_xyplot()` call comes next.
 const _XY_CURRENT = Ref{Ptr{Cvoid}}(C_NULL)
 
 # X-axis time modes -> the C `gmtvtk_xyplot_set_xtime` codes. X must be Unix epoch seconds.
@@ -23,10 +23,10 @@ const _LINESTYLE = Dict(:solid => 1, :dash => 2, :dashed => 2, :dot => 3, :dotte
 const _MARKER    = Dict(:none => 0, :cross => 1, :x => 1, :plus => 2, :square => 3,
                         :circle => 4, :o => 4, :diamond => 5)
 _style_code(d, v, what) = v === nothing ? -1 :
-	get(d, v, nothing) === nothing ? error("xyplot: unknown $what :$v (have $(sort(collect(keys(d)))))") : d[v]
+	get(d, v, nothing) === nothing ? error("plot: unknown $what :$v (have $(sort(collect(keys(d)))))") : d[v]
 
 """
-    xyplot(x, y; name="", color=nothing, linewidth=0, title="", xlabel="X", ylabel="Y") -> QtXYPlot
+    _xyplot(x, y; name="", color=nothing, linewidth=0, title="", xlabel="X", ylabel="Y") -> QtXYPlot
 
 Open a standalone **X,Y plot** window and draw the `(x, y)` series. `y` may be a matrix whose
 columns are separate lines sharing the same `x`. `color` accepts a name (`:red`, `"blue"`), a
@@ -35,11 +35,11 @@ a live QtXYPlot handle; add more lines with add!. Non-blocking.
 
 ```julia
 t = range(0, 4π; length=400) |> collect
-p = xyplot(t, sin.(t); name="sin", title="demo", ylabel="amplitude")
-add!(p, t, cos.(t); name="cos", color=:blue)
+p = _xyplot(t, sin.(t); name="sin", title="demo", ylabel="amplitude")
+_xyadd!(p, t, cos.(t); name="cos", color=:blue)
 ```
 """
-function xyplot(x::AbstractVector, y::AbstractVecOrMat; name::AbstractString="", color=nothing,
+function _xyplot(x::AbstractVector, y::AbstractVecOrMat; name::AbstractString="", color=nothing,
                 linewidth::Real=0, linestyle=nothing, marker=nothing, markersize::Real=0,
                 title::AbstractString="",
                 xlabel::AbstractString="X", ylabel::AbstractString="Y", xtime::Union{Symbol,Bool}=:linear,
@@ -54,7 +54,7 @@ function xyplot(x::AbstractVector, y::AbstractVecOrMat; name::AbstractString="",
 		ccall(_fn(:gmtvtk_xyplot_add_page), Cint, (Ptr{Cvoid}, Cstring), p.h, String(title))
 	else
 		h = ccall(_fn(:gmtvtk_xyplot_open), Ptr{Cvoid}, (Cstring,), String(title))
-		h == C_NULL && error("xyplot: failed to open the plot window")
+		h == C_NULL && error("plot: failed to open the plot window")
 		p = _register_fig!(QtXYPlot(h))
 		_start_pump()
 		_XY_CURRENT[] = h
@@ -96,8 +96,8 @@ function xtime!(p::QtXYPlot, mode::Symbol)
 end
 
 """
-    xyplot(D::GMTdataset; kwargs...) -> QtXYPlot
-    xyplot(D::Vector{<:GMTdataset}; kwargs...) -> QtXYPlot
+    _xyplot(D::GMTdataset; kwargs...) -> QtXYPlot
+    _xyplot(D::Vector{<:GMTdataset}; kwargs...) -> QtXYPlot
 
 Open a `GMTdataset` (or a multi-segment vector) in the X,Y plot tool: column 1 is X, columns 2…n
 are Y series; each segment of a vector becomes its own line. Same keywords as the vector form.
@@ -111,39 +111,39 @@ function _ds_colnames(seg, ncol::Integer)
 end
 
 """
-    xyplot(y::Vector; kwargs...) -> QtXYPlot
+    _xyplot(y::Vector; kwargs...) -> QtXYPlot
 
 A single series against its sample number: X = 1:length(y).
 """
-xyplot(y::AbstractVector{<:Real}; kwargs...) = xyplot(collect(1.0:length(y)), y; kwargs...)
+_xyplot(y::AbstractVector{<:Real}; kwargs...) = _xyplot(collect(1.0:length(y)), y; kwargs...)
 
 """
-    xyplot(M::Matrix; kwargs...) -> QtXYPlot
+    _xyplot(M::Matrix; kwargs...) -> QtXYPlot
 
 A plain numeric matrix: column 1 is X, columns 2…n are Y series sharing it, e.g.
-`xyplot([t sin.(t)])`. Same keywords as the vector form.
+`_xyplot([t sin.(t)])`. Same keywords as the vector form.
 """
-function xyplot(M::AbstractMatrix{<:Real}; kwargs...)
-	size(M, 2) < 2 && error("xyplot: matrix needs at least 2 columns (x, y)")
-	return xyplot(Float64.(@view M[:, 1]), Float64.(@view M[:, 2:end]); kwargs...)
+function _xyplot(M::AbstractMatrix{<:Real}; kwargs...)
+	size(M, 2) < 2 && error("plot: matrix needs at least 2 columns (x, y)")
+	return _xyplot(Float64.(@view M[:, 1]), Float64.(@view M[:, 2:end]); kwargs...)
 end
 
-function xyplot(D::GMTdataset; xlabel=nothing, name=nothing, kwargs...)
+function _xyplot(D::GMTdataset; xlabel=nothing, name=nothing, kwargs...)
 	m = D.data
-	size(m, 2) < 2 && error("xyplot: dataset needs at least 2 columns (x, y)")
+	size(m, 2) < 2 && error("plot: dataset needs at least 2 columns (x, y)")
 	cn = _ds_colnames(D, size(m, 2))
 	x  = Float64.(@view m[:, 1])
-	p  = xyplot(x, Float64.(@view m[:, 2]); name=cn[2],
+	p  = _xyplot(x, Float64.(@view m[:, 2]); name=cn[2],
 	            xlabel=(xlabel === nothing ? cn[1] : xlabel), kwargs...)
 	for c in 3:size(m, 2)
-		add!(p, x, Float64.(@view m[:, c]); name=cn[c])
+		_xyadd!(p, x, Float64.(@view m[:, c]); name=cn[c])
 	end
 	return p
 end
 
-function xyplot(D::AbstractVector{<:GMTdataset}; xlabel=nothing, name=nothing, kwargs...)
+function _xyplot(D::AbstractVector{<:GMTdataset}; xlabel=nothing, name=nothing, kwargs...)
 	segs = [s for s in D if size(s.data, 2) >= 2]
-	isempty(segs) && error("xyplot: no plottable (>= 2 column) segments")
+	isempty(segs) && error("plot: no plottable (>= 2 column) segments")
 	multi = length(segs) > 1
 	local p
 	for (i, seg) in enumerate(segs)
@@ -153,10 +153,10 @@ function xyplot(D::AbstractVector{<:GMTdataset}; xlabel=nothing, name=nothing, k
 		for c in 2:size(m, 2)
 			nm = multi ? "$(cn[c]) (seg $i)" : cn[c]
 			if i == 1 && c == 2
-				p = xyplot(x, Float64.(@view m[:, c]); name=nm,
+				p = _xyplot(x, Float64.(@view m[:, c]); name=nm,
 				           xlabel=(xlabel === nothing ? cn[1] : xlabel), kwargs...)
 			else
-				add!(p, x, Float64.(@view m[:, c]); name=nm)
+				_xyadd!(p, x, Float64.(@view m[:, c]); name=nm)
 			end
 		end
 	end
@@ -164,7 +164,7 @@ function xyplot(D::AbstractVector{<:GMTdataset}; xlabel=nothing, name=nothing, k
 end
 
 """
-    add!(p::QtXYPlot, x, y; name="", color=nothing, linewidth=0, kind=:line, barwidth=0) -> QtXYPlot
+    _xyadd!(p::QtXYPlot, x, y; name="", color=nothing, linewidth=0, kind=:line, barwidth=0) -> QtXYPlot
 
 Add another `(x, y)` series to an open X,Y plot window. Same keyword semantics as xyplot.
 
@@ -176,7 +176,7 @@ bathymetry grid along it from there.
 instead of a polyline; `barwidth` is then the bar width in **x data units** (0 = derive it from the
 data: 90% of the median x spacing), and `linewidth` becomes the bars' outline thickness in px.
 """
-function add!(p::QtXYPlot, x::AbstractVector, y::AbstractVecOrMat; name::AbstractString="",
+function _xyadd!(p::QtXYPlot, x::AbstractVector, y::AbstractVecOrMat; name::AbstractString="",
               color=nothing, linewidth::Real=0, linestyle=nothing, marker=nothing, markersize::Real=0,
               kind::Symbol=:line, barwidth::Real=0, track=nothing, trackgeog::Bool=true)
 	isalive(p) || error("add!: the X,Y plot window is closed")
@@ -185,12 +185,12 @@ function add!(p::QtXYPlot, x::AbstractVector, y::AbstractVecOrMat; name::Abstrac
 end
 
 """
-    add!(p::QtXYPlot, D) -> QtXYPlot
+    _xyadd!(p::QtXYPlot, D) -> QtXYPlot
 
 Add a `GMTdataset`, a vector of them, or a numeric matrix to an open X,Y plot: column 1 is X,
-every other column a new series (named by the dataset's column names). Same reading as `xyplot(D)`.
+every other column a new series (named by the dataset's column names). Same reading as `_xyplot(D)`.
 """
-function add!(p::QtXYPlot, D::Union{GMTdataset, AbstractVector{<:GMTdataset}, AbstractMatrix{<:Real}})
+function _xyadd!(p::QtXYPlot, D::Union{GMTdataset, AbstractVector{<:GMTdataset}, AbstractMatrix{<:Real}})
 	isalive(p) || error("add!: the X,Y plot window is closed")
 	_xy_add_dataset(p, D)
 	return p
@@ -200,14 +200,14 @@ end
     xynowcross!(p::QtXYPlot, x, y; color=:red, size=10, width=2, name="Now") -> QtXYPlot
 
 Add a screen-constant "+" cross at data point `(x, y)` -- e.g. a "current time" indicator on a
-time-series plot. Unlike `add!(...; marker=:plus)`, this is NOT a vtkPlotPoints marker (VTK's
+time-series plot. Unlike `_xyadd!(...; marker=:plus)`, this is NOT a vtkPlotPoints marker (VTK's
 marker rendering reuses the plot's own pen width to draw the glyph, so a marker-only series has no
 independently-controllable thickness at all): it's a real 2-segment line path whose data-space
 half-lengths are recomputed every render from the actual per-axis pixel scale, so both arms stay
 visually equal-length on screen no matter how different the X/Y data ranges are, and it keeps that
 shape across zoom/pan/resize. `size` (half-arm-length) and `width` (stroke thickness) are BOTH in
 **points**, not raw screen pixels -- a physical, DPI-independent unit (same reasoning GMT itself
-uses pens in points, never px), converted internally at 96/72 dpi same as `add_symbols!`. Both are
+uses pens in points, never px), converted internally at 96/72 dpi same as `_add_symbols!`. Both are
 also live-editable afterward via the series' own "Line properties…" dialog (Object Manager
 right-click) -- note that dialog's spinbox is px internally (VTK's own units), so it will show the
 ~1.33x-scaled pixel value, not the points figure this call took.
@@ -277,7 +277,7 @@ function _xy_add(p::QtXYPlot, x::AbstractVector, y::AbstractVecOrMat;
 	for c in 1:ncol
 		yv = Vector{Float64}(@view Y[:, c])
 		length(yv) == length(xv) ||
-			error("xyplot: x and y must have equal length (got $(length(xv)) and $(length(yv)))")
+			error("plot: x and y must have equal length (got $(length(xv)) and $(length(yv)))")
 		nm = ncol == 1 ? String(name) : (isempty(name) ? "Line $(length(p.series)+1)" : "$(name) $c")
 		if kind === :bar
 			ccall(_fn(:gmtvtk_xyplot_add_bars), Cint,
@@ -330,8 +330,8 @@ function _on_xy_seed(plot::Ptr{Cvoid}, cx::Ptr{Float64}, cy::Ptr{Float64}, n::Ci
 			_start_pump()
 		end
 		_XY_CURRENT[] = plot   # Profile -> X,Y is an explicit "open a window" gesture; it still
-		                       # becomes the target for whatever xyplot() call comes next
-		add!(p, x, y; name=nm)
+		                       # becomes the target for whatever _xyplot() call comes next
+		_xyadd!(p, x, y; name=nm)
 	catch e
 		_dbg("xy-seed", "ERR", sprint(showerror, e))
 		@tool_error "xyplot seed failed" exception=e
@@ -351,7 +351,7 @@ end
 function _on_xy_new(plot::Ptr{Cvoid})::Cvoid
 	try
 		_XY_CURRENT[] = plot   # Tools > X,Y plot is an explicit "open a window" gesture; it still
-		                       # becomes the target for whatever xyplot() call comes next
+		                       # becomes the target for whatever _xyplot() call comes next
 		# ALWAYS a fresh mirror. This callback fires only when C++ has just BUILT a window, so any
 		# `_FIGREG` entry already sitting at this address belongs to a destroyed window whose pointer
 		# the allocator recycled — keeping it (what an `already registered -> return` check did) gave
@@ -419,7 +419,7 @@ function _on_xy(plot::Ptr{Cvoid}, caction::Cstring, sel::Cint, cpath::Cstring)::
 end
 
 # File > New: open a fresh empty X,Y plot window (an explicit "open a window" gesture -> always a
-# real new window, but it becomes the _XY_CURRENT target for whatever xyplot() call comes next).
+# real new window, but it becomes the _XY_CURRENT target for whatever _xyplot() call comes next).
 function _xy_open_blank()
 	h = ccall(_fn(:gmtvtk_xyplot_open), Ptr{Cvoid}, (Cstring,), "i'GMT  —  X,Y plot")
 	h == C_NULL && return
@@ -446,7 +446,7 @@ function _xy_add_dataset(p::QtXYPlot, D)
 		x  = Float64.(@view m[:, 1])
 		for c in 2:size(m, 2)                            # one series per data column, named by colname
 			nm = nseg > 1 ? "$(cn[c]) (seg $i)" : cn[c]
-			add!(p, x, Float64.(@view m[:, c]); name=nm)
+			_xyadd!(p, x, Float64.(@view m[:, c]); name=nm)
 		end
 	end
 	return

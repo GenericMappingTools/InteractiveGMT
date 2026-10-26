@@ -42,7 +42,7 @@
 	# the VE stays the constant 1 -- nothing may compute an opening exaggeration from the data.
 	for zspan in (2.0, 500.0, 20_000.0)
 		G = ve_grid(zspan = zspan)
-		f = view_grid(G, geographic=true)
+		f = viz(G, geographic=true)
 		try
 			ve_pump()
 			st = IG._parse_scene_state(IG._scene_state_full_raw(f.h))
@@ -62,7 +62,7 @@ end
 	include(joinpath(@__DIR__, "ve_helpers.jl"))
 	G = ve_grid(zspan = 500.0)
 	for geog in (true, false)
-		f = view_grid(G, geographic=geog)
+		f = viz(G, geographic=geog)
 		try
 			ve_pump()
 			st = IG._parse_scene_state(IG._scene_state_full_raw(f.h))
@@ -81,7 +81,7 @@ end
 	include(joinpath(@__DIR__, "ve_helpers.jl"))
 	Gb = ve_grid(zspan = 8000.0)          # base   (a bathymetry-like span)
 	Gi = ve_grid(zspan = 5.0)             # dropped (an Okada-like span, 1600x smaller)
-	f = view_grid(Gb, geographic=true)
+	f = viz(Gb, geographic=true)
 	try
 		ve_pump(); h = f.h
 		ve_add_layer(h, Gi, "layerB")
@@ -111,7 +111,7 @@ end
 @testitem "VE law 2: a layer's ve reaches NOTHING else, over many layers" tags=[:gui, :ve] begin
 	IG = InteractiveGMT
 	include(joinpath(@__DIR__, "ve_helpers.jl"))
-	f = view_grid(ve_grid(zspan = 8000.0), geographic=true)
+	f = viz(ve_grid(zspan = 8000.0), geographic=true)
 	try
 		ve_pump(); h = f.h
 		ve_add_layer(h, ve_grid(zspan = 5.0),   "L1")
@@ -132,7 +132,7 @@ end
 @testitem "VE law 2: no ve fallback across layers through a session" tags=[:gui, :ve, :session] begin
 	IG = InteractiveGMT
 	include(joinpath(@__DIR__, "ve_helpers.jl"))
-	f = view_grid(ve_grid(zspan = 8000.0), geographic=true)
+	f = viz(ve_grid(zspan = 8000.0), geographic=true)
 	try
 		ve_pump(); h = f.h
 		ve_add_layer(h, ve_grid(zspan = 5.0), "L1")
@@ -156,7 +156,7 @@ end
 @testitem "VE law 2: the handle always states the ACTIVE layer's own ve" tags=[:gui, :ve, :gizmo] begin
 	IG = InteractiveGMT
 	include(joinpath(@__DIR__, "ve_helpers.jl"))
-	f = view_grid(ve_grid(zspan = 8000.0), geographic=true)
+	f = viz(ve_grid(zspan = 8000.0), geographic=true)
 	try
 		ve_pump(); h = f.h
 		ccall(IG._fn(:gmtvtk_set_view_mode_h), Cint, (Ptr{Cvoid}, Cint), h, Cint(0))   # 3-D
@@ -183,7 +183,7 @@ end
 @testitem "VE law 2: each layer's SHADING set is its own" tags=[:gui, :ve, :shading] begin
 	IG = InteractiveGMT
 	include(joinpath(@__DIR__, "ve_helpers.jl"))
-	f = view_grid(ve_grid(zspan = 8000.0), geographic=true)
+	f = viz(ve_grid(zspan = 8000.0), geographic=true)
 	try
 		ve_pump(); h = f.h
 		ve_add_layer(h, ve_grid(zspan = 300.0), "L1")     # active
@@ -223,7 +223,7 @@ end
 	IG = InteractiveGMT
 	include(joinpath(@__DIR__, "ve_helpers.jl"))
 	G = ve_grid(zspan = 8000.0)
-	f = view_grid(G, geographic=true)
+	f = viz(G, geographic=true)
 	try
 		ve_pump(); h = f.h
 		ccall(IG._fn(:gmtvtk_set_view_mode_h), Cint, (Ptr{Cvoid}, Cint), h, Cint(0))   # 3-D
@@ -245,7 +245,7 @@ end
 @testitem "ILLUMINATION law 3: the rendered default view really is lit" tags=[:gui, :ve, :illum] begin
 	IG = InteractiveGMT
 	include(joinpath(@__DIR__, "ve_helpers.jl"))
-	f = view_grid(ve_grid(zspan = 8000.0), geographic=true)
+	f = viz(ve_grid(zspan = 8000.0), geographic=true)
 	png = joinpath(tempdir(), "ig_ve_illum_$(getpid()).png")
 	try
 		ve_pump(); h = f.h
@@ -269,7 +269,7 @@ end
 	IG = InteractiveGMT
 	include(joinpath(@__DIR__, "ve_helpers.jl"))
 	Gb = ve_grid(zspan = 8000.0)
-	f = view_grid(Gb, geographic=true)
+	f = viz(Gb, geographic=true)
 	png1 = joinpath(tempdir(), "ig_ve_illum_a_$(getpid()).png")
 	png2 = joinpath(tempdir(), "ig_ve_illum_b_$(getpid()).png")
 	try
@@ -314,7 +314,7 @@ end
 	IG = InteractiveGMT
 	include(joinpath(@__DIR__, "ve_helpers.jl"))
 	G = ve_grid(zspan = 500.0)             # a real elevation span -> a real (non-1.0) zfac
-	f = view_grid(G, geographic=true)
+	f = viz(G, geographic=true)
 	try
 		ve_pump()
 		I = IG.GMT.mat2img(UInt8[0 255; 255 0])
@@ -373,7 +373,7 @@ end
 	@test ve_H_displayed(Gwide) > 25 * ve_H_displayed(Gsmall)   # the footprints really are far apart
 
 	# SMALL base, WIDE layer (the reported direction).
-	f = view_grid(Gsmall, geographic=true)
+	f = viz(Gsmall, geographic=true)
 	try
 		ve_pump(); h = f.h
 		ve_add_layer(h, Gwide, "wide")
@@ -389,7 +389,7 @@ end
 
 	# ...and the OTHER direction, because a fix that simply swapped which footprint is borrowed would
 	# pass the half above: WIDE base, SMALL layer.
-	f2 = view_grid(Gwide, geographic=true)
+	f2 = viz(Gwide, geographic=true)
 	try
 		ve_pump(); h = f2.h
 		ve_add_layer(h, Gsmall, "patch")
@@ -410,7 +410,7 @@ end
 	# adopt transition (which does re-frame) so this item measures the ADD and nothing else.
 	Gsmall = ve_grid(zspan =    8.0, x = ( -9.52, -9.09), y = (38.50, 38.75))
 	Gwide  = ve_grid(zspan = 8400.0, x = (-18.45, -5.72), y = (32.60, 40.52))
-	f = view_grid(Gsmall, geographic=true)
+	f = viz(Gsmall, geographic=true)
 	try
 		ve_pump(); h = f.h
 		ve_add_layer_raw(h, Gwide, "wide")          # added HIDDEN, as every added grid is
@@ -431,7 +431,7 @@ end
 	# another layer is active is the shortest way to see it.
 	Gsmall = ve_grid(zspan =    8.0, x = ( -9.52, -9.09), y = (38.50, 38.75))
 	Gwide  = ve_grid(zspan = 8400.0, x = (-18.45, -5.72), y = (32.60, 40.52))
-	f = view_grid(Gsmall, geographic=true)
+	f = viz(Gsmall, geographic=true)
 	try
 		ve_pump(); h = f.h
 		ve_add_layer(h, Gwide, "wide")
@@ -458,7 +458,7 @@ end
 	include(joinpath(@__DIR__, "ve_helpers.jl"))
 	Gb = ve_grid(zspan = 8000.0)          # base: a topography
 	Gi = ve_grid(zspan = 2000.0)          # same footprint, a quarter of the span (a basement)
-	f = view_grid(Gb, geographic=true)
+	f = viz(Gb, geographic=true)
 	try
 		ve_pump(); h = f.h
 		ve_add_layer(h, Gi, "basement")
@@ -481,7 +481,7 @@ end
 	end
 	# The public door (add!) and the automatic rule: both grids name the same real z unit -> shared.
 	Gb.z_unit = "m";  Gi.z_unit = "m"
-	f = view_grid(Gb, geographic=true)
+	f = viz(Gb, geographic=true)
 	try
 		ve_pump(); h = f.h
 		zfac_base = parse(Float64, string(ve_state_full(h)["zfac"]))

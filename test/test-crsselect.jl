@@ -43,7 +43,7 @@ end
 @testitem "crs selector: Tools > Project > Select CRS... fills the Destination" tags=[:gui] setup=[GmtvtkTest] begin
 	IG = InteractiveGMT
 	IG._register_crs_select()                  # the window's own DLL asks for the catalogue
-	f = view_grid(IG.GMT.peaks(N = 41))
+	f = viz(IG.GMT.peaks(N = 41))
 	try
 		out = zeros(UInt8, 128)
 		flags = ccall(_test_fn(:gmtvtk_project_crs_test), Cint, (Ptr{Cvoid}, Cstring, Cstring, Ptr{UInt8}, Cint),
@@ -64,7 +64,7 @@ end
 	IG._register_crs_select()
 	G = IG.GMT.peaks(N = 41)
 	G.proj4 = "+proj=utm +zone=29 +datum=WGS84 +units=m +no_defs"
-	f = view_grid(G)
+	f = viz(G)
 	try
 		out = zeros(UInt8, 128)
 		@test ccall(_test_fn(:gmtvtk_crs_chip_test), Cint, (Ptr{Cvoid}, Ptr{UInt8}, Cint), f.h, out, length(out)) == 1
@@ -79,9 +79,9 @@ end
 	G = IG.GMT.mat2grid(rand(Float32, 41, 41); x = collect(range(500000.0, 600000.0; length = 41)),
 	                    y = collect(range(4100000.0, 4200000.0; length = 41)))
 	G.proj4 = "+proj=utm +zone=29 +datum=WGS84 +units=m +no_defs"
-	f = view_grid(G)
+	f = viz(G)
 	U = IG.GMT.mat2grid(rand(Float32, 21, 21); x = collect(0.0:50:1000), y = collect(0.0:50:1000))   # no CRS at all
-	g = view_grid(U)
+	g = viz(U)
 	try
 		ok = IG._crs_check(f.h, "", "EPSG:3763")
 		@test startswith(ok, "OK\t") && occursin("utm", ok)              # the source is the window's own
@@ -106,7 +106,7 @@ end
 	G = IG.GMT.mat2grid(rand(Float32, 41, 41); x = collect(range(500000.0, 600000.0; length = 41)),
 	                    y = collect(range(4100000.0, 4200000.0; length = 41)))
 	G.proj4 = "+proj=utm +zone=29 +datum=WGS84 +units=m +no_defs"
-	f = view_grid(G)
+	f = viz(G)
 	pick(filter, id) = (out = zeros(UInt8, 2048);
 		fl = ccall(_test_fn(:gmtvtk_crs_chip_pick_test), Cint, (Ptr{Cvoid}, Cstring, Cstring, Ptr{UInt8}, Cint),
 		           f.h, filter, id, out, length(out));

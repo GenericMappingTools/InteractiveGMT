@@ -36,7 +36,7 @@
 			f = joinpath(d, basename(src))
 			cp(src, f)
 			cp(src * ".inf", f * ".inf")
-			fig = IG.view_grid(G; geographic=true, title="mbgrdviz test grid")
+			fig = IG.viz(G; geographic=true, title="mbgrdviz test grid")
 			pump()
 			try
 				@test mbgrdviz(; fig)

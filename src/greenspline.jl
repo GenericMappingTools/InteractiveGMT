@@ -234,7 +234,7 @@ function _on_greenspline(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		# dialog does, for the same reason.
 		if ok == Cint(1) && _on(d, "plotpts")
 			mat = D isa Vector ? reduce(vcat, (dd.data for dd in D)) : D.data
-			add_symbols!(scene, view(mat, :, 1), view(mat, :, 2); symbol = :circle, size = 5,
+			_add_symbols!(scene, view(mat, :, 1), view(mat, :, 2); symbol = :circle, size = 5,
 			             fill = :black, edge = :white, edgewidth = 0.5,
 			             name = "Data points (" * basename(String(infile)) * ")")
 		end

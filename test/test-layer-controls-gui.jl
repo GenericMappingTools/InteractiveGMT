@@ -7,7 +7,7 @@
 	include(joinpath(@__DIR__, "ve_helpers.jl"))
 	G  = ve_grid(zspan = 1000.0)
 	G2 = ve_grid(zspan = 500.0)
-	fig = IG.view_grid(G); ve_pump()
+	fig = IG.viz(G); ve_pump()
 	h = getfield(fig, :h)
 	try
 		@test IG.setopacity!(fig, 0.5) === fig
@@ -25,7 +25,7 @@ end
 	include(joinpath(@__DIR__, "ve_helpers.jl"))
 	G  = ve_grid(zspan = 1000.0)
 	G2 = ve_grid(zspan = 500.0)
-	fig = IG.view_grid(G); ve_pump()
+	fig = IG.viz(G); ve_pump()
 	h = getfield(fig, :h)
 	try
 		IG.add!(fig, G2; name = "Second")

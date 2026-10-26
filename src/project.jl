@@ -138,14 +138,14 @@ function _on_project(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		title = "Reprojected ($prj) " * (isimage ? "image" : "grid")
 
 		# Warp the grid, display the grid. The result opens in ITS OWN window, through the SAME
-		# `view_grid` / `iview_image_obj` a file does — the path that is known good for a projected
+		# `_view_grid` / `iview_image_obj` a file does — the path that is known good for a projected
 		# raster, and Mirone's own behaviour too (do_project ends in `mirone(ras,tmp)`, a new figure).
 		# Nothing is adopted into the source window, so nothing has to be re-scaled, re-framed or
 		# re-shaded around it.
 		if isimage
 			iview_image_obj(R, title; title = title)
 		else
-			view_grid(R; title = title)
+			_view_grid(R; title = title)
 		end
 		return Cint(1)
 	catch e

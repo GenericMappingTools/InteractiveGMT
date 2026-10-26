@@ -18,7 +18,7 @@ The file is an ASCII table, one row per node: longitude, latitude, depth (km, ne
 anomaly. `gmtread` reads it as it is:
 
 ```julia
-using GMT, InteractiveGMT
+using InteractiveGMT
 
 download("https://seafile.rlp.net/d/a50881f45aa34cdeb3c0/files/?p=%2FZhao_etal_JGR_2016_Pwave_Alps_3D_k60.txt&dl=1",
          "Zhao_etal_JGR_2016_Pwave_Alps_3D_k60.txt")
@@ -79,7 +79,7 @@ north = grdimage(mat2grid(permutedims(Cube.z[end, :, :])), cmap=cpt, A=true)
 west  = grdimage(mat2grid(permutedims(Cube.z[:, 1, :])),   cmap=cpt, A=true)
 east  = grdimage(mat2grid(permutedims(Cube.z[:, end, :])), cmap=cpt, A=true)
 
-fig = iview(Topo; cmap=:oleron)
+fig = viz(Topo; cmap=:oleron)
 add!(fig, top; name="dVp at 1 km", drape=imgtop, samezscale=true)
 add_curtain!(fig, [0 38; 18 38];       image=south, zrange=(-1001000, -1000))
 add_curtain!(fig, [0 51.95; 18 51.95]; image=north, zrange=(-1001000, -1000))
@@ -103,7 +103,7 @@ L201   = slicecube(Cube, 81)
 img201 = grdimage(L201, cmap=cpt, A=true)
 top201 = grdmath("? 0 MUL -201000 ADD", L201)
 
-fig2 = iview(Topo; cmap=:oleron)
+fig2 = viz(Topo; cmap=:oleron)
 add!(fig2, top201; name="dVp at 201 km", drape=img201, samezscale=true)
 setvisible!(fig2, "Surface", false)
 ```
@@ -145,7 +145,7 @@ L101   = slicecube(Cube, 91)
 img101 = grdimage(L101, cmap=cpt, A=true)
 top101 = grdmath("? 0 MUL -101000 ADD", L101)
 
-fig3 = iview(Topo; cmap=:oleron)
+fig3 = viz(Topo; cmap=:oleron)
 add!(fig3, top101; name="dVp at 101 km", drape=img101, samezscale=true)
 add_curtain!(fig3, [10 38; 10 51.95]; image=grdimage(S10, cmap=cpt, A=true),   zrange=(-1001000, -1000))
 add_curtain!(fig3, [1 39; 18 50];     image=grdimage(Sdiag, cmap=cpt, A=true), zrange=(-1001000, -1000))
@@ -173,7 +173,7 @@ It is drawn as the block was, its top and four sides:
 Stop = slicecube(Sub, 101)
 topS = grdmath("? 0 MUL -1000 ADD", Stop)
 
-fig4 = iview(Topo; cmap=:oleron)
+fig4 = viz(Topo; cmap=:oleron)
 add!(fig4, topS; name="Subset top", drape=grdimage(Stop, cmap=cpt, A=true), samezscale=true)
 add_curtain!(fig4, [5.1 40.1; 12 40.1]; image=grdimage(mat2grid(permutedims(Sub.z[1, :, :])),   cmap=cpt, A=true), zrange=(-1001000, -1000))
 add_curtain!(fig4, [5.1 44.9; 12 44.9]; image=grdimage(mat2grid(permutedims(Sub.z[end, :, :])), cmap=cpt, A=true), zrange=(-1001000, -1000))

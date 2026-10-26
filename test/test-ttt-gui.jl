@@ -25,7 +25,7 @@ end
 @testitem "travel times: both methods run and keep the bathymetry's geometry; contours trace them" tags=[:gui] setup=[TttTest, GmtvtkTest] begin
 	IG = InteractiveGMT
 	G = TttTest.bathy()
-	f = view_grid(G)
+	f = viz(G)
 	try
 		for (k, method) in enumerate(("mirone", "ttt", "mirone"))    # runs 2 and 3 start with the travel times on display
 			# grid = what the dialog sends: activeGridName. On the 2nd run that is the travel-time grid itself.
@@ -59,7 +59,7 @@ end
 @testitem "travel times dialog: X, minimise and Esc park it, Delete ends it" tags=[:gui] setup=[TttTest, GmtvtkTest] begin
 	IG = InteractiveGMT
 	_test_fn = GmtvtkTest._test_fn
-	f = view_grid(TttTest.bathy())
+	f = viz(TttTest.bathy())
 	parked() = ccall(_test_fn(:gmtvtk_ttt_parked_test), Cint, (Ptr{Cvoid},), f.h)
 	opened() = ccall(_test_fn(:gmtvtk_ttt_open_dialog_test), Cint, (Ptr{Cvoid},), f.h)
 	leave(how) = ccall(_test_fn(:gmtvtk_ttt_leave_dialog_test), Cvoid, (Ptr{Cvoid}, Cint), f.h, how)
@@ -91,7 +91,7 @@ end
 @testitem "travel times: contours of the travel-time layer are ONE set in Scene Objects" tags=[:gui] setup=[TttTest, GmtvtkTest] begin
 	IG = InteractiveGMT
 	_test_fn = GmtvtkTest._test_fn
-	f = view_grid(TttTest.bathy())
+	f = viz(TttTest.bathy())
 	tree() = (for _ in 1:5; IG._pump_once(); sleep(0.02); end;
 	          unsafe_string(ccall(_test_fn(:gmtvtk_objtree_test), Cstring, (Ptr{Cvoid},), f.h)))
 	sets(t) = count(l -> strip(l) == "Contours", split(t, '\n'))
@@ -123,7 +123,7 @@ end
 	ttt(h, src) = IG._on_ttt(h, Base.unsafe_convert(Cstring, Base.cconvert(Cstring,
 		"what=grid\ngrid=\nmethod=mirone\nfillvoids=0\nsrcxy=$src")))
 	for fault in (0, 1)
-		f = view_grid(TttTest.bathy())
+		f = viz(TttTest.bathy())
 		try
 			ccall(_test_fn(:gmtvtk_set_flat2d_test), Cvoid, (Ptr{Cvoid}, Cint), f.h, 1)
 			@test ccall(_test_fn(:gmtvtk_ttt_open_dialog_test), Cint, (Ptr{Cvoid},), f.h) == 1

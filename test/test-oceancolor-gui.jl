@@ -7,7 +7,7 @@
 @testitem "Ocean Color browser: the .ui loads and its combos drive it" tags=[:gui] setup=[GmtvtkTest] begin
 	IG = InteractiveGMT
 	_test_fn = GmtvtkTest._test_fn
-	f = IG.view_grid(IG.GMT.peaks(32))
+	f = IG.viz(IG.GMT.peaks(32))
 
 	# A QUiLoader failure or a widget renamed out of the .ui shows up right here.
 	@test ccall(_test_fn(:gmtvtk_oc_open_dialog_test), Cint, (Ptr{Cvoid},), f.h) == 1
@@ -43,7 +43,7 @@ end
 @testitem "Ocean Color browser: the X parks it, it does not kill it" tags=[:gui] setup=[GmtvtkTest] begin
 	IG = InteractiveGMT
 	_test_fn = GmtvtkTest._test_fn
-	f = IG.view_grid(IG.GMT.peaks(32))
+	f = IG.viz(IG.GMT.peaks(32))
 
 	@test ccall(_test_fn(:gmtvtk_oc_open_dialog_test), Cint, (Ptr{Cvoid},), f.h) == 1
 	@test ccall(_test_fn(:gmtvtk_oc_select_test), Cint, (Cint, Cint, Cint),

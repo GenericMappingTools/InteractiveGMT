@@ -19,7 +19,7 @@
 		((i - n / 2)^2 + (j - n / 2)^2 < (0.38n)^2) && (z[j, i] = NaN32)   # a big hole, like a swath gap
 	end
 	G = mat2grid(z, x = collect(range(-16.0, 8.0, length = n)), y = collect(range(32.0, 49.0, length = n)))
-	f = view_grid(G, geographic = true)
+	f = InteractiveGMT.viz(G, geographic = true)
 	png = joinpath(tempdir(), "ig_illum_nodrape_$(getpid()).png")
 	# Share of sampled pixels that are coloured (the CPT), not grey (NaN fill / background).
 	function coloured(h)

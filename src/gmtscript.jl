@@ -74,7 +74,7 @@ end
 # they are not interchangeable; using one for both is why a set thickness came back as a different
 # number:
 #
-#  * SYMBOL SIZES — `add_symbols!` (symbols.jl) stores `pt * 96/72`, a FIXED 96 dpi. So a layer made
+#  * SYMBOL SIZES — `_add_symbols!` (symbols.jl) stores `pt * 96/72`, a FIXED 96 dpi. So a layer made
 #    with `sizeunit=:pt, size=8` must read back as exactly 8p.
 #  * LINE WIDTHS — `gmtvtk_add_overlay_ex_h` (90_c_api.cpp) and the Line Properties dialog take
 #    POINTS and store `pt * dpi/72` using the RENDER WINDOW's own DPI. A width set to 4 pt must read
@@ -1644,6 +1644,10 @@ end
 # Render one call: `mod[!](pos, k=v, …)`.
 function _script_render_call(s::ScriptStep)
 	name = String(s.mod) * (s.bang ? "!" : "")
+	# A name iGMT gives its OWN function (plot, plot!, feather, viz: gmtsyntax.jl) is written GMT.name: the
+	# script draws GMT.jl's static figure, and runs where `using InteractiveGMT` is loaded too.
+	sym = Symbol(name)
+	isdefined(@__MODULE__, sym) && getfield(@__MODULE__, sym) !== getfield(GMT, sym) && (name = "GMT." * name)
 	args = String[]
 	s.pos === nothing || push!(args, _lit(s.pos))
 	for (k, v) in s.kw

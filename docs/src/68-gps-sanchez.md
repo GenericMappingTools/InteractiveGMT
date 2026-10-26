@@ -30,7 +30,7 @@ the velocities to **mm/yr** on the way in (`+s1000`). GMG does these three steps
 `parse_columns_CSV` and a `*1000`.
 
 ```julia
-using InteractiveGMT, GMT
+using InteractiveGMT
 
 url = "https://store.pangaea.de/Publications/Sanchez-etal_2018/ALPS2017_DEF_"
 
@@ -49,7 +49,7 @@ GMG reshapes the columns into 41 × 31 arrays. Because the points are the nodes 
 ```julia
 Gvz = xyz2grd(Vz, region=(4, 16, 43, 49), inc=(0.3, 0.2))
 
-iview(Gvz; cmap=:polar, data=Vh.data[:, 1:2], mode=:points, data_color=:black, data_size=4)
+viz(Gvz; cmap=:polar, data=Vh.data[:, 1:2], mode=:points, data_color=:black, data_size=4)
 ```
 
 The `data=` keyword overlays the positions of the horizontal-velocity nodes as black points. This
@@ -88,7 +88,7 @@ topo = grdcut("@earth_relief_01m", region=(4, 16, 43, 49))
 Cvz  = makecpt(cmap=:polar, range=(-2.5, 2.5))                                 # mm/yr, white = 0
 Ivz  = grdimage(grdsample(Gvz, region=(4, 16, 43, 49), inc="1m"), cmap=Cvz, img_out=true)
 
-fig = iview(topo; drape=Ivz)
+fig = viz(topo; drape=Ivz)
 ```
 
 Switch to **3D** on the toolbar and turn the view with the gizmo. The colour bar is the

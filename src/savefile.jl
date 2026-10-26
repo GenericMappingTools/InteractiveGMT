@@ -117,7 +117,7 @@ function _find_object_exact(scene::Ptr{Cvoid}, kind::Symbol, name::AbstractStrin
 end
 
 # The BASE surface, when `name` is the name the window itself knows it by. The base is registered in
-# `_SCENE_OBJS` under "" whenever it was opened by `view_grid`/`view_image` and RELABELLED afterwards
+# `_SCENE_OBJS` under "" whenever it was opened by `_view_grid`/`_view_image` and RELABELLED afterwards
 # (`gmtvtk_set_surface_name_h`) — Load Session into a fresh window and "Move to new window" both do
 # exactly that — so the registry key and the Scene Objects label disagree, and every lookup that
 # starts from a name the USER picked in a menu misses. Live repro (2026-09-06): reload a tsunami
@@ -249,7 +249,7 @@ function _on_move(scene::Ptr{Cvoid}, req::Cstring)::Cint
 		if kind == "grid"
 			G = _find_object(scene, :grid, name)
 			G === nothing && error("No grid to move in this window")
-			fig = view_grid(G; title = isempty(name) ? "i'GMT" : name)
+			fig = _view_grid(G; title = isempty(name) ? "i'GMT" : name)
 			# Carry the grid's NAME to the new window's base surface, so it keeps every name-driven
 			# per-row option (a "layerN" blank grid keeps "Transplant 2nd grid…"). view_grid
 			# opens the base unnamed ("Surface"); this relabels it without re-registering under the

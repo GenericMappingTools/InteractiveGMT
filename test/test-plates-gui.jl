@@ -26,7 +26,7 @@ end # @testmodule
 
 @testitem "Euler: a line rotated by one finite pole is backtracker's own answer" tags=[:gui] setup=[Plates] begin
 	IG = InteractiveGMT
-	f = view_grid(Plates.grid())
+	f = viz(Plates.grid())
 	IG._add_dataset_to_scene(f.h, IG.GMT.mat2ds(Plates.LINE), "testline")
 	@test IG._euler_segments(f.h, "testline")[1] ≈ Plates.LINE
 
@@ -53,7 +53,7 @@ end
 	129.90000\t68.00000\t37.0\t 0.0\t-7.8000
 	""")
 	try
-		f = view_grid(Plates.grid())
+		f = viz(Plates.grid())
 		IG._add_dataset_to_scene(f.h, IG.GMT.mat2ds(Plates.LINE), "isoc")
 		@test Plates.send(f.h, ["op=rotate", "target=isoc", "usepole=0", "polesfile=$stg",
 		                        "ages=37,53", "agelabels=", "revert=0", "geodetic=0", "showcmd=0"]) == 1
@@ -77,7 +77,7 @@ end
 
 @testitem "Euler: Geodetic Lats changes the answer, and is GMT's own conversion" tags=[:gui] setup=[Plates] begin
 	IG = InteractiveGMT
-	f = view_grid(Plates.grid())
+	f = viz(Plates.grid())
 	IG._add_dataset_to_scene(f.h, IG.GMT.mat2ds(Plates.LINE), "testline")
 	pole = ["polelon=-40.8", "polelat=32.8", "poleang=-12.9"]
 	@test Plates.send(f.h, ["op=rotate", "target=testline", "usepole=1", pole...,
@@ -97,7 +97,7 @@ end
 
 @testitem "Euler: several lines rotate in one go" tags=[:gui] setup=[Plates] begin
 	IG = InteractiveGMT
-	f = view_grid(Plates.grid())
+	f = viz(Plates.grid())
 	other = [-9.8 36.2; -9.2 36.9; -8.6 37.4]
 	IG._add_dataset_to_scene(f.h, IG.GMT.mat2ds(Plates.LINE), "lineA")
 	IG._add_dataset_to_scene(f.h, IG.GMT.mat2ds(other), "lineB")
@@ -129,7 +129,7 @@ end
 	-8.5 37.5
 	""")
 	try
-		f = view_grid(Plates.grid())
+		f = viz(Plates.grid())
 		D = IG.GMT.gmtread(dat)
 		IG._add_dataset_to_scene(f.h, D, "c5c")
 		# The header survived the import as the overlay's own info…
@@ -158,7 +158,7 @@ end
 @testitem "Euler dialog: opens, lists the lines, and takes picks" tags=[:gui] setup=[Plates, GmtvtkTest] begin
 	IG = InteractiveGMT
 	_test_fn = GmtvtkTest._test_fn
-	f = view_grid(Plates.grid())
+	f = viz(Plates.grid())
 	IG._add_dataset_to_scene(f.h, IG.GMT.mat2ds(Plates.LINE), "testline")
 	IG._add_dataset_to_scene(f.h, IG.GMT.mat2ds([-9.8 36.2; -9.2 36.9]), "otherline")
 	@test ccall(_test_fn(:gmtvtk_euler_open_dialog_test), Cint, (Ptr{Cvoid},), f.h) == 1
@@ -183,7 +183,7 @@ end
 	# The dialog lives in gmtvtk_test.dll, so THAT dll's Julia callback has to be registered (and its
 	# answer channel mirrored) — otherwise the combos would come up empty.
 	GmtvtkTest._register_euler_test()
-	f = view_grid(Plates.grid())
+	f = viz(Plates.grid())
 	@test ccall(_test_fn(:gmtvtk_platecalc_open_dialog_test), Cint, (Ptr{Cvoid},), f.h) == 1
 	buf = Vector{UInt8}(undef, 256)
 	rd(what) = (ccall(_test_fn(:gmtvtk_platecalc_read_test), Cint, (Cstring, Ptr{UInt8}, Cint),
@@ -219,7 +219,7 @@ end
 	IG = InteractiveGMT
 	_test_fn = GmtvtkTest._test_fn
 	GmtvtkTest._register_euler_test()
-	f = view_grid(Plates.grid())
+	f = viz(Plates.grid())
 	@test ccall(_test_fn(:gmtvtk_platecalc_open_dialog_test), Cint, (Ptr{Cvoid},), f.h) == 1
 	buf = Vector{UInt8}(undef, 256)
 	rd(what) = (ccall(_test_fn(:gmtvtk_platecalc_read_test), Cint, (Cstring, Ptr{UInt8}, Cint),
@@ -253,7 +253,7 @@ end
 	IG = InteractiveGMT
 	_test_fn = GmtvtkTest._test_fn
 	GmtvtkTest._register_euler_test()
-	f = view_grid(Plates.grid())
+	f = viz(Plates.grid())
 	@test ccall(_test_fn(:gmtvtk_platecalc_open_dialog_test), Cint, (Ptr{Cvoid},), f.h) == 1
 	@test ccall(_test_fn(:gmtvtk_platecalc_select_test), Cint, (Cstring, Cstring, Cstring),
 	            "PB", "EU", "AF") > 0
@@ -278,7 +278,7 @@ end
 @testitem "Euler dialog: the X parks it, it does not kill it" tags=[:gui] setup=[Plates, GmtvtkTest] begin
 	IG = InteractiveGMT
 	_test_fn = GmtvtkTest._test_fn
-	f = view_grid(Plates.grid())
+	f = viz(Plates.grid())
 	IG._add_dataset_to_scene(f.h, IG.GMT.mat2ds(Plates.LINE), "testline")
 	@test ccall(_test_fn(:gmtvtk_euler_open_dialog_test), Cint, (Ptr{Cvoid},), f.h) == 1
 	@test ccall(_test_fn(:gmtvtk_euler_arm_pick_test), Cint, (Cint,), Cint(1)) == 1
@@ -307,7 +307,7 @@ end
 # answer to find and the test can say what "right" is.
 @testitem "Compute Euler pole: the search recovers the pole the lines were made with" tags=[:gui] setup=[Plates] begin
 	IG = InteractiveGMT
-	f = view_grid(Plates.grid())
+	f = viz(Plates.grid())
 	lat  = collect(36.0:0.1:38.5)
 	iso1 = [(-9.5 .+ 0.4 .* sin.((lat .- 36) .* 2)) lat]
 	iso2 = IG._ce_rotated_line(iso1, 20.0, 60.0, 3.0)
@@ -342,7 +342,7 @@ end
 	IG = InteractiveGMT
 	_test_fn = GmtvtkTest._test_fn
 	GmtvtkTest._register_ceuler_test()
-	f = view_grid(Plates.grid())
+	f = viz(Plates.grid())
 	lat  = collect(36.0:0.1:38.5)
 	iso1 = [(-9.5 .+ 0.4 .* sin.((lat .- 36) .* 2)) lat]
 	iso2 = IG._ce_rotated_line(iso1, 20.0, 60.0, 3.0)
@@ -391,7 +391,7 @@ end
 
 @testitem "Compute Euler pole: the Plates menu really carries the entry" tags=[:gui] setup=[Plates, GmtvtkTest] begin
 	_test_fn = GmtvtkTest._test_fn
-	f = view_grid(Plates.grid())
+	f = viz(Plates.grid())
 	# What the user picks: Geophysics > Plates, then Compute Euler pole…. Whether the dialog then
 	# reaches the SCREEN cannot be asserted here — that hangs on the popup grab of a real, open menu,
 	# which trigger() does not create — so this only pins that both entries exist and fire.
@@ -403,7 +403,7 @@ end
 @testitem "Compute Euler pole dialog: visible on the FIRST open, and picks lines from the figure" tags=[:gui] setup=[Plates, GmtvtkTest] begin
 	IG = InteractiveGMT
 	_test_fn = GmtvtkTest._test_fn
-	f = view_grid(Plates.grid())
+	f = viz(Plates.grid())
 	lat  = collect(36.0:0.1:38.5)
 	iso1 = [(-9.5 .+ 0.4 .* sin.((lat .- 36) .* 2)) lat]
 	iso2 = IG._ce_rotated_line(iso1, 20.0, 60.0, 3.0)

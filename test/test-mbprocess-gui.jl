@@ -15,7 +15,7 @@
 	else
 		pump() = for _ in 1:10; sleep(0.05); end
 		G = IG.GMT.mat2grid(Float32[i + j for j in 1:20, i in 1:20], x = collect(1.0:20.0), y = collect(1.0:20.0))
-		fig = IG.view_grid(G; title = "mbprocess parking")
+		fig = IG.viz(G; title = "mbprocess parking")
 		pump()
 		try
 			@test mbprocess_dialog(; fig)

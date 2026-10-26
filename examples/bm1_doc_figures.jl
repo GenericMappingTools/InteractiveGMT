@@ -23,7 +23,7 @@
 # Titles and labels are DELIBERATELY ASCII-ONLY: non-ASCII passed into a GMT `title=` comes back as
 # mojibake in the PNG.
 
-using InteractiveGMT, GMT
+using InteractiveGMT    # re-exports GMT.jl; the static figures below are GMT.plot / GMT.plot!
 
 const IG = InteractiveGMT
 const CB = InteractiveGMT.CatalinaBenchmark1
@@ -54,9 +54,9 @@ function pair_panel!(xb, yb, xr, yr, rgx, ttl, xlab, ylab, panel, lg)
 	(!any(kb) || !any(kr)) && return
 	ylo = min(minimum(yb[kb]), minimum(yr[kr]));  yhi = max(maximum(yb[kb]), maximum(yr[kr]))
 	pad = 0.08 * max(yhi - ylo, eps())
-	plot(xb[kb], yb[kb]; panel=panel, region=(rgx[1], rgx[2], ylo - pad, yhi + pad),
+	GMT.plot(xb[kb], yb[kb]; panel=panel, region=(rgx[1], rgx[2], ylo - pad, yhi + pad),
 	     lc=:blue, lw=1, frame=(axes=:WSen,), xlabel=xlab, ylabel=ylab, title=ttl)
-	plot!(xr[kr], yr[kr]; panel=panel, lc=:red, ls=:dash, lw=1)
+	GMT.plot!(xr[kr], yr[kr]; panel=panel, lc=:red, ls=:dash, lw=1)
 	legend(lg; position=(inside=:TR, width=0.0))
 end
 
@@ -76,28 +76,28 @@ function fig_setup(rundir, outdir)
 	subplot(grid=(2,1), F=(width=22, height=16), margins="0.6c/0.6c/0.4c/1.6c")
 	# (a) the whole flume: a plane 1:10 beach, still water at z = 0
 	k = x .<= 25000.0
-	plot(x[k], z[k]; panel=(1,1), region=(0.0, 25000.0, -2600.0, 200.0), lc=:black, lw=1.25,
+	GMT.plot(x[k], z[k]; panel=(1,1), region=(0.0, 25000.0, -2600.0, 200.0), lc=:black, lw=1.25,
 	     frame=(axes=:WSen,), xlabel="x (m)", ylabel="bed elevation (m)",
 	     title="(a) Catalina BP1 flume: plane beach, slope 1:10")
-	plot!([0.0, 25000.0], [0.0, 0.0]; panel=(1,1), lc="100/140/200", lw=0.75, ls=:dot)
+	GMT.plot!([0.0, 25000.0], [0.0, 0.0]; panel=(1,1), lc="100/140/200", lw=0.75, ls=:dot)
 	# (b) the beach, with each nest drawn over the span it covers
 	k2 = (x .>= -200.0) .& (x .<= 1400.0)
-	plot(x[k2], z[k2]; panel=(2,1), region=(-200.0, 1400.0, -160.0, 40.0), lc=:black, lw=1.25,
+	GMT.plot(x[k2], z[k2]; panel=(2,1), region=(-200.0, 1400.0, -160.0, 40.0), lc=:black, lw=1.25,
 	     frame=(axes=:WSen,), xlabel="x (m)", ylabel="bed elevation (m)",
 	     title="(b) the beach, and the extent of each nested grid")
-	plot!([-200.0, 1400.0], [0.0, 0.0]; panel=(2,1), lc="100/140/200", lw=0.75, ls=:dot)
+	GMT.plot!([-200.0, 1400.0], [0.0, 0.0]; panel=(2,1), lc="100/140/200", lw=0.75, ls=:dot)
 	for (lev, path, label) in paths
 		isfile(path) || continue
 		G = IG._read_cube_layer(path * "?" * IG._bm1_var(path), 1)
 		G === nothing && continue
 		y  = 22.0 - 13.0 * lev
 		xe = min(G.range[2], 1400.0)
-		plot!([G.range[1], xe], [y, y]; panel=(2,1), lc=cols[lev+1], lw=4)
+		GMT.plot!([G.range[1], xe], [y, y]; panel=(2,1), lc=cols[lev+1], lw=4)
 		text!(mat2ds([xe + 25.0 y], [label]); panel=(2,1), font=(7,"Helvetica",cols[lev+1]),
 		      justify=:ML, noclip=true)
 	end
 	for e in IG._BM1_LEVEL_EDGES
-		plot!([e, e], [-160.0, 40.0]; panel=(2,1), lc="150/150/150", lw=0.5, ls=:dash)
+		GMT.plot!([e, e], [-160.0, 40.0]; panel=(2,1), lc="150/150/150", lw=0.5, ls=:dash)
 	end
 	subplot("end")
 	gmtend()
@@ -247,17 +247,17 @@ function fig_nesting(rundir, outdir)
 		append!(ys, ya[ka])
 		isempty(ys) && continue
 		ylo, yhi = minimum(ys), maximum(ys);  pad = 0.10 * max(yhi - ylo, eps())
-		plot(xa[ka], ya[ka]; panel=(row,1), region=(rgx[1], rgx[2], ylo - pad, yhi + pad),
+		GMT.plot(xa[ka], ya[ka]; panel=(row,1), region=(rgx[1], rgx[2], ylo - pad, yhi + pad),
 		     lc="120/120/120", lw=2.0, frame=(axes=:WSen,), xlabel="x (m)", ylabel="eta (m)",
 		     title = row == 1 ? "t = 175 s: the model curve, one colour per nesting level"
 		                      : "the same, over the two finest levels")
 		for (lev, cx, cy) in chunks
 			m = (cx .>= rgx[1]) .& (cx .<= rgx[2])
-			any(m) && plot!(cx[m], cy[m]; panel=(row,1), lc=cols[lev], lw=1.25)
+			any(m) && GMT.plot!(cx[m], cy[m]; panel=(row,1), lc=cols[lev], lw=1.25)
 		end
 		for e in IG._BM1_LEVEL_EDGES
 			(e >= rgx[1] && e <= rgx[2]) &&
-				plot!([e, e], [ylo - pad, yhi + pad]; panel=(row,1), lc="150/150/150", lw=0.5, ls=:dash)
+				GMT.plot!([e, e], [ylo - pad, yhi + pad]; panel=(row,1), lc="150/150/150", lw=0.5, ls=:dash)
 		end
 		legend(lg; position=(inside=:TR, width=0.0))
 	end

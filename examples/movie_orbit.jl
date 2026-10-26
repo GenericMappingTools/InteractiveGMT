@@ -1,8 +1,7 @@
-using GMT
 using InteractiveGMT
 
 G = GMT.peaks()
-fig = view_grid(G)
+fig = viz(G)
 
 # Julia's do-block is passed as the first positional argument, hence this dispatches to
 # InteractiveGMT's extension of GMT.movie rather than GMT.jl's script-recording movie method.

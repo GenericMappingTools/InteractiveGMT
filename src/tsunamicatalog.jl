@@ -181,7 +181,7 @@ function _plot_noaa_tsunami(scene::Ptr{Cvoid}, W, E, S, N)::Bool
 	n     = length(xs)
 	rows  = [view(data, k, :) for k in 1:n]
 	sizes = [_seis_mag_size(Float64(data[k, _NOAA_TSU_MAG])) for k in 1:n]
-	return add_symbols!(scene, xs, ys; symbol=:circle, size=sizes, fill=:cyan, edge=:black,
+	return _add_symbols!(scene, xs, ys; symbol=:circle, size=sizes, fill=:cyan, edge=:black,
 	                    edgewidth=1.0, name=_geo_layer_name("noaa_tsunami"), srs=_LONLAT,
 	                    info=[_noaa_tsu_info(rows[k], country[k]) for k in 1:n],
 	                    datanames=_NOAA_TSU_TABLE_COLS,

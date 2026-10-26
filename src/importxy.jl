@@ -79,7 +79,7 @@ function _import_xy_scaled(scene::Ptr{Cvoid}, D::Vector{GMTdataset}, name::Strin
 	# ONE layer for the whole table: per-point size and colour travel INSIDE it (add_symbols! passes
 	# them to gmtvtk_add_symbols_ex_h). One call, one actor, ONE Scene Objects handle named for the
 	# file. A call per row gave a row per point, which is the same flooding the text import had.
-	add_symbols!(scene, Float64.(m[:, 1]), Float64.(m[:, 2]); z=Float64.(m[:, 3]),
+	_add_symbols!(scene, Float64.(m[:, 1]), Float64.(m[:, 2]); z=Float64.(m[:, 3]),
 	             symbol=:circle, size=sizes, sizeunit=:pt, fill=colors, edge=:black, name=name)
 	return nothing
 end

@@ -58,7 +58,7 @@ function _on_grdsample(scene::Ptr{Cvoid}, cparams::Cstring)::Cvoid
 				# unnamed base, GrdsampleDialog 70_window.cpp:1148) never has to be mapped back.
 				_adopt_derived!(scene, newname, G_out)
 			else
-				GMT.gmtwrite(output, G_out); view_grid(G_out)
+				GMT.gmtwrite(output, G_out); _view_grid(G_out)
 			end
 		elseif src isa GMTimage
 			# Image -> GMT.gdalwarp (grdsample is grid-only).

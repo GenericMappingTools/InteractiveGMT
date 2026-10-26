@@ -7,20 +7,15 @@ CurrentModule = InteractiveGMT
 ## Front-Door Dispatcher
 
 ```@docs
-iview
-```
-
-## Grid Viewer
-
-```@docs
-view_grid
-view_image
+viz
 ```
 
 ## Overlays
 
 ```@docs
 add!
+scatter!
+orbits!
 ```
 
 ## Curtains
@@ -35,12 +30,6 @@ add_curtain!
 add_isosurface!
 ```
 
-## Point Clouds
-
-```@docs
-view_points
-```
-
 ## Selection
 
 ```@docs
@@ -50,14 +39,15 @@ selection
 ## Solids
 
 ```@docs
-view_fv
 poly2fv
 ```
 
 ## X,Y Plot
 
 ```@docs
-xyplot
+plot
+plot!
+bar!
 clear!
 ```
 
@@ -71,7 +61,7 @@ logscale!
 ## Stick Diagrams
 
 ```@docs
-stickplot
+feather
 ```
 
 ## Movies
@@ -123,7 +113,7 @@ cubegrid_all
 Handle for a 3-D grid/image window.
 
 ```julia
-fig = view_grid(G)  # Returns QtFigure
+fig = viz(G)  # Returns QtFigure
 ```
 
 ### QtPoints
@@ -131,7 +121,7 @@ fig = view_grid(G)  # Returns QtFigure
 Handle for a point cloud window.
 
 ```julia
-fig = view_points(D)  # Returns QtPoints
+fig = viz(D)  # Returns QtPoints
 ```
 
 ### QtFV
@@ -139,7 +129,7 @@ fig = view_points(D)  # Returns QtPoints
 Handle for a solid/mesh window.
 
 ```julia
-fig = view_fv("torus")  # Returns QtFV
+fig = viz("torus")  # Returns QtFV
 ```
 
 ### QtImage
@@ -155,7 +145,7 @@ Handle for an empty launcher window.
 Handle for an X,Y plot window.
 
 ```julia
-fig = xyplot([x y])  # Returns QtXYPlot
+fig = plot([x y])  # Returns QtXYPlot
 ```
 
 ## Index

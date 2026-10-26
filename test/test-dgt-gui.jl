@@ -5,7 +5,7 @@
 @testitem "DGT LIDAR: X, minimise, Esc and Use this region park; Delete ends dialog and map" tags=[:gui] setup=[GmtvtkTest] begin
 	IG = InteractiveGMT
 	_test_fn = GmtvtkTest._test_fn
-	f = view_grid(IG.GMT.peaks())
+	f = viz(IG.GMT.peaks())
 	opened() = ccall(_test_fn(:gmtvtk_dgt_open_dialog_test), Cint, (Ptr{Cvoid},), f.h)
 	parked() = ccall(_test_fn(:gmtvtk_dgt_parked_test), Cint, (Ptr{Cvoid},), f.h)
 	leave(how) = ccall(_test_fn(:gmtvtk_dgt_leave_dialog_test), Cvoid, (Ptr{Cvoid}, Cint), f.h, how)

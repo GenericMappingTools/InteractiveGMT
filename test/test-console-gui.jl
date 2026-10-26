@@ -5,7 +5,7 @@
 
 @testitem "console: one REPL pane — runs, continues an open block, recalls history" tags=[:gui] setup=[GmtvtkTest] begin
 	IG = InteractiveGMT; GMT = IG.GMT; tf = GmtvtkTest._test_fn
-	f = view_grid(GMT.mat2grid(Float32[x + y for y in 1:20, x in 1:30]))
+	f = viz(GMT.mat2grid(Float32[x + y for y in 1:20, x in 1:30]))
 	buf = zeros(UInt8, 1 << 16)
 	# type `cmd` ('\n' = Enter) and press Enter, then Up/Down; returns the current input,
 	# or the whole pane with ups = -1

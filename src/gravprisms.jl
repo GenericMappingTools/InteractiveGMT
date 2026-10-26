@@ -247,7 +247,7 @@ function _on_gravprisms(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 					names = Dd.colnames
 					infos = [join(("$(names[c]) = $(m[k, c])" for c in 1:size(m, 2)), '\n')
 					         for k in 1:size(m, 1)]
-					add_symbols!(scene, view(m, :, 1), view(m, :, 2); symbol = :circle, size = 6,
+					_add_symbols!(scene, view(m, :, 1), view(m, :, 2); symbol = :circle, size = 6,
 					             fill = :cyan, edge = :black, edgewidth = 0.5,
 					             name = "gravprisms (" * label * ")", info = infos)
 				end

@@ -21,20 +21,20 @@ iGMTinstall()
 ### Quick Example
 
 ```julia
-using InteractiveGMT, GMT
+using InteractiveGMT
 
 # View a grid
 G = GMT.peaks()
-fig = view_grid(G)
+fig = viz(G)
 
 # View points
 D = GMT.mat2ds(rand(100,3))
-fig = view_points(D; color="red")
+fig = viz(D; color="red")
 
 # X,Y plot
 t = 0:0.1:10
 y = sin.(t)
-fig = xyplot([t y])
+fig = plot([t y])
 ```
 
 The window opens immediately. The REPL stays usable.
@@ -73,10 +73,10 @@ button — the speech bubble opens the Messages dock (execution messages); a red
 ```julia
 # From file
 G = gmtread("my_grid.nc")
-fig = view_grid(G)
+fig = viz(G)
 
 # With options
-fig = view_grid(G;
+fig = viz(G;
     cmap="relief",      # Colormap
     drape=image,        # Drape an image
     title="My Grid"     # Window title
@@ -157,7 +157,7 @@ Drape a georeferenced image over the terrain (it must overlap the grid):
 ```julia
 G = gmtread("dem.nc")
 I = gmtread("satellite.tif")
-fig = view_grid(G; drape=I)   # the drape is given when the grid is opened
+fig = viz(G; drape=I)         # the drape is given when the grid is opened
 ```
 
 ### Vertical Curtain
@@ -179,7 +179,7 @@ add_curtain!(fig, [x0 y0; x1 y1];   # Track, in the grid's XY
 
 ```julia
 D = gmtread("points.xyz")
-fig = view_points(D;
+fig = viz(D;
     color="blue",   # One colour (default: coloured by z through cmap)
     size=5          # Point size
 )
@@ -203,22 +203,22 @@ sel = selection(fig)
 
 ```julia
 # Platonic solids (keywords go to the GMT.jl generator: r = circumradius)
-fig = view_fv("icosahedron"; r=2)
+fig = viz("icosahedron"; r=2)
 
 # Primitives
-fig = view_fv("torus"; R=2, r=0.5)
+fig = viz("torus"; R=2, r=0.5)
 
 # Operations
-fig = view_fv("revolve"; curve=...)
-fig = view_fv("loft"; C1=..., C2=...)
-fig = view_fv("extrude"; shape=..., h=1)
+fig = viz("revolve"; curve=...)
+fig = viz("loft"; C1=..., C2=...)
+fig = viz("extrude"; shape=..., h=1)
 ```
 
 ### Polygon Meshes
 
 ```julia
 fv = poly2fv(D)      # closed 3-D polygons (x y z), a GMTdataset or a vector of them
-fig = view_fv(fv; color="orange")
+fig = viz(fv; color="orange")
 ```
 
 **Toolbar:** **3-D Bodies** button (flyout menu) for quick solids.
@@ -237,21 +237,25 @@ A solid built from the toolbar's **3-D Bodies** flyout opens in its own solids w
 # From data
 t = 0:0.1:10
 y = sin.(t) .* exp.(-t/5)
-fig = xyplot([t y]; xlabel="Time (s)", ylabel="Amplitude")
+fig = plot([t y]; xlabel="Time (s)", ylabel="Amplitude")
 
-# From file
+# From file (multicol=true: every column after the first is a series)
 D = gmtread("data.txt")
-fig = xyplot(D)
+fig = plot(D; multicol=true)
 ```
+
+`plot` takes GMT.jl's `plot` arguments and keywords (`legend`, `lc`, `lw`, `ls`, `marker`, `ms`,
+`proj`, ...). As in GMT.jl, a matrix or dataset draws only column 2 against column 1 unless
+`multicol=true` is given.
 
 ### Adding Series
 
 ```julia
-add!(fig, more_data)                                # a GMTdataset or matrix: col 1 = X
-add!(fig, x, y; name="Series 2", linestyle=:dash)  # or one series by hand
+plot!(fig, more_data)                               # a GMTdataset or matrix: col 1 = X
+plot!(fig, x, y; legend="Series 2", ls=:dash)      # or one series by hand
 ```
 
-`xyplot` called while an X,Y window is open adds a new page to that window instead of opening
+`plot` called while an X,Y window is open adds a new page to that window instead of opening
 another one.
 
 ### Multiple Pages
@@ -265,7 +269,7 @@ Click the **[+]** button beside the tabs to add a new page.
 
 ```julia
 # X is epoch seconds
-fig = xyplot([epoch_seconds values]; xtime=true)   # or :date, :date_ymd, :time, :decyear, :doy
+fig = plot([epoch_seconds values]; xtime=true)     # or :date, :date_ymd, :time, :decyear, :doy
 xtime!(fig, :decyear)                               # change it later
 ```
 
@@ -278,13 +282,13 @@ Decimal year, Day-of-Year.
 
 ```julia
 # Log X
-fig = xyplot(data; xscale=:log)
+fig = plot(data; proj=:logx)
 
 # Log Y
-fig = xyplot(data; yscale=:log)
+fig = plot(data; proj=:logy)
 
 # Both
-fig = xyplot(data; xscale=:log, yscale=:log)
+fig = plot(data; proj=:loglog)
 
 # Later, on a live plot
 logscale!(fig; x=true, y=false)
@@ -403,7 +407,7 @@ data without a CRS disables the menu.
 
 ```julia
 # Via code
-fig = iview("my_file.nc")   # Auto-detects type
+fig = viz("my_file.nc")     # Auto-detects type
 
 # Via menu
 # File → Open known file types… (or the folder button on the toolbar)
@@ -585,8 +589,8 @@ Quick-insert a geometric solid:
 3. The solid opens in its own solids window
 
 **Operations:** **Revolve / Loft / Extrude** build a demo (a sample profile, curves, a star outline).
-For your own input use `view_fv("revolve"; curve=…)`, `view_fv("loft"; C1=…, C2=…)`,
-`view_fv("extrude"; shape=…, h=…)`.
+For your own input use `viz("revolve"; curve=…)`, `viz("loft"; C1=…, C2=…)`,
+`viz("extrude"; shape=…, h=…)`.
 
 ---
 
@@ -688,13 +692,13 @@ Shows execution errors from menu actions (drop, geography, basemap, etc.).
 ### Create a shaded relief map with coastlines
 
 ```julia
-using InteractiveGMT, GMT
+using InteractiveGMT
 
 # Load DEM
 G = gmtread("dem.nc")
 
 # View with hillshade
-fig = view_grid(G; cmap="geo")    # vertical exaggeration: the gizmo's amber cone
+fig = viz(G; cmap="geo")    # vertical exaggeration: the gizmo's amber cone
 
 # Turn on hillshade
 # (In window: the Illumination (Hillshade) toolbar button)
@@ -711,7 +715,7 @@ add!(fig, coast; mode=:lines, color="black", size=1)
 D = gmtread("tide.txt")  # epoch_seconds, sea_level
 
 # Plot
-fig = xyplot(D; xlabel="Time", ylabel="Sea level (m)", xtime=true)
+fig = plot(D; xlabel="Time", ylabel="Sea level (m)", xtime=true)
 
 # Compute spectrum
 # (In window: select series → Analysis → FFT — Power Spectrum Density)
@@ -725,7 +729,7 @@ G = gmtread("dem.nc")
 I = gmtread("satellite.tif")
 
 # View with drape
-fig = view_grid(G; drape=I, cmap="gray")
+fig = viz(G; drape=I, cmap="gray")
 
 # Adjust lighting
 # (In window: the Illumination (Hillshade) toolbar button → Cast shadows)
@@ -738,7 +742,7 @@ G1 = gmtread("model.nc")
 G2 = gmtread("observation.nc")
 
 # View first
-fig = view_grid(G1)
+fig = viz(G1)
 
 # Add second as a second layer
 add!(fig, G2)
@@ -802,8 +806,8 @@ setopacity!(fig, 0.5; layer="observation")
 **Julia REPL:**
 
 ```julia
-?view_grid     # Docstring
-?xyplot        # Docstring
+?viz           # Docstring
+?plot          # Docstring
 ```
 
 ---

@@ -167,7 +167,7 @@ end
 # Scene-Objects rebuild + render). Offset large enough that the label clears the star glyph
 # (10px-ish on-screen at typical zoom) instead of overlapping it.
 # `xs`/`ys` are lon/lat: they cross into the window's system through `_to_window` (crs.jl), the SAME
-# crossing `add_symbols!` gives the stars, so label k still sits by star k (event index = position in
+# crossing `_add_symbols!` gives the stars, so label k still sits by star k (event index = position in
 # the surviving set, in both). The offset is a fraction of the window's own extent, in its own units.
 function _add_city_labels!(scene::Ptr{Cvoid}, xs, ys, names, W, E, S, N, groupName::AbstractString)
 	xs, ys, keep = _to_window(scene, _LONLAT, xs, ys)
@@ -344,7 +344,7 @@ function _on_geography(scene::Ptr{Cvoid}, req::String)::Cvoid
 			# Each symbol carries its 4-field metadata, shown as a tooltip when the mouse hovers it.
 			xs, ys, infos = _volcano_data(W, E, S, N)
 			isempty(xs) && return
-			add_symbols!(scene, xs, ys; symbol=:triangle, size=12, fill=:yellow, edge=:black, edgewidth=1.0,
+			_add_symbols!(scene, xs, ys; symbol=:triangle, size=12, fill=:yellow, edge=:black, edgewidth=1.0,
 			             name="Volcanoes", info=infos, srs=_LONLAT)
 		elseif kind == "city_major" || kind == "city"
 			# World cities (Mirone wcity_major.dat/wcity.dat): 7pt filled stars, constant on-screen
@@ -355,7 +355,7 @@ function _on_geography(scene::Ptr{Cvoid}, req::String)::Cvoid
 			xs, ys, names = _city_data(datafile, W, E, S, N)
 			isempty(xs) && return
 			nm = kind == "city_major" ? "Major Cities" : "Cities"
-			add_symbols!(scene, xs, ys; symbol=:star, size=7, sizeunit=:pt, fill=:blue, edge=:black,
+			_add_symbols!(scene, xs, ys; symbol=:star, size=7, sizeunit=:pt, fill=:blue, edge=:black,
 			             edgewidth=1.0, name=nm, info=names, srs=_LONLAT)
 			_add_city_labels!(scene, xs, ys, names, W, E, S, N, nm)
 		elseif kind == "meteorite"
@@ -363,14 +363,14 @@ function _on_geography(scene::Ptr{Cvoid}, req::String)::Cvoid
 			# Each carries its 5-field metadata (name/diameter/age/exposed/type) as a hover tooltip.
 			xs, ys, infos = _meteorite_data(W, E, S, N)
 			isempty(xs) && return
-			add_symbols!(scene, xs, ys; symbol=:diamond, size=11, fill=:red, edge=:black, edgewidth=1.0,
+			_add_symbols!(scene, xs, ys; symbol=:diamond, size=11, fill=:red, edge=:black, edgewidth=1.0,
 			             name="Meteorite Impacts", info=infos, srs=_LONLAT)
 		elseif kind == "tidestations"
 			# Tide-prediction stations (xtide.mat harmonic database): yellow filled triangles, thin
 			# black edge, constant on-screen size. Hover shows the station name.
 			xs, ys, names = _tidestations_data(W, E, S, N)
 			isempty(xs) && return
-			add_symbols!(scene, xs, ys; symbol=:triangle, size=8, sizeunit=:pt, fill=:yellow, edge=:black,
+			_add_symbols!(scene, xs, ys; symbol=:triangle, size=8, sizeunit=:pt, fill=:yellow, edge=:black,
 			             edgewidth=1.0, name=_geo_layer_name(kind), info=names, srs=_LONLAT)
 		elseif kind == "tides"
 			# Mirone's tide-gauge stations: red stars with a thin black edge, constant on-screen size.
@@ -378,14 +378,14 @@ function _on_geography(scene::Ptr{Cvoid}, req::String)::Cvoid
 			# "Download Mareg (2 days)" / "(Calendar)" entries -> _on_tides_download.
 			xs, ys, infos = _tides_data(W, E, S, N)
 			isempty(xs) && return
-			add_symbols!(scene, xs, ys; symbol=:star, size=8, sizeunit=:pt, fill=:red, edge=:black, edgewidth=1.0,
+			_add_symbols!(scene, xs, ys; symbol=:star, size=8, sizeunit=:pt, fill=:red, edge=:black, edgewidth=1.0,
 			             name="Tide Stations", info=infos, srs=_LONLAT)
 		elseif kind == "hydro"
 			# NOAA PMEL hydrothermal vents: orange filled circles with a thin black edge, screen-constant.
 			# Each carries its 5-field metadata (name/site activity/tectonic/spreading rate/depth) as a tooltip.
 			xs, ys, infos = _hydro_data(W, E, S, N)
 			isempty(xs) && return
-			add_symbols!(scene, xs, ys; symbol=:circle, size=9, fill=:orange, edge=:black, edgewidth=1.0,
+			_add_symbols!(scene, xs, ys; symbol=:circle, size=9, fill=:orange, edge=:black, edgewidth=1.0,
 			             name="Hydrothermal Vents", info=infos, srs=_LONLAT)
 		elseif kind == "noaa_tsunami"
 			# NOAA/NCEI historical tsunami events (Geophysics > Tsunamis). A point dataset over the view
@@ -505,7 +505,7 @@ function _on_tides_download(scene::Ptr{Cvoid}, cmode::Cstring, cstation::Cstring
 		# Open the series in its OWN standalone X,Y plot window (Object Manager + Analysis + save)
 		# instead of overwriting the 3-D viewer's shared bottom-dock Profile panel. X is epoch
 		# seconds -> xtime=:date paints date/time labels (matches the old isDate=1 path).
-		xyplot(x, y; name=title, title=title, xlabel="Time (UTC)", ylabel=ylab, xtime=:date)
+		_xyplot(x, y; name=title, title=title, xlabel="Time (UTC)", ylabel=ylab, xtime=:date)
 	catch e
 		_tides_fail(scene, sprint(showerror, e))
 		@tool_error "tides: download callback failed" exception=(e,)
@@ -597,7 +597,7 @@ function _on_tidemodel(scene::Ptr{Cvoid}, cmode::Cstring, cstation::Cstring)::Cv
 		epoch0u = GMT.Dates.DateTime(1970, 1, 1)
 		x = [GMT.Dates.value(t - epoch0u) / 1000.0 for t in tim]        # epoch seconds
 		title = xharm.station[ista]
-		p = xyplot(x, pred; name=title, title="Tide prediction — $title",
+		p = _xyplot(x, pred; name=title, title="Tide prediction — $title",
 		           xlabel="Time (UTC)", ylabel="$unit (datum $(xharm.datum[ista]))", xtime=:date)
 
 		if showNow
@@ -670,10 +670,10 @@ function _earthtide_series(scene, start, stop, lon, lat, comp)
 		label = _ET_COMP[ch][2]
 		y = Float64.(view(D.data, :, colidx[label]))
 		if pl === nothing
-			pl = xyplot(t, y; name=label, title="Earth tides @ ($lon, $lat)",
+			pl = _xyplot(t, y; name=label, title="Earth tides @ ($lon, $lat)",
 			            xlabel="Time (UTC)", ylabel="Displacement (m)", xtime=:date)
 		else
-			add!(pl, t, y; name=label)
+			_xyadd!(pl, t, y; name=label)
 		end
 	end
 	return

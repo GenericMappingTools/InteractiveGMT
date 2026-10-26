@@ -336,7 +336,7 @@ function _on_solar(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 			if _on(d, "marksun")
 				lon = mod(v[1] - W, 360.0) + W             # the map's own longitude frame
 				ccall(_fn(:gmtvtk_remove_symbols_h), Cint, (Ptr{Cvoid}, Cstring), scene, _SOLAR_SUN_LAYER)
-				add_symbols!(scene, [lon], [v[2]]; symbol = :star, size = 16, sizeunit = :pt,
+				_add_symbols!(scene, [lon], [v[2]]; symbol = :star, size = 16, sizeunit = :pt,
 				             fill = :yellow, edge = :black, edgewidth = 1.0, name = _SOLAR_SUN_LAYER, srs = _LONLAT,
 				             info = ["Sub-solar point\nlon $(_solar_fmt(lon))\nlat $(_solar_fmt(v[2]))"])
 			end

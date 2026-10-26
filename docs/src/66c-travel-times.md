@@ -21,9 +21,9 @@ Here the grid is `@earth_relief_02m` cut to `-20/-4/30/44`: a 481 × 421 grid at
 from Galicia to southern Morocco, with Madeira in the SW corner. From the REPL:
 
 ```julia
-using GMT, InteractiveGMT
+using InteractiveGMT
 G = grdcut("@earth_relief_02m", region=(-20, -4, 30, 44))
-view_grid(G)
+viz(G)
 ```
 
 Or open the file with *File → Open*, or drag it onto the window. Switch the view to **2D** (toolbar

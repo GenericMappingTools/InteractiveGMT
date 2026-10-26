@@ -19,20 +19,20 @@ Interactive 3-D viewing of [GMT.jl](https://github.com/GenericMappingTools/GMT.j
 ## Quick Start
 
 ```julia
-using InteractiveGMT, GMT
+using InteractiveGMT
 
 # View a grid
 G = GMT.peaks()
-fig = iview(G)
+fig = viz(G)
 
 # View points
 D = GMT.mat2ds(rand(100,3))
-fig = iview(D; color="red")
+fig = viz(D; color="red")
 
 # X,Y plot
 t = 0:0.1:10
 y = sin.(t)
-fig = xyplot([t y])
+fig = plot([t y])
 ```
 
 ## Documentation

@@ -213,7 +213,7 @@ function _on_rgb_scatter(scene::Ptr{Cvoid}, px::Ptr{UInt8}, npix::Cint, nb::Cint
 		end
 		label = unsafe_string(clabel)
 		# A real 3-D iGMT window instead of MATLAB's plot3 figure — Red/Green/Blue ARE x/y/z.
-		view_points(P; geographic=false,
+		_view_points(P; geographic=false,
 		            title="RGB scatter — $label  (x = Red, y = Green, z = Blue)")
 		return Cint(1)
 	catch err

@@ -1,6 +1,5 @@
 # Image-drape orientation test: a chiral "F" marker draped on a flat grid reveals any flip/mirror.
 using InteractiveGMT
-using GMT
 
 # Flat grid so the texture shows undistorted, top-down-ish view.
 nx, ny = 200, 160
@@ -25,7 +24,7 @@ I.image  = permutedims(img, (2, 1, 3))
 I.layout = "TRBa"
 println("layout=", I.layout, "  size=", size(I.image))
 
-fig = view_grid(G; drape=I, geographic=false, title="drape F test (row-major)")
+fig = viz(G; drape=I, geographic=false, title="drape F test (row-major)")
 
 if abspath(PROGRAM_FILE) == @__FILE__
     sleep(2)                                     # let the Qt pump render a frame

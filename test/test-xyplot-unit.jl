@@ -3,8 +3,8 @@
 # actual window) is exercised by the :gui tests in test-scene-gui.jl. Noise is DETERMINISTIC (a
 # high-frequency deterministic tone, not randn) so the assertions are reproducible with no RNG dep.
 
-@testitem "xyplot exports present" tags=[:unit, :fast] begin
-	for s in (:xyplot, :add!, :clear!, :profile_to_xyplot, :xtime!, :stickplot, :QtXYPlot)
+@testitem "X,Y plot exports present" tags=[:unit, :fast] begin
+	for s in (:plot, :plot!, :clear!, :profile_to_xyplot, :xtime!, :feather, :QtXYPlot)
 		@test isdefined(InteractiveGMT, s)
 	end
 end

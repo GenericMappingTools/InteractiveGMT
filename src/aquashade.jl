@@ -357,7 +357,7 @@ end
 # not something computed per node. It is NOT method 7 (the CPU Cook-Torrance bake), and neither
 # one stands in for the other.
 #
-# Nothing here is re-implemented. The half is shown through `view_grid`, lit through the
+# Nothing here is re-implemented. The half is shown through `_view_grid`, lit through the
 # Illumination tool's own door (`_on_hillshade` with `model=1`, exactly as the dialog sends it), and
 # its pixels are taken with the capture that already exists (`gmtvtk_capture_rect_rgb`, via
 # `_capture_rect_image`). It goes into `aqua_shade_image`'s OWN combine, the same one every other

@@ -68,7 +68,7 @@
 	# either grid's VE was before or becomes after
 	for mode in (1, 0), (veBase, veSecond, veAfter) in ((1.0, 1.0, 1.0), (5.0, 1.0, 1.0), (1.0, 5.0, 1.0),
 	                                                     (1.0, 1.0, 5.0), (5.0, 1.0, 0.3))
-		f = IG.view_grid(G; geographic=true, title="base"); pump()
+		f = IG.viz(G; geographic=true, title="base"); pump()
 		h = f.h
 		try
 			mode == 0 && @test viewmode(h, 0) == 1
@@ -104,7 +104,7 @@
 	end
 
 	# LAW 1 and the track's ownership, on the VE numbers
-	f = IG.view_grid(G; geographic=true, title="base"); pump()
+	f = IG.viz(G; geographic=true, title="base"); pump()
 	h = f.h
 	try
 		setve(h, 3.0); pump()

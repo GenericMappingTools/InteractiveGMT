@@ -91,16 +91,16 @@ function _gravfft_curve(scene::Ptr{Cvoid}, R, title::String, outfile::AbstractSt
 	show_table(scene, D; name = title)
 
 	x = Float64.(@view m[:, 1])
-	p = xyplot(x, Float64.(@view m[:, 2]); name = ylab, title = title, xlabel = xlab, ylabel = ylab)
+	p = _xyplot(x, Float64.(@view m[:, 2]); name = ylab, title = title, xlabel = xlab, ylabel = ylab)
 	# The one-sigma error bar has no primitive of its own in the X,Y tool, so it travels as the two
 	# dashed envelopes around the estimate — which is what it means anyway.
 	if size(m, 2) >= 3
 		e = Float64.(@view m[:, 3])
 		y = Float64.(@view m[:, 2])
-		add!(p, x, y .+ e; name = "+1 sigma", linestyle = :dash)
-		add!(p, x, y .- e; name = "-1 sigma", linestyle = :dash)
+		_xyadd!(p, x, y .+ e; name = "+1 sigma", linestyle = :dash)
+		_xyadd!(p, x, y .- e; name = "-1 sigma", linestyle = :dash)
 	end
-	size(m, 2) >= 4 && add!(p, x, Float64.(@view m[:, 4]); name = "theoretical", linewidth = 2)
+	size(m, 2) >= 4 && _xyadd!(p, x, Float64.(@view m[:, 4]); name = "theoretical", linewidth = 2)
 	return Cint(1)
 end
 

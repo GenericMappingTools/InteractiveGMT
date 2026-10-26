@@ -446,7 +446,7 @@ function _xy_addpage!(plot::Ptr{Cvoid}, p::QtXYPlot, pagename::AbstractString, x
                       kind::Symbol=:line, barwidth::Real=0)
 	ccall(_fn(:gmtvtk_xyplot_add_page), Cint, (Ptr{Cvoid}, Cstring), plot, String(pagename))
 	ccall(_fn(:gmtvtk_xyplot_set_labels), Cvoid, (Ptr{Cvoid}, Cstring, Cstring), plot, String(xlabel), String(ylabel))
-	add!(p, x, y; name=String(name), kind, barwidth)
+	_xyadd!(p, x, y; name=String(name), kind, barwidth)
 	return
 end
 
@@ -474,13 +474,13 @@ function _xy_stat(plot::Ptr{Cvoid}, p::QtXYPlot, kind::AbstractString, sel::Int=
 		page("density", "value", "density")
 		for (v, nm) in zip(vals, names)
 			D = GMT.kernelDensity(v)
-			add!(p, D.data[:, 1], D.data[:, 2]; name="$nm density")
+			_xyadd!(p, D.data[:, 1], D.data[:, 2]; name="$nm density")
 		end
 	elseif kind == "ecdfplot"
 		page("ECDF", "value", "cumulative probability")
 		for (v, nm) in zip(vals, names)
 			xF, F = GMT.ecdf(v)
-			add!(p, xF, F; name="$nm ECDF")
+			_xyadd!(p, xF, F; name="$nm ECDF")
 		end
 		ccall(_fn(:gmtvtk_xyplot_set_plot_type), Cint, (Ptr{Cvoid}, Cstring), plot, "stairs")   # ecdfplot draws stairs
 	elseif kind == "boxplot"
@@ -492,9 +492,9 @@ function _xy_stat(plot::Ptr{Cvoid}, p::QtXYPlot, kind::AbstractString, sel::Int=
 			c, q50, q0, q25, q75, q100 = D.data[k, 1:6]
 			bx = [c-w, c+w, c+w, c-w, c-w, nan, c-w, c+w, nan, c, c, nan, c, c, nan, c-w/2, c+w/2, nan, c-w/2, c+w/2]
 			by = [q25, q25, q75, q75, q25, nan, q50, q50, nan, q0, q25, nan, q75, q100, nan, q0, q0, nan, q100, q100]
-			add!(p, bx, by; name=names[k])
+			_xyadd!(p, bx, by; name=names[k])
 		end
-		size(Dol.data, 1) > 0 && add!(p, Dol.data[:, 1], Dol.data[:, 2]; name="outliers", marker=:circle, linestyle=:none)
+		size(Dol.data, 1) > 0 && _xyadd!(p, Dol.data[:, 1], Dol.data[:, 2]; name="outliers", marker=:circle, linestyle=:none)
 	elseif kind == "violin"
 		page("violin", "series", "value")
 		Dv, _, xc = GMT.helper1_violin(vals)
@@ -504,7 +504,7 @@ function _xy_stat(plot::Ptr{Cvoid}, p::QtXYPlot, kind::AbstractString, sel::Int=
 			# helper1_violin computes that scale but its loop never applies it (GMT.jl statplots.jl).
 			hw = maximum(abs.(P[:, 1] .- xc[k]))
 			xs = hw > 0 ? xc[k] .+ (P[:, 1] .- xc[k]) .* (0.28 / hw) : P[:, 1]
-			add!(p, xs, P[:, 2]; name=names[k])
+			_xyadd!(p, xs, P[:, 2]; name=names[k])
 		end
 	elseif kind == "qqnorm" || kind == "qqplot"
 		allqx = Float64[]
@@ -513,17 +513,17 @@ function _xy_stat(plot::Ptr{Cvoid}, p::QtXYPlot, kind::AbstractString, sel::Int=
 			for (v, nm) in zip(vals, names)
 				pr = (0.5:length(v)) ./ length(v)
 				qx, qy = GMT.qqbuild(v, sqrt(2) .* GMT.erfinv(collect(2 .* pr .- 1)))
-				add!(p, qx, qy; name=nm, marker=:circle, linestyle=:none)
+				_xyadd!(p, qx, qy; name=nm, marker=:circle, linestyle=:none)
 				append!(allqx, qx)
 			end
 		else
 			page("qqplot", names[1], names[2])
 			qx, qy = GMT.qqbuild(vals[1], vals[2])
-			add!(p, qx, qy; name="$(names[1]) vs $(names[2])", marker=:circle, linestyle=:none)
+			_xyadd!(p, qx, qy; name="$(names[1]) vs $(names[2])", marker=:circle, linestyle=:none)
 			append!(allqx, qx)
 		end
 		lo, hi = extrema(allqx)       # GMT.jl's default qqline=:identity: ys = xs over the x quantiles
-		add!(p, [lo, hi], [lo, hi]; name="identity", color=:black, linestyle=:dash)
+		_xyadd!(p, [lo, hi], [lo, hi]; name="identity", color=:black, linestyle=:dash)
 	elseif kind in ("radar", "rose", "parallelplot", "cornerplot", "marginalhist", "biplot")
 		_xy_framed(plot, p, kind, sel, page)
 	else
@@ -553,7 +553,7 @@ _xy_look(plot, square::Bool, hide::Bool, lim=(NaN, NaN, NaN, NaN)) =
 
 # add! one series, then draw it as XYSeries kind `kind` (8 = filled polygons).
 function _xy_addk!(plot, p, x, y, name, kind; kw...)
-	add!(p, x, y; name=String(name), kw...)
+	_xyadd!(p, x, y; name=String(name), kw...)
 	n = ccall(_fn(:gmtvtk_xyplot_series_count), Cint, (Ptr{Cvoid},), plot)
 	ccall(_fn(:gmtvtk_xyplot_set_series_kind), Cint, (Ptr{Cvoid}, Cint, Cint), plot, n - 1, kind)
 	return
@@ -626,7 +626,7 @@ function _xy_framed(plot, p, kind, sel, page)
 			cx, cy = _xy_circle(r); append!(gx, cx); append!(gy, cy)
 		end
 		for a in angs  append!(gx, [0.0, cosd(a), NaN]); append!(gy, [0.0, sind(a), NaN])  end
-		add!(p, gx, gy; name="radar grid", color=_XY_GRID_RGB)
+		_xyadd!(p, gx, gy; name="radar grid", color=_XY_GRID_RGB)
 		for (i, nm) in enumerate(nms)
 			r = data[i, :] ./ lims
 			_xy_addk!(plot, p, vcat(r .* cosd.(angs), r[1] * cosd(angs[1])), vcat(r .* sind.(angs), r[1] * sind(angs[1])), nm, 8)
@@ -655,7 +655,7 @@ function _xy_framed(plot, p, kind, sel, page)
 			cx, cy = _xy_circle(rr); append!(gx, cx); append!(gy, cy)
 		end
 		for a in 0:30:330  append!(gx, [0.0, sind(a), NaN]); append!(gy, [0.0, cosd(a), NaN])  end
-		add!(p, gx, gy; name="rose grid", color=_XY_GRID_RGB)
+		_xyadd!(p, gx, gy; name="rose grid", color=_XY_GRID_RGB)
 		px, py = Float64[], Float64[]
 		for k in axes(hst, 1)
 			r[k] > 0 || continue
@@ -678,10 +678,10 @@ function _xy_framed(plot, p, kind, sel, page)
 		page("parallelplot", "", "")
 		lx, ly = Float64[], Float64[]
 		for i in axes(A, 1)  append!(lx, vcat(1.0:nv, NaN)); append!(ly, vcat(A[i, :], NaN))  end
-		add!(p, lx, ly; name="observations")
+		_xyadd!(p, lx, ly; name="observations")
 		ax, ay = Float64[], Float64[]
 		for k in 1:nv  append!(ax, [k, k, NaN]); append!(ay, [0.0, 1.0, NaN])  end
-		add!(p, ax, ay; name="rulers", color=(0.0, 0.0, 0.0))
+		_xyadd!(p, ax, ay; name="rulers", color=(0.0, 0.0, 0.0))
 		for k in 1:nv
 			_xy_lbl(plot, k, 1.02, _xy_fmt(bbox[2k]); va=-1, size=10)
 			_xy_lbl(plot, k, -0.02, _xy_fmt(bbox[2k-1]); va=1, size=10)
@@ -706,13 +706,13 @@ function _xy_framed(plot, p, kind, sel, page)
 			rx, ry = _xy_rect(X0(j), X0(j) + 1, Y0(i), Y0(i) + 1)
 			append!(fx, vcat(rx[1:4], rx[1], NaN)); append!(fy, vcat(ry[1:4], ry[1], NaN))
 		end
-		add!(p, fx, fy; name="panels", color=(0.3, 0.3, 0.3))
+		_xyadd!(p, fx, fy; name="panels", color=(0.3, 0.3, 0.3))
 		for k in 1:nv
 			hx, hy = _xy_panel_hist(M[:, k], lohi[k]..., X0(k), Y0(k), 0.95, false)
 			_xy_addk!(plot, p, hx, hy, "$(nms[k]) histogram", 8; color=_XY_BLUE)
 		end
 		for i in 2:nv, j in 1:i-1
-			add!(p, X0(j) .+ nx(j, M[:, j]), Y0(i) .+ nx(i, M[:, i]); name="$(nms[i]) vs $(nms[j])",
+			_xyadd!(p, X0(j) .+ nx(j, M[:, j]), Y0(i) .+ nx(i, M[:, i]); name="$(nms[i]) vs $(nms[j])",
 			     marker=:circle, linestyle=:none, markersize=3, color=_XY_BLUE)
 		end
 		for j in 1:nv                                 # x scales + names under the bottom row
@@ -744,8 +744,8 @@ function _xy_framed(plot, p, kind, sel, page)
 			rx, ry = _xy_rect(a, b, c, d)
 			append!(fx, vcat(rx[1:4], rx[1], NaN)); append!(fy, vcat(ry[1:4], ry[1], NaN))
 		end
-		add!(p, fx, fy; name="panels", color=(0.3, 0.3, 0.3))
-		add!(p, (x .- xl) ./ (xh - xl), (y .- yl) ./ (yh - yl); name=isempty(nm) ? "x vs y" : nm,
+		_xyadd!(p, fx, fy; name="panels", color=(0.3, 0.3, 0.3))
+		_xyadd!(p, (x .- xl) ./ (xh - xl), (y .- yl) ./ (yh - yl); name=isempty(nm) ? "x vs y" : nm,
 		     marker=:circle, linestyle=:none, markersize=4, color=_XY_BLUE)
 		hx, hy = _xy_panel_hist(x, xl, xh, 0.0, 1 + g, f * 0.95, false)
 		_xy_addk!(plot, p, hx, hy, "x histogram", 8; color=_XY_BLUE)
@@ -775,7 +775,7 @@ function _xy_framed(plot, p, kind, sel, page)
 		r = GMT.round_wesn([mima[1], mima[2], mima_c[1], mima_c[2]])
 		r[1] = -max(-r[1], r[2]);  r[2] = -r[1];  r[3] = -max(-r[3], r[4]);  r[4] = -r[3]
 		page("biplot", "PC1 ($(round(explained[1], digits=1))%)", "PC2 ($(round(explained[2], digits=1))%)")
-		add!(p, scores[:, 1], scores[:, 2]; name="observations", marker=:circle, linestyle=:none, markersize=4,
+		_xyadd!(p, scores[:, 1], scores[:, 2]; name="observations", marker=:circle, linestyle=:none, markersize=4,
 		     color=(0.35, 0.35, 0.35))
 		axl, ayl = Float64[], Float64[]
 		hl = 0.06 * maxlen
@@ -788,7 +788,7 @@ function _xy_framed(plot, p, kind, sel, page)
 			append!(ayl, [0.0, cy, NaN, cy - hl * (uy + 0.5ux), cy, cy - hl * (uy - 0.5ux), NaN])
 			_xy_lbl(plot, cx * 1.08, cy * 1.08, nms[k]; ha=cx >= 0 ? -1 : 1, size=12, c=_XY_BLUE)
 		end
-		add!(p, axl, ayl; name="loadings", color=_XY_BLUE, linewidth=2)
+		_xyadd!(p, axl, ayl; name="loadings", color=_XY_BLUE, linewidth=2)
 		# biplot()'s symmetric limits, widened 15%: its y limits come from the coefficients alone, which
 		# leaves an arrow tip on the frame and its name outside it (GMT text is not clipped; ours is).
 		_xy_look(plot, true, false, (1.15r[1], 1.15r[2], 1.15r[3], 1.15r[4]))
@@ -1148,10 +1148,10 @@ function _on_xy_analysis(plot::Ptr{Cvoid}, cop::Cstring, sel::Cint)::Cvoid
 				ccall(_fn(:gmtvtk_xyplot_set_xtime), Cvoid, (Ptr{Cvoid}, Cint), plot, parent_fmt)
 			end
 			ccall(_fn(:gmtvtk_xyplot_set_labels), Cvoid, (Ptr{Cvoid}, Cstring, Cstring), plot, String(xl), String(yl))
-			add!(p, nx, ny; name="$nm $suffix")
+			_xyadd!(p, nx, ny; name="$nm $suffix")
 			_xy_log(plot, "Analysis: $suffix → new page ($(length(nx)) pts)")
 		else
-			add!(p, nx, ny; name="$nm $suffix")
+			_xyadd!(p, nx, ny; name="$nm $suffix")
 			_xy_log(plot, "Analysis: added '$nm $suffix' ($(length(nx)) pts)")
 		end
 	catch e

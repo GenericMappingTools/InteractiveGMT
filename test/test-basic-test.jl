@@ -1,10 +1,10 @@
 # CI-safe tests: exercise the pure-Julia helpers (colour parsing, CPT nodes, vertical-scale
 # resolution, dataset/drape packing, poly2fv). These never touch the Qt+VTK DLL, so they run
-# anywhere `using InteractiveGMT` succeeds. The viewer windows themselves (view_grid/points/fv)
+# anywhere `using InteractiveGMT` succeeds. The viewer windows themselves (viz of grids/points/fv)
 # need a live display + the built gmtvtk.dll, so they are exercised from examples/, not here.
 
 @testitem "exports present" tags=[:unit, :fast] begin
-    for s in (:view_grid, :view_image, :view_points, :view_fv, :iview, :add!, :add_curtain!,
+    for s in (:viz, :iview, :plot, :plot!, :feather, :scatter!, :orbits!, :add!, :add_curtain!,
               :show_table, :selection, :isalive, :poly2fv, :save_png, :wait_windows, :stereo!,
               :QtFigure, :QtPoints, :QtFV, :QtImage, :QtEmpty)
         @test isdefined(InteractiveGMT, s)

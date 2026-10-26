@@ -308,6 +308,6 @@ function _extract_profile(scene::Ptr{Cvoid}, path::String, proj4::String,
 	# panel's own "Open in X,Y plot tool" uses, ProfilePanel::setProfile).
 	ttl = isempty(gridname) ? "Profile" : "Profile " * String(gridname)
 	(tracks !== nothing && length(tracks) > 1) && (ttl *= " (stacked, $(length(tracks)) tracks)")
-	xyplot(dist, z; name=ttl, title=ttl, xlabel=xlab, ylabel="Elevation")
+	_xyplot(dist, z; name=ttl, title=ttl, xlabel=xlab, ylabel="Elevation")
 	return nothing
 end

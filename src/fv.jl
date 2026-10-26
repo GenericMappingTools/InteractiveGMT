@@ -3,7 +3,7 @@
 # and either its per-face colours (flat shading) or a CPT z-ramp, and hand them to gmtvtk_view_fv.
 # Mirrors GMTF3D fv_to_mesh's sides/indices packing.
 #
-# DESIGN NOTE: the public `view_fv` is a thin STUB. It parses the loose kwargs — resolving every
+# DESIGN NOTE: the public `_view_fv` is a thin STUB. It parses the loose kwargs — resolving every
 # `nothing`/auto into a CONCRETE value (a neutral empty array stands in for an absent option,
 # never `nothing`) — then calls the typed worker `_view_fv`, whose signature has ONLY concrete
 # types (no `Union{...,Nothing}`, no `nothing` defaults).
@@ -73,7 +73,7 @@ function _fv_bbox(fv::GMTfv)
 end
 
 """
-	view_fv(fv::GMTfv; cmap=:turbo, color=true, edges=false, geographic=nothing, title=...)
+	_view_fv(fv::GMTfv; cmap=:turbo, color=true, edges=false, geographic=nothing, title=...)
 
 Show a `GMTfv` (faces-vertices solid or polygon mesh — cube, sphere, country polygons, …) in
 the Qt + VTK viewer. Returns a `QtFV` handle immediately; the window stays live while you keep
@@ -91,11 +91,11 @@ using the REPL.
 - `geographic` is auto-detected (override with `true`/`false`) — only affects the axis titles.
 
 The vertical exaggeration comes from `fv.zscale` (set by `poly2fv`/`tri2fv`); 1 = true 1:1.
-E.g. `view_fv(poly2fv(GMT.gmtread("countries.gmt")))`.
+E.g. `_view_fv(poly2fv(GMT.gmtread("countries.gmt")))`.
 """
 # Resolve a GMTfv + colour options to the CONCRETE render arrays the C API takes — never `nothing`;
 # an empty array is the neutral element (a C NULL = "absent"). Shared by the new-window path
-# (`view_fv`/`_view_fv`) and the in-place 3-D Bodies path (`_promote_fv`, solids.jl):
+# (`_view_fv`/`_view_fv`) and the in-place 3-D Bodies path (`_promote_fv`, solids.jl):
 #   facergb -> explicit per-face RGB (direct colours, no colorbar)
 #   facez   -> per-face mean z       (faceted CPT colours that MATCH the colorbar)
 #   cz/crgb -> CPT control nodes     (for the z-mapped modes)
@@ -109,7 +109,7 @@ function _fv_resolve(fv::GMTfv; cmap=:turbo, color=true, geographic::Union{Bool,
 	(color === :explicit) && (facergb = _fv_facecolors(fv))
 	if isempty(facergb)                                        # z-mapped colouring (matches the bar)
 		# A colour VALUE (:orange, "red", (r,g,b), grey) paints every face that one colour, through the
-		# same z-mapped path as `view_points(D; color=…)`: a palette of that single colour.
+		# same z-mapped path as `_view_points(D; color=…)`: a palette of that single colour.
 		cz, crgb, ncolor = (color isa Bool || color === :explicit) ? _cpt_nodes_range(bb[5], bb[6], cmap) :
 		                   _flat_cpt_nodes(bb[5], bb[6], color)
 		(color === false) || (facez = _fv_facez(fv))          # true -> faceted per-face z; false -> smooth per-vertex
@@ -118,7 +118,7 @@ function _fv_resolve(fv::GMTfv; cmap=:turbo, color=true, geographic::Union{Bool,
 	return (xyz, sides, indices, facergb, facez, cz, crgb, ncolor, bb, geog, zscale)
 end
 
-function view_fv(fv::GMTfv; cmap=:turbo, color=true, edges::Bool=false,
+function _view_fv(fv::GMTfv; cmap=:turbo, color=true, edges::Bool=false,
 				 geographic::Union{Bool,Nothing}=nothing,
 				 objname::AbstractString="",
 				 title::AbstractString="GMT FV Viewer)")
@@ -160,7 +160,7 @@ function _view_fv(fv::GMTfv, xyz::Vector{Float64}, sides::Vector{Cint}, indices:
 	return fig
 end
 
-# ─── named solids catalogue (view_fv("cube"), …) ─────────────────────────────
+# ─── named solids catalogue (_view_fv("cube"), …) ─────────────────────────────
 # The generators (cube, sphere, torus, icosahedron, …) are GMT.jl functions; each SOLIDS entry
 # forwards every kwarg untouched so the generator's OWN defaults stand. An optional positional (a
 # primitive's circumradius `r`) uses a `missing` sentinel: omit it -> the generator default; give
@@ -225,7 +225,7 @@ function colorize_by_z!(fv::GMTfv)
 end
 
 """
-	view_fv(name::AbstractString; color=true, cmap=:turbo, edges=false, geographic=nothing,
+	_view_fv(name::AbstractString; color=true, cmap=:turbo, edges=false, geographic=nothing,
 			title="", solid_kwargs...)
 
 Show a NAMED GMT solid from the SOLIDS catalogue (`"cube"`, `"sphere"`, `"torus"`,
@@ -233,17 +233,17 @@ Show a NAMED GMT solid from the SOLIDS catalogue (`"cube"`, `"sphere"`, `"torus"
 `"loft"`, `"extrude"`). The solid takes its OWN parameters — any kwarg that is NOT a viewer
 keyword is forwarded untouched to the GMT generator:
 
-	view_fv("cube"; r=3)                 # r = circumradius (centre→vertex)
-	view_fv("sphere"; n=4)               # sphere's own subdivision level
-	view_fv("torus"; R=8, nx=200, edges=true)
-	view_fv("revolve"; curve=mycurve)    # your own profile (else a demo profile)
+	_view_fv("cube"; r=3)                 # r = circumradius (centre→vertex)
+	_view_fv("sphere"; n=4)               # sphere's own subdivision level
+	_view_fv("torus"; R=8, nx=200, edges=true)
+	_view_fv("revolve"; curve=mycurve)    # your own profile (else a demo profile)
 
-`color` behaves as in [`view_fv(::GMTfv)`](@ref): `true` (default) = FACETED per-face colour by
+`color` behaves as in [`_view_fv(::GMTfv)`](@ref): `true` (default) = FACETED per-face colour by
 mean z through `cmap` with a MATCHING colorbar; `false` = smooth per-vertex z; `:explicit` =
 the solid's own baked colours (no colorbar). The remaining viewer kwargs (`cmap`, `edges`,
 `geographic`, `title`) behave the same.
 """
-function view_fv(name::AbstractString; color=true, cmap=:turbo, edges::Bool=false,
+function _view_fv(name::AbstractString; color=true, cmap=:turbo, edges::Bool=false,
 				 geographic::Union{Bool,Nothing}=nothing, title::AbstractString="", kwargs...)
 	lname   = lowercase(String(name))
 	builder = get(SOLIDS, lname, nothing)
@@ -251,7 +251,7 @@ function view_fv(name::AbstractString; color=true, cmap=:turbo, edges::Bool=fals
 		error("unknown solid '$name'. Choose one of: $(join(sort(collect(keys(SOLIDS))), ", "))")
 	fv = builder(; kwargs...)                       # every non-viewer kwarg -> the GMT generator
 	ttl = isempty(title) ? "GMT $lname  (Qt + VTK)" : String(title)
-	return view_fv(fv; color=color, cmap=cmap, edges=edges, geographic=geographic,
+	return _view_fv(fv; color=color, cmap=cmap, edges=edges, geographic=geographic,
 				   objname=uppercasefirst(lname), title=ttl)   # Scene Objects checkbox = the solid name
 end
 
@@ -264,7 +264,7 @@ end
 	poly2fv(D::Vector{<:GMTdataset}; cmap=:turbo, zscale=:auto, vfrac=0.2, vexag=:auto,
 			isgeog=false, ncolor=256, triangulate=false) -> GMTfv
 
-Fold a vector of **closed 3-D polygons** into a single coloured `GMTfv` ready for [`view_fv`](@ref)
+Fold a vector of **closed 3-D polygons** into a single coloured `GMTfv` ready for [`viz`](@ref)
 — one mesh face per polygon, any corner count. Each polygon needs `x y z` columns; a repeated
 closing vertex is dropped. Faces are coloured by their mean *z* through the GMT colormap `cmap`.
 Pass `triangulate=true` to fan-split every polygon into triangles (concave / non-planar polys).

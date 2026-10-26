@@ -52,9 +52,9 @@ Example of `i'GMT` in action:
 Use the `i'GMT` icon that you now have on your desktop. Or, from a Julia REPL
 
 ```julia
-using InteractiveGMT, GMT
+using InteractiveGMT               # re-exports GMT.jl; no `using GMT` needed
 G   = GMT.peaks()
-fig = view_grid(G)                 # opens a window, returns a QtFigure handle
+fig = viz(G)                       # opens a window, returns a QtFigure handle
 ```
 
 The call is **non-blocking**: it returns immediately and a Julia `Timer` pumps the Qt loop
@@ -65,10 +65,10 @@ REPL, end the script with `wait_windows()` to keep the process alive until the w
 
 | function | shows |
 |----------|-------|
-| `view_grid(G; …)`   | a `GMTgrid` surface (CPT colour or image `drape`, `vcurtain`, overlays) |
-| `view_points(D; …)` | a coloured point cloud (Ctrl+right-drag rubber-band selection) |
-| `view_fv(fv; …)` / `view_fv("torus"; …)` | a `GMTfv` solid / named solid / polygon mesh |
-| `f3dview(x; …)`     | front-door dispatch over all of the above |
+| `viz(G; …)`         | a `GMTgrid` surface (CPT colour or image `drape`, `vcurtain`, overlays) |
+| `viz(D; …)`         | a coloured point cloud (Ctrl+right-drag rubber-band selection) |
+| `viz(fv; …)` / `viz("torus"; …)` | a `GMTfv` solid / named solid / polygon mesh |
+| `viz(x; …)`         | front-door dispatch over all of the above (`iview` is an alias) |
 | `add!(fig, D; …)`   | add line/point overlays to a live grid window |
 | `add_curtain!(fig, path; …)` | hang a vertical image curtain (seismic / midwater profile) |
 | `show_table(fig, D)` | display tabular data in the window's Data Viewer tab |

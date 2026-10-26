@@ -1,9 +1,9 @@
 # Point clouds with rubber-band selection. A coloured point cloud (Ctrl+right-drag a box to
-# select points). Ported from GMTF3D `view_points` + its f3d_ext rubber-band selector, onto the
+# select points). Ported from GMTF3D `_view_points` + its f3d_ext rubber-band selector, onto the
 # self-contained Qt+VTK viewer.
 
 """
-	view_points(D; cmap=:turbo, color=nothing, pointsize=4, pickcolor=(0.83,0.83,0.83),
+	_view_points(D; cmap=:turbo, color=nothing, pointsize=4, pickcolor=(0.83,0.83,0.83),
 				geographic=nothing, title=...)
 
 Show a point cloud — a `GMTdataset` or an `N×≥3` matrix of `x y z [...]` rows — in the
@@ -24,7 +24,7 @@ selected points are highlighted in `pickcolor` and kept for you — read them ba
 - `geographic` — auto-detected for a `GMTdataset` (override with `true`/`false`); treats
   x,y as degrees and z as metres for a physically-true vertical scale.
 """
-function view_points(D; cmap=:turbo, color=nothing, pointsize::Real=4, size::Union{Real,Nothing}=nothing, pickcolor=(0.83, 0.83, 0.83),
+function _view_points(D; cmap=:turbo, color=nothing, pointsize::Real=4, size::Union{Real,Nothing}=nothing, pickcolor=(0.83, 0.83, 0.83),
 					 geographic::Union{Bool,Nothing}=nothing,
 					 title::AbstractString="GMT 3-D Point Cloud  (Qt + VTK)")
 	A = D isa GMTdataset ? Float64.(D.data) : Float64.(Matrix(D))
@@ -97,7 +97,7 @@ end
 	selection() -> Matrix{Float64}
 
 The points selected in the LAST point cloud you selected in — **Shift+left-drag** (or
-Ctrl+right-drag) a box over any cloud, however it was opened (`view_points`, a dropped `.laz`,
+Ctrl+right-drag) a box over any cloud, however it was opened (`_view_points`, a dropped `.laz`,
 an MB-System swath file, File > Open) — as an `n×3` matrix of `x y z` rows. Empty (0×3) when
 nothing is selected or that window is closed.
 """

@@ -18,7 +18,7 @@ data are Schori's (2020) map and basement surface of the Jura, on Zenodo
 The topography is GMT's own 3″ earth relief over the Jura:
 
 ```julia
-using GMT, InteractiveGMT
+using InteractiveGMT
 
 Topo = grdcut("@earth_relief_03s", region=(5, 8.1, 45.5, 47.7))
 ```
@@ -54,7 +54,7 @@ Section = gmtread("Schori_2020_Ornans-Miserey-v2_whiteBG.png")
 GMG drapes the map on the topography with `drape_on_topo`. In iGMT that is the `drape` keyword:
 
 ```julia
-fig = iview(Topo; drape=Geology)
+fig = viz(Topo; drape=Geology)
 ```
 
 The basement is a second grid in the same window. It is the same quantity as the topography, an
@@ -117,7 +117,7 @@ TopoCut = grdmath("? X Y 69.97 SUB 0.1284 MUL 57.5 ADD GE 0 NAN MUL", TopoR)
 ```
 
 The block's walls are curtains too. A wall's picture is its profile drawn by GMT: `grdtrack` samples
-the basement along the wall, `plot` paints cover over the whole frame and the basement below the
+the basement along the wall, `GMT.plot` paints cover over the whole frame and the basement below the
 profile, and the curtain's `clip` then cuts its top to the surface above it. The cut face first:
 
 ```julia
@@ -127,8 +127,8 @@ basement = "150/115/20"
 cutT = grdtrack(BaseR, E="42.4/-49.9/57.8/69.9+i0.2", s=true)
 dcut = hypot.(cutT[:, 1] .- 42.4, cutT[:, 2] .+ 49.9)
 Lcut = hypot(57.8 - 42.4, 69.9 + 49.9)
-plot([0 -8000; Lcut -8000; Lcut 2000; 0 2000; 0 -8000], region=(0, Lcut, -8000, 2000), figsize=(24, 8), fill=cover, frame=:none)
-plot!([[0; dcut; Lcut] [-8000; cutT[:, 3]; -8000]], fill=basement, savefig="wall_cut.png")
+GMT.plot([0 -8000; Lcut -8000; Lcut 2000; 0 2000; 0 -8000], region=(0, Lcut, -8000, 2000), figsize=(24, 8), fill=cover, frame=:none)
+GMT.plot!([[0; dcut; Lcut] [-8000; cutT[:, 3]; -8000]], fill=basement, savefig="wall_cut.png")
 ```
 
 The south face of the block, beyond the cut, the same way:
@@ -137,8 +137,8 @@ The south face of the block, beyond the cut, the same way:
 southT = grdtrack(BaseR, E="42.4/-49.9/119.9/-49.9+i0.2", s=true)
 dsouth = southT[:, 1] .- 42.4
 Lsouth = 119.9 - 42.4
-plot([0 -8000; Lsouth -8000; Lsouth 2000; 0 2000; 0 -8000], region=(0, Lsouth, -8000, 2000), figsize=(24, 8), fill=cover, frame=:none)
-plot!([[0; dsouth; Lsouth] [-8000; southT[:, 3]; -8000]], fill=basement, savefig="wall_south.png")
+GMT.plot([0 -8000; Lsouth -8000; Lsouth 2000; 0 2000; 0 -8000], region=(0, Lsouth, -8000, 2000), figsize=(24, 8), fill=cover, frame=:none)
+GMT.plot!([[0; dsouth; Lsouth] [-8000; southT[:, 3]; -8000]], fill=basement, savefig="wall_south.png")
 ```
 
 Where the cover is removed the walls are basement only, one colour:
@@ -152,7 +152,7 @@ Now the scene: the cut topography with the map, the basement, the walls and the 
 basement:
 
 ```julia
-fig = iview(TopoCut; drape=GeologyR)
+fig = viz(TopoCut; drape=GeologyR)
 add!(fig, BaseR; name="Basement", cmap=:batlow, samezscale=true)
 setvisible!(fig, "Surface")
 setvisible!(fig, "Axes", false; layer="Basement")

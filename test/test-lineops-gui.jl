@@ -31,7 +31,7 @@ end # @testmodule
 
 @testitem "Vector Operations: the window's line elements are listed" tags=[:gui, :lineops] setup=[LineOps] begin
 	IG = InteractiveGMT
-	f = view_grid(LineOps.grid())
+	f = viz(LineOps.grid())
 	IG._add_dataset_to_scene(f.h, IG.GMT.mat2ds(LineOps.LINE), "testline")
 	els = IG._lop_elements(f.h)
 	@test any(e -> e.name == "testline", els)
@@ -46,7 +46,7 @@ end
 
 @testitem "Vector Operations: bezier / cspline / polysimplify add a new line, source kept" tags=[:gui, :lineops] setup=[LineOps] begin
 	IG = InteractiveGMT
-	f = view_grid(LineOps.grid())
+	f = viz(LineOps.grid())
 	IG._add_dataset_to_scene(f.h, IG.GMT.mat2ds(LineOps.LINE), "testline")
 
 	@test LineOps.send(f.h, "bezier 25", ["testline"]) == 1
@@ -66,7 +66,7 @@ end
 
 @testitem "Vector Operations: buffer wraps the line" tags=[:gui, :lineops] setup=[LineOps] begin
 	IG = InteractiveGMT
-	f = view_grid(LineOps.grid())
+	f = viz(LineOps.grid())
 	IG._add_dataset_to_scene(f.h, IG.GMT.mat2ds(LineOps.LINE), "testline")
 	@test LineOps.send(f.h, "buffer 5K 16", ["testline"]) == 1
 	B = IG._lop_xy(f.h, "testline buffer")
@@ -82,7 +82,7 @@ end
 @testitem "Vector Operations: the four boolean ops" tags=[:gui, :lineops] setup=[LineOps] begin
 	IG = InteractiveGMT
 	for (op, cmp) in (("polyunion", >), ("polyintersect", <), ("polyxor", >), ("polyminus", <))
-		f = view_grid(LineOps.grid())
+		f = viz(LineOps.grid())
 		IG._add_dataset_to_scene(f.h, IG.GMT.mat2ds(LineOps.SQ1), "A")
 		IG._add_dataset_to_scene(f.h, IG.GMT.mat2ds(LineOps.SQ2), "B")
 		@test LineOps.send(f.h, op, ["A", "B"]) == 1
@@ -97,14 +97,14 @@ end
 		@test cmp(area(R), area(LineOps.SQ1)) || true    # shape-dependent; the add is what matters
 	end
 	# Fewer than two polygons is refused, exactly as Mirone refuses it.
-	f2 = view_grid(LineOps.grid())
+	f2 = viz(LineOps.grid())
 	IG._add_dataset_to_scene(f2.h, IG.GMT.mat2ds(LineOps.SQ1), "A")
 	@test LineOps.send(f2.h, "polyunion", ["A"]) == 0
 end
 
 @testitem "Vector Operations: group and line2patch CONSUME their sources" tags=[:gui, :lineops] setup=[LineOps] begin
 	IG = InteractiveGMT
-	f = view_grid(LineOps.grid())
+	f = viz(LineOps.grid())
 	IG._add_dataset_to_scene(f.h, IG.GMT.mat2ds(LineOps.LINE), "l1")
 	IG._add_dataset_to_scene(f.h, IG.GMT.mat2ds(LineOps.LINE .+ 0.1), "l2")
 	@test LineOps.send(f.h, "group lines", ["l1", "l2"]) == 1
@@ -123,7 +123,7 @@ end
 
 @testitem "Vector Operations: delete DUP / SMALL / SPUR" tags=[:gui, :lineops] setup=[LineOps] begin
 	IG = InteractiveGMT
-	f = view_grid(LineOps.grid())
+	f = viz(LineOps.grid())
 	IG._add_dataset_to_scene(f.h, IG.GMT.mat2ds(LineOps.LINE), "a")
 	IG._add_dataset_to_scene(f.h, IG.GMT.mat2ds(LineOps.LINE), "b")          # exact duplicate
 	IG._add_dataset_to_scene(f.h, IG.GMT.mat2ds(reverse(LineOps.LINE, dims = 1)), "c")  # reversed
@@ -142,7 +142,7 @@ end
 
 @testitem "Vector Operations: stitch joins two lines end to end" tags=[:gui, :lineops] setup=[LineOps] begin
 	IG = InteractiveGMT
-	f = view_grid(LineOps.grid())
+	f = viz(LineOps.grid())
 	IG._add_dataset_to_scene(f.h, IG.GMT.mat2ds([-9.5 36.5; -9.0 37.0]), "seg1")
 	IG._add_dataset_to_scene(f.h, IG.GMT.mat2ds([-9.0 37.0; -8.5 37.5]), "seg2")
 	@test LineOps.send(f.h, "stitch 0.1", ["seg1"]) == 1
@@ -155,7 +155,7 @@ end
 
 @testitem "Vector Operations: self-crossings are marked" tags=[:gui, :lineops] setup=[LineOps] begin
 	IG = InteractiveGMT
-	f = view_grid(LineOps.grid())
+	f = viz(LineOps.grid())
 	bow = [-9.5 36.5; -8.5 37.5; -8.5 36.5; -9.5 37.5]
 	IG._add_dataset_to_scene(f.h, IG.GMT.mat2ds(bow), "bow")
 	@test LineOps.send(f.h, "self-crossings", ["bow"]) == 1
@@ -164,7 +164,7 @@ end
 
 @testitem "Vector Operations: pline draws from typed coordinates" tags=[:gui, :lineops] setup=[LineOps] begin
 	IG = InteractiveGMT
-	f = view_grid(LineOps.grid())
+	f = viz(LineOps.grid())
 	@test LineOps.send(f.h, "pline [-9.5 -9.0 -8.5; 36.5 37.0 37.5]") == 1
 	M = IG._lop_xy(f.h, "pline")
 	@test size(M) == (3, 2)
@@ -173,7 +173,7 @@ end
 
 @testitem "Vector Operations: hand2Workspace binds Main.lineHandles" tags=[:gui, :lineops] setup=[LineOps] begin
 	IG = InteractiveGMT
-	f = view_grid(LineOps.grid())
+	f = viz(LineOps.grid())
 	IG._add_dataset_to_scene(f.h, IG.GMT.mat2ds(LineOps.LINE), "testline")
 	@test LineOps.send(f.h, "hand2Workspace", ["testline"]) == 1
 	@test isdefined(Main, :lineHandles)
@@ -182,7 +182,7 @@ end
 
 @testitem "Vector Operations: thicken registers the tracks a profile stacks" tags=[:gui, :lineops] setup=[LineOps] begin
 	IG = InteractiveGMT
-	f = view_grid(LineOps.grid())
+	f = viz(LineOps.grid())
 	IG._add_dataset_to_scene(f.h, IG.GMT.mat2ds(LineOps.LINE), "track")
 	@test LineOps.send(f.h, "thicken 4", ["track"]) == 1
 	T = get(IG._LOP_THICK, (f.h, "track"), nothing)
@@ -194,7 +194,7 @@ end
 
 @testitem "Vector Operations: toRidge snaps the vertices onto a ridge" tags=[:gui, :lineops] setup=[LineOps] begin
 	IG = InteractiveGMT
-	f = view_grid(LineOps.grid())
+	f = viz(LineOps.grid())
 	# A line that runs beside the Gaussian bump's crest (the grid peaks at x = -8, y = 37.5).
 	IG._add_dataset_to_scene(f.h, IG.GMT.mat2ds([-8.3 37.2; -8.3 37.5; -8.3 37.8]), "walk")
 	rc = LineOps.send(f.h, "toRidge 5", ["walk"])
@@ -206,7 +206,7 @@ end
 
 @testitem "Vector Operations: a bad command reports and changes nothing" tags=[:gui, :lineops] setup=[LineOps] begin
 	IG = InteractiveGMT
-	f = view_grid(LineOps.grid())
+	f = viz(LineOps.grid())
 	IG._add_dataset_to_scene(f.h, IG.GMT.mat2ds(LineOps.LINE), "testline")
 	before = LineOps.names(f.h)
 	@test LineOps.send(f.h, "bezier 25") == 0            # nothing picked

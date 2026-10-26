@@ -19,7 +19,6 @@
 # Run:   julia examples/sdg.jl        or in the REPL:  include("examples/sdg.jl")
 
 using InteractiveGMT
-using GMT
 
 const IG = InteractiveGMT
 
@@ -68,8 +67,8 @@ println("shelf break (SDG negative peak)        : ", x[argmin(view(R_neg.z, size
 # --- and the same thing in the viewer ------------------------------------------------------------
 # In the app this is Grid Tools > SDG > Positive / Negative / Both, which asks for `p` and adds the
 # result to the SAME window as a new, checked Scene Object. Here, two plain windows side by side.
-fig_bat = view_grid(G;     cmap = :geo,   title = "i'GMT  —  synthetic margin (bathymetry)")
-fig_sdg = view_grid(R_pos; cmap = :turbo, title = "i'GMT  —  SDG (positive): the FOS ridge")
+fig_bat = viz(G;     cmap = :geo,   title = "i'GMT  —  synthetic margin (bathymetry)")
+fig_sdg = viz(R_pos; cmap = :turbo, title = "i'GMT  —  SDG (positive): the FOS ridge")
 
 # Script mode has no REPL: keep the process alive until the windows close. (The parentheses are not
 # decoration: `@__FILE__ && f()` swallows the `&&` into the macro's arguments and fails to parse.)

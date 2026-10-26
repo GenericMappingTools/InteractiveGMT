@@ -480,7 +480,7 @@ end
 # --- plotting ----------------------------------------------------------------------------------
 
 """
-    plot_groundtrack!(fig, sat; color = nothing, name = "", kw...)
+    _plot_groundtrack!(fig, sat; color = nothing, name = "", kw...)
 
 Draw `sat`'s ground track into an open iGMT window and register it in Scene Objects.
 
@@ -493,9 +493,9 @@ of the map that is already there. It reaches the scene through `_add_dataset_to_
 function every other vector import uses, which is what gives it its Scene Objects row (one row per
 satellite, carrying every dateline segment) with properties and Remove.
 """
-function plot_groundtrack!(scene::Ptr{Cvoid}, s::Satellite; color = _TRACK_COLOR,
+function _plot_groundtrack!(scene::Ptr{Cvoid}, s::Satellite; color = _TRACK_COLOR,
                            name::String = "", kw...)
-	scene == C_NULL && error("plot_groundtrack!: no window")
+	scene == C_NULL && error("orbits!: no window")
 	D = groundtrack(s; kw...)
 	nm = !isempty(name) ? name :
 	     !isempty(s.tle.name) ? s.tle.name : "NORAD " * string(norad_number(s))
@@ -504,7 +504,7 @@ end
 
 # The add half, split out so a caller that already has the track (the dialog, which then asks
 # whether it is on screen) does not propagate it a second time just to plot it. ONE add path —
-# `plot_groundtrack!` is this function plus the propagation, never a parallel copy of it.
+# `orbits!` is this function plus the propagation, never a parallel copy of it.
 # `live = true` marks ONE FRAME of the one-day animation: the same plot, minus the two steps that
 # only make sense once it has come to rest — the data table (2880 formatted rows rebuilt 120 times is
 # the whole cost of the animation) and the Scene Objects unfold (a tree rebuilt under the user's
@@ -513,7 +513,7 @@ end
 function _plot_track!(scene::Ptr{Cvoid}, D::Vector{GMT.GMTdataset}, nm::String; color = _TRACK_COLOR,
                       replaced::Union{Nothing,Ref{Int}} = nothing,
                       sat::Union{Nothing,Satellite} = nothing, live::Bool = false)
-	isempty(D) && (@warn "plot_groundtrack!: the track is empty"; return false)
+	isempty(D) && (@warn "orbits!: the track is empty"; return false)
 
 	# An EMPTY window has nothing to overlay ONTO, so the vector-import law does not apply here:
 	# that law governs a vector dropped on a window that ALREADY shows a grid or an image. Applied
@@ -552,7 +552,7 @@ function _plot_track!(scene::Ptr{Cvoid}, D::Vector{GMT.GMTdataset}, nm::String; 
 	# by THE crossing (crs.jl), so the line that is drawn and the table that describes it are the same
 	# vertices. `D` itself stays lon/lat: the swath is computed from it, on the Earth.
 	Dw = _dataset_to_window(scene, D; kind = :lines)
-	Dw === nothing && (@warn "plot_groundtrack!: the track does not cross this window"; return false)
+	Dw === nothing && (@warn "orbits!: the track does not cross this window"; return false)
 	Dw isa GMT.GMTdataset && (Dw = [Dw])
 	ok = _add_dataset_to_scene(scene, Dw, nm;
 	                           color = color, forceMode = :lines, noConvertToPoints = true)
@@ -761,7 +761,7 @@ const _TRACK_TUBE_R = 0.0022
 # `:orange` is a name colors.jl already defines; this does not introduce a colour of its own.
 const _TRACK_COLOR = :orange
 
-plot_groundtrack!(fig::QtFigure, s::Satellite; kw...) = plot_groundtrack!(fig.h, s; kw...)
+_plot_groundtrack!(fig::QtFigure, s::Satellite; kw...) = _plot_groundtrack!(fig.h, s; kw...)
 
 # --- the one-day animation ------------------------------------------------------------------------
 # "Animate 1 day" (the dialog, beside Update orbit) winds ONE satellite's LAST 24 hours onto the map, ending at NOW:

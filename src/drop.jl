@@ -507,7 +507,7 @@ end
 # C++ bridge target for the "Point cloud view" menu item on a SHAPENC interior-points overlay
 # (55_lineprops.cpp, Overlay::isShapencInteriorPoints): pulls that overlay's raw x,y,z directly into
 # a Julia-owned buffer via gmtvtk_overlay_points_h (ALL in-process -- no temp file, project rule: never
-# write one) and opens it in the REAL 3-D point-cloud viewer (`view_points`: Z axis, colour-by-height,
+# write one) and opens it in the REAL 3-D point-cloud viewer (`_view_points`: Z axis, colour-by-height,
 # rubber-band select) instead of the flat overlay display. `scene`/`actor` are the raw pointers the
 # C++ click handler embedded in the eval command (same idiom nestCreateBlankGrid already uses for the
 # scene handle); `geog` comes straight from the C++ window's own CRS state (`s->hasCRS()`).
@@ -523,7 +523,7 @@ function _on_pointcloud_view(scene::Ptr{Cvoid}, actor::Ptr{Cvoid}, n::Integer, g
 	# `buf` is column-major (x-block, y-block, z-block -- gmtvtk_overlay_points_h fills it that way
 	# on purpose) so this reshape is a real Julia Array sharing `buf`'s own memory, zero copy.
 	xyz = reshape(buf, Int(n), 3)
-	view_points(GMT.mat2ds(xyz); geographic=geog)
+	_view_points(GMT.mat2ds(xyz); geographic=geog)
 	return nothing
 end
 
@@ -1400,7 +1400,7 @@ end
 function _promote_dataset(scene::Ptr{Cvoid}, D, name)
 	# A 3-D POINT CLOUD (a .laz/.las, or any x,y,z swarm) is NOT overlay material: it needs the real
 	# point-cloud display -- CPT colouring by z, its own colour bar, Z axis, VE gizmo, LOD interaction,
-	# rubber-band selection. That is exactly what `view_points` builds, so this window is promoted
+	# rubber-band selection. That is exactly what `_view_points` builds, so this window is promoted
 	# through the SAME C++ builder (gmtvtk_promote_points_h -> buildSceneContent(pointCloud=true) +
 	# configurePointCloud), in place, instead of opening a second window (SACRED_LAW.md: one
 	# operation, one function; and an empty launcher is always reused, never replaced).
@@ -1454,8 +1454,8 @@ end
 
 # Promote THIS window into the 3-D point-cloud viewer over `D`. Returns false (nothing done) when
 # `D` is not a point cloud, or when the C side declines because the window already holds data.
-# The CPT nodes, point size and pick colour are `view_points`'s own defaults, read from the same
-# helpers, so a dropped cloud and `view_points(D)` produce the identical display.
+# The CPT nodes, point size and pick colour are `_view_points`'s own defaults, read from the same
+# helpers, so a dropped cloud and `_view_points(D)` produce the identical display.
 function _promote_point_cloud(scene::Ptr{Cvoid}, D, name)::Bool
 	_drop_overlay_kind(D) === :points || return false
 	d1 = D isa AbstractVector ? D[1] : D
@@ -1825,7 +1825,7 @@ end
 # Base Map empty-launcher pattern: open an empty launcher, PROMOTE a HIDDEN blank base over the
 # image bbox (lays down the framed axes + coord grid + coord readout + centred 2-D view), then add
 # the image on top as an ExtraObj. Use this for tool-generated images (e.g. the Tiles Tool mosaic)
-# that must be manageable in the Scene Objects panel — `view_image`/`iview(I)` makes an imageOnly
+# that must be manageable in the Scene Objects panel — `_view_image`/`iview(I)` makes an imageOnly
 # surface with NO properties row and leaves the bare backing plane visible (a red panel under the
 # tile). Returns the QtImage handle.
 function iview_image_obj(I::GMTimage, name::AbstractString; title::String="i'GMT")
@@ -1912,7 +1912,7 @@ end
 #    unordered rows, a third numeric column, one segment -- and reads as :points too, exactly like a
 #    .laz; a text column does NOT change this (still no ordering/connectivity implied, so still no
 #    business being drawn as a connected line). The front door (`iview(file)` -> `_ds_kind` ->
-#    `view_points`) always read that same data as a cloud — one operation, one answer, whichever
+#    `_view_points`) always read that same data as a cloud — one operation, one answer, whichever
 #    door it came through (SACRED_LAW.md). Its per-row text still rides along as hover info /
 #    "Show point labels" — that mechanism is orthogonal to line-vs-points, not a reason to force one.
 #  - everything else (2-column x,y table, or several segments = real polylines) stays :lines, which
@@ -2209,10 +2209,10 @@ Open an empty viewer window that acts as a drag-and-drop launcher: drop a grid, 
 file (anything `GMT.gmtread` understands) onto it — or onto any open viewer window — and it is
 added to that window and listed in its "Scene Objects" panel. Returns a `QtEmpty` handle.
 """
-function iview()
+function viz()
 	_dbg("startup", "iview() enter")
 	h = ccall(_fn(:gmtvtk_open_empty), Ptr{Cvoid}, (Cstring,), "i'GMT  —  drop a file")
-	h == C_NULL && error("iview: could not open the empty window")
+	h == C_NULL && error("viz: could not open the empty window")
 	_dbg("startup", "gmtvtk_open_empty returned")
 	fig = _register_fig!(QtEmpty(h))
 	_start_pump()

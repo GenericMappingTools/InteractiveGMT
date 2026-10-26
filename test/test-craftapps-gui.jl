@@ -41,7 +41,7 @@ end
 	tmphome = mktempdir()
 	foreach(k -> ENV[k] = tmphome, homes)
 	G = GMT.mat2grid(Float32[sin(ix / 3) * cos(iy / 4) for iy in 0:29, ix in 0:29]; x=[0.0, 29.0], y=[0.0, 29.0])
-	f = view_grid(G)
+	f = InteractiveGMT.viz(G)
 	made = String[]
 	try
 		for k in keys; ENV[k] = first(Base.julia_cmd().exec); end
@@ -122,7 +122,7 @@ end
 	# no PhotoCraft here: the edited picture is handed straight to the replacement step
 	A = zeros(UInt8, 60, 90, 3); A[:, :, 1] .= 200
 	f = iview(GMT.mat2img(A; x = [-10.0, 20.0], y = [30.0, 50.0]))
-	g = view_grid(GMT.mat2grid(Float32[ix * iy for iy in 0:20, ix in 0:30]; x = [0.0, 30.0], y = [0.0, 20.0]))
+	g = InteractiveGMT.viz(GMT.mat2grid(Float32[ix * iy for iy in 0:20, ix in 0:30]; x = [0.0, 30.0], y = [0.0, 20.0]))
 	try
 		IG._pump_once()
 		key, I0 = IG._find_object_named(f.h, :image)

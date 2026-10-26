@@ -487,7 +487,7 @@ function _seis_layer(scene::Ptr{Cvoid}, name, sel, lon, lat, dep, mag, t,
 	# …and the layer carries THE CATALOG ITSELF, one row per event, for "Show data table": the event's
 	# own lon / lat / depth / magnitude / date. That is what the data IS. How big its circle is drawn
 	# is a property of the picture, not of the earthquake, and has no business in a data table.
-	add_symbols!(scene, view(lon, sel), view(lat, sel); z=zv, symbol=:sphere,
+	_add_symbols!(scene, view(lon, sel), view(lat, sel); z=zv, symbol=:sphere,
 	             size=sizepx, fill=color, edge=:black, edgewidth=1.0, name=name, info=infos,
 	             srs=_LONLAT, datanames=_SEIS_TABLE_COLS,
 	             datarows=[_seis_row(lon[i], lat[i], dep[i], mag[i], t[i]) for i in sel])

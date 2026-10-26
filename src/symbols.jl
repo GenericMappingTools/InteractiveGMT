@@ -33,7 +33,7 @@ _sym_ptr(h::Ptr{Cvoid}) = h
 _sym_ptr(f) = f.h                          # QtFigure (and friends) carry the Scene* in `.h`
 
 """
-    add_symbols!(handle, x, y; z=0, symbol=:c, size=8, sizeunit=:px,
+    _add_symbols!(handle, x, y; z=0, symbol=:c, size=8, sizeunit=:px,
                  fill=:yellow, edge=:black, edgewidth=1.0, filled=true)
 
 Stamp a screen-constant symbol layer at points `(x, y[, z])` (TRUE data coords) on an existing
@@ -47,7 +47,7 @@ size at any zoom. `srs` names the referencing system `x, y` are in (e.g. lon/lat
 when it differs from the window's the points are reprojected and cut to its footprint first.
 Returns `true` if the layer was added.
 """
-function add_symbols!(handle, x, y;
+function _add_symbols!(handle, x, y;
                       z=0.0, symbol=:c, size=8, sizeunit::Symbol=:px,
                       fill=:yellow, edge=:black, edgewidth=1.0, filled::Bool=true,
                       name::AbstractString="", info=nothing,
@@ -57,7 +57,7 @@ function add_symbols!(handle, x, y;
 	p = _sym_ptr(handle)
 	xv = collect(Float64, x); yv = collect(Float64, y)
 	n = length(xv)
-	n == length(yv) || error("add_symbols!: x ($(length(xv))) and y ($(length(yv))) length mismatch")
+	n == length(yv) || error("scatter!: x ($(length(xv))) and y ($(length(yv))) length mismatch")
 	n == 0 && return false
 	# `srs` = the referencing system the points are IN (a catalog's lon/lat). When it is not the
 	# window's, they cross through `_to_window` (crs.jl): reprojected, and only those on the window's
@@ -81,7 +81,7 @@ function add_symbols!(handle, x, y;
 		end
 	end
 	zv = z isa AbstractVector ? collect(Float64, z) : [Float64(z) for _ in 1:n]
-	length(zv) == n || error("add_symbols!: z length must be 1 or match x/y")
+	length(zv) == n || error("scatter!: z length must be 1 or match x/y")
 	xyz = Vector{Float64}(undef, 3n)
 	@inbounds for i in 1:n
 		xyz[3i-2] = xv[i]; xyz[3i-1] = yv[i]; xyz[3i] = zv[i]
@@ -99,7 +99,7 @@ function add_symbols!(handle, x, y;
 	packed = ""
 	if info !== nothing
 		iv = collect(String, info)
-		length(iv) == n || error("add_symbols!: info length ($(length(iv))) must match x/y ($n)")
+		length(iv) == n || error("scatter!: info length ($(length(iv))) must match x/y ($n)")
 		packed = join(iv, '\x1e')
 	end
 	# Per-point size / fill (a "scaled symbols" table): ONE layer carrying its own factors, never one
@@ -118,9 +118,9 @@ function add_symbols!(handle, x, y;
 		return ok != 0
 	end
 	if (sizev !== nothing)
-		length(sizev) == n || error("add_symbols!: size vector ($(length(sizev))) must match x/y ($n)")
+		length(sizev) == n || error("scatter!: size vector ($(length(sizev))) must match x/y ($n)")
 		base = maximum(sizev)
-		base > 0 || error("add_symbols!: size vector must hold a positive value")
+		base > 0 || error("scatter!: size vector must hold a positive value")
 		spx   = sizeunit === :pt ? base * 96 / 72 : base
 		scale = sizev ./ base
 	else
@@ -159,7 +159,7 @@ function _sym_point_rgb(fill, n::Int)
 	    (fill isa AbstractVector && length(fill) == n && n != 3 && eltype(fill) <: Union{Tuple,AbstractVector}) ?
 	        reduce(vcat, (reshape(Float64.(collect(c))[1:3], 1, 3) for c in fill)) : nothing
 	M === nothing && return nothing
-	size(M, 1) == n && size(M, 2) >= 3 || error("add_symbols!: fill matrix must be $(n)x3")
+	size(M, 1) == n && size(M, 2) >= 3 || error("scatter!: fill matrix must be $(n)x3")
 	M = M[:, 1:3]
 	maximum(M) > 1 && (M = M ./ 255)
 	return vec(permutedims(clamp.(M, 0, 1)))

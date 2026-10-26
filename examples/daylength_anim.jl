@@ -7,7 +7,7 @@
 #   daylength_anim(out=raw"C:\Users\j\Documents\daylength.mp4")   # 2026, every 2nd day
 #   daylength_anim(step=1, tilt=0.0, out=raw"C:\Users\j\Documents\daylength_notilt.mp4")
 
-using GMT, InteractiveGMT, Printf
+using InteractiveGMT, Printf
 using InteractiveGMT: daylength_year, daylength_cpt, daylength_frame, EARTH_TILT
 
 """

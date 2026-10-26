@@ -23,7 +23,7 @@ end
 @testitem "view_grid: full framed window with coordinate grid" tags=[:gui] begin
 	IG = InteractiveGMT; GMT = IG.GMT
 	G = GMT.mat2grid(Float32[ix + iy for iy in 0:9, ix in 0:9]; x=[0.0, 9.0], y=[0.0, 9.0])
-	f = view_grid(G)
+	f = viz(G)
 	try
 		IG._pump_once()
 		st = IG._scene_state(f.h)
@@ -72,7 +72,7 @@ end
 		@test_skip "data/etopo4.jpg not present"
 	else
 		G = GMT.mat2grid(Float32[ix + iy for iy in 0:9, ix in 0:9]; x=[-10.0, 10.0], y=[-10.0, 10.0])
-		f = view_grid(G)
+		f = viz(G)
 		try
 			before = IG._scene_state(f.h)
 			s = "-180/180/-90/90/0/global"
@@ -129,7 +129,7 @@ end
 @testitem "fault plane: buried 3-D plane + Scene Objects handle" tags=[:gui] setup=[GmtvtkTest] begin
 	IG = InteractiveGMT; GMT = IG.GMT
 	G = GMT.mat2grid(Float32[100*sin(ix/3)+50*cos(iy/4) for iy in 0:40, ix in 0:40]; x=[0.0, 40.0], y=[0.0, 40.0])
-	f = view_grid(G)
+	f = viz(G)
 	try
 		IG._pump_once()
 		ccall(_test_fn(:gmtvtk_fault_add_test), Cint, (Ptr{Cvoid}, Cdouble, Cdouble, Cdouble, Cdouble),
@@ -176,10 +176,10 @@ end
 @testitem "symbol layer: sphere -> circle in flat-2D, per-point sizes in both" tags=[:gui] setup=[GmtvtkTest] begin
 	IG = InteractiveGMT; GMT = IG.GMT
 	G = GMT.mat2grid(Float32[ix + iy for iy in 0:9, ix in 0:9]; x=[0.0, 9.0], y=[0.0, 9.0])
-	f = view_grid(G)                      # view_grid opens flat-2D
+	f = viz(G)                      # view_grid opens flat-2D
 	try
 		IG._pump_once()
-		IG.add_symbols!(f.h, [2.0, 4.0, 6.0], [2.0, 4.0, 6.0]; z=[-1.0, -2.0, -3.0],
+		IG._add_symbols!(f.h, [2.0, 4.0, 6.0], [2.0, 4.0, 6.0]; z=[-1.0, -2.0, -3.0],
 		                symbol=:sphere, size=[4.0, 8.0, 12.0], fill=:red, name="Seismicity")
 		IG._pump_once()
 		out = zeros(Cdouble, 5)
@@ -212,7 +212,7 @@ end
 		@test toplayer(0) == 1
 
 		# A layer that asked for a FLAT glyph is left alone by the mode switch.
-		IG.add_symbols!(f.h, [1.0], [1.0]; symbol=:triangle, size=6.0, name="Flat")
+		IG._add_symbols!(f.h, [1.0], [1.0]; symbol=:triangle, size=6.0, name="Flat")
 		IG._pump_once()
 		ccall(_test_fn(:gmtvtk_symbol_layer_test), Cint, (Ptr{Cvoid}, Cint, Ptr{Cdouble}), f.h, 1, out)
 		@test out[1] == 0 && out[2] == 0 && out[3] == 0
@@ -234,7 +234,7 @@ end
 	# one is marginally closer. That is not the law failing, it is a fixture with no scale — it passed
 	# on a big desktop window and returned "OUTSIDE" for the buried event on CI's Xvfb screen.
 	G = GMT.mat2grid(Float32[500 + 300*sin(ix/3.0) for iy in 0:20, ix in 0:20]; x=[0.0, 20.0], y=[0.0, 20.0])
-	f = view_grid(G)
+	f = viz(G)
 	buf = Vector{UInt8}(undef, 1024)
 	hover(x, y, z) = (n = ccall(_test_fn(:gmtvtk_symbol_hover_test), Cint,
 	                            (Ptr{Cvoid}, Cdouble, Cdouble, Cdouble, Ptr{UInt8}, Cint),
@@ -245,7 +245,7 @@ end
 	try
 		IG._pump_once()
 		# under the ground · above it · deep but OUTSIDE the grid, so nothing is in the way
-		IG.add_symbols!(f.h, [10.0, 5.0, 30.0], [5.0, 15.0, 10.0];
+		IG._add_symbols!(f.h, [10.0, 5.0, 30.0], [5.0, 15.0, 10.0];
 		                z=[-500.0, 2000.0, -500.0], symbol=:sphere, size=40.0,
 		                fill=(1.0, 0.0, 1.0), name="evts", info=["BURIED", "ABOVE", "OUTSIDE"])
 		IG._pump_once()
@@ -292,7 +292,7 @@ end
 	# genuinely can see under its edge, and that is not a bug. The two symbols are at different
 	# (x,y) — on one spot the later-drawn covers the other and this would measure paint order.
 	G = GMT.mat2grid(Float32[500 + 300*sin(ix/3.0) for iy in 0:20, ix in 0:20]; x=[0.0, 20.0], y=[0.0, 20.0])
-	f = view_grid(G)
+	f = viz(G)
 	px(r, g, b) = ccall(_test_fn(:gmtvtk_pixel_count_test), Cint,
 	                    (Ptr{Cvoid}, Cdouble, Cdouble, Cdouble, Cdouble), f.h, r, g, b, 0.25)
 	flat2d(on) = (ccall(_test_fn(:gmtvtk_set_flat2d_test), Cvoid, (Ptr{Cvoid}, Cint), f.h, on);
@@ -303,7 +303,7 @@ end
 		yellow0  = px(1.0, 1.0, 0.0)              # baselines: whatever the grid itself paints
 
 		# A hypocentre UNDER the surface, well inside the grid's footprint.
-		IG.add_symbols!(f.h, [10.0], [14.0]; z=[-500.0], symbol=:sphere, size=30.0,
+		IG._add_symbols!(f.h, [10.0], [14.0]; z=[-500.0], symbol=:sphere, size=30.0,
 		                fill=(1.0, 0.0, 1.0), name="Deep")
 		IG._pump_once()
 		@test px(1.0, 0.0, 1.0) > magenta0 + 100   # flat-2-D map: the marker shows
@@ -313,7 +313,7 @@ end
 
 		# Same view, same layer kind, a symbol ABOVE the surface: still drawn. Without this leg a
 		# regression that stopped drawing symbols in 3-D altogether would pass the test above.
-		IG.add_symbols!(f.h, [6.0], [6.0]; z=[2500.0], symbol=:sphere, size=30.0,
+		IG._add_symbols!(f.h, [6.0], [6.0]; z=[2500.0], symbol=:sphere, size=30.0,
 		                fill=(1.0, 1.0, 0.0), name="High")
 		IG._pump_once()
 		@test px(1.0, 1.0, 0.0) > yellow0 + 100
@@ -331,14 +331,14 @@ end
 @testitem "symbol layer data table carries the catalog, not graphics" tags=[:gui] setup=[GmtvtkTest] begin
 	IG = InteractiveGMT; GMT = IG.GMT
 	G = GMT.mat2grid(Float32[ix + iy for iy in 0:9, ix in 0:9]; x=[0.0, 9.0], y=[0.0, 9.0])
-	f = view_grid(G)
+	f = viz(G)
 	buf = Vector{UInt8}(undef, 4096)
 	table(h, i) = (n = ccall(_test_fn(:gmtvtk_symbol_table_test), Cint,
 	                         (Ptr{Cvoid}, Cint, Ptr{UInt8}, Cint), h, i, buf, length(buf));
 	               n <= 0 ? "" : String(buf[1:n]))
 	try
 		IG._pump_once()
-		IG.add_symbols!(f.h, [2.0, 4.0], [3.0, 5.0]; symbol=:sphere, size=[6.0, 12.0], name="Cat",
+		IG._add_symbols!(f.h, [2.0, 4.0], [3.0, 5.0]; symbol=:sphere, size=[6.0, 12.0], name="Cat",
 		                datanames=["Lon", "Lat", "Mag"],
 		                datarows=[["2.0", "3.0", "5.1"], ["4.0", "5.0", "6.2"]])
 		IG._pump_once()
@@ -349,11 +349,11 @@ end
 		@test !occursin("Size", t[3])             # … and nothing about how it is drawn
 
 		# A layer with no data of its own carries no table (the viewer then shows its coordinates).
-		IG.add_symbols!(f.h, [1.0], [1.0]; symbol=:circle, size=6.0, name="Plain")
+		IG._add_symbols!(f.h, [1.0], [1.0]; symbol=:circle, size=6.0, name="Plain")
 		IG._pump_once()
 		@test startswith(table(f.h, 1), "0;0;")
 		# A table that does not align 1:1 with the points is refused, never shown half-filled.
-		IG.add_symbols!(f.h, [1.0, 2.0], [1.0, 2.0]; symbol=:circle, size=6.0, name="Bad",
+		IG._add_symbols!(f.h, [1.0, 2.0], [1.0, 2.0]; symbol=:circle, size=6.0, name="Bad",
 		                datanames=["A"], datarows=[["1"]])
 		IG._pump_once()
 		@test startswith(table(f.h, 2), "0;0;")
@@ -374,7 +374,7 @@ end
 	ax = zeros(Cdouble, 7)
 	frame(h) = (ccall(_test_fn(:gmtvtk_active_axes_test), Cint, (Ptr{Cvoid}, Ptr{Cdouble}), h, ax); copy(ax))
 	G = GMT.mat2grid(Float32[100*sin(ix/3) for iy in 0:20, ix in 0:20]; x=[-10.0, 10.0], y=[-10.0, 10.0])
-	f = view_grid(G)
+	f = viz(G)
 	try
 		IG._pump_once()
 		before = frame(f.h)
@@ -411,7 +411,7 @@ end
 @testitem "save_png writes a valid PNG" tags=[:gui, :output] begin
 	IG = InteractiveGMT; GMT = IG.GMT
 	G = GMT.mat2grid(Float32[ix + iy for iy in 0:9, ix in 0:9]; x=[0.0, 9.0], y=[0.0, 9.0])
-	f = view_grid(G)
+	f = viz(G)
 	path = joinpath(tempdir(), "interactivegmt_png_$(getpid()).png")
 	try
 		IG._pump_once()
@@ -434,7 +434,7 @@ end
 	IG = InteractiveGMT; GMT = IG.GMT
 	G1 = GMT.mat2grid(Float32[ix + iy for iy in 0:9, ix in 0:9]; x=[0.0, 9.0], y=[0.0, 9.0])
 	G2 = GMT.mat2grid(Float32[2(ix + iy) for iy in 0:9, ix in 0:9]; x=[0.0, 9.0], y=[0.0, 9.0])
-	f = view_grid(G1)                                  # base relief grid = tag -1
+	f = viz(G1)                                  # base relief grid = tag -1
 	try
 		@test IG._add_grid_to_scene(f.h, G2, "g2")     # first dropped grid = tag 1
 		IG._pump_once()
@@ -470,7 +470,7 @@ end
 @testitem "fault trace is isFault + open (drives the LINE icon)" tags=[:gui] setup=[GmtvtkTest] begin
 	IG = InteractiveGMT; GMT = IG.GMT
 	G = GMT.mat2grid(Float32[ix + iy for iy in 0:9, ix in 0:9]; x=[0.0, 9.0], y=[0.0, 9.0])
-	f = view_grid(G)
+	f = viz(G)
 	try
 		@test ccall(_test_fn(:gmtvtk_fault_add_test), Cint,
 			(Ptr{Cvoid}, Cdouble, Cdouble, Cdouble, Cdouble), f.h, 2.0, 2.0, 7.0, 7.0) == 1
@@ -491,7 +491,7 @@ end
 @testitem "add! puts a line overlay on the window" tags=[:gui] begin
 	IG = InteractiveGMT; GMT = IG.GMT
 	G = GMT.mat2grid(Float32[ix + iy for iy in 0:9, ix in 0:9]; x=[0.0, 9.0], y=[0.0, 9.0])
-	f = view_grid(G)
+	f = viz(G)
 	try
 		add!(f, [1.0 1.0; 5.0 5.0; 8.0 2.0]; mode=:lines)
 		IG._pump_once()
@@ -508,7 +508,7 @@ end
 		@test_skip "data/etopo4_logo.jpg not present"
 	else
 		G = GMT.mat2grid(Float32[ix + iy for iy in 0:9, ix in 0:9]; x=[0.0, 9.0], y=[0.0, 9.0])
-		f = view_grid(G)
+		f = viz(G)
 		try
 			add_curtain!(f, [0.0 0.0; 9.0 9.0]; image=IG._etopo4_logo(), zrange=(-100.0, 0.0))
 			IG._pump_once()
@@ -530,7 +530,7 @@ end
 		# rounded and clamped to the image): georeference it with THAT, never with what was asked for.
 		I, W, E, S, N = IG._crop_etopo4(-10.0, 10.0, -10.0, 10.0)
 		I.range = [W, E, S, N, 0.0, 255.0]
-		f = view_grid(G; drape=I)
+		f = viz(G; drape=I)
 		try
 			IG._pump_once()
 			st = IG._scene_state(f.h)
@@ -550,7 +550,7 @@ end
 	IG = InteractiveGMT; GMT = IG.GMT
 	sq(x0, y0, z) = [x0 y0 z; x0+1 y0 z; x0+1 y0+1 z; x0 y0+1 z; x0 y0 z]
 	fv = poly2fv([GMT.mat2ds(sq(0, 0, 0.0)), GMT.mat2ds(sq(2, 0, 1.0))])
-	f = view_fv(fv)
+	f = viz(fv)
 	try
 		IG._pump_once()
 		st = IG._scene_state(f.h)
@@ -562,10 +562,10 @@ end
 	end
 end
 
-@testitem "view_points opens a cloud; empty selection is nothing" tags=[:gui] begin
+@testitem "a point cloud opens; empty selection is nothing; empty selection is nothing" tags=[:gui] begin
 	IG = InteractiveGMT
 	A = Float64[(j == 1 ? mod(i, 7) : j == 2 ? mod(2i, 5) : i / 3) for i in 1:60, j in 1:3]
-	f = view_points(A)
+	f = IG._view_points(A)
 	try
 		IG._pump_once()
 		st = IG._scene_state(f.h)
@@ -580,7 +580,7 @@ end
 @testitem "show_table fills the Data Viewer rows" tags=[:gui] begin
 	IG = InteractiveGMT; GMT = IG.GMT
 	G = GMT.mat2grid(Float32[ix + iy for iy in 0:9, ix in 0:9]; x=[0.0, 9.0], y=[0.0, 9.0])
-	f = view_grid(G)
+	f = viz(G)
 	try
 		show_table(f, [1.0 2.0; 3.0 4.0; 5.0 6.0])
 		IG._pump_once()
@@ -596,17 +596,17 @@ end
 @testitem "xyplot opens, adds series, analysis grows it, saves a PNG" tags=[:gui, :xyplot] begin
 	IG = InteractiveGMT
 	t = collect(range(0, 2π; length=128))
-	p = xyplot(t, sin.(t); name="sin", title="xy test", xlabel="x", ylabel="y")
+	p = plot(t, sin.(t); legend="sin", title="xy test", xlabel="x", ylabel="y")
 	path = joinpath(tempdir(), "interactivegmt_xy_$(getpid()).png")
 	try
 		IG._pump_once()
 		@test isalive(p)
 		@test length(p.series) == 1
-		add!(p, t, cos.(t); name="cos")
+		plot!(p, t, cos.(t); legend="cos")
 		@test length(p.series) == 2
 		# a same-domain analysis op (compute + add, the path the Analysis menu drives)
 		nx, ny, _ = IG._xy_compute("remove_mean", p.series[1][1], p.series[1][2])
-		add!(p, nx, ny; name="sin − mean")
+		plot!(p, nx, ny; legend="sin − mean")
 		@test length(p.series) == 3
 		xtime!(p, :date); xtime!(p, :linear)          # mode switch must not throw / crash
 		logscale!(p; y=true); logscale!(p; y=false)   # log toggle must not throw / crash
@@ -625,7 +625,7 @@ end
 	IG = InteractiveGMT
 	t = collect(range(0, 2π; length=200))
 	IG._XY_CURRENT[] = C_NULL   # the previous item's window close is async and unpumped -- don't reuse it
-	p = xyplot(t, sin.(t); name="sin")
+	p = plot(t, sin.(t); legend="sin")
 	mark(x, y, g) = (o = fill(NaN, 3); r = ccall(GmtvtkTest._test_fn(:gmtvtk_xyplot_mark_test), Cint,
 	                 (Ptr{Cvoid}, Cdouble, Cdouble, Cint, Ptr{Cdouble}), p.h, x, y, g, o); (r, o))
 	try
@@ -651,7 +651,7 @@ end
 @testitem "X,Y curve marker: a profile opened in the X,Y tool shares the panel's marker" tags=[:gui, :xyplot] setup=[GmtvtkTest] begin
 	IG = InteractiveGMT; GMT = IG.GMT
 	G = GMT.mat2grid(Float32[ix + iy for iy in 0:9, ix in 0:9]; x=[0.0, 9.0], y=[0.0, 9.0])
-	f = view_grid(G)
+	f = viz(G)
 	q = nothing
 	pmark(x) = ccall(GmtvtkTest._test_fn(:gmtvtk_profile_marker_test), Cdouble, (Ptr{Cvoid}, Cdouble), f.h, x)
 	xmark(x, y, g) = (o = fill(NaN, 3); r = ccall(GmtvtkTest._test_fn(:gmtvtk_xyplot_mark_test), Cint,
@@ -708,7 +708,7 @@ end
 	end
 
 	IG._XY_CURRENT[] = C_NULL   # p's window close (line 394) is async and unpumped -- same reuse risk as above
-	r = iview(D3; xy=true)                          # force the X,Y tool: cols 2,3 become two series
+	r = iview(D3; xy=true, multicol=true)           # force the X,Y tool: cols 2,3 become two series (multicol, as GMT.jl)
 	try
 		@test r isa QtXYPlot
 		@test length(r.series) == 2
@@ -722,7 +722,7 @@ end
 	h = 500.0
 	k = collect(0.0002:0.0002:0.02)
 	P = 1000.0 .* exp.(-4π * h .* k)                 # synthetic mag power spectrum, depth 500 m
-	p = xyplot(k, P; name="PSD")
+	p = plot(k, P; legend="PSD")
 	try
 		IG._pump_once()
 		# the C fit the interactive drag tool uses, over the whole band, unit 1/m
@@ -755,9 +755,9 @@ end
 @testitem "clear! empties an X,Y plot" tags=[:gui, :xyplot] begin
 	IG = InteractiveGMT
 	t = collect(range(0, 1; length=32))
-	p = xyplot(t, t; name="a")
+	p = plot(t, t; legend="a")
 	try
-		add!(p, t, t .^ 2; name="b")
+		plot!(p, t, t .^ 2; legend="b")
 		@test length(p.series) == 2
 		clear!(p)
 		@test length(p.series) == 0
@@ -772,7 +772,7 @@ end
 @testitem "profile_to_xyplot seeds a mirror with the panel series" tags=[:gui, :xyplot] begin
 	IG = InteractiveGMT; GMT = IG.GMT
 	G = GMT.mat2grid(Float32[ix + iy for iy in 0:9, ix in 0:9]; x=[0.0, 9.0], y=[0.0, 9.0])
-	f = view_grid(G)
+	f = viz(G)
 	q = nothing
 	try
 		x = collect(0.0:0.5:10.0); y = sin.(x)
@@ -801,7 +801,7 @@ end
 	G = GMT.mat2grid(Float32[100sind(2lat) + 50cosd(3lon) for lat in -60.0:2.0:60.0, lon in -180.0:2.0:178.0];
 	                 x=collect(-180.0:2.0:178.0), y=collect(-60.0:2.0:60.0))
 	G.proj4 = "+proj=longlat +datum=WGS84 +no_defs"
-	f = view_grid(G)
+	f = viz(G)
 	try
 		setmode(m) = ccall(IG._fn(:gmtvtk_set_view_mode_h), Cint, (Ptr{Cvoid}, Cint), f.h, Cint(m))
 		getmode()  = ccall(IG._fn(:gmtvtk_get_view_mode_h), Cint, (Ptr{Cvoid},), f.h)
@@ -842,7 +842,7 @@ end
 	Z = Float32[3000 * sind(2lo) * cosd(la) - 2000 for la in lat, lo in lon]
 	G = GMT.mat2grid(Z; x=lon, y=lat)
 	G.proj4 = "+proj=longlat +datum=WGS84 +no_defs"
-	f = IG.view_grid(G)
+	f = IG.viz(G)
 	try
 		# VE 8, deliberately: the ceiling lift is proportional to the DRAWN relief, so at the default
 		# exaggeration on a synthetic grid it is itself only a hair and the two cases would be
@@ -948,10 +948,10 @@ end
 @testitem "Ctrl+left-drag profile: a grid starts one, a point cloud refuses it" tags=[:gui] setup=[GmtvtkTest] begin
 	IG = InteractiveGMT; GMT = IG.GMT
 	G = GMT.mat2grid(Float32[ix + iy for iy in 0:49, ix in 0:49]; x=[0.0, 49.0], y=[0.0, 49.0])
-	f = view_grid(G)
+	f = viz(G)
 	xyz = [Float64(i % 50) for i in 0:2499] .|> identity
 	D = GMT.mat2ds(hcat(xyz, [Float64(i ÷ 50) for i in 0:2499], [Float64(i % 7) for i in 0:2499]))
-	c = view_points(D)
+	c = viz(D)
 	try
 		for _ in 1:10; IG._pump_once(); sleep(0.05); end
 		begin_at(h) = ccall(GmtvtkTest._test_fn(:gmtvtk_profile_begin_test), Cint, (Ptr{Cvoid},), h)
@@ -971,7 +971,7 @@ end
 	mk(x0, n) = GMT.mat2grid(Float32[x + y for y in x0:x0+n, x in x0:x0+n];
 	                         x = collect(Float64, x0:x0+n), y = collect(Float64, x0:x0+n))
 	A = mk(0, 10);  B = mk(5, 10);  C = mk(40, 10)
-	f = view_grid(A; title = "A")
+	f = viz(A; title = "A")
 	try
 		for _ in 1:10; IG._pump_once(); sleep(0.05); end
 		IG._add_grid_to_scene(f.h, C, "C")
@@ -1002,7 +1002,7 @@ end
 @testitem "Ctrl+left-drag profile: unchecking its row hides the track, the row stays" tags=[:gui, :law] setup=[GmtvtkTest] begin
 	IG = InteractiveGMT; GMT = IG.GMT
 	G = GMT.mat2grid(Float32[ix + iy for iy in 0:49, ix in 0:49]; x=[0.0, 49.0], y=[0.0, 49.0])
-	f = view_grid(G)
+	f = viz(G)
 	try
 		for _ in 1:10; IG._pump_once(); sleep(0.05); end
 		np = ccall(GmtvtkTest._test_fn(:gmtvtk_profile_drag_test), Cint,
@@ -1030,7 +1030,7 @@ end
 	x = collect(0.0:1.0:200.0)
 	ys = IG._magmodel(s[1], x, fill(2.5, length(x)), 0, 90, 4.0, 0, 0, 0.0, 1.0)[1]
 	ym = vcat(fill(ys[1], 5), ys[1:end-5])                # the "measured" profile: the model, 5 km later
-	p = xyplot(x, ym; name="mag anomaly")
+	p = plot(x, ym; legend="mag anomaly")
 	q = nothing
 	path = joinpath(tempdir(), "igmt_xymag_$(getpid()).igmtz")
 	st(h) = (o = fill(NaN, 22); ccall(tf(:gmtvtk_xyplot_mag_state_test), Cint, (Ptr{Cvoid}, Ptr{Float64}, Cint), h, o, 22); o)
@@ -1081,12 +1081,12 @@ end
 	IG = InteractiveGMT
 	IG._XY_CURRENT[] = C_NULL
 	t = collect(1.0:100.0)
-	p = xyplot(t, t .^ 2; name="sq", yscale=:log)
+	p = plot(t, t .^ 2; legend="sq", proj=:logy)
 	ms() = (o = fill(Cint(-9), 3); ccall(GmtvtkTest._test_fn(:gmtvtk_xyplot_misc_state_test), Cint, (Ptr{Cvoid}, Ptr{Cint}), p.h, o); o)
 	try
 		IG._pump_once()
 		@test ms() == [0, 1, 0]                     # yscale=:log from Julia ticks "Log Y axis"
-		add!(p, t, t .^ 3; name="cube")             # a later add! keeps it
+		plot!(p, t, t .^ 3; legend="cube")             # a later add! keeps it
 		@test ms() == [0, 1, 0]
 		xtime!(p, :decyear)
 		@test ms()[3] == 4                          # xtime! from Julia ticks its Time-axis item
@@ -1105,7 +1105,7 @@ end
 	G = GMT.mat2grid(Float32[100 * sind(30x) * cosd(10y) for y in -2:0.02:2, x in -3:0.02:3]; x=[-3.0, 3.0], y=[-2.0, 2.0], proj4="+proj=longlat")
 	B = GMT.mat2grid(Float32[-3000 - 200x for y in -2:0.02:2, x in -3:0.02:3]; x=[-3.0, 3.0], y=[-2.0, 2.0], proj4="+proj=longlat")
 	batf = joinpath(tempdir(), "igmt_bat_$(getpid()).grd"); GMT.gmtwrite(batf, B)
-	f = view_grid(G); q = nothing
+	f = viz(G); q = nothing
 	drag(a, b, c, d) = ccall(tf(:gmtvtk_profile_drag_test), Cint, (Ptr{Cvoid}, Cdouble, Cdouble, Cdouble, Cdouble), f.h, a, b, c, d)
 	st() = (o = fill(NaN, 22); ccall(tf(:gmtvtk_xyplot_mag_state_test), Cint, (Ptr{Cvoid}, Ptr{Float64}, Cint), q.h, o, 22); o)
 	GmtvtkTest._register_console_eval_test(true)   # the dragged profile measures as the app does
@@ -1154,7 +1154,7 @@ end
 	IG = InteractiveGMT; GMT = IG.GMT; tf = GmtvtkTest._test_fn
 	IG._XY_CURRENT[] = C_NULL
 	G = GMT.mat2grid(Float32[sind(30x) for y in -2:0.02:2, x in -3:0.02:3]; x=[-3.0, 3.0], y=[-2.0, 2.0], proj4="+proj=longlat")
-	f = view_grid(G)
+	f = viz(G)
 	k = collect(0.02:0.02:2.0); P = 1000 .* exp.(-4π * 0.5 .* k)          # depth 500 m, k in 1/km
 	h = ccall(IG._fn(:gmtvtk_open_xyplot_from_host), Ptr{Cvoid}, ())    # owned by the viewer
 	p = IG._FIGREG[h]
@@ -1164,12 +1164,12 @@ end
 	path = joinpath(tempdir(), "igmt_sg_$(getpid()).igmtz"); p2 = nothing
 	try
 		Pk = copy(P); Pk[40] *= 50                                            # one spike inside the band
-		add!(p, k, Pk; name="spiky")
+		plot!(p, k, Pk; legend="spiky")
 		# the fit is GMT trend1d's ROBUST one (ecran's -N2r): the spike does not move the depth
 		@test isapprox(ccall(IG._fn(:gmtvtk_xyplot_specgrant), Cdouble, (Ptr{Cvoid}, Cint, Cdouble, Cdouble, Cdouble),
 		                     h, 0, 0.4, 1.2, 1000.0), 500; rtol=1e-3)
 		ccall(IG._fn(:gmtvtk_xyplot_clear), Cvoid, (Ptr{Cvoid},), h)
-		add!(p, k, P; name="PSD"); logscale!(p; y=true); IG._pump_once()
+		plot!(p, k, P; legend="PSD"); logscale!(p; y=true); IG._pump_once()
 		ccall(tf(:gmtvtk_xyplot_sg_on_test), Cint, (Ptr{Cvoid}, Cint, Cdouble), h, 0, 1000.0)
 		dragc(0.4, P[20], 1.2, P[60])
 		s1 = sg()
@@ -1202,7 +1202,7 @@ end
 	IG = InteractiveGMT; GMT = IG.GMT
 	G1 = GMT.mat2grid(Float32[x + y for y in 0:20, x in 0:30]; x=[0.0, 30.0], y=[0.0, 20.0])
 	G2 = GMT.mat2grid(Float32[1000 + x * y for y in 0:10, x in 0:15]; x=[5.0, 20.0], y=[5.0, 15.0])
-	f = view_grid(G1)
+	f = viz(G1)
 	try
 		IG._pump_once()
 		IG._add_grid_to_scene(f.h, G2, "second"; promote=false)
@@ -1231,8 +1231,8 @@ end
 	IG = InteractiveGMT
 	IG._XY_CURRENT[] = C_NULL
 	t = collect(1.0:50)
-	p = xyplot(t, t .^ 2; name="squares", xlabel="distance", ylabel="value", yscale=:log)
-	add!(p, t, t .^ 1.5; name="pow 1.5", color=:red, linestyle=:dash, marker=:circle)
+	p = plot(t, t .^ 2; legend="squares", xlabel="distance", ylabel="value", proj=:logy)
+	plot!(p, t, t .^ 1.5; legend="pow 1.5", lc=:red, ls=:dash, marker=:circle)
 	zipf = joinpath(tempdir(), "igmt_xyscript_$(getpid()).zip")
 	png = joinpath(tempdir(), "igmt_xyscript_$(getpid()).png")
 	try
@@ -1266,8 +1266,8 @@ end
 	IG._XY_CURRENT[] = C_NULL
 	xr = collect(0.0:1.0:100.0); y = sin.(xr ./ 8)
 	xd = [x <= 40 ? 10 + x / 2 : 30 + (x - 40) * 2 for x in xr]     # the same record, distorted x
-	p = xyplot(xd, y; name="distorted")                               # the Object Manager's current curve
-	add!(p, xr, y; name="reference")
+	p = plot(xd, y; legend="distorted")                               # the Object Manager's current curve
+	plot!(p, xr, y; legend="reference")
 	click(x, yy) = (o = fill(NaN, 3); ccall(tf(:gmtvtk_xyplot_mark_test), Cint, (Ptr{Cvoid}, Cdouble, Cdouble, Cint, Ptr{Cdouble}), p.h, x, yy, 0, o))
 	rclick(x, yy, it) = ccall(tf(:gmtvtk_xyplot_rclick_test), Cint, (Ptr{Cvoid}, Cdouble, Cdouble, Cstring), p.h, x, yy, it)
 	st() = (o = fill(NaN, 22); ccall(tf(:gmtvtk_xyplot_mag_state_test), Cint, (Ptr{Cvoid}, Ptr{Float64}, Cint), p.h, o, 22); o)

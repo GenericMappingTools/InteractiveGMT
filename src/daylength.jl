@@ -152,7 +152,7 @@ function daylength_base(; tilt::Float64=EARTH_TILT, decl::Vector{Float64}, G::GM
 	R = S / 2
 	lon0, lat0 = _DL_VIEWS[clamp(view, 0, 2) + 1]
 	# The page, white: it fixes the crop (see _DL_W).
-	plot([0 0; _DL_W 0; _DL_W _DL_H; 0 _DL_H; 0 0], region=(0, _DL_W, 0, _DL_H), proj=:linear,
+	GMT.plot([0 0; _DL_W 0; _DL_W _DL_H; 0 _DL_H; 0 0], region=(0, _DL_W, 0, _DL_H), proj=:linear,
 	     figsize=(_DL_W, _DL_H), fill=:white, frame=:none, xshift=0.0, yshift=0.0)
 
 	# ---- Globe: the chosen view, Sun from the right ---------------------------------------------
@@ -160,20 +160,20 @@ function daylength_base(; tilt::Float64=EARTH_TILT, decl::Vector{Float64}, G::GM
 	       water="#a9cfe6", shore=(0.25, "#7a6a4a"), res=:crude, frame=(axes=:none, grid=30),
 	       par=(MAP_GRID_PEN_PRIMARY="0.25p,gray50", MAP_FRAME_PEN="1p"), xshift=_DL_GX, yshift=_DL_GY)
 	# One call per pen: every GMT call costs a module start.
-	plot!([mat2ds(_dl_parallel(φ)) for φ in (tilt, -tilt)], pen=(0.9, :red, :dash))
-	plot!([mat2ds(_dl_parallel(φ)) for φ in (90 - tilt, tilt - 90)], pen=(0.9, :blue, :dash))
-	plot!(_dl_parallel(0.0), pen=(0.8, :black))
+	GMT.plot!([mat2ds(_dl_parallel(φ)) for φ in (tilt, -tilt)], pen=(0.9, :red, :dash))
+	GMT.plot!([mat2ds(_dl_parallel(φ)) for φ in (90 - tilt, tilt - 90)], pen=(0.9, :blue, :dash))
+	GMT.plot!(_dl_parallel(0.0), pen=(0.8, :black))
 	if lat0 == 0.0
 		# Rotation axis, upright, poking out of both poles.
-		plot!([R -0.7; R S + 0.7], region=(0, S, 0, S), proj=:linear, figsize=(S, S), pen=(1.5, :black),
+		GMT.plot!([R -0.7; R S + 0.7], region=(0, S, 0, S), proj=:linear, figsize=(S, S), pen=(1.5, :black),
 		      arrow=(len=0.35, stop=true, shape=0.5), fill=:black, noclip=true)
 	else
 		# Looking down the axis: it is the centre of the picture.
-		plot!([R R], region=(0, S, 0, S), proj=:linear, figsize=(S, S), marker=:circle, ms=0.3, fill=:black,
+		GMT.plot!([R R], region=(0, S, 0, S), proj=:linear, figsize=(S, S), marker=:circle, ms=0.3, fill=:black,
 		      ml=(0.5, :white))
 	end
 	# The Sun.
-	plot!([S + 1.6 R], marker=:circle, ms=1.0, fill=:gold, ml=(0.6, :orange), noclip=true)
+	GMT.plot!([S + 1.6 R], marker=:circle, ms=1.0, fill=:gold, ml=(0.6, :orange), noclip=true)
 
 	# ---- Bar panel: frame only (the bars are the overlay's) ----------------------------------------
 	basemap!(region=(0, 24, -90, 90), proj=:linear, figsize=(_DL_BW, S), xshift=_DL_BX - _DL_GX,
@@ -188,7 +188,7 @@ function daylength_base(; tilt::Float64=EARTH_TILT, decl::Vector{Float64}, G::GM
 	          xaxis=(custom=(pos=_DL_MONTH_DOY, type_=fill("ag", 12), label=_DL_MONTH_TXT),),
 	          yaxis=(annot=30, ticks=10, label="Latitude"), par=(FONT_TITLE="14p,Helvetica-Bold",))
 	grdcontour!(G, cont=2, annot=(int=6, labels=(font=(7, "Helvetica"),)), pen=(0.3, "gray25"))
-	plot!(hcat(collect(1.0:ndays), decl), pen=(1.5, :blue))
+	GMT.plot!(hcat(collect(1.0:ndays), decl), pen=(1.5, :blue))
 	colorbar!(pos=(anchor=:MR, offset=(0.4, 0), length=_DL_YH, width=0.35), cmap=cpt,
 	          frame=(annot=6, ticks=1, ylabel="h"))
 	return nothing
@@ -275,13 +275,13 @@ function _dl_render_overlay!(L::Vector{Float64}, year::Int)
 			o = k + (kind == 1 ? 6 : 7)
 			xy = permutedims(reshape(L[o:o + 2n - 1], 2, n))
 			if kind == 1
-				plot!(xy; frame!()..., fill=rgb(r, g, b) * @sprintf("@%d", round(Int, 100 * (1 - a))), close=true)
+				GMT.plot!(xy; frame!()..., fill=rgb(r, g, b) * @sprintf("@%d", round(Int, 100 * (1 - a))), close=true)
 			else
-				plot!(xy; frame!()..., pen=dashed ? (w, rgb(r, g, b), :dash) : (w, rgb(r, g, b)), noclip=true)
+				GMT.plot!(xy; frame!()..., pen=dashed ? (w, rgb(r, g, b), :dash) : (w, rgb(r, g, b)), noclip=true)
 			end
 			k = o + 2n
 		elseif kind == 3
-			plot!([L[k + 1] L[k + 2]]; frame!()..., marker=:circle, ms=2 * L[k + 3], fill=rgb(L[k + 4], L[k + 5], L[k + 6]),
+			GMT.plot!([L[k + 1] L[k + 2]]; frame!()..., marker=:circle, ms=2 * L[k + 3], fill=rgb(L[k + 4], L[k + 5], L[k + 6]),
 			      ml=(L[k + 7], :black), noclip=true)
 			k += 8
 		elseif kind == 4

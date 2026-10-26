@@ -10,7 +10,6 @@
 # or in the REPL:  include("examples/curtain.jl")
 
 using InteractiveGMT
-using GMT
 
 const SEISMIC_IMG = normpath(joinpath(@__DIR__, "..", "deps", "assets", "seismic_E46.jpg"))
 
@@ -18,15 +17,15 @@ const SEISMIC_IMG = normpath(joinpath(@__DIR__, "..", "deps", "assets", "seismic
 G = GMT.grdcut("@earth_relief_04m", region=(-12, 0, 35, 45))
 
 # Hang the seismic profile along the two-point WSW–ENE track, clipped to the seafloor.
-# Form 1 — the `vcurtain=` kwarg of view_grid (one spec, or a vector of specs):
-fig = view_grid(G; cmap=:geo, title="i'GMT  —  vertical curtain",
-                vcurtain = (; image  = SEISMIC_IMG,
-                              path   = [-11.045 36.077; -6.9846 36.1846],
-                              zrange = (-10000.0, 0.0),
-                              clip   = true))
+# Form 1 — the `vcurtain=` kwarg of viz (one spec, or a vector of specs):
+fig = viz(G; cmap=:geo, title="i'GMT  —  vertical curtain",
+          vcurtain = (; image  = SEISMIC_IMG,
+                        path   = [-11.045 36.077; -6.9846 36.1846],
+                        zrange = (-10000.0, 0.0),
+                        clip   = true))
 
 # Form 2 — equivalently, add it after the window is up with add_curtain!:
-#   fig = view_grid(G; cmap=:geo)
+#   fig = viz(G; cmap=:geo)
 #   add_curtain!(fig, [-11.045 36.077; -6.9846 36.1846];
 #                image=SEISMIC_IMG, zrange=(-10000.0, 0.0), clip=true)
 

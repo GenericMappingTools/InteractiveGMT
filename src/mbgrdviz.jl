@@ -19,14 +19,14 @@ a region (a drawn rectangle) is opened as a new window, and the checked navigati
 ported swath editors (mbedit, mbeditviz, mbvelocitytool).
 
 - `file`: a grid to open, as `mbgrdviz -I` does: into `fig`'s window when it is empty, else a new window.
-- `fig`: the window to bind (a figure returned by `view_grid` and friends).
+- `fig`: the window to bind (a figure returned by `viz`).
 
 It reads swath files with MB-System's MBIO library, found as the swath editor finds it
 (`ENV["INTERACTIVEGMT_MBIO"]`, iGMT.ini, the PATH, or asked). It is also on the Tools menu of every
 window, as "Survey planning (mbgrdviz)".
 
 ```julia
-fig = view_grid(G);  mbgrdviz(; fig)
+fig = _view_grid(G);  mbgrdviz(; fig)
 ```
 """
 function mbgrdviz(file::String=""; fig=nothing)

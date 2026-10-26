@@ -21,7 +21,7 @@
 # negated here so both curves mean the same thing — checked, not assumed: cos-similarity between the
 # two u columns is -0.99 at every benchmark time.
 
-using InteractiveGMT, GMT
+using InteractiveGMT    # re-exports GMT.jl; the static figures below are GMT.plot / GMT.plot!
 
 const IG = InteractiveGMT
 const CB = InteractiveGMT.CatalinaBenchmark1
@@ -81,10 +81,10 @@ function bm1_compare(quantity::Symbol = :eta; outdir::String = raw"C:\TMP\claude
 			ylo = min(minimum(vt[o][kt]), minimum(va[ka]))
 			yhi = max(maximum(vt[o][kt]), maximum(va[ka]))
 			pad = 0.08 * (yhi - ylo)
-			plot(xt[o][kt], vt[o][kt]; panel=(k, col), region=(rgx[1], rgx[2], ylo - pad, yhi + pad),
+			GMT.plot(xt[o][kt], vt[o][kt]; panel=(k, col), region=(rgx[1], rgx[2], ylo - pad, yhi + pad),
 			     lc=:blue, lw=1, frame=(axes=:WSen,), xlabel="x (m)", ylabel=ylab,
 			     title = col == 1 ? "t = $(Int(t)) s   (full profile)" : "t = $(Int(t)) s   (beach)")
-			plot!(xa[ka], va[ka]; panel=(k, col), lc=:red, ls=:dash, lw=1)
+			GMT.plot!(xa[ka], va[ka]; panel=(k, col), lc=:red, ls=:dash, lw=1)
 			legend(leg(); position=(inside=:TR, width=0.0))
 		end
 	end
