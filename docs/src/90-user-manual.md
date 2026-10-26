@@ -8,12 +8,15 @@
 
 ### Installation
 
-```bash
-# In Julia
-import Pkg; Pkg.add("https://github.com/joa-quim/InteractiveGMT.jl.git")
+With an up-to-date GMT.jl:
+
+```julia
+using GMT
+iGMTinstall()
 ```
 
-**Requirements:** Windows only. The viewer ships as a pre-built DLL.
+**Requirements:** Windows 11, macOS or Linux. The viewer ships as a pre-built shared library
+(`gmtvtk.dll` / `libgmtvtk.dylib` / `libgmtvtk.so`).
 
 ### Quick Example
 
@@ -41,23 +44,23 @@ The window opens immediately. The REPL stays usable.
 ## Window Layout
 
 ```
-┌────────────────────────────────────────────────────────────┐
-│ File  View  Geography  Tools  Help           [2D] [Open]   │ Toolbar
-├────────────────────────────────────────────────────────────┤
-│                                                            │ │
-│                                                            │ │
-│                     3-D View                              │ │
-│                   (VTK Canvas)                            │ │  Scene
-│                                                            │ │  Objects
-│                                                            │ │  Dock
-│                                                            │ │
-├────────────────────────────────────────────────────────────┤
-│ │ Scene Objects │ │ Julia Console │ │ Profile │          │ Dock Tabs
-└────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────────┐
+│ File Image View Geography Geophysics Satellite Tools GMT Grid Tools    │ Menus
+│ T & L Help                                                             │
+├────────────────────────────────────────────────────────────────────────┤
+│ [Open] [2D/3D ▾] [Base Map] [Ruler] [shapes ▾] … [Swipe ▾] [i ▾]       │ Toolbar
+├──────────┬─────────────────────────────────────────────────────────────┤
+│ Scene    │                                                             │
+│ Objects  │                      3-D View                               │
+│ Dock     │                    (VTK Canvas)                             │
+│          │                                                             │
+├──────────┴─────────────────────────────────────────────────────────────┤
+│ ▸ Panels:  Profile │ Julia Console                                     │
+└────────────────────────────────────────────────────────────────────────┘
 ```
 
-**Right panel:** Scene Objects (all elements in your scene)
-**Bottom panel:** Profile, Julia Console (type commands)
+**Left panel:** Scene Objects (all elements in your scene) — it can be dragged to the right edge
+**Bottom panel ("Panels"):** Profile, Julia Console (type commands)
 **Status corner (bottom-right):** CRS chip (`EPSG:4326`, `EPSG:000` = unreferenced) + Messages
 button — the speech bubble opens the Messages dock (execution messages); a red dot = unread
 
@@ -84,52 +87,51 @@ fig = view_grid(G;
 
 | Mouse | Action |
 |-------|--------|
-| Left-drag | Rotate view |
+| Left-drag | Rotate view (pans in the flat 2-D map) |
 | Middle-drag | Pan (move sideways) |
 | Scroll wheel | Zoom in/out |
+| Ctrl+left-drag | Draw a profile (on a grid) |
 | Ctrl+right-drag | Select points (rubber band) |
 | Right-click | Context menu |
 
 **Keyboard shortcuts:**
 - `e` — Toggle mesh edges
-- `2` — Toggle 2-D/3-D view
+- `1` – `6` — Snap the camera to a preset view (`2` = straight down from the top)
+- `R` — Reset camera (also **View → Reset Camera**)
 
 ### Vertical Exaggeration
 
 Adjust relief vertical scale:
 
-1. Menu: **View → Vertical Scale…**
-2. Drag the gizmo ring (blue ring around the gizmo)
-3. Double-click the gizmo to reset
+1. Menu: **View → Vertical Exaggeration…**
+2. Or drag the gizmo's vertical **amber cone** (its two grey rings set tilt and azimuth)
 
 ### Flat 2-D View
 
 Switch to map view (top-down, no perspective):
 
-- Toolbar: **[2D]** button
-- Menu: **View → 2-D View**
+- Toolbar: the **2D/3D** view-mode button — its dropdown offers **2D**, **3D**, and, for
+  geographic data, **Globe** and **Cube**
+- Or the 3-D view's right-click menu
 
-The relief flattens; grid shows colour only. Rotations lock.
+The relief flattens; grid shows colour only. Left-drag pans instead of rotating.
 
 ### Colormap
 
 Change the colour scheme:
 
-1. Right-click **"Color Bar"** in Scene Objects
-2. Pick a colormap (16 GMT masters)
-3. Or choose **Custom…** to load a .cpt file
+1. Left-click the **"Color Bar"** label in Scene Objects
+2. Pick a colormap (GMT masters)
+3. Or choose **Custom…** and type the name of any GMT CPT
+4. **Color Palettes…** (also a toolbar button) opens the full palette editor
 
 **Drag the colour bar** to move it.
 
 ### Hillshade
 
-Illuminate relief like a shaded map:
-
-- **View → Hillshade Lambert** — VE-corrected
-- **View → Hillshade grdimage** — GMT gradient style
-- **View → Cast Shadows** — PBR shadows (slow, experimental)
-
-Hillshade and shadows are mutually exclusive.
+Illuminate relief like a shaded map with the toolbar **Illumination (Hillshade)** button. Its dialog
+aims the light and picks the shading method — among them the Lambert hillshade, the GMT
+grdimage-style gradient shading, and a PBR method whose panel has a **Cast shadows** checkbox.
 
 ### Adding Overlays
 
@@ -145,19 +147,17 @@ stations = gmtread("stations.txt")
 add!(fig, stations; mode=:points, color="red", size=10)
 ```
 
-**Right-click** any overlay in Scene Objects for options.
+**Left-click** an overlay's row in Scene Objects for its properties, **right-click** it for its
+context menu. Right-clicking the overlay itself in the 3-D view also opens its properties.
 
 ### Image Drape
 
-Drape a georeferenced image over the terrain:
+Drape a georeferenced image over the terrain (it must overlap the grid):
 
 ```julia
-# View grid
-fig = view_grid(GMT.peaks())
-
-# Drape image (given when the grid is opened)
+G = gmtread("dem.nc")
 I = gmtread("satellite.tif")
-fig = view_grid(G; drape=I)
+fig = view_grid(G; drape=I)   # the drape is given when the grid is opened
 ```
 
 ### Vertical Curtain
@@ -187,9 +187,8 @@ fig = view_points(D;
 
 ### Selecting Points
 
-1. Hold **Ctrl**
-2. Right-drag a box around points
-3. Selection appears in Data Viewer
+1. **Shift+left-drag** (or **Ctrl+right-drag**) a box around points
+2. The selected points are highlighted; dragging again over them toggles them; **Ctrl+Z** undoes
 
 ```julia
 # Get selected rows
@@ -203,22 +202,22 @@ sel = selection(fig)
 ### Named Solids
 
 ```julia
-# Platonic solids
-fig = view_fv("icosahedron"; size=2)
+# Platonic solids (keywords go to the GMT.jl generator: r = circumradius)
+fig = view_fv("icosahedron"; r=2)
 
 # Primitives
-fig = view_fv("torus"; major=2, minor=0.5)
+fig = view_fv("torus"; R=2, r=0.5)
 
 # Operations
-fig = view_fv("revolve"; profile=...)
-fig = view_fv("loft"; sections=[...])
-fig = view_fv("extrude"; face=..., height=1)
+fig = view_fv("revolve"; curve=...)
+fig = view_fv("loft"; C1=..., C2=...)
+fig = view_fv("extrude"; shape=..., h=1)
 ```
 
 ### Polygon Meshes
 
 ```julia
-fv = poly2fv(D)      # Convert polygon to solid
+fv = poly2fv(D)      # closed 3-D polygons (x y z), a GMTdataset or a vector of them
 fig = view_fv(fv; color="orange")
 ```
 
@@ -226,9 +225,7 @@ fig = view_fv(fv; color="orange")
 
 ### Body Placement
 
-- Empty launcher: solid replaces the blank space
-- Existing solid: new solid replaces it
-- Grid window: solid opens in new window
+A solid built from the toolbar's **3-D Bodies** flyout opens in its own solids window.
 
 ---
 
@@ -254,23 +251,28 @@ add!(fig, more_data)                                # a GMTdataset or matrix: co
 add!(fig, x, y; name="Series 2", linestyle=:dash)  # or one series by hand
 ```
 
+`xyplot` called while an X,Y window is open adds a new page to that window instead of opening
+another one.
+
 ### Multiple Pages
 
-Click **[+]** tab to add a new page.
+Click the **[+]** button beside the tabs to add a new page.
 
 **Right-click tab:**
-- New / Duplicate / Rename / Delete
+- New / Duplicate / Rename… / Copy to Page / Delete
 
 ### Time Series
 
 ```julia
 # X is epoch seconds
-fig = xyplot([epoch_seconds values]; xtime=true)
+fig = xyplot([epoch_seconds values]; xtime=true)   # or :date, :date_ymd, :time, :decyear, :doy
+xtime!(fig, :decyear)                               # change it later
 ```
 
 X-axis auto-formats as dates/times.
 
-**Menu:** **Misc → Time Format** — choose format.
+**Menu:** **Misc → Time axis (X)** — Linear (numbers), Date — auto, Date — yyyy-mm-dd, Time — HH:MM,
+Decimal year, Day-of-Year.
 
 ### Log Axes
 
@@ -283,19 +285,38 @@ fig = xyplot(data; yscale=:log)
 
 # Both
 fig = xyplot(data; xscale=:log, yscale=:log)
+
+# Later, on a live plot
+logscale!(fig; x=true, y=false)
 ```
 
-Or use **Misc → Log X / Log Y** menu.
+Or use **Misc → Log X axis / Log Y axis**.
+
+### Plot Types
+
+A row of miniatures under the menus re-plots the current page in another way (MATLAB's PLOTS
+gallery, plus GMT.jl's plotting functions):
+
+- **Same page:** plot, area, bar, barh, bar stack, barh stack, waterfall, semilogx, semilogy, loglog,
+  comet (animated), stem, stairs, scatter, plotyy, fill_between
+- **New page:** histogram (of the selected series), density, boxplot, violin, ecdfplot, qqnorm,
+  qqplot, radar, rose (selected series as azimuths), parallelplot, cornerplot, marginalhist (selected
+  series), biplot
+
+Buttons that do not fit are under the **»** at the right end of the row.
 
 ### Series Properties
 
-Double-click a series name in Object Manager (or right-click):
+Double-click a series name in the Object Manager for **Line properties…**:
 
 - Colour
 - Width
-- Style (solid/dashed/dotted)
-- Marker (circle/square/triangle/…)
+- Line style (Solid / Dashed / Dotted / Dash-Dot / Dash-Dot-Dot / None)
+- Marker (None / Cross / Plus / Square / Circle / Diamond)
 - Marker size
+- Bar width (bar series)
+
+Right-click the name for Line properties…, Show in Data Table, Save data…, Rename…, Delete.
 
 ### Analysis Menu
 
@@ -305,24 +326,35 @@ Transform your data:
 |----------|--------------|
 | Remove Mean | Subtract mean from Y |
 | Remove Trend | Remove linear trend |
-| 1st Derivative | dY/dX (new window) |
-| 2nd Derivative | d²Y/dX² (new window) |
-| FFT Amplitude | Power spectrum (via GMT.spectrum1d) |
-| FFT PSD | Power spectral density |
-| Autocorrelation | Autocorrelation (new window) |
-| Fit Polynomial | Fit degree-N polynomial |
-| Savitzky-Golay | Smooth (window size dialog) |
-| Butterworth | Low/high-pass filter (cutoff dialog) |
-| Filter Outliers | Despike (σ threshold dialog) |
-| Spector-Grant | Depth-to-sources (drag band on spectrum) |
+| FFT — Amplitude Spectrum | Amplitude spectrum, via GMT spectrum1d (new page) |
+| FFT — Power Spectrum Density | Power spectral density (new page) |
+| Autocorrelation | Autocorrelation (new page) |
+| 1st derivative | dY/dX (new page) |
+| 2nd derivative | d²Y/dX² (new page) |
+| Fit polynomial… | Fit a degree-N polynomial |
+| Smoothing (Savitzky-Golay)… | Smooth (window size dialog) |
+| Filter (Butterworth)… | Low/high-pass filter (cutoff dialog) |
+| Filter outliers (despike)… | Despike (σ threshold dialog) |
+| Histogram… | Histogram of Y (new page) |
+| Bar graph | The series as bars (new page) |
+| Sound Velocity Profile… | Chen & Millero sound velocity (new page) |
+| Reference a curve to another… | Pick pairs of points, then stretch one curve onto the other |
+| Depth to sources (Spector-Grant) | Depth-to-sources (drag a band on a spectrum) |
+
+The results that are not on the parent's axes go to a **new page** of the same window; the others
+are added to the current page.
 
 **Usage:** Select a row in Object Manager first, then choose analysis.
+
+The **GMT** menu has a full **spectrum1d…** dialog (auto- and cross-spectra).
 
 ### Saving
 
 **Menu:**
-- **File → Save** — Save current page
-- **File → Save As…** — Choose filename
+- **File → Save…** — the selected series (or every series of the page if none is selected); the
+  format follows the extension
+- **File → Session → Open… / Save…** — the whole window (.igmtz)
+- **File → Paste** (Ctrl+V) — the clipboard's numbers become new series
 
 ---
 
@@ -332,30 +364,36 @@ Transform your data:
 
 Add GSHHG shorelines:
 
-1. **Geography → Plot Coastline…**
-2. Choose resolution (crude/low/intermediate/full/high)
-3. Click OK
+**Geography → Plot coastline →** Low / Intermediate / High / Full / Automatic resolution.
+
+Political boundaries and rivers have their own submenus beside it.
 
 ### Volcanoes
 
 Plot global volcano locations:
 
-1. **Geography → Plot Volcanoes**
+1. **Geography → Volcanoes**
 2. Hover over points for metadata
 
 ### Tides
 
 Download and plot tide gauge data:
 
-**Geography → Download Mareg:**
-- **Last 2 Days** — Auto-fetch recent
-- **Calendar…** — Choose date range
+1. **Geography → Tides (download)** plots the IOC gauges as stars
+2. Right-click a star: **Download Mareg (2 days)** or **Download Mareg (Calendar)**
 
 Data from IOC sea-level monitoring.
 
+### More layers
+
+The Geography menu also has administrative units (GADM), global seismicity, magnetic isochrons,
+meteorite impacts, hydrothermal sites, tide stations, Earth tides, sun and terminators, plate
+boundaries and cities.
+
 ### CRS (Coordinate Reference)
 
-When you load georeferenced data (images/grids), the Geography menu unhides. The window sets its CRS from the data.
+The Geography menu is enabled in a new window. The window sets its CRS from the data you load;
+data without a CRS disables the menu.
 
 ---
 
@@ -368,28 +406,32 @@ When you load georeferenced data (images/grids), the Geography menu unhides. The
 fig = iview("my_file.nc")   # Auto-detects type
 
 # Via menu
-# File → Open... (or click [Open] toolbar button)
+# File → Open known file types… (or the folder button on the toolbar)
 ```
 
-**Supported:** GMT grids, images, datasets.
+**Supported:** GMT grids, images, datasets. **File → Open xy(z)** has the table readers.
 
 ### Drag and Drop
 
 Drop a file onto the window — auto-opens.
 
-**Also:** Drag files onto `iview.bat` (desktop launcher).
+**Also:** Drag files onto the `igmt` desktop launcher.
 
 ### Saving
 
 **Grids:**
-- **File → Save Grid…** — Save the surface as .nc
+- **File → Save Grid…** — Save the window's grid; a dialog picks the format
 
 **Images:**
-- **File → Save Image…** — Export screenshot
+- **File → Save Image…** — Save the window's image layer (greyed out when there is none)
+- **File → Save Screenshot img… / Save Screenshot GeoTIFF…** — what the view shows
+- **File → Copy to Clipboard**
 
 **Per-object:**
 - Right-click item in Scene Objects
-- Choose **Save…**
+- Choose **Save grid… / Save image… / Save data…** (whichever applies)
+
+**Whole window:** **File → Save Session… / Load Session…**
 
 ### Recent Files
 
@@ -399,12 +441,12 @@ Drop a file onto the window — auto-opens.
 
 Create an empty 2-D map with specific bounds:
 
-1. **File → Background Region…**
-2. Enter W/E/S/N
-3. Check **Is Geographic?** for lon/lat
+1. **File → Background region…**
+2. Enter W/E/S/N (default: the whole Earth)
+3. **Is Geographic?** (checked by default) for lon/lat
 4. Click OK
 
-Useful as a blank canvas for adding data.
+It opens a new window — a blank canvas for adding data.
 
 ---
 
@@ -417,15 +459,16 @@ Download and view web map tiles (satellite, roads, terrain):
 1. **Tools → Tiles Tool**
 2. Picker opens with world map
 3. **Click tiles** to select (toggle)
-4. Choose **Provider** (e.g., Esri World Imagery)
-5. Set **Zoom** level
-6. Click **GO**
+4. Choose **Provider** (Bing / Google / OSM / Esri)
+5. Set **Zoom** (slider, or the ± buttons)
+6. Click **GO** — a mosaic over the selected tiles' bounding box
 
 **Features:**
-- **Anchor** — Drag star to center view
+- **Anchor** — Click the anchor button, then the map, to fix the zoom centre (drag it afterwards)
 - **Pan** — Use scrollbars
-- **Cache** — Where to store tiles (default: ~/.gmt/cache_tileserver)
-- **Mercator** — Toggle Mercator vs Geographic projection
+- **Cache** — Where to store tiles (default `~/.gmt`, i.e. ~/.gmt/cache_tileserver; **…** to pick
+  another, recent ones are remembered)
+- **Mercator / Geogs** — Mercator or geographic output (Geogs by default)
 
 Result opens as a new window.
 
@@ -434,11 +477,12 @@ Result opens as a new window.
 Reproject the window's raster (grid or image) into another coordinate reference system — an
 interface to `gdalwarp`:
 
-1. **Tools → Project…**
+1. **Tools → Project…** (needs a grid or an image in the window)
 2. **Source Referencing System** — pre-filled from the window's own CRS (the same one the
-   bottom-right EPSG chip shows). Leave blank to let GDAL read it off the data.
+   bottom-right EPSG chip shows).
 3. **Destination Referencing System** — type a PROJ4 / WKT / `EPSG:nnnn` string, or pick from the
-   **Projections** combo (which just fills this box, so it stays editable).
+   **Projections** combo (which just fills this box, so it stays editable). Its last row,
+   **More…**, and the **Select CRS…** button open the full PROJ system selector.
 4. Choose an **Interpolation method** (nearest neighbour / bilinear / cubic / cubicspline).
 5. Optionally force the output **Rows + Columns**, or an **x inc / y inc** resolution in target
    units (resolution wins when both are given; blank = GDAL's own guess).
@@ -520,13 +564,13 @@ end
 
 Quick-add a world base map:
 
-1. Click **[Base Map]** toolbar button (grid icon before shapes)
-2. Picker shows 4×8 tile grid over ETOPO
-3. Click a tile or drag a region
+1. Click the **[Base Map]** toolbar button (the world icon, next to the Ruler)
+2. The **World Topo Tiles** picker shows a 4×8 tile grid over ETOPO
+3. Click a tile — or toggle the picker's rectangle tool and drag a region
 4. Tile loads as georeferenced image
 
 **Options:**
-- **World-Map-Tiles** vs **Whole World-Map**
+- **World Map Tiles** vs **World Map**
 - **[-180 180]** vs **[0 360]** (Pacific-centered)
 
 ---
@@ -535,11 +579,14 @@ Quick-add a world base map:
 
 Quick-insert a geometric solid:
 
-1. Click **[3-D Bodies]** toolbar button (flyout menu)
-2. Choose solid (Cube/Sphere/Torus/etc.)
-3. Solid appears in scene
+1. Click the **[3-D Bodies]** toolbar button's arrow (flyout menu)
+2. Choose a solid (Cube, Sphere, Torus, Cylinder, the Platonic solids, …) — clicking the button
+   itself builds the current one
+3. The solid opens in its own solids window
 
-**For operations:** Choose **Revolve / Loft / Extrude** — these open dialogs.
+**Operations:** **Revolve / Loft / Extrude** build a demo (a sample profile, curves, a star outline).
+For your own input use `view_fv("revolve"; curve=…)`, `view_fv("loft"; C1=…, C2=…)`,
+`view_fv("extrude"; shape=…, h=…)`.
 
 ---
 
@@ -549,8 +596,8 @@ One toolbar slot, two ways to compare two rasters — click the small **▾** ar
 which.
 
 **Toolbar:** the **[Swipe]/[Link]** toggle (immediately before the **[i]** Info button). Its
-icon shows the currently selected mode; the dropdown arrow switches between them. Clicking the
-slot itself turns the SELECTED mode on/off.
+icon shows the currently selected mode. Picking a mode from the dropdown selects it **and turns it
+on**; clicking the slot itself then turns the selected mode off and on.
 
 ### Swipe — compare two layers of THIS window
 
@@ -558,8 +605,9 @@ Splits two grids/images of the same window across a draggable vertical divider �
 the left of the divider shows on the left, the layer on the right shows on the right. Greyed
 out until the window holds at least two grids or images.
 
-1. Load a second grid/image into the window (drag and drop, **File → Open**, or `add!`)
-2. Pick **Swipe** from the dropdown, then click the slot to turn it on
+1. Load a second grid/image into the window (drag and drop, **File → Open known file types…**, or
+   `add!`)
+2. Pick **Swipe** from the dropdown — that turns it on
    - Exactly two rasters: they are paired automatically
    - More than two: a small dialog asks which layer to pair the currently displayed one with
 3. **Drag the divider** (or its round handle) left and right
@@ -572,18 +620,22 @@ While on, every **other** raster in the window is hidden (Scene Objects shows th
 off restores exactly what was visible before. Deleting one of the paired layers switches the
 tool off by itself.
 
-### Link — switch between two layers of THIS window, keeping the view
+### Link — peek at the other of two layers, keeping the view
 
 Pairs two grids/images of the same window — same pairing as Swipe — but instead of splitting
-them across a divider, shows **one at a time**. Right-click swaps which of the two is visible,
+them across a divider, shows **one at a time**. **Holding the right button** shows the other one,
 **without moving the camera at all**: whatever region and zoom you're looking at stays exactly
-as it was, only the raster underneath changes.
+as it was, only the raster underneath changes. Releasing the button snaps back.
 
-1. Pick **Link** from the dropdown, then click the slot to turn it on
+1. Pick **Link** from the dropdown — that turns it on
    - Exactly two rasters: paired automatically
    - More than two: a small dialog asks which layer to pair the currently displayed one with
-2. **Right-click** anywhere in the window: the other layer of the pair becomes visible instead
+   - Only one raster: it pairs with another open window whose extent overlaps; the right button
+     then raises that window, framed on this window's view
+2. **Hold the right button** anywhere in the window to see the other layer; release to come back
 3. Click the slot again to turn Link off (restores whatever was visible before)
+
+While Link is on, the right button belongs to it (no context menu).
 
 The two layers only need to **overlap**, not match — a linked pair can be a grid and an image of
 completely different resolution and footprint, as long as they describe some of the same
@@ -594,28 +646,22 @@ switches the tool off by itself.
 
 ## Scene Objects Panel
 
-Every element in your scene appears here:
+Every element in your scene appears here — grids, images, lines, points and point clouds, symbols,
+polygons, text, curtains, beachballs, colour bars, axes, … — each row with its own icon.
 
-| Icon | Element |
-|------|---------|
-| 🌐 | Grid surface |
-| 🖼️ | Image |
-| 〰️ | Line overlay |
-| ⚪ | Symbol layer |
-| 🔷 | Polygon |
-| 📊 | Profile |
+**Checkbox:** Show/hide element (unchecking a group hides every element in it)
 
-**Checkbox:** Show/hide element
+**Left-click a row's label:** its properties
 
-**Right-click menu:**
-- **Properties** — Edit appearance
-- **Show data table** — View coordinates
-- **Save…** — Export to file
-- **Delete** — Remove
+**Right-click menu** (what applies to the element):
+- **Line properties… / Text Properties… / Symb properties …** — Edit appearance
+- **Show data table…** — View coordinates
+- **Save grid… / Save image… / Save data…** — Export to file
+- **Remove** — Delete the element
 
-**Stacking** (images, vectors):
-- **Stack up / down** — Move in draw order
-- **Place on top / at bottom**
+**Stack order** submenu (images, vectors):
+- **Place on top / Place at bottom**
+- **Bring forward / Send backward**
 
 ---
 
@@ -632,7 +678,7 @@ add!(fig, G2)
 
 **`fig` is pre-bound** to the window.
 
-**Messages dock** (speech-bubble button in the bottom-right status corner, or View > Messages Panel):
+**Messages dock** (speech-bubble button in the bottom-right status corner):
 Shows execution errors from menu actions (drop, geography, basemap, etc.).
 
 ---
@@ -648,10 +694,10 @@ using InteractiveGMT, GMT
 G = gmtread("dem.nc")
 
 # View with hillshade
-fig = view_grid(G; cmap="geo")    # vertical exaggeration: the gizmo's blue ring
+fig = view_grid(G; cmap="geo")    # vertical exaggeration: the gizmo's amber cone
 
 # Turn on hillshade
-# (In window: View → Hillshade Lambert)
+# (In window: the Illumination (Hillshade) toolbar button)
 
 # Add coastlines
 coast = gmtread("coastline.gmt")
@@ -668,7 +714,7 @@ D = gmtread("tide.txt")  # epoch_seconds, sea_level
 fig = xyplot(D; xlabel="Time", ylabel="Sea level (m)", xtime=true)
 
 # Compute spectrum
-# (In window: select series → Analysis → FFT PSD)
+# (In window: select series → Analysis → FFT — Power Spectrum Density)
 ```
 
 ### Drape satellite imagery over terrain
@@ -682,7 +728,7 @@ I = gmtread("satellite.tif")
 fig = view_grid(G; drape=I, cmap="gray")
 
 # Adjust lighting
-# (In window: View → Cast Shadows)
+# (In window: the Illumination (Hillshade) toolbar button → Cast shadows)
 ```
 
 ### Compare two grids
@@ -697,7 +743,7 @@ fig = view_grid(G1)
 # Add second as a second layer
 add!(fig, G2)
 
-# In the window: click the [Swipe] toolbar toggle, then drag the divider
+# In the window: pick Swipe from the Swipe/Link toolbar dropdown, then drag the divider
 ```
 
 Or blend them instead of swiping:
@@ -714,26 +760,34 @@ setopacity!(fig, 0.5; layer="observation")
 
 | Key | Action |
 |-----|--------|
-| `Ctrl+O` | Open file |
-| `2` | Toggle 2-D/3-D |
+| `1` – `6` | Snap to a preset view (`2` = top) |
+| `R` | Reset camera |
 | `e` | Toggle mesh edges |
-| Ctrl+left-drag | Rotate (alternative) |
+| `x` | Toggle the gizmo |
+| `c` | Recenter on the point under the cursor |
+| `+` / `-` | Zoom |
+| Arrow keys | Pan |
+| `Ctrl+V` | Paste a table from the clipboard |
+| `Ctrl+Z` | Undo the last point selection |
+| Left-drag | Rotate (3-D) / pan (flat 2-D) |
+| Ctrl+left-drag | Draw a profile |
 | Middle-drag | Pan |
 | Scroll | Zoom |
-| Ctrl+right-drag | Select points |
-| Right-click | Context menu |
+| Shift+left-drag, Ctrl+right-drag | Select points (point clouds) |
+| Right-click | Context menu (Link's peek while Link is on) |
 
 ---
 
 ## Tips
 
-- **Large grids:** Tiled LOD auto-kicks in >512 nodes. Memory drops ~9×.
+- **Large grids:** Grids are drawn as tiles with level of detail, so big grids stay responsive.
 - **Empty launcher:** Drag files onto it — promotes to real data in-place.
 - **Multi-page X,Y:** Use tabs for related plots. They share the same window.
 - **Time axes:** Set `xtime=true` for epoch seconds. Auto-formats.
-- **Vector stacking:** All vectors (lines, symbols, polygons) share one draw order. Use Stack up/down.
-- **Colour bar:** Drag it to move. Right-click to change colormap.
-- **Gizmo:** Drag blue ring for vertical exaggeration. Drag arrows to pan.
+- **Vector stacking:** All vectors (lines, symbols, polygons) share one draw order. Use the
+  **Stack order** submenu.
+- **Colour bar:** Drag it to move. Left-click its Scene Objects label to change colormap.
+- **Gizmo:** Drag the amber cone for vertical exaggeration, the grey rings for tilt and azimuth.
 - **Error messages:** Check the Messages dock (status-corner bubble), not the REPL.
 - **Tool images:** Open via tool dialogs (Tiles Tool, Base Map) → ExtraObj, not primary surface.
 
@@ -741,8 +795,9 @@ setopacity!(fig, 0.5; layer="observation")
 
 ## Getting Help
 
-- **Help → Controls** — Show this help in-window
+- **Help → InteractiveGMT Manual (online)** — this documentation
 - **Help → About** — Version info
+- **Help → Check for Updates…**
 
 **Julia REPL:**
 
@@ -762,7 +817,7 @@ setopacity!(fig, 0.5; layer="observation")
 
 **Via VTK (read natively, no GMT/GDAL involved):**
 - **VTK XML:** .vti, .vtr, .vts, .vtp, .vtu (+ the .pvti/.pvtr/.pvts/.pvtp/.pvtu parallel forms)
-- **VTK multiblock:** .vtm (a raster composite shows its first non-empty block)
+- **VTK multiblock:** .vtm, .vtmb (a raster composite shows its first non-empty block)
 - **VTK legacy:** .vtk (any dataset type)
 - **VTKHDF:** .vtkhdf
 - **3-D meshes:** .ply, .obj, .stl, .off, .byu, .gltf, .glb
@@ -810,5 +865,5 @@ layer's own RGB raster), `.vtp` writes the layer's rendered polydata, `.vtk` wri
 
 ---
 
-*Version 0.1.0 (unregistered)*
-*Windows-only*
+*Version 0.1.0*
+*Windows, macOS and Linux*
