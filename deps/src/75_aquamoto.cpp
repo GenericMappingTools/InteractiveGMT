@@ -355,12 +355,25 @@ public:
 		// handle's re-show), and it runs before the file's grids are built.
 		sceneSetAquaWindow(scene, true);
 		AquamotoWindow *w = registry().value(scene, nullptr);
-		if (!w || !w->win) {
+		const bool fresh = !w || !w->win;
+		if (fresh) {
 			w = new AquamotoWindow(parent, scene);
 			if (!w->win) { delete w; return; }
 			registry().insert(scene, w);
 		}
 		w->win->show();
+		// A NEW Aquamoto window pops up against the RIGHT side of its iGMT window, tops level, kept on
+		// that window's screen. A re-shown one stays wherever the user put it.
+		if (fresh && scene && scene->win) {
+			const QRect vf = scene->win->frameGeometry();
+			const QRect af = w->win->frameGeometry();
+			QScreen *scr = scene->win->screen();
+			const QRect avail = scr ? scr->availableGeometry() : QRect(vf.right() + 1, vf.top(), af.width(), af.height());
+			int x = vf.right() + 1, y = vf.top();
+			if (x + af.width() > avail.right() + 1) x = avail.right() + 1 - af.width();
+			if (y + af.height() > avail.bottom() + 1) y = avail.bottom() + 1 - af.height();
+			w->win->move(std::max(x, avail.left()), std::max(y, avail.top()));
+		}
 		w->win->raise();
 		w->win->activateWindow();
 		// Compile the slice path while the user is still choosing a file / reaching for the slider.
@@ -629,10 +642,16 @@ public:
 				rightBtn->setAutoRepeat(true);
 				row->insertWidget(idx, leftBtn);
 				row->insertWidget(idx + 2, rightBtn);   // sliceSlider shifted to idx+1 by the insert above
+				// ONE LAYER PER DRAWN SLICE. A repeat that lands while a slice is still drawing (busy_) or
+				// waiting to be caught up (sliceDirty_) is dropped: moving the slider then made the catch-up
+				// jump straight to wherever the repeats had got to, skipping every layer in between on any
+				// tank slower to draw than the repeat interval. The hold steps at the speed slices draw.
 				QObject::connect(leftBtn,  &QToolButton::clicked, sliceSlider, [this, leftBtn]() {
+					if (busy_ || sliceDirty_) return;
 					if (sliceSlider && arrowStillHeld(leftBtn)) sliceSlider->setValue(sliceSlider->value() - 1);
 				});
 				QObject::connect(rightBtn, &QToolButton::clicked, sliceSlider, [this, rightBtn]() {
+					if (busy_ || sliceDirty_) return;
 					if (sliceSlider && arrowStillHeld(rightBtn)) sliceSlider->setValue(sliceSlider->value() + 1);
 				});
 			}
@@ -2437,6 +2456,15 @@ public:
 		// button makes, after the slice is up. It runs INSIDE the transport's disabled window: it is
 		// the long half of the step, and a < / > auto-repeating through it is the stall.
 		if (ok && renderedImageCheck && renderedImageCheck->isChecked()) runCombinedImage(/*perSlice=*/true);
+		// THE SLICE REACHES THE SCREEN BEFORE THE NEXT ONE STARTS. Render() only draws into the view's
+		// offscreen buffer and SCHEDULES the paint that puts it on the monitor; the catch-up below can
+		// start the next slice before that paint is ever delivered, and then the screen skips layers
+		// (measured on a 765x476 tank: slices 2..15 all drawn, only 2,4,5,7,8,10,15 painted). Paint now.
+		if (ok && scene_ && sceneAlive(scene_) && scene_->widget) scene_->widget->repaint();
+		// …and so do the slider and the layer number box: their repaints are queued the same way and
+		// were starved the same way, so during a hold neither moved on screen.
+		if (sliceSlider) sliceSlider->repaint();
+		if (sliceSpin)   sliceSpin->repaint();
 		transportEnable(true);
 		// Requests that came in while this one was running: ONE catch-up redraw, on the next turn of
 		// the loop (never a recursive call), at whatever slice the slider ended up on.

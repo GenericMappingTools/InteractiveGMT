@@ -28,9 +28,18 @@
 	renders(h, reset = false) = Int(ccall(GmtvtkTest._test_fn(:gmtvtk_render_count_test), Cint,
 	                                      (Ptr{Cvoid}, Cint), h, Cint(reset)))
 
+	# The slider's value at every paint of the 3-D view since the last start: what reached the screen.
+	paintlog(h, start) = start ? (ccall(GmtvtkTest._test_fn(:gmtvtk_paint_log_test), Cint,
+	                                    (Ptr{Cvoid}, Cint, Ptr{Cint}, Cint), h, 1, C_NULL, 0); Int[]) :
+	                     (buf = zeros(Cint, 100_000);
+	                      n = ccall(GmtvtkTest._test_fn(:gmtvtk_paint_log_test), Cint,
+	                                (Ptr{Cvoid}, Cint, Ptr{Cint}, Cint), h, 0, buf, Cint(length(buf)));
+	                      Int.(buf[1:max(n, 0)]))
+
 	# Hold for `secs` by SLEEPING (the Timer pump runs), then release and let it settle `settle` s.
 	function hold(h, st, dir, secs; settle = 3.0)
 		renders(h, true)
+		paintlog(h, true)
 		v0 = aqf_realpress(h, dir, true)
 		@assert v0 >= 0 "arrow press hook failed: $v0"
 		drawn = Int[]; gap = 0.0; tl = time(); t0 = tl
@@ -45,22 +54,30 @@
 			sleep(0.01); t = time(); gap = max(gap, t - tl); tl = t
 			push!(marks, slider(h))
 		end
-		(; v0, vrel, ndrawn = length(unique(drawn)), nr, gap,
+		pl = paintlog(h, false)
+		painted = [pl[i] for i in eachindex(pl) if i == 1 || pl[i] != pl[i-1]]   # each layer once, in order
+		(; v0, vrel, ndrawn = length(unique(drawn)), nr, gap, painted,
 		   vmid = marks[max(1, length(marks) ÷ 2)], vend = slider(h), cur = st.cur + 1)
 	end
 
 	aqf_on_screen() do                     # the real mouse needs the window on the screen
 	mktempdir() do dir
+	# The small tank, one of a real model's size (765x476), and a big one whose slice takes longer than
+	# the arrow's repeat interval -- where the repeats used to run the slider ahead of the drawing.
+	for (nx, ny) in ((128, 96), (765, 476), (2000, 1500))
 		# 40 steps: enough that a working hold cannot run out of slices inside the hold window.
-		nc = aqf_make_tsunami_nc(joinpath(dir, "tsu_transport.nc"); nt = 40)
+		nc = aqf_make_tsunami_nc(joinpath(dir, "tsu_transport_$nx.nc"); nx, ny, nt = 40)
 		f = iview()
 		try
 			IG._on_drop(f.h, nc);  aqf_pump(80)
 			st = IG._AQUA[f.h]
 			for dir in (+1, -1)
 				r = hold(f.h, st, dir, 2.0)
-				@info "hold dir=$dir" r
-				isdefined(Main, :_log) && Main._log("    hold dir=", dir, ": ", r)
+				@info "hold $(nx)x$ny dir=$dir" r
+				isdefined(Main, :_log) && Main._log("    hold ", nx, "x", ny, " dir=", dir, ": ", r)
+				# SMOOTH: every layer the slider passed was PAINTED, one after the other, in order. A
+				# hold that freezes on one layer and then jumps ten skips the ones in between.
+				@test filter(!=(r.v0), r.painted) == collect(r.v0 + dir:dir:r.vrel)
 				# Moves in the asked direction, several DRAWN slices (a healthy 2 s hold draws 10+).
 				@test dir * (r.vrel - r.v0) > 3
 				@test r.ndrawn > 3
@@ -77,6 +94,7 @@
 		finally
 			aqf_close(f.h)
 		end
+	end
 	end
 	end
 end

@@ -73,6 +73,7 @@ const _TEST_SYMBOLS = (
 	:gmtvtk_aqua_arrow_press_test,    # press / release an arrow, no pumping (the app's pump drives it)
 	:gmtvtk_aqua_slider_value_test,   # the slice slider's value, no pumping
 	:gmtvtk_render_count_test,        # renders that reached the screen since the last reset
+	:gmtvtk_paint_log_test,           # slider value at every paint of the 3-D view
 	:gmtvtk_axes_sets_test,           # EVERY axes set: name|shown|onscreen|zlock|z0|z1 per line
 	:gmtvtk_image_tex_hash_test,      # hash + dims of an image extra's texture bytes
 	:gmtvtk_aqua_arrow_screen_test,   # screen pos of an arrow, for REAL OS mouse input

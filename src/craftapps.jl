@@ -117,7 +117,10 @@ end
 function _craft_release(a::CraftApp)::Tuple{String,String,Int,String}
 	suf = _craft_asset_suffix()
 	isempty(suf) && error("$(a.title) has no download for this system ($(Sys.KERNEL) $(Sys.ARCH)).")
-	json = _github_json("https://api.github.com/repos/$(a.repo)/releases/latest")   # gmtplugin.jl
+	io = IOBuffer()
+	GMT.Downloads.download("https://api.github.com/repos/$(a.repo)/releases/latest", io;
+	                       headers = ["Accept" => "application/vnd.github+json"], timeout = 20)
+	json = String(take!(io))
 	m = match(r"\"tag_name\"\s*:\s*\"([^\"]+)\"", json)
 	m === nothing && error("GitHub did not report a release of $(a.title) (github.com/$(a.repo)).")
 	tag = String(m.captures[1])

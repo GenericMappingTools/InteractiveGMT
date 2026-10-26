@@ -250,7 +250,9 @@ elseif Sys.isapple()
 		aqf_cg_post(UInt32(5))                  # kCGEventMouseMoved
 	end
 	aqf_os_button(down) = aqf_cg_post(UInt32(down ? 1 : 2))    # kCGEventLeftMouseDown / Up
-	aqf_cf_key(name) = unsafe_load(cglobal((name, AQF_CG), Ptr{Cvoid}))
+	# the key's name is a runtime value, so dlsym it: cglobal((name, lib)) with a local name is a
+	# lowering error on Julia >= 1.14, for the whole file, on every system
+	aqf_cf_key(name) = unsafe_load(Ptr{Ptr{Cvoid}}(Base.Libc.Libdl.dlsym(Base.Libc.Libdl.dlopen(AQF_CG), name)))
 	function aqf_cf_string(s::Ptr{Cvoid})
 		s == C_NULL && return ""
 		buf = zeros(UInt8, 512)

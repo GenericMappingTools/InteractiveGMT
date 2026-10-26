@@ -102,11 +102,11 @@ end
 	# The start-up update checks fetch GitHub's release JSON on a background task. Julia 1.10's
 	# Downloads crashed the process at exit (ACCESS VIOLATION in curl_multi_cleanup) whenever that
 	# transfer was still in flight, e.g. a short test run, or a session closed right after start.
-	# _bg_check stops it at exit. In a CHILD, exiting a moment after the check starts.
+	# _bg_check waits for it at exit. In a CHILD, exiting a moment after the check starts.
 	script = """
 	using InteractiveGMT
 	IG = InteractiveGMT
-	IG._bg_check(() -> try IG._github_json("https://api.github.com/repos/GenericMappingTools/GMT.jl/releases/latest") catch end)
+	IG._bg_check(() -> try IG.GMT.Downloads.download("https://api.github.com/repos/GenericMappingTools/GMT.jl/releases/latest", IOBuffer(); timeout = 20) catch end)
 	sleep(0.05)
 	print(stderr, "EXITING")
 	"""

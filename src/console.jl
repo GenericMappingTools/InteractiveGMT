@@ -193,12 +193,18 @@ end
 # the REPL does, with the REPL's own call, before its first command.
 const _CONSOLE_IUTILS = Ref(false)
 
+# A call a TOOL makes through this door (every Aquamoto slice, every dialog request) is spelled
+# `InteractiveGMT.<function>(...)`. Those run exactly as they always did; the REPL-only extras below
+# (InteractiveUtils, `ans`) are for what the user TYPES -- a slice call must not overwrite `ans`.
+_console_typed(code::String)::Bool = !startswith(lstrip(code), "InteractiveGMT.")
+
 function _console_eval_run(scene::Ptr{Cvoid}, cmd::Cstring, buf::Ptr{UInt8}, cap::Cint)::Cint
-	if !_CONSOLE_IUTILS[]
+	code = unsafe_string(cmd)
+	typed = _console_typed(code)
+	if typed && !_CONSOLE_IUTILS[]
 		try Base.load_InteractiveUtils(Main) catch end
 		_CONSOLE_IUTILS[] = true
 	end
-	code = unsafe_string(cmd)
 	fig  = get(_FIGREG, scene, nothing)
 	fig !== nothing && Core.eval(Main, :(fig = $fig))   # console's `fig` = this window
 	# Capture the command's stdout through a real pipe (redirect_stdout rejects an IOBuffer);
@@ -219,7 +225,7 @@ function _console_eval_run(scene::Ptr{Cvoid}, cmd::Cstring, buf::Ptr{UInt8}, cap
 		# `ans` = the last result, as the REPL keeps it (another REPL-only thing a session with no
 		# REPL never has). Only on success: a failed command leaves the previous `ans` alone, as
 		# there. QuoteNode so a Symbol or Expr result is stored, not evaluated.
-		Core.eval(Main, Expr(:(=), :ans, QuoteNode(val)))
+		typed && Core.eval(Main, Expr(:(=), :ans, QuoteNode(val)))
 	catch e
 		err = e
 	finally

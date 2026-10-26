@@ -10897,6 +10897,40 @@ GMTVTK_API int gmtvtk_aqua_arrow_press_test(void *scene, int dir, int down) {
 // i.e. how many pictures actually reached the screen. `reset` != 0 zeroes it (installing the observer
 // on first use). A slice that is read and pushed but never rendered is invisible to every Julia-side
 // count; this is the count of what the user sees. -1 no widget/render window.
+// test hook: what the 3-D view really PAINTS while Aquamoto's < / > is held. Every Paint event the
+// view widget receives is logged with the slice slider's value at that moment, so "each layer was
+// shown in turn" is read from the frames themselves, not from the host's state. mode 1 = start (and
+// clear) the log; mode 0 = copy up to `cap` logged slider values into `out`, return how many.
+struct PaintLogFilter : QObject {
+	QScrollBar *slider = nullptr;
+	std::vector<int> log;
+	bool eventFilter(QObject *o, QEvent *e) override {
+		if (e->type() == QEvent::Paint || e->type() == QEvent::UpdateRequest)
+			log.push_back(slider ? slider->value() : -1);
+		return QObject::eventFilter(o, e);
+	}
+};
+GMTVTK_API int gmtvtk_paint_log_test(void *scene, int mode, int *out, int cap) {
+	static std::map<void *, PaintLogFilter *> filters;
+	Scene *s = (Scene*)scene;
+	if (!s || !s->widget) return -1;
+	PaintLogFilter *&f = filters[s->widget];
+	if (!f) {
+		f = new PaintLogFilter;
+		s->widget->installEventFilter(f);
+	}
+	if (mode == 1) {
+		f->log.clear();
+		f->slider = nullptr;
+		for (QWidget *tl : QApplication::topLevelWidgets())
+			if (QScrollBar *sb = tl->findChild<QScrollBar *>("sliceSlider")) { f->slider = sb; break; }
+		return 0;
+	}
+	const int n = (int)std::min<size_t>(f->log.size(), (size_t)cap);
+	for (int i = 0; i < n; ++i) out[i] = f->log[(size_t)i];
+	return n;
+}
+
 GMTVTK_API int gmtvtk_render_count_test(void *scene, int reset) {
 	static std::map<void *, int> counts;
 	static std::set<void *> hooked;
