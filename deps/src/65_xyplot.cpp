@@ -43,13 +43,22 @@ struct XYSeries {
 	int                       marker = 0;       // vtkPlotPoints: NONE=0 CROSS=1 PLUS=2 SQUARE=3 CIRCLE=4 DIAMOND=5
 	double                    markerSize = 7.0;
 	bool                      visible = true;
-	// Chart plot type: 0 = line (vtkChart::LINE, the default), 1 = BAR (histogram / bar graph).
+	// Chart plot type: 0 = line (vtkChart::LINE, the default), 1 = BAR (histogram / bar graph),
+	// 2 = AREA, 3 = STEM, 4 = STAIRS, 5 = SCATTER (vtkChart::POINTS), 6 = BARS ON A BASE, 7 = HORIZONTAL
+	// BARS ON A BASE, 8 = FILLED POLYGONS (vtkXYShapePlot, the plot-type gallery's own kinds).
 	// It is a property of the SERIES, not of the call that made it, so a rebuild (xyRebuildPlots,
 	// after a delete) re-creates the right plot item. `barWidth` is vtkPlotBar's bar width, which
 	// is expressed in X DATA units (not pixels) -- hence its own field: `width` stays the pen width
 	// in px for every kind, so the two never overwrite each other (see xyApplyStyle).
 	int                       kind = 0;
 	double                    barWidth = 1.0;
+	bool                      barH = false;     // a BAR series drawn horizontally (the gallery's "barh")
+	// What an area / based-bar series stands on (xyRestack): 0 y = 0, 1 the series before it (stacked
+	// bars), 2 its own running sum (waterfall), 3 the page's first curve (fill_between). `base` is the
+	// result, per row; derived, never saved.
+	int                       stack = 0;
+	std::vector<double>       base;
+	bool                      rightAxis = false;   // plotyy: drawn against the right-hand Y axis
 	// Screen-constant "+" cross (e.g. Tide tool's "Now" indicator) -- NOT a vtkPlotPoints marker
 	// (VTK's marker glyph rendering literally overwrites the plot's pen width with MarkerSize, so a
 	// marker-only series has no independent thickness control at all; see xyRecomputeCross). Built
@@ -118,6 +127,17 @@ struct XYMag {
 	bool   rerun = false;                       // the measured track was redrawn while this page was not shown
 };
 
+// A text placed on a page at a DATA position (the plot types that draw their own frame: a radar's
+// spoke names, a rose's angles, a parallel plot's variable names, a corner plot's panel scales). Drawn
+// by the chart itself (xyLabelPaint), so it moves with zoom and pan like the curves.
+struct XYLabel {
+	double x = 0, y = 0;
+	std::string text;
+	double r = 0, g = 0, b = 0;
+	double size = 11;
+	int ha = 0, va = 0;                        // -1 left / bottom, 0 centre, 1 right / top
+};
+
 // One PAGE inside an X,Y window: its own chart, its own series list, its own axis
 // time-mode + Spector-Grant drag state. Only the current page's chart is mounted
 // in the window's shared scene.
@@ -158,6 +178,11 @@ struct XYPage {
 	int                         refLine[2] = { -1, -1 };
 	std::vector<int>            refRows[2];
 	int                         refLast = -1;
+	// The look of a page a plot type draws with its own frame (radar, rose, biplot, cornerplot,
+	// marginalhist): a SQUARE plot area, the chart's own axes hidden, and its own labels.
+	bool                        square = false;
+	bool                        axesHidden = false;
+	std::vector<XYLabel>        labels;
 };
 
 // Reveal + unfold a viewer's Scene Objects dock (defined in 70_window.cpp, later in this same
@@ -226,6 +251,7 @@ struct XYPlot {
 	bool                                magGuiding = false;    // "Guide me": next left click sets the first guess
 	bool                                magSyncing = false;    // filling the widgets: their signals do nothing
 	QString                             reqErr;                // a failed Julia request's message (xyRequest shows it)
+	bool                                cometBusy = false;     // the gallery's "comet" is animating
 	QTimer                             *profTimer = nullptr;   // a redrawn 3-D track re-runs the mag tools once it settles
 	QAction                            *actRef = nullptr;      // Analysis > Reference a curve to another (checkable)
 	// The Spector-Grant fit's answer from GMT's trend1d (xyanalysis.jl, gmtvtk_xyplot_sg_set_fit).
@@ -308,6 +334,244 @@ static const double *xyPalette(int i) {
 	return pal[((i % 10) + 10) % 10];
 }
 
+// The plot items the plot-type gallery adds to vtkPlotLine: AREA (filled down to y = 0, or down to
+// another curve -- fill_between), STEM (a stick from y = 0 up to each point, a marker on its top),
+// STAIRS (a step at every x) and BASED BARS (each bar standing on its own base -- stacked bars, stacked
+// horizontal bars, a waterfall). They paint from the SAME cached points a plain line paints (shifted,
+// scaled, log'd by vtkPlotPoints), so the hover tooltip, log axes and zoom behave exactly as on a line.
+// A NaN breaks the shape, as it breaks a line.
+class vtkXYShapePlot : public vtkPlotLine {
+public:
+	static vtkXYShapePlot *New();
+	vtkTypeMacro(vtkXYShapePlot, vtkPlotLine);
+	int Shape = 2;                     // XYSeries::kind: 2 area, 3 stem, 4 stairs, 6 bars, 7 horizontal bars, 8 polygons
+	std::vector<double> Base;          // per row, data units: what an area / a bar stands on (empty = 0)
+	double BarW = 1.0;                 // bar width, data units of the position axis
+	double VLo = 0, VHi = 0, PLo = 0, PHi = 0;   // a based bar series' data extent: values / positions
+	bool Paint(vtkContext2D *painter) override {
+		if (!this->Visible || !this->Points || this->Points->GetNumberOfPoints() == 0)
+			return false;
+		const vtkIdType n = this->Points->GetNumberOfPoints();
+		const vtkRectd ss = this->GetShiftScale();
+		auto baseAt = [&](vtkIdType i) { return i < (vtkIdType)Base.size() ? Base[i] : 0.0; };
+		if (Shape == 6 || Shape == 7) {
+			// Rows -> rectangles. A vertical bar's value is on Y, a horizontal one's on X (its input
+			// columns are swapped, xyApplyStyle), so the base adds along that axis.
+			painter->ApplyPen(this->Pen);
+			painter->ApplyBrush(this->Brush);
+			for (vtkIdType i = 0; i < n; ++i) {
+				double p[3];
+				this->Points->GetPoint(i, p);
+				const double b = baseAt(i);
+				if (!std::isfinite(p[0]) || !std::isfinite(p[1]) || !std::isfinite(b))
+					continue;
+				if (Shape == 6) {
+					const double w = BarW * ss[2], y0 = (b + ss[1]) * ss[3], y1 = p[1] + b * ss[3];
+					painter->DrawRect((float)(p[0] - w / 2), (float)std::min(y0, y1), (float)w, (float)std::abs(y1 - y0));
+				}
+				else {
+					const double h = BarW * ss[3], x0 = (b + ss[0]) * ss[2], x1 = p[0] + b * ss[2];
+					painter->DrawRect((float)std::min(x0, x1), (float)(p[1] - h / 2), (float)std::abs(x1 - x0), (float)h);
+				}
+			}
+			return true;
+		}
+		if (Shape == 8) {
+			// Filled polygons, one per NaN-separated run, each filled as a fan around its vertices' mean
+			// (a radar polygon, a rose petal: shapes that are star-shaped about that point), then outlined.
+			std::vector<float> ring;
+			auto flush = [&] {
+				const int m = (int)ring.size() / 2;
+				if (m >= 3) {
+					float cx = 0, cy = 0;
+					for (int i = 0; i < m; ++i) { cx += ring[2 * i]; cy += ring[2 * i + 1]; }
+					cx /= m; cy /= m;
+					std::vector<float> q;
+					q.reserve(4 * ((size_t)m + 1));
+					for (int i = 0; i <= m; ++i) {
+						q.push_back(cx); q.push_back(cy);
+						q.push_back(ring[2 * (i % m)]); q.push_back(ring[2 * (i % m) + 1]);
+					}
+					painter->ApplyBrush(this->Brush);
+					painter->GetPen()->SetLineType(vtkPen::NO_PEN);
+					painter->DrawQuadStrip(q.data(), 2 * (m + 1));
+					painter->ApplyPen(this->Pen);
+					painter->DrawPoly(ring.data(), m);
+				}
+				ring.clear();
+			};
+			for (vtkIdType i = 0; i < n; ++i) {
+				double p[3];
+				this->Points->GetPoint(i, p);
+				if (!std::isfinite(p[0]) || !std::isfinite(p[1])) { flush(); continue; }
+				ring.push_back((float)p[0]);
+				ring.push_back((float)p[1]);
+			}
+			flush();
+			return true;
+		}
+		std::vector<std::vector<float>> runs(1);      // runs of finite points, x y x y ...
+		std::vector<std::vector<float>> runBase(1);   // and the base under each of them (scene y)
+		float ymin = std::numeric_limits<float>::max();
+		for (vtkIdType i = 0; i < n; ++i) {
+			double p[3];
+			this->Points->GetPoint(i, p);
+			double b = (baseAt(i) + ss[1]) * ss[3];
+			if (this->LogY) b = Base.empty() ? 0.0 : std::log10(b);
+			if (!std::isfinite(p[0]) || !std::isfinite(p[1]) || !std::isfinite(b)) {
+				if (!runs.back().empty()) { runs.emplace_back(); runBase.emplace_back(); }
+				continue;
+			}
+			runs.back().push_back((float)p[0]);
+			runs.back().push_back((float)p[1]);
+			runBase.back().push_back((float)b);
+			ymin = std::min(ymin, (float)p[1]);
+		}
+		// The baseline y = 0 in the points' own (shifted/scaled) space; a log Y axis has no 0, so there
+		// it is the lowest point (unless the base is another curve, which a log axis shows as it is).
+		const bool logFloor = this->LogY && Base.empty();
+		for (size_t k = 0; k < runs.size(); ++k) {
+			const std::vector<float> &r = runs[k];
+			const std::vector<float> &rb = runBase[k];
+			const int m = (int)r.size() / 2;
+			if (m < 1)
+				continue;
+			painter->ApplyPen(this->Pen);
+			if (Shape == 2) {
+				if (m < 2)
+					continue;
+				std::vector<float> q;
+				q.reserve(4 * (size_t)m);
+				for (int i = 0; i < m; ++i) {
+					q.push_back(r[2 * i]); q.push_back(r[2 * i + 1]);
+					q.push_back(r[2 * i]); q.push_back(logFloor ? ymin : rb[i]);
+				}
+				painter->ApplyBrush(this->Brush);
+				painter->DrawQuadStrip(q.data(), 2 * m);
+				painter->DrawPoly(const_cast<float *>(r.data()), m);
+			}
+			else if (Shape == 3) {
+				for (int i = 0; i < m; ++i)
+					painter->DrawLine(r[2 * i], logFloor ? ymin : rb[i], r[2 * i], r[2 * i + 1]);
+			}
+			else {
+				std::vector<float> q;
+				q.reserve(4 * (size_t)m);
+				for (int i = 0; i < m; ++i) {
+					if (i > 0) { q.push_back(r[2 * i]); q.push_back(r[2 * i - 1]); }   // across, then up/down
+					q.push_back(r[2 * i]); q.push_back(r[2 * i + 1]);
+				}
+				if (q.size() >= 4)
+					painter->DrawPoly(q.data(), (int)q.size() / 2);
+			}
+		}
+		return this->vtkPlotPoints::Paint(painter);   // the markers (a stem's heads), nothing else
+	}
+	// What an area / a stem / a bar stands on is part of its extent (y = 0 unless Y is log, which has no
+	// 0; or the curve under it): the axes then show the whole fill, every stick, every bar.
+	void GetBounds(double bounds[4]) override {
+		const vtkRectd ss = this->GetShiftScale();
+		if (Shape == 6 || Shape == 7) {
+			double u[4];
+			GetUnscaledInputBounds(u);
+			bounds[0] = (u[0] + ss[0]) * ss[2]; bounds[1] = (u[1] + ss[0]) * ss[2];
+			bounds[2] = (u[2] + ss[1]) * ss[3]; bounds[3] = (u[3] + ss[1]) * ss[3];
+			return;
+		}
+		this->Superclass::GetBounds(bounds);
+		if ((Shape == 2 || Shape == 3) && !this->LogY) {
+			double lo, hi;
+			BaseRange(lo, hi);
+			bounds[2] = std::min(bounds[2], (lo + ss[1]) * ss[3]);
+			bounds[3] = std::max(bounds[3], (hi + ss[1]) * ss[3]);
+		}
+	}
+	void GetUnscaledInputBounds(double bounds[4]) override {
+		if (Shape == 6) { bounds[0] = PLo; bounds[1] = PHi; bounds[2] = VLo; bounds[3] = VHi; return; }
+		if (Shape == 7) { bounds[0] = VLo; bounds[1] = VHi; bounds[2] = PLo; bounds[3] = PHi; return; }
+		this->Superclass::GetUnscaledInputBounds(bounds);
+		if ((Shape == 2 || Shape == 3) && !(this->YAxis && this->YAxis->GetLogScaleActive())) {
+			double lo, hi;
+			BaseRange(lo, hi);
+			bounds[2] = std::min(bounds[2], lo);
+			bounds[3] = std::max(bounds[3], hi);
+		}
+	}
+	void BaseRange(double &lo, double &hi) const {
+		lo = hi = 0.0;
+		if (Base.empty())
+			return;
+		lo = std::numeric_limits<double>::max(); hi = -lo;
+		for (double b : Base)
+			if (std::isfinite(b)) { lo = std::min(lo, b); hi = std::max(hi, b); }
+		if (lo > hi) lo = hi = 0.0;
+	}
+	bool PaintLegend(vtkContext2D *painter, const vtkRectf &rect, int idx) override {
+		if (Shape != 2 && Shape != 6 && Shape != 7 && Shape != 8)
+			return this->Superclass::PaintLegend(painter, rect, idx);
+		painter->ApplyPen(this->Pen);
+		painter->ApplyBrush(this->Brush);
+		painter->DrawRect(rect[0], rect[1], rect[2], rect[3]);
+		return true;
+	}
+};
+vtkStandardNewMacro(vtkXYShapePlot);
+
+// Add the chart plot item a series' `kind` asks for. THE one place a series' plot item is made, so a
+// new series, a rebuild, a page copy and a session load all draw a kind the same way.
+static vtkPlot *xyAddPlotItem(vtkChartXY *chart, const XYSeries &se) {
+	vtkPlot *pl = nullptr;
+	if ((se.kind >= 2 && se.kind <= 4) || (se.kind >= 6 && se.kind <= 8)) {
+		vtkNew<vtkXYShapePlot> sp;
+		sp->Shape = se.kind;
+		chart->AddPlot(sp);                           // the chart keeps its own reference
+		pl = sp;
+	}
+	else {
+		pl = chart->AddPlot(se.kind == 1 ? vtkChart::BAR : se.kind == 5 ? vtkChart::POINTS : vtkChart::LINE);
+	}
+	if (se.rightAxis)                                 // plotyy: this curve reads the right-hand Y axis
+		chart->SetPlotCorner(pl, 1);
+	return pl;
+}
+
+// What each series of a page stands on (XYSeries::stack): its own running sum (waterfall), the
+// series before it (stacked bars) or the page's first curve (fill_between). Recomputed whenever the
+// page's series or their kinds change, so a delete re-stacks what is left.
+static void xyRestack(XYPage &pg) {
+	std::vector<double> run;                          // the stack so far, per row
+	for (int k = 0; k < (int)pg.series.size(); ++k) {
+		XYSeries &se = pg.series[k];
+		se.base.clear();
+		if (se.stack == 0 || !se.table)
+			continue;
+		const int n = (int)se.table->GetNumberOfRows();
+		se.base.assign((size_t)n, 0.0);
+		if (se.stack == 1) {
+			if ((int)run.size() < n) run.resize((size_t)n, 0.0);
+			for (int i = 0; i < n; ++i) {
+				se.base[i] = run[i];
+				const double y = se.table->GetValue(i, 1).ToDouble();
+				if (std::isfinite(y)) run[i] += y;
+			}
+		}
+		else if (se.stack == 2) {
+			double c = 0.0;
+			for (int i = 0; i < n; ++i) {
+				se.base[i] = c;
+				const double y = se.table->GetValue(i, 1).ToDouble();
+				if (std::isfinite(y)) c += y;
+			}
+		}
+		else if (k > 0 && pg.series[0].table) {       // 3: down to the first curve, row by row
+			vtkTable *t0 = pg.series[0].table;
+			for (int i = 0; i < n; ++i)
+				se.base[i] = i < t0->GetNumberOfRows() ? t0->GetValue(i, 1).ToDouble()
+				                                       : std::numeric_limits<double>::quiet_NaN();
+		}
+	}
+}
+
 // Push a series' presentation (colour / width / line style / markers) onto its chart plot.
 // `se.markerSize` is the caller-facing, DPI-independent size (what a spinbox/Julia API sets and
 // shows back) -- scaled by devicePixelRatioF() here, at the one point it actually reaches VTK, so
@@ -322,6 +586,7 @@ static void xyApplyStyle(XYPlot *s, XYSeries &se) {
 	// `se.width` (px) would blow a histogram's bars up to the whole axis. The outline pen keeps
 	// `se.width`, so both stay independently controllable.
 	if (vtkPlotBar *pb = vtkPlotBar::SafeDownCast(se.plot)) {
+		pb->SetOrientation(se.barH ? vtkPlotBar::HORIZONTAL : vtkPlotBar::VERTICAL);
 		pb->SetWidth((float)se.barWidth);
 		if (pb->GetPen()) pb->GetPen()->SetWidth((float)se.width);
 	}
@@ -330,9 +595,34 @@ static void xyApplyStyle(XYPlot *s, XYSeries &se) {
 	}
 	if (se.plot->GetPen())
 		se.plot->GetPen()->SetLineType(se.lineType);
+	// An area is filled in its own colour, see-through so areas over areas show; a bar solid.
+	if ((se.kind == 2 || (se.kind >= 6 && se.kind <= 8)) && se.plot->GetBrush())
+		se.plot->GetBrush()->SetColor((unsigned char)(se.r * 255), (unsigned char)(se.g * 255),
+		                              (unsigned char)(se.b * 255), se.kind == 2 ? 150 : se.kind == 8 ? 110 : 255);
+	if (vtkXYShapePlot *sp = vtkXYShapePlot::SafeDownCast(se.plot)) {
+		sp->Base = se.base;
+		sp->BarW = se.barWidth;
+		if (se.kind == 6 || se.kind == 7) {
+			if (se.kind == 7) sp->SetInputData(se.table, 1, 0);   // value on X, position on Y
+			// The data extent the axes must show: every bar's base and top, every bar's full width.
+			sp->VLo = sp->PLo = std::numeric_limits<double>::max();
+			sp->VHi = sp->PHi = -sp->VLo;
+			const int n = se.table ? (int)se.table->GetNumberOfRows() : 0;
+			for (int i = 0; i < n; ++i) {
+				const double x = se.table->GetValue(i, 0).ToDouble(), y = se.table->GetValue(i, 1).ToDouble();
+				const double b = i < (int)se.base.size() ? se.base[i] : 0.0;
+				if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(b)) continue;
+				sp->VLo = std::min({ sp->VLo, b, b + y }); sp->VHi = std::max({ sp->VHi, b, b + y });
+				sp->PLo = std::min(sp->PLo, x - se.barWidth / 2); sp->PHi = std::max(sp->PHi, x + se.barWidth / 2);
+			}
+			if (sp->VLo > sp->VHi) sp->VLo = sp->VHi = sp->PLo = sp->PHi = 0.0;
+		}
+		sp->Modified();
+	}
 	if (vtkPlotPoints *pp = vtkPlotPoints::SafeDownCast(se.plot)) {
 		const double dpr = (s && s->widget) ? s->widget->devicePixelRatioF() : 1.0;
-		pp->SetMarkerStyle(se.marker);
+		// a stem has a head, a scatter has its points
+		pp->SetMarkerStyle((se.kind == 3 || se.kind == 5) && se.marker == 0 ? vtkPlotPoints::CIRCLE : se.marker);
 		pp->SetMarkerSize((float)(se.markerSize * dpr));
 	}
 }
@@ -389,8 +679,9 @@ static void xyApplyInfoStyle(XYPlot *s) {
 static void xyRebuildPlots(XYPlot *s) {
 	XYPage &pg = xyCur(s);
 	pg.chart->ClearPlots();
+	xyRestack(pg);                                   // a delete changes what the stacked ones stand on
 	for (auto &se : pg.series) {
-		vtkPlot *pl = pg.chart->AddPlot(se.kind == 1 ? vtkChart::BAR : vtkChart::LINE);
+		vtkPlot *pl = xyAddPlotItem(pg.chart, se);
 		pl->SetInputData(se.table, 0, 1);
 		pl->SetLabel(se.name);
 		pl->SetTooltipLabelFormat("%x, %y");   // hover shows ONLY x,y (not the series name)
@@ -514,6 +805,23 @@ static void xyShowDataTable(XYPlot *s, int idx) {
 		/*editable=*/false, [s, idx]() { xySaveSeries(s, idx); });
 }
 
+// The bar width a series' abscissa asks for: 0.9 of the MEDIAN |dx| (not the mean, and not the full
+// span / n — the median survives a duplicate or a gap), leaving a hairline between neighbouring bars.
+// 0 when there is no spacing at all (one point, or all x equal). THE one bar-width rule: a series born
+// as bars (xyAddSeries) and a line turned into bars (the plot-type gallery) both get it from here.
+static double xyAutoBarWidth(const double *x, int n) {
+	std::vector<double> dx;
+	dx.reserve(n > 1 ? (size_t)n - 1 : 0);
+	for (int i = 1; i < n; ++i) {
+		const double d = std::abs(x[i] - x[i - 1]);
+		if (d > 0.0) dx.push_back(d);
+	}
+	if (dx.empty())
+		return 0.0;
+	std::nth_element(dx.begin(), dx.begin() + dx.size() / 2, dx.end());
+	return 0.9 * dx[dx.size() / 2];
+}
+
 // Append one (x,y) series to the CURRENT page. Returns its index (or -1 on bad input). Renders.
 // `lineType` (vtkPen), `marker` (vtkPlotPoints) and `markerSize` set the presentation; pass
 // lineType<0 / marker<0 / markerSize<=0 for the defaults (solid line, no marker, size 7).
@@ -550,16 +858,8 @@ static int xyAddSeries(XYPlot *s, const double *x, const double *y, int n,
 			se.barWidth = barWidth;
 		}
 		else if (n > 1) {
-			std::vector<double> dx;
-			dx.reserve((size_t)n - 1);
-			for (int i = 1; i < n; ++i) {
-				const double d = std::abs(x[i] - x[i - 1]);
-				if (d > 0.0) dx.push_back(d);
-			}
-			if (!dx.empty()) {
-				std::nth_element(dx.begin(), dx.begin() + dx.size() / 2, dx.end());
-				se.barWidth = 0.9 * dx[dx.size() / 2];
-			}
+			const double w = xyAutoBarWidth(x, n);
+			if (w > 0.0) se.barWidth = w;
 		}
 	}
 
@@ -574,7 +874,7 @@ static int xyAddSeries(XYPlot *s, const double *x, const double *y, int n,
 		se.table->SetValue(i, 1, (float)y[i]);
 	}
 
-	vtkPlot *pl = pg.chart->AddPlot(se.kind == 1 ? vtkChart::BAR : vtkChart::LINE);
+	vtkPlot *pl = xyAddPlotItem(pg.chart, se);
 	pl->SetInputData(se.table, 0, 1);
 	pl->SetLabel(se.name);
 	pl->SetTooltipLabelFormat("%x, %y");   // hover shows ONLY x,y (not the series name)
@@ -1882,6 +2182,53 @@ static void xyMarkPaint(XYPlot *s, vtkChartXY *chart, vtkContext2D *p) {
 	p->DrawString(bx + pad, by + pad, lab);
 }
 
+// The page's own labels (XYPage::labels), at their data positions. Clipped to the plot frame like a
+// curve would be: a label outside the axes' current range is simply not drawn.
+static void xyLabelPaint(XYPlot *s, vtkChartXY *chart, vtkContext2D *p) {
+	if (!s || s->pages.empty()) return;
+	XYPage *pg = nullptr;
+	for (auto &q : s->pages) if (q.chart.Get() == chart) { pg = &q; break; }
+	if (!pg || pg->labels.empty()) return;
+	const float dpr = s->widget ? (float)s->widget->devicePixelRatioF() : 1.0f;
+	const float *x0 = chart->GetAxis(vtkAxis::BOTTOM)->GetPoint1(), *x1 = chart->GetAxis(vtkAxis::BOTTOM)->GetPoint2();
+	const float *y0 = chart->GetAxis(vtkAxis::LEFT)->GetPoint1(),   *y1 = chart->GetAxis(vtkAxis::LEFT)->GetPoint2();
+	const float tol = 40.0f * dpr;                    // labels just outside a hidden frame (spoke names) still show
+	for (const XYLabel &l : pg->labels) {
+		double sx, sy;
+		if (!xyDataToScene(*pg, l.x, l.y, sx, sy)) continue;
+		if (sx < x0[0] - tol || sx > x1[0] + tol || sy < y0[1] - tol || sy > y1[1] + tol) continue;
+		vtkTextProperty *tp = p->GetTextProp();
+		tp->SetColor(l.r, l.g, l.b);
+		tp->SetFontSize((int)std::lround(l.size));
+		if (l.ha < 0) tp->SetJustificationToLeft(); else if (l.ha > 0) tp->SetJustificationToRight(); else tp->SetJustificationToCentered();
+		if (l.va < 0) tp->SetVerticalJustificationToBottom(); else if (l.va > 0) tp->SetVerticalJustificationToTop(); else tp->SetVerticalJustificationToCentered();
+		p->DrawString((float)sx, (float)sy, l.text);
+	}
+}
+
+// A page's square plot area and hidden axes (XYPage::square / axesHidden), applied to its chart. The
+// square is the largest one centred in the window's scene, so the page's own frame (a radar's circle,
+// a corner plot's panels) is never stretched; every other page keeps the chart's own full-size layout.
+static void xyApplyPageLook(XYPlot *s, XYPage &pg) {
+	vtkChartXY *c = pg.chart;
+	if (!c) return;
+	c->SetAutoAxes(!pg.axesHidden);                  // the chart would otherwise show them again
+	if (pg.axesHidden)
+		for (int a : { vtkAxis::BOTTOM, vtkAxis::LEFT, vtkAxis::RIGHT, vtkAxis::TOP }) {
+			c->GetAxis(a)->SetVisible(false);
+			c->GetAxis(a)->SetGridVisible(false);
+		}
+	if (!pg.square || !s->view || !s->view->GetScene()) {
+		c->SetAutoSize(true);
+		return;
+	}
+	const float w = (float)s->view->GetScene()->GetSceneWidth(), h = (float)s->view->GetScene()->GetSceneHeight();
+	if (w <= 0 || h <= 0) return;
+	const float side = std::min(w, h);
+	c->SetAutoSize(false);
+	c->SetSize(vtkRectf((w - side) / 2, (h - side) / 2, side, side));
+}
+
 static void xyMagPaint(XYPlot *s, vtkChartXY *chart, vtkContext2D *p);   // the magnetic picks (below)
 static void xyRefPaint(XYPlot *s, vtkChartXY *chart, vtkContext2D *p);   // the reference picks (below)
 
@@ -1892,6 +2239,7 @@ public:
 	XYPlot *owner = nullptr;                            // set right after New(); never reparented
 	bool Paint(vtkContext2D *painter) override {
 		const bool r = vtkChartXY::Paint(painter);
+		if (owner && xyAlive(owner)) xyLabelPaint(owner, this, painter);  // the page's own labels
 		if (owner && xyAlive(owner)) xyMagPaint(owner, this, painter);    // chron names, isochron picks
 		if (owner && xyAlive(owner)) xyRefPaint(owner, this, painter);    // the reference pick markers
 		if (owner && xyAlive(owner)) xyMarkPaint(owner, this, painter);   // the curve marker, on top
@@ -2073,11 +2421,15 @@ static void xyDuplicatePage(XYPlot *s, int idx) {
 	dst.chart->GetAxis(vtkAxis::LEFT)->SetTitle(src.chart->GetAxis(vtkAxis::LEFT)->GetTitle());
 	dst.xTimeFmt = src.xTimeFmt;
 	dst.mag = src.mag;                                   // the copied series keep their mag roles, so the state goes too
+	dst.square = src.square;                             // a radar / corner plot page stays one
+	dst.axesHidden = src.axesHidden;
+	dst.labels = src.labels;
+	xyApplyPageLook(s, dst);
 	for (const XYSeries &so : src.series) {
 		XYSeries se = so;                                // copies style/name; deep-copy the table next
 		se.table = vtkSmartPointer<vtkTable>::New();
 		se.table->DeepCopy(so.table);
-		vtkPlot *pl = dst.chart->AddPlot(se.kind == 1 ? vtkChart::BAR : vtkChart::LINE);
+		vtkPlot *pl = xyAddPlotItem(dst.chart, se);
 		pl->SetInputData(se.table, 0, 1);
 		pl->SetLabel(se.name);
 		pl->SetTooltipLabelFormat("%x, %y");
@@ -2178,7 +2530,7 @@ static void xyCopyToPage(XYPlot *s, int srcIdx, int dstIdx) {
 		se.magRole = 0;                                  // its mag role belongs to the SOURCE page's state
 		se.table = vtkSmartPointer<vtkTable>::New();
 		se.table->DeepCopy(so.table);
-		vtkPlot *pl = dst.chart->AddPlot(se.kind == 1 ? vtkChart::BAR : vtkChart::LINE);
+		vtkPlot *pl = xyAddPlotItem(dst.chart, se);
 		pl->SetInputData(se.table, 0, 1);
 		pl->SetLabel(se.name);
 		pl->SetTooltipLabelFormat("%x, %y");
@@ -3380,6 +3732,11 @@ static std::string xySessionState(XYPlot *s) {
 		kv("xlabel", xyEsc(QString::fromStdString(ax->GetTitle())));
 		kv("ylabel", xyEsc(QString::fromStdString(ay->GetTitle())));
 		kv("xtime", QString::number(pg.xTimeFmt));
+		kv("square", QString::number(pg.square ? 1 : 0));
+		kv("axeshidden", QString::number(pg.axesHidden ? 1 : 0));
+		for (const XYLabel &l : pg.labels)               // one key per label, in order
+			kv("label", xyNums({ l.x, l.y, l.r, l.g, l.b, l.size, (double)l.ha, (double)l.va }) + " " +
+			            xyEsc(QString::fromStdString(l.text)));
 		kv("logx", QString::number(ax->GetLogScale() ? 1 : 0));
 		kv("logy", QString::number(ay->GetLogScale() ? 1 : 0));
 		kv("xfixed", QString::number(ax->GetBehavior() == vtkAxis::FIXED ? 1 : 0));
@@ -3428,6 +3785,9 @@ static std::string xySessionState(XYPlot *s) {
 			kv("idx", QString::number(i));
 			kv("name", xyEsc(QString::fromStdString(se.name)));
 			kv("kind", QString::number(se.kind));
+			kv("barh", QString::number(se.barH ? 1 : 0));
+			kv("stack", QString::number(se.stack));
+			kv("right", QString::number(se.rightAxis ? 1 : 0));
 			kv("nowcross", QString::number(se.nowCross ? 1 : 0));
 			kv("rgb", xyNum(se.r) + " " + xyNum(se.g) + " " + xyNum(se.b));
 			kv("width", xyNum(se.width));
@@ -3486,6 +3846,18 @@ static void xySessionApply(XYPlot *s, const char *text) {
 			else if (k == "xlabel") ax->SetTitle(xyUnesc(v).toStdString());
 			else if (k == "ylabel") ay->SetTitle(xyUnesc(v).toStdString());
 			else if (k == "xtime") pg.xTimeFmt = v.toInt();
+			else if (k == "square") { pg.square = v.toInt() != 0; xyApplyPageLook(s, pg); }
+			else if (k == "axeshidden") { pg.axesHidden = v.toInt() != 0; xyApplyPageLook(s, pg); }
+			else if (k == "label") {
+				const QStringList f = v.split(' ');
+				if (f.size() >= 9) {
+					XYLabel l;
+					l.x = xyToNum(f[0]); l.y = xyToNum(f[1]); l.r = xyToNum(f[2]); l.g = xyToNum(f[3]); l.b = xyToNum(f[4]);
+					l.size = xyToNum(f[5]); l.ha = f[6].toInt(); l.va = f[7].toInt();
+					l.text = xyUnesc(f.mid(8).join(' ')).toStdString();
+					pg.labels.push_back(l);
+				}
+			}
 			else if (k == "logx") ax->SetLogScale(v.toInt() != 0);
 			else if (k == "logy") ay->SetLogScale(v.toInt() != 0);
 			else if (k == "xfixed" || k == "yfixed") (k == "xfixed" ? ax : ay)->SetBehavior(v.toInt() ? vtkAxis::FIXED : vtkAxis::AUTO);
@@ -3549,6 +3921,25 @@ static void xySessionApply(XYPlot *s, const char *text) {
 			else if (k == "msize") se.markerSize = xyToNum(v);
 			else if (k == "visible") { se.visible = v.toInt() != 0; if (se.plot) se.plot->SetVisible(se.visible); }
 			else if (k == "barwidth") se.barWidth = xyToNum(v);
+			else if (k == "stack") se.stack = v.toInt();      // its base is re-derived below (xyRestack)
+			else if (k == "kind" || k == "barh" || k == "right") {
+				// The loader made a line or vertical bars; any other gallery type gets its own item.
+				const int kd = (k == "kind") ? v.toInt() : se.kind;
+				const bool bh = (k == "barh") ? v.toInt() != 0 : se.barH;
+				const bool ra = (k == "right") ? v.toInt() != 0 : se.rightAxis;
+				if ((kd != se.kind || bh != se.barH || ra != se.rightAxis) && !se.nowCross && se.table) {
+					XYPage &pg = s->pages[sp];
+					se.kind = kd;
+					se.barH = bh;
+					se.rightAxis = ra;
+					if (se.plot) pg.chart->RemovePlotInstance(se.plot);
+					se.plot = xyAddPlotItem(pg.chart, se);
+					se.plot->SetInputData(se.table, 0, 1);
+					se.plot->SetLabel(se.name);
+					se.plot->SetTooltipLabelFormat("%x, %y");
+					se.plot->SetVisible(se.visible);
+				}
+			}
 			else if (k == "magrole") se.magRole = v.toInt();
 			else if (k == "trackgeog") se.trackGeog = v.toInt();
 			else if (k == "trackx") se.trackX = xyToNums(v);
@@ -3557,6 +3948,9 @@ static void xySessionApply(XYPlot *s, const char *text) {
 		}
 	}
 	for (XYPage &pg : s->pages) {
+		xyRestack(pg);                                // stacked / waterfall / fill_between bases
+		for (XYSeries &se : pg.series)
+			if (se.plot) xyApplyStyle(s, se);
 		pg.chart->SetShowLegend(s->legendVisible);
 		if (vtkChartLegend *lg = pg.chart->GetLegend()) lg->GetLabelProperties()->SetFontSize((int)s->legendFontPt);
 		pg.chart->GetAxis(vtkAxis::BOTTOM)->SetGridVisible(grid);
@@ -3598,6 +3992,599 @@ static Scene *xyDefaultOwner() {
 	if (sceneAlive(g_lastScene)) return g_lastScene;
 	if (g_scenes.size() == 1)    return *g_scenes.begin();
 	return nullptr;                     // no viewer at all -> nowhere to park, the X really closes
+}
+
+// ---- plot-type gallery (the strip of miniatures under the menus, MATLAB's PLOTS tab) ----------------
+// One entry per type; the index is what xySetPlotType takes.
+// MATLAB's set first, then the rest of GMT.jl's 2-D plotting functions (its "Plotting functions"
+// examples): scatter, plotyy, fill_between, stacked bars (bar stack=true, also hbar), the waterfall
+// (bar stacked=:water), and the statistical plots. Those last ones (from XY_PT_HIST on) are not a way
+// of drawing the curves but a different quantity (a distribution), so they land on a NEW page, computed
+// in Julia by GMT.jl's own helpers (xyanalysis.jl `_xy_stat`).
+enum { XY_PT_PLOT, XY_PT_AREA, XY_PT_BAR, XY_PT_SEMILOGX, XY_PT_SEMILOGY, XY_PT_LOGLOG, XY_PT_COMET,
+       XY_PT_STEM, XY_PT_STAIRS, XY_PT_BARH, XY_PT_SCATTER, XY_PT_PLOTYY, XY_PT_FILLBETWEEN, XY_PT_BARSTACK,
+       XY_PT_BARHSTACK, XY_PT_WATERFALL, XY_PT_HIST, XY_PT_DENSITY, XY_PT_BOXPLOT, XY_PT_VIOLIN, XY_PT_ECDF,
+       XY_PT_QQNORM, XY_PT_QQPLOT, XY_PT_RADAR, XY_PT_ROSE, XY_PT_PARALLEL, XY_PT_CORNER, XY_PT_MARGINAL,
+       XY_PT_BIPLOT, XY_PT_COUNT };
+static const char *const xyPlotTypeNames[XY_PT_COUNT] = { "plot", "area", "bar", "semilogx", "semilogy", "loglog",
+	"comet", "stem", "stairs", "barh", "scatter", "plotyy", "fill_between", "bar stack", "barh stack", "waterfall",
+	"histogram", "density", "boxplot", "violin", "ecdfplot", "qqnorm", "qqplot", "radar", "rose", "parallelplot",
+	"cornerplot", "marginalhist", "biplot" };
+static void xyComet(XYPlot *s);   // below: comet is an animation, not a kind of series
+
+// Re-plot every series of the CURRENT page as `type`. The series keep their data and style; only the
+// plot item (line / bar, bar orientation) and the axis scaling change. The plot items are re-made by
+// xyRebuildPlots and the axes set by xySetLog — the same functions a delete and the Misc menu use.
+static void xySetPlotType(XYPlot *s, int type) {
+	if (!xyAlive(s) || type < 0 || type >= XY_PT_COUNT || s->cometBusy)
+		return;
+	if (type == XY_PT_COMET) {
+		xyComet(s);
+		return;
+	}
+	XYPage &pg = xyCur(s);
+	if (pg.series.empty()) {
+		s->win->statusBar()->showMessage("This page has no series to re-plot", 3000);
+		return;
+	}
+	if (type >= XY_PT_HIST) {                         // a distribution: computed in Julia, on a new page
+		if (type == XY_PT_HIST) {
+			const int sel = xyCurrentSel(s);
+			if (sel < 0) { xyLog(s, "Select a series in the Object Manager first"); return; }
+			xyRequest(s, "hist:0", sel, "Computing the histogram...");
+		}
+		else {
+			xyRequest(s, QString("stat:%1").arg(xyPlotTypeNames[type]), xyCurrentSel(s),
+			          QString("Computing the %1...").arg(xyPlotTypeNames[type]).toUtf8().constData());
+		}
+		return;
+	}
+	if ((type == XY_PT_PLOTYY || type == XY_PT_FILLBETWEEN) && pg.series.size() < 2) {
+		QMessageBox::information(s->win, "X,Y plot", QString("%1 needs two curves on this page.").arg(xyPlotTypeNames[type]));
+		return;
+	}
+	const bool bar = (type == XY_PT_BAR || type == XY_PT_BARH || type == XY_PT_BARSTACK || type == XY_PT_BARHSTACK ||
+	                  type == XY_PT_WATERFALL);
+	for (int k = 0; k < (int)pg.series.size(); ++k) {
+		XYSeries &se = pg.series[k];
+		if (se.nowCross)
+			continue;                                // a marker, not data: it stays what it is
+		if (bar && se.kind != 1 && se.kind != 6 && se.kind != 7 && se.table) {   // a line becoming bars: width
+			const int n = (int)se.table->GetNumberOfRows();                          // from its own x spacing
+			std::vector<double> x((size_t)n);
+			for (int i = 0; i < n; ++i)
+				x[i] = se.table->GetValue(i, 0).ToDouble();
+			const double w = xyAutoBarWidth(x.data(), n);
+			if (w > 0.0) se.barWidth = w;
+		}
+		switch (type) {
+		case XY_PT_BAR: case XY_PT_BARH:  se.kind = 1; break;
+		case XY_PT_AREA:                  se.kind = 2; break;
+		case XY_PT_STEM:                  se.kind = 3; break;
+		case XY_PT_STAIRS:                se.kind = 4; break;
+		case XY_PT_SCATTER:               se.kind = 5; break;
+		case XY_PT_BARSTACK: case XY_PT_WATERFALL: se.kind = 6; break;
+		case XY_PT_BARHSTACK:             se.kind = 7; break;
+		case XY_PT_FILLBETWEEN:           se.kind = k == 0 ? 0 : 2; break;
+		default:                          se.kind = 0; break;
+		}
+		se.barH = (type == XY_PT_BARH);
+		se.stack = (type == XY_PT_BARSTACK || type == XY_PT_BARHSTACK) ? 1 : type == XY_PT_WATERFALL ? 2 :
+		           (type == XY_PT_FILLBETWEEN && k > 0) ? 3 : 0;
+		se.rightAxis = (type == XY_PT_PLOTYY && k > 0);
+	}
+	xyRebuildPlots(s);
+	pg.chart->GetAxis(vtkAxis::BOTTOM)->SetBehavior(vtkAxis::AUTO);   // a bar <-> barh swap trades the axes' ranges
+	pg.chart->GetAxis(vtkAxis::LEFT)->SetBehavior(vtkAxis::AUTO);
+	pg.chart->GetAxis(vtkAxis::RIGHT)->SetBehavior(vtkAxis::AUTO);    // plotyy's second axis
+	xySetLog(s, 0, type == XY_PT_SEMILOGX || type == XY_PT_LOGLOG);
+	xySetLog(s, 1, type == XY_PT_SEMILOGY || type == XY_PT_LOGLOG);
+	s->win->statusBar()->showMessage(QString("Plot type: %1").arg(xyPlotTypeNames[type]), 3000);
+}
+
+// The gallery choice by its name ("stairs", "scatter", ...): what the host uses to draw a page it has
+// just built in one of the gallery's types (the ECDF page is stairs). False for an unknown name.
+static bool xySetPlotTypeByName(XYPlot *s, const char *name) {
+	for (int t = 0; name && t < XY_PT_COUNT; ++t)
+		if (std::strcmp(name, xyPlotTypeNames[t]) == 0) {
+			xySetPlotType(s, t);
+			return true;
+		}
+	return false;
+}
+
+// MATLAB's comet: the page is re-plotted as lines, and each curve is then drawn in over ~2 s, a circle
+// at its head. The axes are held at the whole data's range meanwhile, so nothing rescales as it grows.
+// The real series are only hidden while it runs; the moving trail + head are temporary plot items
+// (not series, no legend entry), removed at the end, when the real curves come back.
+static void xyComet(XYPlot *s) {
+	XYPage &pg0 = xyCur(s);
+	if (pg0.series.empty()) {
+		s->win->statusBar()->showMessage("This page has no series to animate", 3000);
+		return;
+	}
+	xySetPlotType(s, XY_PT_PLOT);                     // lines on linear axes, bounds of all the data
+	XYPage &pg = xyCur(s);
+	struct Run {
+		vtkSmartPointer<vtkChartXY> chart;
+		std::vector<int> idx;                         // series animated
+		std::vector<vtkSmartPointer<vtkTable>> src, trail, head;
+		std::vector<vtkSmartPointer<vtkPlot>> plots;  // temporary trail + head items
+		int step = 0;
+	};
+	auto run = std::make_shared<Run>();
+	run->chart = pg.chart;
+	pg.chart->GetAxis(vtkAxis::BOTTOM)->SetBehavior(vtkAxis::FIXED);
+	pg.chart->GetAxis(vtkAxis::LEFT)->SetBehavior(vtkAxis::FIXED);
+	for (int i = 0; i < (int)pg.series.size(); ++i) {
+		XYSeries &se = pg.series[i];
+		if (se.nowCross || !se.visible || !se.plot || !se.table || se.table->GetNumberOfRows() < 2)
+			continue;
+		se.plot->SetVisible(false);
+		auto mk = [&](vtkSmartPointer<vtkTable> &t, int type, float width) {
+			t = vtkSmartPointer<vtkTable>::New();
+			vtkNew<vtkDoubleArray> ax; ax->SetName("X"); t->AddColumn(ax);
+			vtkNew<vtkFloatArray> ay; ay->SetName("Y"); t->AddColumn(ay);
+			vtkPlot *pl = pg.chart->AddPlot(type);
+			pl->SetInputData(t, 0, 1);
+			pl->SetLegendVisibility(false);
+			pl->SetColor((unsigned char)(se.r * 255), (unsigned char)(se.g * 255), (unsigned char)(se.b * 255), 255);
+			pl->SetWidth(width);
+			run->plots.push_back(pl);
+			return pl;
+		};
+		vtkSmartPointer<vtkTable> tt, th;
+		mk(tt, vtkChart::LINE, (float)se.width);
+		if (vtkPlotPoints *hp = vtkPlotPoints::SafeDownCast(mk(th, vtkChart::POINTS, 2.0f))) {
+			hp->SetMarkerStyle(vtkPlotPoints::CIRCLE);
+			hp->SetMarkerSize((float)(9.0 * s->widget->devicePixelRatioF()));
+		}
+		for (vtkIdType r = 0; r < 2; ++r) {               // the first two points: a line is never painted shorter
+			tt->InsertNextBlankRow();
+			tt->SetValue(r, 0, se.table->GetValue(r, 0));
+			tt->SetValue(r, 1, se.table->GetValue(r, 1));
+		}
+		th->InsertNextBlankRow();
+		th->SetValue(0, 0, se.table->GetValue(1, 0));
+		th->SetValue(0, 1, se.table->GetValue(1, 1));
+		run->idx.push_back(i);
+		run->src.push_back(se.table);
+		run->trail.push_back(tt);
+		run->head.push_back(th);
+	}
+	if (run->idx.empty())
+		return;
+	pg.chart->SetShowLegend(false);                   // its entries are hidden meanwhile: an empty box
+	s->cometBusy = true;
+	const int steps = 60;
+	QTimer *tm = new QTimer(s->win);
+	tm->setInterval(33);
+	QObject::connect(tm, &QTimer::timeout, s->win, [s, run, tm, steps] {
+		// The end (or the page went away from under it): drop the temporary items, bring the curves back.
+		auto finish = [&] {
+			tm->stop();
+			tm->deleteLater();
+			for (auto &pl : run->plots)
+				run->chart->RemovePlotInstance(pl);
+			for (XYPage &p : s->pages)
+				if (p.chart == run->chart)
+					for (XYSeries &se : p.series)
+						if (se.plot) se.plot->SetVisible(se.visible);
+			run->chart->SetShowLegend(s->legendVisible);
+			run->chart->GetAxis(vtkAxis::BOTTOM)->SetBehavior(vtkAxis::AUTO);
+			run->chart->GetAxis(vtkAxis::LEFT)->SetBehavior(vtkAxis::AUTO);
+			run->chart->RecalculateBounds();
+			s->cometBusy = false;
+			if (s->widget->renderWindow()) s->widget->renderWindow()->Render();
+		};
+		if (!xyAlive(s) || xyCur(s).chart != run->chart || ++run->step > steps) {
+			finish();
+			return;
+		}
+		for (size_t k = 0; k < run->idx.size(); ++k) {
+			vtkTable *src = run->src[k], *tr = run->trail[k], *hd = run->head[k];
+			const vtkIdType n = src->GetNumberOfRows();
+			const vtkIdType m = std::min(n, std::max<vtkIdType>(2, (n * run->step + steps - 1) / steps));
+			for (vtkIdType r = tr->GetNumberOfRows(); r < m; ++r) {
+				tr->InsertNextBlankRow();
+				tr->SetValue(r, 0, src->GetValue(r, 0));
+				tr->SetValue(r, 1, src->GetValue(r, 1));
+			}
+			hd->SetNumberOfRows(1);
+			hd->SetValue(0, 0, src->GetValue(m - 1, 0));
+			hd->SetValue(0, 1, src->GetValue(m - 1, 1));
+			tr->Modified();
+			hd->Modified();
+		}
+		if (s->widget->renderWindow()) s->widget->renderWindow()->Render();
+	});
+	tm->start();
+}
+
+// The gallery miniature of a plot type: a framed little chart, drawn here (no image files to ship).
+static QIcon xyPlotTypeIcon(int type, qreal dpr) {
+	const int W = 56, H = 36;
+	QPixmap pm(qRound(W * dpr), qRound(H * dpr));
+	pm.setDevicePixelRatio(dpr);
+	pm.fill(Qt::white);
+	QPainter p(&pm);
+	p.setRenderHint(QPainter::Antialiasing, true);
+	const QColor blue(0, 114, 189), orange(217, 83, 25), grid(200, 200, 200);
+	const QRectF fr(1.5, 1.5, W - 3.0, H - 3.0);
+	const double x0 = fr.left() + 3, x1 = fr.right() - 3, y0 = fr.top() + 3, y1 = fr.bottom() - 3;
+	// log-spaced grid lines (one decade's 2..9 ticks squeezed into the frame)
+	auto logLines = [&](bool vertical) {
+		p.setPen(QPen(grid, 0.8));
+		for (int d = 0; d < 2; ++d)
+			for (int k = 1; k <= 9; ++k) {
+				const double f = (d + std::log10((double)k)) / 2.0;
+				if (vertical) { const double x = x0 + f * (x1 - x0); p.drawLine(QPointF(x, y0), QPointF(x, y1)); }
+				else          { const double y = y1 - f * (y1 - y0); p.drawLine(QPointF(x0, y), QPointF(x1, y)); }
+			}
+	};
+	// a wave whose x is warped by `warp` (0..1 -> 0..1), so the log types squeeze it the way they do
+	auto wave = [&](auto warp) {
+		QPainterPath path;
+		for (int i = 0; i <= 80; ++i) {
+			const double t = i / 80.0;
+			const double x = x0 + warp(t) * (x1 - x0);
+			const double y = (y0 + y1) / 2 - 0.42 * (y1 - y0) * std::sin(t * 4.0 * M_PI);
+			if (i == 0) path.moveTo(x, y); else path.lineTo(x, y);
+		}
+		p.setPen(QPen(blue, 1.6));
+		p.setBrush(Qt::NoBrush);
+		p.drawPath(path);
+	};
+	switch (type) {
+	case XY_PT_PLOT:
+		wave([](double t) { return t; });
+		break;
+	case XY_PT_BAR:
+	case XY_PT_BARH:
+		p.setPen(Qt::NoPen);
+		for (int i = 0; i < 6; ++i) {
+			const double v1 = 0.2 + 0.13 * i, v2 = 0.12 + 0.15 * i;
+			if (type == XY_PT_BAR) {
+				const double bx = x0 + 2 + i * (x1 - x0 - 2) / 6.0, bw = (x1 - x0) / 15.0;
+				p.setBrush(orange); p.drawRect(QRectF(bx, y1 - v2 * (y1 - y0), bw, v2 * (y1 - y0)));
+				p.setBrush(blue);   p.drawRect(QRectF(bx + bw, y1 - v1 * (y1 - y0), bw, v1 * (y1 - y0)));
+			}
+			else {
+				const double by = y0 + 1 + i * (y1 - y0 - 1) / 6.0, bh = (y1 - y0) / 14.0;
+				p.setBrush(blue);   p.drawRect(QRectF(x0, by, (1.0 - 0.14 * i) * (x1 - x0), bh));
+				p.setBrush(orange); p.drawRect(QRectF(x0, by + bh, (0.9 - 0.13 * i) * (x1 - x0), bh));
+			}
+		}
+		break;
+	case XY_PT_SEMILOGX:
+		logLines(true);
+		wave([](double t) { return std::log10(1.0 + 99.0 * t) / 2.0; });
+		break;
+	case XY_PT_SEMILOGY:
+		logLines(false);
+		wave([](double t) { return t; });
+		break;
+	case XY_PT_LOGLOG:
+		logLines(true);
+		logLines(false);
+		wave([](double t) { return std::log10(1.0 + 99.0 * t) / 2.0; });
+		break;
+	case XY_PT_AREA: {
+		QPainterPath path;
+		path.moveTo(x0, y1);
+		for (int i = 0; i <= 80; ++i) {
+			const double t = i / 80.0;
+			path.lineTo(x0 + t * (x1 - x0), y1 - (0.1 + 0.8 * std::abs(std::sin(t * 2.0 * M_PI))) * (y1 - y0));
+		}
+		path.lineTo(x1, y1);
+		path.closeSubpath();
+		p.setPen(QPen(blue, 1.0));
+		p.setBrush(blue);
+		p.drawPath(path);
+		break;
+	}
+	case XY_PT_COMET: {
+		p.setPen(QPen(blue, 1.4, Qt::DotLine));
+		p.setBrush(Qt::NoBrush);
+		QPainterPath path;
+		const double hx = x0 + 0.62 * (x1 - x0), hy = y0 + 0.35 * (y1 - y0);
+		path.moveTo(x0 + 0.4 * (x1 - x0), y1);
+		path.quadTo(x0 + 0.5 * (x1 - x0), y0, hx, hy);
+		p.drawPath(path);
+		p.setPen(QPen(blue, 1.4));
+		p.drawEllipse(QPointF(hx + 2, hy + 1), 2.6, 2.6);
+		break;
+	}
+	case XY_PT_STEM:
+		for (int i = 0; i < 12; ++i) {
+			const double x = x0 + 2 + i * (x1 - x0 - 4) / 11.0;
+			const double y = y1 - (0.25 + 0.65 * std::abs(std::sin(i * 0.55))) * (y1 - y0);
+			p.setPen(QPen(blue, 1.2));
+			p.drawLine(QPointF(x, y1), QPointF(x, y));
+			p.setBrush(Qt::white);
+			p.drawEllipse(QPointF(x, y), 1.6, 1.6);
+		}
+		break;
+	case XY_PT_STAIRS: {
+		QPainterPath path;
+		const int ns = 12;
+		for (int i = 0; i <= ns; ++i) {
+			const double x = x0 + i * (x1 - x0) / ns;
+			const double y = (y0 + y1) / 2 - 0.38 * (y1 - y0) * std::sin(i * 2.0 * M_PI / 6.0);
+			if (i == 0) path.moveTo(x, y);
+			else { path.lineTo(x, path.currentPosition().y()); path.lineTo(x, y); }
+		}
+		p.setPen(QPen(blue, 1.4));
+		p.setBrush(Qt::NoBrush);
+		p.drawPath(path);
+		break;
+	}
+	case XY_PT_SCATTER:
+		p.setPen(QPen(blue, 1.0));
+		p.setBrush(Qt::NoBrush);
+		for (int i = 0; i < 22; ++i) {
+			const double t = std::fmod(i * 0.618034, 1.0), u = std::fmod(i * 0.414214 + 0.2, 1.0);
+			p.drawEllipse(QPointF(x0 + 2 + t * (x1 - x0 - 4), y0 + 2 + (0.15 + 0.7 * u * (1 - 0.5 * t)) * (y1 - y0 - 4)), 1.8, 1.8);
+		}
+		break;
+	case XY_PT_PLOTYY: {
+		QPainterPath a, b;
+		for (int i = 0; i <= 60; ++i) {
+			const double t = i / 60.0, x = x0 + t * (x1 - x0);
+			const double ya = (y0 + y1) / 2 - 0.35 * (y1 - y0) * std::sin(t * 4.0 * M_PI);
+			const double yb = y1 - (0.15 + 0.7 * t * t) * (y1 - y0);
+			if (i == 0) { a.moveTo(x, ya); b.moveTo(x, yb); } else { a.lineTo(x, ya); b.lineTo(x, yb); }
+		}
+		p.setBrush(Qt::NoBrush);
+		p.setPen(QPen(blue, 1.4));   p.drawPath(a);
+		p.setPen(QPen(orange, 1.4)); p.drawPath(b);
+		p.setPen(QPen(blue, 1.0));   p.drawLine(QPointF(x0 + 1, y0), QPointF(x0 + 1, y1));
+		p.setPen(QPen(orange, 1.0)); p.drawLine(QPointF(x1 - 1, y0), QPointF(x1 - 1, y1));
+		break;
+	}
+	case XY_PT_FILLBETWEEN: {
+		QPainterPath top, band;
+		std::vector<QPointF> a, b;
+		for (int i = 0; i <= 60; ++i) {
+			const double t = i / 60.0, x = x0 + t * (x1 - x0);
+			a.emplace_back(x, (y0 + y1) / 2 - 0.35 * (y1 - y0) * std::sin(t * 2.0 * M_PI));
+			b.emplace_back(x, (y0 + y1) / 2 + 0.2 * (y1 - y0) * std::sin(t * 2.0 * M_PI + 1.0));
+		}
+		band.moveTo(a[0]);
+		for (const QPointF &q : a) band.lineTo(q);
+		for (auto it = b.rbegin(); it != b.rend(); ++it) band.lineTo(*it);
+		band.closeSubpath();
+		p.setPen(Qt::NoPen);
+		p.setBrush(QColor(0, 114, 189, 110));
+		p.drawPath(band);
+		p.setBrush(Qt::NoBrush);
+		p.setPen(QPen(blue, 1.3));
+		p.drawPolyline(a.data(), (int)a.size());
+		p.setPen(QPen(orange, 1.3));
+		p.drawPolyline(b.data(), (int)b.size());
+		break;
+	}
+	case XY_PT_BARSTACK:
+	case XY_PT_BARHSTACK:
+		p.setPen(Qt::NoPen);
+		for (int i = 0; i < 5; ++i) {
+			const double v1 = 0.2 + 0.1 * i, v2 = 0.15 + 0.06 * (4 - i);
+			if (type == XY_PT_BARSTACK) {
+				const double bx = x0 + 3 + i * (x1 - x0 - 3) / 5.0, bw = (x1 - x0) / 8.0, H = y1 - y0;
+				p.setBrush(blue);   p.drawRect(QRectF(bx, y1 - v1 * H, bw, v1 * H));
+				p.setBrush(orange); p.drawRect(QRectF(bx, y1 - (v1 + v2) * H, bw, v2 * H));
+			}
+			else {
+				const double by = y0 + 1 + i * (y1 - y0 - 1) / 5.0, bh = (y1 - y0) / 7.5, W = x1 - x0;
+				p.setBrush(blue);   p.drawRect(QRectF(x0, by, v1 * W, bh));
+				p.setBrush(orange); p.drawRect(QRectF(x0 + v1 * W, by, v2 * W, bh));
+			}
+		}
+		break;
+	case XY_PT_WATERFALL: {
+		const double steps[6] = { 0.35, 0.2, 0.15, -0.12, -0.2, 0.0 };
+		double c = 0.0;
+		p.setPen(Qt::NoPen);
+		for (int i = 0; i < 6; ++i) {
+			const double bx = x0 + 2 + i * (x1 - x0 - 2) / 6.0, bw = (x1 - x0) / 8.0, H = y1 - y0;
+			const double lo = i == 5 ? 0.0 : std::min(c, c + steps[i]), hi = i == 5 ? c : std::max(c, c + steps[i]);
+			p.setBrush(i == 5 ? QColor(120, 120, 120) : steps[i] >= 0 ? blue : orange);
+			p.drawRect(QRectF(bx, y1 - hi * H, bw, (hi - lo) * H));
+			c += steps[i];
+		}
+		break;
+	}
+	case XY_PT_HIST:
+		p.setPen(QPen(Qt::white, 0.6));
+		p.setBrush(blue);
+		for (int i = 0; i < 9; ++i) {
+			const double t = (i - 4) / 2.2, h = std::exp(-t * t / 2) * 0.88;
+			const double bw = (x1 - x0) / 9.0;
+			p.drawRect(QRectF(x0 + i * bw, y1 - h * (y1 - y0), bw, h * (y1 - y0)));
+		}
+		break;
+	case XY_PT_DENSITY:
+		p.setBrush(QColor(0, 114, 189, 70));
+		p.setPen(QPen(blue, 1.4));
+		{
+			QPainterPath d;
+			d.moveTo(x0, y1);
+			for (int i = 0; i <= 60; ++i) {
+				const double t = i / 60.0, z1 = (t - 0.35) / 0.12, z2 = (t - 0.7) / 0.1;
+				d.lineTo(x0 + t * (x1 - x0), y1 - (0.8 * std::exp(-z1 * z1 / 2) + 0.5 * std::exp(-z2 * z2 / 2)) * (y1 - y0));
+			}
+			d.lineTo(x1, y1);
+			p.drawPath(d);
+		}
+		break;
+	case XY_PT_BOXPLOT:
+		for (int i = 0; i < 3; ++i) {
+			const double cx = x0 + (i + 0.5) * (x1 - x0) / 3.0, H = y1 - y0;
+			const double q0 = 0.1 + 0.05 * i, q1 = 0.3 + 0.05 * i, q2 = 0.45 + 0.08 * i, q3 = 0.6 + 0.06 * i, q4 = 0.85;
+			p.setPen(QPen(i == 1 ? orange : blue, 1.1));
+			p.setBrush(Qt::NoBrush);
+			p.drawLine(QPointF(cx, y1 - q0 * H), QPointF(cx, y1 - q1 * H));
+			p.drawLine(QPointF(cx, y1 - q3 * H), QPointF(cx, y1 - q4 * H));
+			p.drawLine(QPointF(cx - 2.5, y1 - q0 * H), QPointF(cx + 2.5, y1 - q0 * H));
+			p.drawLine(QPointF(cx - 2.5, y1 - q4 * H), QPointF(cx + 2.5, y1 - q4 * H));
+			p.setBrush(QColor(i == 1 ? 217 : 0, i == 1 ? 83 : 114, i == 1 ? 25 : 189, 70));
+			p.drawRect(QRectF(cx - 5, y1 - q3 * H, 10, (q3 - q1) * H));
+			p.drawLine(QPointF(cx - 5, y1 - q2 * H), QPointF(cx + 5, y1 - q2 * H));
+		}
+		break;
+	case XY_PT_VIOLIN:
+		for (int i = 0; i < 3; ++i) {
+			const double cx = x0 + (i + 0.5) * (x1 - x0) / 3.0;
+			QPainterPath v;
+			for (int side = 0; side < 2; ++side)
+				for (int j = 0; j <= 30; ++j) {
+					const double t = side == 0 ? j / 30.0 : 1.0 - j / 30.0;
+					const double z = (t - 0.45 - 0.05 * i) / 0.18;
+					const double w = 6.5 * (std::exp(-z * z / 2) + 0.25 * std::exp(-(t - 0.85) * (t - 0.85) / 0.005)) + 0.3;
+					const QPointF q(cx + (side == 0 ? w : -w), y1 - t * (y1 - y0));
+					if (side == 0 && j == 0) v.moveTo(q); else v.lineTo(q);
+				}
+			v.closeSubpath();
+			p.setPen(QPen(i == 1 ? orange : blue, 1.0));
+			p.setBrush(QColor(i == 1 ? 217 : 0, i == 1 ? 83 : 114, i == 1 ? 25 : 189, 90));
+			p.drawPath(v);
+		}
+		break;
+	case XY_PT_ECDF: {
+		QPainterPath path;
+		const int ns = 14;
+		double c = 0.0;
+		path.moveTo(x0, y1);
+		for (int i = 0; i < ns; ++i) {
+			const double x = x0 + (i + 0.5) * (x1 - x0) / ns;
+			const double t = (i - ns / 2.0) / 3.0;
+			const double nc = 1.0 / (1.0 + std::exp(-1.7 * t));
+			path.lineTo(x, y1 - c * (y1 - y0));
+			c = nc;
+			path.lineTo(x, y1 - c * (y1 - y0));
+		}
+		path.lineTo(x1, y1 - c * (y1 - y0));
+		p.setPen(QPen(blue, 1.4));
+		p.setBrush(Qt::NoBrush);
+		p.drawPath(path);
+		break;
+	}
+	case XY_PT_QQNORM:
+	case XY_PT_QQPLOT:
+		p.setPen(QPen(type == XY_PT_QQNORM ? orange : QColor(80, 80, 80), 1.2, Qt::DashLine));
+		p.drawLine(QPointF(x0 + 2, y1 - 2), QPointF(x1 - 2, y0 + 2));
+		p.setPen(QPen(blue, 1.0));
+		p.setBrush(QColor(0, 114, 189));
+		for (int i = 0; i < 14; ++i) {
+			const double t = (i + 0.5) / 14.0, d = 0.08 * std::sin(i * 1.3) + (type == XY_PT_QQPLOT ? 0.1 * (t - 0.5) * (t - 0.5) * 4 : 0.0);
+			p.drawEllipse(QPointF(x0 + 2 + t * (x1 - x0 - 4), y1 - 2 - std::clamp(t + d, 0.0, 1.0) * (y1 - y0 - 4)), 1.4, 1.4);
+		}
+		break;
+	case XY_PT_RADAR: {
+		const QPointF c((x0 + x1) / 2, (y0 + y1) / 2);
+		const double R = (y1 - y0) / 2;
+		const double v[5] = { 0.9, 0.55, 0.8, 0.4, 0.7 };
+		p.setPen(QPen(grid, 0.8));
+		p.setBrush(Qt::NoBrush);
+		QPolygonF poly, ring;
+		for (int k = 0; k < 5; ++k) {
+			const double a = M_PI / 2 + k * 2 * M_PI / 5;
+			const QPointF e(c.x() + R * std::cos(a), c.y() - R * std::sin(a));
+			p.drawLine(c, e);
+			ring << e;
+			poly << QPointF(c.x() + v[k] * R * std::cos(a), c.y() - v[k] * R * std::sin(a));
+		}
+		p.drawPolygon(ring);
+		p.setPen(QPen(blue, 1.2));
+		p.setBrush(QColor(0, 114, 189, 90));
+		p.drawPolygon(poly);
+		break;
+	}
+	case XY_PT_ROSE: {
+		const QPointF c((x0 + x1) / 2, (y0 + y1) / 2);
+		const double R = (y1 - y0) / 2;
+		p.setPen(QPen(Qt::white, 0.5));
+		p.setBrush(blue);
+		for (int k = 0; k < 12; ++k) {
+			const double r = R * (0.35 + 0.65 * std::abs(std::sin(k * 0.9 + 0.4)));
+			const QRectF box(c.x() - r, c.y() - r, 2 * r, 2 * r);
+			p.drawPie(box, k * 30 * 16, 30 * 16);
+		}
+		break;
+	}
+	case XY_PT_PARALLEL:
+		p.setPen(QPen(QColor(90, 90, 90), 1.0));
+		for (int k = 0; k < 4; ++k) {
+			const double x = x0 + 2 + k * (x1 - x0 - 4) / 3.0;
+			p.drawLine(QPointF(x, y0), QPointF(x, y1));
+		}
+		for (int i = 0; i < 6; ++i) {
+			QPolygonF l;
+			for (int k = 0; k < 4; ++k)
+				l << QPointF(x0 + 2 + k * (x1 - x0 - 4) / 3.0,
+				             y0 + (0.1 + 0.8 * std::fmod(0.17 * i + 0.31 * k * (i % 2 ? 1 : 2) + 0.05, 1.0)) * (y1 - y0));
+			p.setPen(QPen(i < 3 ? blue : orange, 1.0));
+			p.drawPolyline(l);
+		}
+		break;
+	case XY_PT_CORNER:
+	case XY_PT_MARGINAL: {
+		auto cell = [&](double cx, double cy, double cw, double ch) {
+			return QRectF(x0 + cx * (x1 - x0), y0 + cy * (y1 - y0), cw * (x1 - x0), ch * (y1 - y0));
+		};
+		auto hist = [&](const QRectF &r, bool horiz) {
+			p.setPen(Qt::NoPen);
+			p.setBrush(blue);
+			for (int i = 0; i < 6; ++i) {
+				const double t = (i - 2.5) / 1.6, h = std::exp(-t * t / 2) * 0.9;
+				if (!horiz) p.drawRect(QRectF(r.left() + i * r.width() / 6, r.bottom() - h * r.height(), r.width() / 6, h * r.height()));
+				else        p.drawRect(QRectF(r.left(), r.top() + i * r.height() / 6, h * r.width(), r.height() / 6));
+			}
+		};
+		auto dots = [&](const QRectF &r) {
+			p.setPen(Qt::NoPen);
+			p.setBrush(blue);
+			for (int i = 0; i < 14; ++i) {
+				const double t = std::fmod(i * 0.618034, 1.0), u = std::clamp(t + 0.25 * std::sin(i * 2.1), 0.05, 0.95);
+				p.drawEllipse(QPointF(r.left() + t * r.width(), r.bottom() - u * r.height()), 1.2, 1.2);
+			}
+		};
+		if (type == XY_PT_CORNER) {
+			hist(cell(0.0, 0.0, 0.32, 0.31), false);
+			dots(cell(0.0, 0.34, 0.32, 0.31)); hist(cell(0.34, 0.34, 0.32, 0.31), false);
+			dots(cell(0.0, 0.68, 0.32, 0.31)); dots(cell(0.34, 0.68, 0.32, 0.31)); hist(cell(0.68, 0.68, 0.32, 0.31), false);
+		}
+		else {
+			hist(cell(0.0, 0.0, 0.75, 0.22), false);
+			dots(cell(0.0, 0.26, 0.75, 0.74));
+			hist(cell(0.79, 0.26, 0.21, 0.74), true);
+		}
+		break;
+	}
+	case XY_PT_BIPLOT: {
+		const QPointF c((x0 + x1) / 2, (y0 + y1) / 2);
+		p.setPen(Qt::NoPen);
+		p.setBrush(QColor(120, 120, 120));
+		for (int i = 0; i < 18; ++i) {
+			const double t = std::fmod(i * 0.618034, 1.0) - 0.5, u = std::fmod(i * 0.414214, 1.0) - 0.5;
+			p.drawEllipse(QPointF(c.x() + t * (x1 - x0) * 0.8, c.y() + (0.6 * u + 0.4 * t) * (y1 - y0) * 0.8), 1.1, 1.1);
+		}
+		p.setPen(QPen(blue, 1.4));
+		const double ends[3][2] = { { 0.4, -0.3 }, { -0.25, -0.4 }, { 0.3, 0.35 } };
+		for (const auto &e : ends) {
+			const QPointF q(c.x() + e[0] * (x1 - x0), c.y() + e[1] * (y1 - y0));
+			p.drawLine(c, q);
+			p.setBrush(blue);
+			p.drawEllipse(q, 1.5, 1.5);
+		}
+		break;
+	}
+	}
+	p.setPen(QPen(QColor(90, 90, 90), 1.0));
+	p.setBrush(Qt::NoBrush);
+	p.drawRect(fr);
+	p.end();
+	return QIcon(pm);
 }
 
 static XYPlot *buildXYPlot(const char *title) {
@@ -4036,6 +5023,38 @@ static XYPlot *buildXYPlot(const char *title) {
 	s->actMag->setToolTip("Enter ages & plot a geomagnetic barcode");
 	QObject::connect(s->actMag, &QAction::toggled, s->win, [s](bool) { xyMagSyncUi(s); xyMagRender(s); });
 
+	// --- plot-type gallery: its own row under the tool bar; a click re-plots the current page ---
+	s->win->addToolBarBreak(Qt::TopToolBarArea);
+	QToolBar *gal = s->win->addToolBar("Plot types");
+	gal->setObjectName("xyPlotTypes");
+	gal->setIconSize(QSize(56, 36));
+	gal->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
+	// Display order (the enum's order is only an id): the bar plots side by side.
+	static const int order[XY_PT_COUNT] = {
+		XY_PT_PLOT, XY_PT_AREA, XY_PT_BAR, XY_PT_BARH, XY_PT_BARSTACK, XY_PT_BARHSTACK, XY_PT_WATERFALL,
+		XY_PT_HIST, XY_PT_SEMILOGX, XY_PT_SEMILOGY, XY_PT_LOGLOG, XY_PT_COMET, XY_PT_STEM, XY_PT_STAIRS,
+		XY_PT_SCATTER, XY_PT_PLOTYY, XY_PT_FILLBETWEEN,
+		XY_PT_DENSITY, XY_PT_BOXPLOT, XY_PT_VIOLIN, XY_PT_ECDF, XY_PT_QQNORM, XY_PT_QQPLOT,
+		XY_PT_RADAR, XY_PT_ROSE, XY_PT_PARALLEL, XY_PT_CORNER, XY_PT_MARGINAL, XY_PT_BIPLOT };
+	for (int t : order) {
+		if (t == XY_PT_SCATTER || t == XY_PT_DENSITY)
+			gal->addSeparator();                      // MATLAB's set | GMT.jl's other plots | statistics
+		QAction *a = gal->addAction(xyPlotTypeIcon(t, s->win->devicePixelRatioF()), xyPlotTypeNames[t]);
+		a->setObjectName(QString("xyPlotType_%1").arg(QString(xyPlotTypeNames[t]).replace(' ', '_')));
+		a->setToolTip(t == XY_PT_COMET     ? QString("Animate this page's series as comets") :
+		              t == XY_PT_PLOTYY    ? QString("The first curve on the left Y axis, the others on a right one") :
+		              t == XY_PT_FILLBETWEEN ? QString("Fill between the first curve and each of the others") :
+		              t == XY_PT_WATERFALL ? QString("Each bar starts where the previous one ended") :
+		              t == XY_PT_HIST      ? QString("Histogram of the selected series, on a new page") :
+		              t == XY_PT_QQPLOT    ? QString("Quantiles of the first two curves against each other, on a new page") :
+		              t == XY_PT_RADAR     ? QString("Each series of this page as one radar polygon (a spoke per point), on a new page") :
+		              t == XY_PT_ROSE      ? QString("Rose diagram of the selected series' values as azimuths (degrees), on a new page") :
+		              t == XY_PT_MARGINAL  ? QString("The selected series' x against y, with the histogram of each on the margins, on a new page") :
+		              t > XY_PT_HIST       ? QString("%1 of this page's series, on a new page").arg(xyPlotTypeNames[t]) :
+		                                     QString("Re-plot this page's series as %1").arg(xyPlotTypeNames[t]));
+		QObject::connect(a, &QAction::triggered, s->win, [s, t] { xySetPlotType(s, t); });
+	}
+
 	// --- Object Manager interactions ---
 	QObject::connect(s->objMgr, &QTreeWidget::itemChanged, s->win, [s](QTreeWidgetItem *it, int){
 		if (s->rebuilding) return;
@@ -4081,6 +5100,15 @@ static XYPlot *buildXYPlot(const char *title) {
 	s->widget->installEventFilter(new XYMagFilter(s, s->win));
 	// --- "Reference a curve to another": its picks, and "Reference me" on them (sees a press first) ---
 	s->widget->installEventFilter(new XYRefFilter(s, s->win));
+	// --- a square page keeps its square through every resize: sized before each render ---
+	{
+		vtkNew<vtkCallbackCommand> cb;
+		cb->SetClientData(s);
+		cb->SetCallback([](vtkObject *, unsigned long, void *cd, void *) {
+			XYPlot *p = static_cast<XYPlot *>(cd);
+			if (xyAlive(p) && !p->pages.empty() && xyCur(p).square) xyApplyPageLook(p, xyCur(p)); });
+		rw->AddObserver(vtkCommand::StartEvent, cb);
+	}
 	// --- the bar code strip follows every chart render (zoom / pan / resize move its mapping) ---
 	{
 		vtkNew<vtkCallbackCommand> cb;

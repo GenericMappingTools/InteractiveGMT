@@ -264,6 +264,8 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_xyplot_add_now_cross, :gmtvtk_xyplot_add_bars,
 	:gmtvtk_xyplot_set_analysis_callback, :gmtvtk_open_profile_in_xyplot,
 	:gmtvtk_xyplot_set_seed_callback, :gmtvtk_xyplot_set_xtime, :gmtvtk_xyplot_set_logscale,
+	:gmtvtk_xyplot_set_plot_type, :gmtvtk_xyplot_set_page_look, :gmtvtk_xyplot_add_label,
+	:gmtvtk_xyplot_set_series_kind,
 	:gmtvtk_xyplot_specgrant, :gmtvtk_xyplot_set_new_callback, :gmtvtk_open_xyplot_from_host,
 	:gmtvtk_xyplot_log, :gmtvtk_xyplot_run_analysis,
 	:gmtvtk_xyplot_add_page, :gmtvtk_xyplot_series_count, :gmtvtk_xyplot_series_npoints,

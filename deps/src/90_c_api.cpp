@@ -14769,6 +14769,69 @@ GMTVTK_API void gmtvtk_xyplot_set_logscale(void *handle, int axis, int on) {
 	xySetLog(p, axis, on != 0);
 }
 
+// Draw the CURRENT page as one of the plot-type gallery's types, by its gallery name ("stairs",
+// "scatter", "bar stack", ...) — the same xySetPlotType a click on the gallery runs. 1 = done, 0 =
+// dead handle or unknown name.
+GMTVTK_API int gmtvtk_xyplot_set_plot_type(void *handle, const char *name) {
+	XYPlot *p = static_cast<XYPlot*>(handle);
+	if (!xyAlive(p))
+		return 0;
+	return xySetPlotTypeByName(p, name) ? 1 : 0;
+}
+
+// The CURRENT page's look for a plot type that draws its own frame (radar, rose, biplot, cornerplot,
+// marginalhist): `square` != 0 = a square plot area, `hideAxes` != 0 = the chart's own axes and grid
+// hidden, and the axes' limits [x0,x1] / [y0,y1] when finite (fixed, as Misc's zoom leaves them; NaN =
+// automatic). No-op on a dead handle.
+GMTVTK_API void gmtvtk_xyplot_set_page_look(void *handle, int square, int hideAxes,
+                                            double x0, double x1, double y0, double y1) {
+	XYPlot *p = static_cast<XYPlot*>(handle);
+	if (!xyAlive(p))
+		return;
+	XYPage &pg = xyCur(p);
+	pg.square = square != 0;
+	pg.axesHidden = hideAxes != 0;
+	xyApplyPageLook(p, pg);
+	auto lim = [](vtkAxis *a, double lo, double hi) {
+		if (!std::isfinite(lo) || !std::isfinite(hi) || hi <= lo) return;
+		a->SetBehavior(vtkAxis::FIXED);
+		a->SetRange(lo, hi);
+	};
+	lim(pg.chart->GetAxis(vtkAxis::BOTTOM), x0, x1);
+	lim(pg.chart->GetAxis(vtkAxis::LEFT), y0, y1);
+	if (p->widget && p->widget->renderWindow())
+		p->widget->renderWindow()->Render();
+}
+
+// Draw series `idx` of the CURRENT page as plot kind `kind` (XYSeries::kind: 0 line ... 8 filled
+// polygons) — the host's way to make what the gallery's own types make. 1 = done, 0 = bad handle/index.
+GMTVTK_API int gmtvtk_xyplot_set_series_kind(void *handle, int idx, int kind) {
+	XYPlot *p = static_cast<XYPlot*>(handle);
+	if (!xyAlive(p))
+		return 0;
+	XYPage &pg = xyCur(p);
+	if (idx < 0 || idx >= (int)pg.series.size() || kind < 0 || kind > 8)
+		return 0;
+	pg.series[idx].kind = kind;
+	xyRebuildPlots(p);
+	return 1;
+}
+
+// Put a text on the CURRENT page at DATA position (x, y) — drawn by the chart, so it follows zoom and
+// pan. Colour r,g,b in 0..1, `size` in points, ha / va: -1 left/bottom, 0 centre, 1 right/top.
+GMTVTK_API void gmtvtk_xyplot_add_label(void *handle, double x, double y, const char *text,
+                                        double r, double g, double b, double size, int ha, int va) {
+	XYPlot *p = static_cast<XYPlot*>(handle);
+	if (!xyAlive(p) || !text)
+		return;
+	XYLabel l;
+	l.x = x; l.y = y; l.text = text; l.r = r; l.g = g; l.b = b;
+	l.size = size > 0 ? size : 11; l.ha = ha; l.va = va;
+	xyCur(p).labels.push_back(l);
+	if (p->widget && p->widget->renderWindow())
+		p->widget->renderWindow()->Render();
+}
+
 // Spector-Grant depth-to-sources over band [xa,xb] of series `sel` (the SAME fit the interactive
 // drag tool runs): fit ln(power) vs wavenumber, return depth = |slope|/(4Ï€)·unit in metres. Returns
 // NaN on a dead handle / bad series / < 2 positive-power points in the band. Programmatic twin of
