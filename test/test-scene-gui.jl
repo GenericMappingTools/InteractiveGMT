@@ -1099,6 +1099,40 @@ end
 	end
 end
 
+@testitem "X,Y legend: the mouse drags it, it stays there, a session puts it back" tags=[:gui, :xyplot] setup=[GmtvtkTest] begin
+	IG = InteractiveGMT
+	IG._XY_CURRENT[] = C_NULL
+	t = collect(range(0, 2π; length=200))
+	p = plot(t, sin.(t); legend="sin")
+	plot!(p, t, cos.(t); legend="cos")
+	lg(h, dx=0.0, dy=0.0) = (o = fill(NaN, 4); ccall(GmtvtkTest._test_fn(:gmtvtk_xyplot_legend_test), Cint,
+	                         (Ptr{Cvoid}, Cdouble, Cdouble, Ptr{Cdouble}, Cint), h, dx, dy, o, 4); o)
+	path = joinpath(tempdir(), "igmt_xylegend_$(getpid()).igmtz"); q = nothing
+	try
+		IG._pump_once()
+		a = lg(p.h)
+		@test a[3] == 0 && a[4] == 1                # in its corner; the press point is on it
+		b = lg(p.h, -200.0, -120.0)                 # dragged by the mouse
+		@test b[3] == 1
+		@test isapprox(b[1] - a[1], -200; atol=1) && isapprox(b[2] - a[2], -120; atol=1)
+		IG._pump_once()
+		@test isapprox(lg(p.h)[1:2], b[1:2]; atol=0.5)   # a repaint leaves it where it was dropped
+		IG._xy_save_session(p.h, path)
+		@test occursin(r"legendpos=", IG._xy_session_state(p.h))
+		q = IG._on_load_session(C_NULL, path)
+		for _ in 1:5; IG._pump_once(); end
+		c = lg(q.h)
+		@test c[3] == 1
+		@test isapprox(c[1], b[1]; atol=1) && isapprox(c[2], b[2]; atol=1)
+		strip_title(s) = replace(s, r"title=.*\n" => "")
+		@test strip_title(IG._xy_session_state(q.h)) == strip_title(IG._xy_session_state(p.h))
+	finally
+		ccall(IG._fn(:gmtvtk_xyplot_close), Cvoid, (Ptr{Cvoid},), p.h)
+		q === nothing || ccall(IG._fn(:gmtvtk_xyplot_close), Cvoid, (Ptr{Cvoid},), q.h)
+		rm(path; force=true)
+	end
+end
+
 @testitem "X,Y magnetic model reads the 3-D profile's track; a redrawn track re-runs it" tags=[:gui, :xyplot] setup=[GmtvtkTest] begin
 	IG = InteractiveGMT; GMT = IG.GMT; tf = GmtvtkTest._test_fn
 	IG._XY_CURRENT[] = C_NULL

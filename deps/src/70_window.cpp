@@ -19226,6 +19226,346 @@ static DgtLidarDialog *openDgtDialog(QWidget *win, Scene *s, bool ortos) {
 }
 
 // ============================================================================================
+// EMODNET (Tools menu) — the EMODnet Bathymetry DTM over a region DRAWN on a map, instead of over
+// EMODnet's own download tiles. ONE dialog: the etopo world image (the Tiles Tool's basemap) showing
+// only the ground the DTM's tiles cover, the tiles drawn and named on it, and a rectangle dragged over
+// it. The tiles say where the DTM is and what a region will touch; what is read is the region: GDAL
+// takes its piece out of each tile it crosses and mosaics them (src/emodnet.jl).
+// ============================================================================================
+class EmodnetDialog;
+static std::map<Scene *, EmodnetDialog *> g_emodnetDlgs;   // one per window, alive while parked
+
+class EmodnetDialog {
+public:
+	QDialog *dlg = nullptr;
+	Scene *scn = nullptr;
+	TilesArea *map = nullptr;
+	QLineEdit *xmin = nullptr, *xmax = nullptr, *ymin = nullptr, *ymax = nullptr, *outFile = nullptr;
+	QLabel *lblTiles = nullptr, *lblInfo = nullptr;
+	QPlainTextEdit *logTxt = nullptr;
+	std::vector<TilesArea::Footprint> tiles;   // the DTM's tiles, from Julia (mode=tiles)
+	QString release;
+	bool reallyClose = false;
+	bool syncing = false;                      // boxes <-> map, so neither echoes the other
+
+	explicit EmodnetDialog(QWidget *parent, Scene *scene) : scn(scene) {
+		dlg = new QDialog(parent);
+		dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint | Qt::WindowMinimizeButtonHint);
+		dlg->setWindowModality(Qt::NonModal);
+		dlg->setWindowTitle("EMODNET");
+		QDialog *d = dlg;
+		Scene *sc = scn;
+		QObject::connect(d, &QObject::destroyed, d, [sc, d]() {
+			if (sceneAlive(sc)) unparkTool(sc, d);
+		});
+		parkOnMinimise(d, [this]() { parkNow(); });
+		struct CloseParks : QObject {
+			EmodnetDialog *ed;
+			CloseParks(QObject *parent, EmodnetDialog *e) : QObject(parent), ed(e) {}
+			bool eventFilter(QObject *o, QEvent *e) override {
+				if (e->type() == QEvent::Close && ed && !ed->reallyClose && sceneAlive(ed->scn)) {
+					e->ignore();
+					ed->parkNow();
+					return true;
+				}
+				return QObject::eventFilter(o, e);
+			}
+		};
+		d->installEventFilter(new CloseParks(d, this));
+		QObject::connect(d, &QDialog::rejected, d, [this]() { parkNow(); });   // Esc
+		g_emodnetDlgs[scn] = this;
+
+		auto *v = new QVBoxLayout(d);
+		lblInfo = new QLabel("EMODnet Bathymetry DTM, 1/16 arc-minute.", d);
+		lblInfo->setWordWrap(true);
+		v->addWidget(lblInfo);
+		map = new TilesArea(d);
+		if (!g_tilesWorld.isEmpty()) map->world.load(g_tilesWorld);
+		map->showMesh = false;  map->regionMode = true;
+		map->rectAction = TilesArea::RectSelect;  map->rectArmed = true;
+		map->setCursor(Qt::CrossCursor);
+		map->setToolTip("Drag a rectangle to pick the region; drag its corners to adjust it. "
+		                "The wheel and +/- zoom, the arrows pan.");
+		v->addWidget(map, 0, Qt::AlignHCenter);
+		// Right-click on a tile: take the WHOLE tile instead of a region. The map widget ignores the
+		// right button, so its context-menu request is free for this dialog to answer.
+		map->setContextMenuPolicy(Qt::CustomContextMenu);
+		QObject::connect(map, &QWidget::customContextMenuRequested, d, [this, d](const QPoint &p) {
+			const double lon = map->px2lon(p.x()), lat = map->px2lat(p.y());
+			QString name;
+			for (const TilesArea::Footprint &t : tiles)
+				if (lon >= t.W && lon <= t.E && lat >= t.S && lat <= t.N) { name = t.name; break; }
+			if (name.isEmpty()) return;
+			QMenu m;
+			QAction *aGet = m.addAction(QString("Download the entire tile %1").arg(name));
+			QAction *aDel = map->hasRegion ? m.addAction("Delete the rectangle") : nullptr;
+			QAction *pick = m.exec(map->mapToGlobal(p));
+			if (pick == aGet) downloadTile(d, name);
+			else if (pick && pick == aDel) deleteRect();
+		});
+		auto *acDel = new QShortcut(QKeySequence(Qt::Key_Delete), map);
+		acDel->setContext(Qt::WidgetShortcut);
+		QObject::connect(acDel, &QShortcut::activated, d, [this]() { deleteRect(); });
+		// A finished sweep: cut it to the DTM (none of it on a tile = no rectangle), and keep the map
+		// armed, so the next drag draws a new rectangle instead of doing nothing.
+		map->onRegionDone = [this]() {
+			if (map->hasRegion && !clampToTiles()) { deleteRect(); return; }
+			map->rectArmed = true;
+			map->setCursor(Qt::CrossCursor);
+		};
+		auto *g = new QGridLayout();
+		xmin = new QLineEdit(d);  xmax = new QLineEdit(d);  ymin = new QLineEdit(d);  ymax = new QLineEdit(d);
+		g->addWidget(new QLabel("West", d), 0, 0);   g->addWidget(xmin, 0, 1);
+		g->addWidget(new QLabel("East", d), 0, 2);   g->addWidget(xmax, 0, 3);
+		g->addWidget(new QLabel("South", d), 0, 4);  g->addWidget(ymin, 0, 5);
+		g->addWidget(new QLabel("North", d), 0, 6);  g->addWidget(ymax, 0, 7);
+		v->addLayout(g);
+		lblTiles = new QLabel("Tiles: (no region yet)", d);
+		lblTiles->setWordWrap(true);
+		v->addWidget(lblTiles);
+		auto *fl = new QHBoxLayout();
+		fl->addWidget(new QLabel("Also save to", d));
+		outFile = new QLineEdit(d);
+		outFile->setPlaceholderText("(optional) file for the grid — it is added to this window either way");
+		fl->addWidget(outFile, 1);
+		auto *bFile = new QPushButton("…", d);
+		bFile->setFixedWidth(28);
+		fl->addWidget(bFile);
+		auto *bGet = new QPushButton("Get the DTM", d);
+		bGet->setToolTip("GDAL reads the region's piece of every tile it crosses and mosaics them");
+		fl->addWidget(bGet);
+		v->addLayout(fl);
+		logTxt = new QPlainTextEdit(d);
+		logTxt->setReadOnly(true);
+		logTxt->setMaximumBlockCount(500);
+		logTxt->setFixedHeight(90);
+		v->addWidget(logTxt);
+		for (QPushButton *b : d->findChildren<QPushButton *>()) { b->setAutoDefault(false); b->setDefault(false); }
+
+		// Map -> boxes while the rectangle is drawn or resized.
+		map->onRegionChanged = [this]() {
+			if (syncing || !map->hasRegion) return;
+			clampToTiles();
+			syncing = true;
+			xmin->setText(QString::number(map->rW, 'f', 6));  xmax->setText(QString::number(map->rE, 'f', 6));
+			ymin->setText(QString::number(map->rS, 'f', 6));  ymax->setText(QString::number(map->rN, 'f', 6));
+			syncing = false;
+			showTilesHit();
+		};
+		// Boxes -> map when one is typed in.
+		for (QLineEdit *e : { xmin, xmax, ymin, ymax })
+			QObject::connect(e, &QLineEdit::editingFinished, d, [this]() {
+				double W, E, S, N;
+				if (syncing || !boxes(W, E, S, N)) return;
+				syncing = true;
+				map->setRegion(W, E, S, N);
+				if (clampToTiles()) {              // typed numbers obey the same rule as a drawn box
+					xmin->setText(QString::number(map->rW, 'f', 6));  xmax->setText(QString::number(map->rE, 'f', 6));
+					ymin->setText(QString::number(map->rS, 'f', 6));  ymax->setText(QString::number(map->rN, 'f', 6));
+				}
+				else
+					map->clearRegion();
+				syncing = false;
+				showTilesHit();
+			});
+		QObject::connect(bFile, &QPushButton::clicked, d, [this, d]() {
+			QString p = QFileDialog::getSaveFileName(d, "Save the DTM grid", prefStartDir("emodnet.nc"),
+			                                         "netCDF (*.nc *.grd);;GeoTIFF (*.tif *.tiff);;All files (*)");
+			if (p.isEmpty()) return;
+			outFile->setText(QDir::toNativeSeparators(p));
+			rememberStartDir(QFileInfo(p).absolutePath());
+		});
+		QObject::connect(bGet, &QPushButton::clicked, d, [this, d]() { run(d); });
+		QObject::connect(d, &QObject::destroyed, d, [this]() { delete this; });
+	}
+
+	// Julia's answer to mode=tiles (gmtvtk_emodnet_set_tiles): draw them, and bound the map to them.
+	void setTiles(std::vector<TilesArea::Footprint> t, const QString &rel) {
+		tiles = std::move(t);
+		release = rel;
+		if (lblInfo)
+			lblInfo->setText(QString("EMODnet Bathymetry DTM %1, 1/16 arc-minute — %2 tiles. Drag a rectangle; "
+			                         "only its part of each tile is read.").arg(release).arg(tiles.size()));
+		if (!map) return;
+		map->setFootprints(tiles);
+		double W = 180, E = -180, S = 90, N = -90;
+		for (const TilesArea::Footprint &f : tiles) {
+			W = std::min(W, f.W);  E = std::max(E, f.E);  S = std::min(S, f.S);  N = std::max(N, f.N);
+		}
+		N = std::min(N, 85.0);                     // the map's own ceiling (TilesArea::setLimits)
+		if (E > W && N > S) { lim[0] = W; lim[1] = E; lim[2] = S; lim[3] = N; hasLim = true; }
+		// The map widget takes the SHAPE of the tiles' ground, so the view is exactly that ground —
+		// setView would otherwise grow one axis to fill a widget of another shape.
+		if (hasLim) {
+			QScreen *scr = dlg->screen();
+			const int availW = scr ? scr->availableGeometry().width()  : 1400;
+			const int availH = scr ? scr->availableGeometry().height() : 900;
+			const double aspect = (N - S) / (E - W);
+			int w = std::min(1000, availW - 80);
+			int h = int(std::lround(w * aspect));
+			if (h > availH - 300) { h = availH - 300;  w = int(std::lround(h / aspect)); }
+			map->setFixedSize(w, h);
+			dlg->adjustSize();
+		}
+		frame();
+		showTilesHit();
+	}
+	// The view IS the tiles' ground: bounded to it and opened on all of it. Applied once the map has
+	// its real size (setView takes the widget's aspect), so also from the first show.
+	void frame() {
+		if (!hasLim || !map) return;
+		map->setLimits(lim[0], lim[1], lim[2], lim[3]);
+		map->setView(lim[0], lim[1], lim[2], lim[3]);
+	}
+
+	// The rectangle never leaves the DTM: it is cut to the bounding box of the tiles it touches, live
+	// while it is swept or resized. False when it touches no tile at all.
+	bool clampToTiles() {
+		if (!map || !map->hasRegion) return false;
+		double tW = 1e9, tE = -1e9, tS = 1e9, tN = -1e9;
+		for (const TilesArea::Footprint &t : tiles)
+			if (t.W < map->rE && t.E > map->rW && t.S < map->rN && t.N > map->rS) {
+				tW = std::min(tW, t.W);  tE = std::max(tE, t.E);
+				tS = std::min(tS, t.S);  tN = std::max(tN, t.N);
+			}
+		if (!(tE > tW)) return false;
+		map->rW = std::max(map->rW, tW);  map->rE = std::min(map->rE, tE);
+		map->rS = std::max(map->rS, tS);  map->rN = std::min(map->rN, tN);
+		if (map->dragRegion) {             // the band being swept is drawn too: same box
+			map->bW = map->rW;  map->bE = map->rE;  map->bS = map->rS;  map->bN = map->rN;
+		}
+		map->update();
+		return true;
+	}
+	// Right-click "Delete the rectangle", or the Delete key over the map.
+	void deleteRect() {
+		if (!map) return;
+		syncing = true;
+		map->clearRegion();
+		for (QLineEdit *e : { xmin, xmax, ymin, ymax }) e->clear();
+		syncing = false;
+		map->rectArmed = true;
+		map->setCursor(Qt::CrossCursor);
+		showTilesHit();
+	}
+
+	bool boxes(double &W, double &E, double &S, double &N) const {
+		bool a = false, b = false, c = false, e = false;
+		W = xmin->text().trimmed().toDouble(&a);  E = xmax->text().trimmed().toDouble(&b);
+		S = ymin->text().trimmed().toDouble(&c);  N = ymax->text().trimmed().toDouble(&e);
+		return a && b && c && e && E > W && N > S;
+	}
+
+	// Which tiles the region touches — what "Get the DTM" will read.
+	void showTilesHit() {
+		if (!lblTiles) return;
+		double W, E, S, N;
+		if (!boxes(W, E, S, N)) { lblTiles->setText("Tiles: (no region yet)"); return; }
+		QStringList hit;
+		for (const TilesArea::Footprint &t : tiles)
+			if (t.W < E && t.E > W && t.S < N && t.N > S) hit << t.name;
+		lblTiles->setText(hit.isEmpty() ? QString("Tiles: none — this region is outside the DTM")
+		                                : QString("Tiles: %1").arg(hit.join(", ")));
+	}
+
+	void log(const QString &line) {
+		if (!logTxt) return;
+		logTxt->appendPlainText(line);
+		QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+	}
+
+	void run(QDialog *d) {
+		if (!g_juliaEmodnet) {
+			QMessageBox::warning(d, "EMODNET", "EMODNET: callback not registered (src/emodnet.jl).");
+			return;
+		}
+		double W, E, S, N;
+		if (!boxes(W, E, S, N)) {
+			QMessageBox::warning(d, "EMODNET", "Drag a rectangle on the map first, or type all four Region boxes.");
+			return;
+		}
+		QStringList kv;
+		kv << "mode=download"
+		   << QString("region=%1/%2/%3/%4").arg(W, 0, 'g', 12).arg(E, 0, 'g', 12).arg(S, 0, 'g', 12).arg(N, 0, 'g', 12);
+		if (!outFile->text().trimmed().isEmpty()) kv << "outfile=" + outFile->text().trimmed();
+		showBusyDialog("Reading the EMODnet DTM through GDAL…");
+		const int ok = g_juliaEmodnet(scn, this, kv.join("\n").toUtf8().constData());
+		closeBusyDialog();
+		if (!ok) QMessageBox::warning(d, "EMODNET", "EMODNET failed — see the log in this dialog.");
+	}
+
+	// The whole of one tile, read by GDAL straight into a grid and added to this window.
+	void downloadTile(QDialog *d, const QString &name) {
+		if (!g_juliaEmodnet) {
+			QMessageBox::warning(d, "EMODNET", "EMODNET: callback not registered (src/emodnet.jl).");
+			return;
+		}
+		QStringList kv;
+		kv << "mode=tile" << "tile=" + name;
+		showBusyDialog(qUtf8Printable(QString("Downloading EMODnet tile %1 through GDAL…").arg(name)));
+		const int ok = g_juliaEmodnet(scn, this, kv.join("\n").toUtf8().constData());
+		closeBusyDialog();
+		if (!ok) QMessageBox::warning(d, "EMODNET", "The tile download failed — see the log in this dialog.");
+	}
+
+	void unpark() {
+		if (!dlg) return;
+		unparkTool(scn, dlg);
+		dlg->setWindowState(dlg->windowState() & ~Qt::WindowMinimized);
+		dlg->showNormal();
+		dlg->raise();
+		dlg->activateWindow();
+	}
+	std::function<void(const QPoint &)> parkedMenu() {
+		return [this](const QPoint &g) {
+			QMenu m;
+			QAction *aShow = m.addAction("Show");
+			m.addSeparator();
+			QAction *aDel  = m.addAction("Delete");
+			QAction *pick  = m.exec(g);
+			if (pick == aShow) unpark();
+			else if (pick == aDel) {
+				reallyClose = true;
+				unparkTool(scn, dlg);
+				forget();
+				dlg->deleteLater();          // destroyed -> this wrapper goes with it
+			}
+		};
+	}
+	void parkNow() {
+		if (!dlg || !sceneAlive(scn)) return;
+		dlg->setWindowState(dlg->windowState() & ~Qt::WindowMinimized);
+		dlg->hide();
+		parkTool(scn, dlg, "EMODNET", IC_Rect,
+		         "Minimised EMODNET — double-click to bring it back, click for Show / Delete",
+		         [this]() { unpark(); }, parkedMenu());
+		unfoldSceneObjects(scn);
+	}
+	void forget() {
+		for (auto it = g_emodnetDlgs.begin(); it != g_emodnetDlgs.end(); )
+			it = (it->second == this) ? g_emodnetDlgs.erase(it) : std::next(it);
+	}
+	~EmodnetDialog() { forget(); }
+private:
+	double lim[4] = { 0, 0, 0, 0 };
+	bool hasLim = false;
+};
+
+// Tools > EMODNET: the window's OWN dialog (a parked one comes back as it was), else a new one that
+// first asks Julia for the tile table.
+static EmodnetDialog *openEmodnetDialog(QWidget *win, Scene *s) {
+	auto it = g_emodnetDlgs.find(s);
+	if (it != g_emodnetDlgs.end()) { it->second->unpark(); return it->second; }
+	auto *w = new EmodnetDialog(win, s);
+	w->dlg->show();
+	showBusyDialog("Reading the EMODnet tile list…");
+	const int ok = g_juliaEmodnet ? g_juliaEmodnet(s, w, "mode=tiles\n") : 0;
+	closeBusyDialog();
+	if (!ok) QMessageBox::warning(w->dlg, "EMODNET", "Could not read EMODnet's tile list — see the log in this dialog.");
+	return w;
+}
+
+// ============================================================================================
 // grdlandmask (GMT menu) — build a wet/dry mask grid from the shoreline database. Layout is Mirone's
 // grdlandmask window: the shared "Griding Line Geometry" block, coastline resolution, Min area (-A),
 // registration, and the five Node values with the Boundary flag. The .ui carries a verbatim copy of
@@ -29865,10 +30205,10 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		if (!s->ren || !s->surf || !s->widget) return false;
 		const bool wasFlat = s->flat2d;
 		if (!wasFlat) sceneSetFlat2D(s, true);
-		fitSnapView(s, /*topMode=*/true);        // guarantee the data fills edge-to-edge, no stale pan/zoom
 		const AxesShownSnap axesVis = sceneAxesSnapshot(s);   // per raster, never one OR for all of them
 		const bool barVis  = colorbarVisible(s);
 		sceneAxesSetShown(s, false);             // decoration only — never part of the georeferenced pixels
+		fitSnapView(s, /*topMode=*/true);        // axes down first: no annotation margin, data edge-to-edge
 		if (s->bar)  setColorbarVisible(s, false);
 		s->widget->renderWindow()->Render();
 
@@ -29914,6 +30254,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		sceneAxesRestore(s, axesVis);
 		if (s->bar)  setColorbarVisible(s, barVis);
 		if (!wasFlat) sceneSetFlat2D(s, false);
+		else fitSnapView(s, /*topMode=*/true);   // axes back: refit so their annotations are on screen again
 		s->widget->renderWindow()->Render();
 		return ok;
 	};
@@ -31379,6 +31720,28 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		auto *w = new EarthRegionsDialog(win, s);
 		if (w->dlg) w->dlg->show();
 	});
+	// "EMODNET": the EMODnet Bathymetry DTM over a region drawn on a map (src/emodnet.jl). Wired on
+	// first use, so the first click waits (wait cursor) for the Julia side to register itself.
+	mTools->addAction("EMODNET", [win, s]() {
+		if (g_juliaEmodnet) { openEmodnetDialog(win, s); return; }
+		warmupTool("emodnet");
+		QApplication::setOverrideCursor(Qt::WaitCursor);
+		auto tries = std::make_shared<int>(0);
+		auto step = std::make_shared<std::function<void()>>();
+		*step = [win, s, tries, step]() {
+			if (!g_juliaEmodnet && ++*tries < 200) {
+				QTimer::singleShot(50, win, *step);
+				return;
+			}
+			QApplication::restoreOverrideCursor();
+			if (!sceneAlive(s)) return;
+			if (g_juliaEmodnet)
+				openEmodnetDialog(win, s);
+			else
+				QMessageBox::warning(win, "EMODNET", "EMODNET's Julia side did not answer (src/emodnet.jl).");
+		};
+		QTimer::singleShot(0, win, *step);
+	});
 
 	// "PT Tools", everything that only concerns Portugal, together: the two pickers of Mirone's
 	// cartas_militares.m (its 1:25000 map-sheet branch and its LIDAR2011 mosaic branch, the SAME dialog
@@ -31423,8 +31786,8 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		dlg->show();
 	});
 
-	// --- GMT menu: helper windows to drive GMT modules (TODO: populate with module tools) ----
-	QMenu *mGMT = win->menuBar()->addMenu("&GMT");
+	// --- Tools > GMT sub-menu: helper windows to drive GMT modules ----
+	QMenu *mGMT = mTools->addMenu("&GMT");
 	mGMT->addAction("grdsample", [win, s]() {
 		GrdsampleDialog dlg(win, s);
 		dlg.exec();   // Julia is invoked inside the dialog on Apply
@@ -32549,6 +32912,9 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 
 	// interactor must be live before we attach observers
 	widget->renderWindow()->Render();
+	// The flat-2-D switch above framed the map BEFORE show(), at the pre-layout widget size; the view
+	// only has its real size now. Fit again so frame + annotations fill the display area it really has.
+	if (openFlat2D) fitSnapView(s, /*topMode=*/true);
 	applyShading(s);   // first real lighting/material/pass setup (IBL + PBR + passes)
 	auto *iren = widget->interactor();
 

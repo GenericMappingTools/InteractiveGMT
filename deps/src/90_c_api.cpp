@@ -89,6 +89,7 @@ GMTVTK_API void *gmtvtk_view_grid(const float *z, int nx, int ny, double x0, dou
 		cam->SetViewUp(0.0, 1.0, 0.0);
 		cam->SetPosition(fp[0], fp[1], fp[2] + 1.0);
 		cam->ParallelProjectionOn();
+		s->flat2d = true;                      // before the fit: the numbers it measures sit on their 2-D edges
 		if (image_only == 2) {                 // plain image: no axes, maximize edge-to-edge
 			s->baseAxes.shown = false;         // ITS OWN intent — rebuildAxisLabels re-derives the
 			                                    // actor visibility every render, so a bare
@@ -4996,6 +4997,32 @@ GMTVTK_API void gmtvtk_set_dgt_callback(JuliaDgtFn fn) {
 	g_juliaDgt = fn;
 }
 
+// Register the EMODNET callback (Tools menu; contract in 30_app.cpp). nullptr to detach.
+GMTVTK_API void gmtvtk_set_emodnet_callback(JuliaEmodnetFn fn) {
+	g_juliaEmodnet = fn;
+}
+
+// One line into the EMODNET dialog's log pane, painted now (the read that writes it blocks the loop).
+GMTVTK_API void gmtvtk_emodnet_log(void *dlg, const char *msg) {
+	auto *d = static_cast<EmodnetDialog *>(dlg);
+	if (!d || !d->dlg) return;
+	d->log(QString::fromUtf8(msg ? msg : ""));
+}
+
+// Julia's answer to the EMODNET dialog's mode=tiles: the DTM's tiles, `rects` = 4*n doubles
+// (W,E,S,N per tile), `names` newline-joined, `release` the DTM release they belong to.
+GMTVTK_API void gmtvtk_emodnet_set_tiles(void *dlg, const double *rects, const char *names, int n,
+                                         const char *release) {
+	auto *d = static_cast<EmodnetDialog *>(dlg);
+	if (!d || !d->dlg) return;
+	const QStringList nm = QString::fromUtf8(names ? names : "").split('\n');
+	std::vector<TilesArea::Footprint> out;
+	for (int k = 0; rects && k < n; ++k)
+		out.push_back({ rects[4 * k], rects[4 * k + 1], rects[4 * k + 2], rects[4 * k + 3],
+		                k < nm.size() ? nm[k] : QString() });
+	d->setTiles(std::move(out), QString::fromUtf8(release ? release : ""));
+}
+
 // Register the Euler rotations Compute callback (Plates menu). fn(scene, params) with the "key=value"
 // block described in 30_app.cpp rotates the chosen line / adds two poles / interpolates a rotation
 // model, all through GMT's spotter modules. Returns 1/0. nullptr to detach.
@@ -8161,6 +8188,42 @@ GMTVTK_API int gmtvtk_xyplot_drag_test(void *handle, double x0, double y0, doubl
 	send(QEvent::MouseButtonRelease, q(bx, by), Qt::NoButton);
 	for (int i = 0; i < 3; ++i) QApplication::processEvents();
 	return 1;
+}
+//  - the current page's legend: when (dx,dy) is not (0,0), LEFT-DRAG it by that many scene px from just
+//    inside its box's bottom-left corner, through Qt's mouse events (press, moves, release). Then
+//    out[0..1] = its corner (scene px), out[2] = 1 when it has a place of its own (CUSTOM), out[3] = 1
+//    when the press point was on the legend. Returns the count filled.
+GMTVTK_API int gmtvtk_xyplot_legend_test(void *handle, double dx, double dy, double *out, int cap) {
+	XYPlot *p = static_cast<XYPlot*>(handle);
+	if (!p || !p->widget || p->pages.empty() || !out) return 0;
+	vtkChartLegend *lg = xyCur(p).chart->GetLegend();
+	if (!lg) return 0;
+	p->widget->renderWindow()->Render();
+	const double ax = lg->GetPoint()[0] + 4.0, ay = lg->GetPoint()[1] + 4.0;
+	vtkContextMouseEvent cm;
+	cm.SetPos(vtkVector2f((float)ax, (float)ay));
+	const bool onLegend = lg->Hit(cm);               // the box as the last paint laid it out
+	if (dx != 0.0 || dy != 0.0) {
+		const double dpr = p->widget->devicePixelRatioF();
+		const int H = p->widget->renderWindow()->GetSize()[1];
+		auto q = [&](double sx, double sy) { return QPointF(sx / dpr, (H - sy) / dpr); };
+		auto send = [&](QEvent::Type t, const QPointF &at, Qt::MouseButtons bs) {
+			QMouseEvent ev(t, at, p->widget->mapToGlobal(at), t == QEvent::MouseMove ? Qt::NoButton : Qt::LeftButton, bs, Qt::NoModifier);
+			QApplication::sendEvent(p->widget, &ev);
+		};
+		send(QEvent::MouseButtonPress, q(ax, ay), Qt::LeftButton);
+		for (int k = 1; k <= 5; ++k)
+			send(QEvent::MouseMove, q(ax + dx * k / 5.0, ay + dy * k / 5.0), Qt::LeftButton);
+		send(QEvent::MouseButtonRelease, q(ax + dx, ay + dy), Qt::NoButton);
+		for (int i = 0; i < 3; ++i) QApplication::processEvents();
+		p->widget->renderWindow()->Render();
+	}
+	const float *pt = lg->GetPoint();
+	const double v[] = { pt[0], pt[1], lg->GetHorizontalAlignment() == vtkChartLegend::CUSTOM ? 1.0 : 0.0,
+	                     onLegend ? 1.0 : 0.0 };
+	const int n = std::min(cap, (int)(sizeof(v) / sizeof(v[0])));
+	for (int i = 0; i < n; ++i) out[i] = v[i];
+	return n;
 }
 //  - switch the Spector-Grant tool on for series `sel` with wavenumber unit factor `unit` (what its
 //    toggle does after the unit question, which a test cannot answer), or off (sel < 0).

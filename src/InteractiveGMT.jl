@@ -155,6 +155,7 @@ include("grdvolume.jl")  # GMT menu > grdvolume: area, volume and mean height ag
 include("gravprisms.jl") # GMT menu > gravprisms: the field of a body made of rectangular prisms
 include("grdvector.jl")  # GMT menu > grdvector: the vector field of two grids, drawn as an overlay
 include("earthregions.jl")# Tools > Earth regions: a named region's raster or boundaries (GMT.jl earthregions)
+include("emodnet.jl")     # Tools > EMODNET: EMODnet Bathymetry DTM over a drawn region (GDAL /vsicurl subsets)
 include("mbgrid.jl")     # MBGRID: Gaussian binning + zgrid/surface gap fill, via deps/src/mbgrid.c
 include("cube.jl")       # CUBE (Combined Uncertainty and Bathymetry Estimator), via deps/src/cube/mb_cube.c
 include("interpolate.jl")# GMT menu > Interpolate: grid an x,y,z table (surface, nearneighbor, mbgrid, block*, …)

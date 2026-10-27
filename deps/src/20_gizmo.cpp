@@ -143,6 +143,9 @@ void fitSnapView(Scene *s, bool topMode, double fill = -1.0) {
 		if (frac <= 1e-6) break;
 		cam->Zoom(targetFill / frac);
 	}
+	// Looking straight down: the margin is not a fraction, it is what the annotations measure.
+	double dop[3]; cam->GetDirectionOfProjection(dop);
+	if (topMode && !s->globe && dop[2] < -0.999) fitTopDownWithAnnotations(s, b);
 	ren->ResetCameraClippingRange();
 }
 

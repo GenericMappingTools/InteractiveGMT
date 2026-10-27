@@ -129,6 +129,7 @@ const _TEST_SYMBOLS = (
 	:gmtvtk_xyplot_magbar_dblclick_test, :gmtvtk_xyplot_mag_state_test,               # typing, menus, the bar strip, state
 	:gmtvtk_xyplot_misc_state_test,   # what the X,Y Misc menu shows (log X/Y, time mode)
 	:gmtvtk_xyplot_drag_test, :gmtvtk_xyplot_sg_state_test,   # a left-drag on the chart; the kept S&G lines
+	:gmtvtk_xyplot_legend_test,       # the legend dragged by the mouse; its corner and placement
 	:gmtvtk_xyplot_sg_on_test,        # the S&G tool on/off without its unit question
 	:gmtvtk_xyplot_menu_test,         # an X,Y menu item chosen
 	:gmtvtk_xyplot_objmgr_test,       # an X,Y Object Manager row: click its label, check / uncheck it

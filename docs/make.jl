@@ -67,6 +67,7 @@ const titles = Dict(
     "69f-ascii-tomography.md" => "Tutorial: A Tomography Model from ASCII",
     "70-tools.md" => "Tools",
     "71-earthregions.md" => "Earth Regions",
+    "71b-emodnet.md" => "EMODNET",
     "72-ecmwf.md" => "Copernicus / ECMWF",
     "73-sentinelhub.md" => "Sentinel Hub",
     "74-modis-scenes.md" => "MODIS Scenes (Terra / Aqua)",

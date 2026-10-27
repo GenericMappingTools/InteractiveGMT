@@ -4847,6 +4847,110 @@ static bool sceneVisibleRegion(Scene *s, double &W, double &E, double &S, double
 	return (E > W && N > S);
 }
 
+static void rebuildAxisLabels(Scene *s);      // below: lays every set's billboards out for the current camera
+static double sceneWorldPerPixel(Scene *s);   // 50_scene.cpp: world units per screen pixel at the focal point
+
+// Display-pixel box {x0,x1,y0,y1} of one SHOWN annotation billboard. Same measurement the text labels'
+// gaps use (vtkTextRenderer at the window's DPI); its box is relative to the anchor and already carries
+// the justification placeTickBillboards/placeAxisTitle chose.
+static bool billboardDisplayBox(Scene *s, vtkBillboardTextActor3D *t, int dpi, double box[4]) {
+	if (!t || !t->GetVisibility() || !t->GetInput() || !*t->GetInput()) return false;
+	vtkTextRenderer *tr = vtkTextRenderer::GetInstance();
+	int bb[4] = { 0, 0, 0, 0 };
+	if (!tr || !tr->GetBoundingBox(t->GetTextProperty(), t->GetInput(), bb, dpi)) return false;
+	const double *p = t->GetPosition();
+	s->ren->SetWorldPoint(p[0], p[1], p[2], 1.0); s->ren->WorldToDisplay();
+	const double *d = s->ren->GetDisplayPoint();
+	const int *off = t->GetDisplayOffset();
+	const double ax = d[0] + off[0], ay = d[1] + off[1];
+	box[0] = ax + bb[0]; box[1] = ax + bb[1]; box[2] = ay + bb[2]; box[3] = ay + bb[3];
+	return true;
+}
+
+// TOP-DOWN FIT THAT SPENDS THE WHOLE DISPLAY AREA. A map seen straight down is fitted so that its frame
+// PLUS its annotations (tick numbers, axis names) fill the viewport, aspect kept: on the limiting side
+// the outermost text touches the viewport edge, the other side is centred. The annotations are
+// screen-constant (pixel font, pixel offsets), so no fixed fill fraction can be right — it wastes room
+// in a big window and clips labels in a small one. They are MEASURED instead, after rebuildAxisLabels
+// has laid them out for the current camera, and the fit repeated: the tick length is world-sized, so
+// the label offsets move a little with the zoom and settle in a couple of passes. A raster with no
+// axes shown measures no margin and fills edge to edge.
+static void fitTopDownWithAnnotations(Scene *s, const double b[6]) {
+	vtkRenderer *ren = s->ren;
+	vtkCamera *cam = ren->GetActiveCamera();
+	const int *vs = ren->GetSize();
+	if (!cam || !vs || vs[0] < 16 || vs[1] < 16) return;
+	int dpi = s->widget->renderWindow()->GetDPI();
+	if (dpi <= 0) dpi = 72;
+	const double pad = 4.0;                         // px between the outermost text and the viewport edge
+	const double sc[3] = { 0.5*(b[0]+b[1]), 0.5*(b[2]+b[3]), 0.5*(b[4]+b[5]) };
+	const double diag = std::sqrt((b[1]-b[0])*(b[1]-b[0]) + (b[3]-b[2])*(b[3]-b[2]) + (b[5]-b[4])*(b[5]-b[4]));
+	for (int pass = 0; pass < 3; ++pass) {
+		// Back onto the frame centre (the previous pass panned off it), so Zoom scales about it.
+		{
+			double pos[3], foc[3]; cam->GetPosition(pos); cam->GetFocalPoint(foc);
+			const double d[3] = { pos[0]-foc[0], pos[1]-foc[1], pos[2]-foc[2] };
+			cam->SetFocalPoint(sc);
+			cam->SetPosition(sc[0]+d[0], sc[1]+d[1], sc[2]+d[2]);
+		}
+		rebuildAxisLabels(s);
+		double fx0 = 1e300, fx1 = -1e300, fy0 = 1e300, fy1 = -1e300;   // the frame on screen
+		for (double cx : { b[0], b[1] })
+			for (double cy : { b[2], b[3] })
+				for (double cz : { b[4], b[5] }) {
+					ren->SetWorldPoint(cx, cy, cz, 1.0); ren->WorldToDisplay();
+					const double *d = ren->GetDisplayPoint();
+					fx0 = std::min(fx0, d[0]); fx1 = std::max(fx1, d[0]);
+					fy0 = std::min(fy0, d[1]); fy1 = std::max(fy1, d[1]);
+				}
+		if (fx1 - fx0 < 1e-6 || fy1 - fy0 < 1e-6) return;
+		double ux0 = fx0, ux1 = fx1, uy0 = fy0, uy1 = fy1;             // frame + every shown annotation
+		bool any = false;
+		auto take = [&](vtkBillboardTextActor3D *t) {
+			double box[4];
+			if (!billboardDisplayBox(s, t, dpi, box)) return;
+			any = true;
+			ux0 = std::min(ux0, box[0]); ux1 = std::max(ux1, box[1]);
+			uy0 = std::min(uy0, box[2]); uy1 = std::max(uy1, box[3]);
+		};
+		auto takeSet = [&](AxesSet &A) {
+			for (auto &t : A.xlab) take(t);
+			for (auto &t : A.ylab) take(t);
+			for (auto &t : A.zlab) take(t);
+			take(A.title[0]); take(A.title[1]);
+		};
+		takeSet(s->baseAxes);
+		for (auto &ex : s->extras) takeSet(ex.ax);
+		double mL = fx0 - ux0, mR = ux1 - fx1, mB = fy0 - uy0, mT = uy1 - fy1;
+		if (any) {
+			// The far edges carry tick marks only (no numbers), and those stick out too.
+			const double wpp = sceneWorldPerPixel(s);
+			const double tickPx = (wpp > 0.0) ? 0.00625 * diag / wpp : 0.0;
+			mL = std::max(mL, tickPx) + pad; mR = std::max(mR, tickPx) + pad;
+			mB = std::max(mB, tickPx) + pad; mT = std::max(mT, tickPx) + pad;
+		}
+		const double aw = vs[0] - mL - mR, ah = vs[1] - mB - mT;
+		if (aw < 8.0 || ah < 8.0) return;          // no room at all: keep the caller's fit
+		cam->Zoom(std::min(aw / (fx1 - fx0), ah / (fy1 - fy0)));
+		// Zoom scaled about the viewport centre; slide the frame to the middle of the room left over.
+		const double sx = 0.5 * (mL - mR), sy = 0.5 * (mB - mT);
+		const double wpp = sceneWorldPerPixel(s);
+		if (wpp > 0.0 && (sx != 0.0 || sy != 0.0)) {
+			double up[3], dop[3], rt[3];
+			cam->GetViewUp(up); cam->GetDirectionOfProjection(dop);
+			vtkMath::Cross(dop, up, rt); vtkMath::Normalize(rt);
+			vtkMath::Cross(rt, dop, up); vtkMath::Normalize(up);
+			double pos[3], foc[3]; cam->GetPosition(pos); cam->GetFocalPoint(foc);
+			for (int i = 0; i < 3; ++i) {
+				const double m = -(sx * rt[i] + sy * up[i]) * wpp;
+				pos[i] += m; foc[i] += m;
+			}
+			cam->SetPosition(pos); cam->SetFocalPoint(foc);
+		}
+	}
+	rebuildAxisLabels(s);
+}
+
 // Point the camera at `b` (an already xfac/zfac/ve-SCALED world bbox) using the SAME re-center +
 // NDC-fit-zoom technique gmtvtk_reframe_z_h/fitSnapView use — WITHOUT touching the axes cube or the
 // scene's own x0/x1/y0/y1 bookkeeping. gmtvtk_reframe_z_h (90_c_api.cpp) is this PLUS that axes/frame
@@ -4891,6 +4995,7 @@ static void cameraFitToScaledBBox(Scene *s, const double b[6], bool keepMargin) 
 		if (frac <= 1e-6) break;
 		cam->Zoom(targetFill / frac);
 	}
+	if (s->flat2d && !s->globe) fitTopDownWithAnnotations(s, b);   // frame + annotations fill the viewport
 	ren->ResetCameraClippingRange();
 }
 

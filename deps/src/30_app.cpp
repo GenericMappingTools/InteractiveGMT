@@ -1375,6 +1375,15 @@ static JuliaGadmFn g_juliaGadm = nullptr;
 typedef int (*JuliaDgtFn)(void *scene, void *dlg, const char *params);
 static JuliaDgtFn g_juliaDgt = nullptr;
 
+// EMODNET (Tools menu): the EMODnet Bathymetry DTM over a region drawn on the map. EmodnetDialog
+// (70_window.cpp) hands a newline-separated "key=value" block to Julia (_on_emodnet, src/emodnet.jl):
+// mode=tiles (push the DTM's tile table back through gmtvtk_emodnet_set_tiles) or mode=download
+// (region=W/E/S/N, optional outfile=: GDAL reads the tiles' pieces and mosaics them; the grid is added
+// to `scene`). `dlg` is the EmodnetDialog that asked; progress goes back to it (gmtvtk_emodnet_log).
+// Registered lazily (warm_register "emodnet"). Returns 1 on success, 0 on failure.
+typedef int (*JuliaEmodnetFn)(void *scene, void *dlg, const char *params);
+static JuliaEmodnetFn g_juliaEmodnet = nullptr;
+
 // grdlandmask (GMT menu), dialog laid out after Mirone's grdlandmask window. GrdLandmaskDialog
 // (70_window.cpp, loads deps/ui/grdlandmask_dialog.ui) hands a newline-separated "key=value" block to
 // Julia (_on_grdlandmask, src/grdlandmask.jl): region, inc, res, area, maskvalues, border, pixel,

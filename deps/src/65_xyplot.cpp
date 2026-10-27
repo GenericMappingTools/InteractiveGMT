@@ -2672,7 +2672,24 @@ public:
 	static XYChart *New();
 	vtkTypeMacro(XYChart, vtkChartXY);
 	XYPlot *owner = nullptr;                            // set right after New(); never reparented
+	// A dragged legend (CUSTOM alignment, XYLegendFilter) has its place as its box's bottom-left corner
+	// in FRACTIONS of the scene: the one source of its position, written by the drag and by a loaded
+	// session, read by every paint. A scene that changes size (a resize, a reopened window still
+	// being laid out) keeps the legend where it was put; px are only ever derived from it.
+	float legFx = 0.0f, legFy = 0.0f;
+	float legBoxW = 0.0f, legBoxH = 0.0f;               // its box at the last paint, px (the drag's limits)
 	bool Paint(vtkContext2D *painter) override {
+		vtkChartLegend *lg = this->GetLegend();
+		const float W = this->GetScene() ? (float)this->GetScene()->GetSceneWidth() : 0.0f;
+		const float H = this->GetScene() ? (float)this->GetScene()->GetSceneHeight() : 0.0f;
+		if (lg && lg->GetVisible() && lg->GetHorizontalAlignment() == vtkChartLegend::CUSTOM && W > 0.0f && H > 0.0f) {
+			const vtkRectf box = lg->GetBoundingRect(painter);   // wholly inside the scene, however small
+			legBoxW = box.GetWidth();  legBoxH = box.GetHeight();
+			const float x = std::max(0.0f, std::min(legFx * W, W - box.GetWidth()));
+			const float y = std::max(0.0f, std::min(legFy * H, H - box.GetHeight()));
+			const float *p = lg->GetPoint();
+			if (x != p[0] || y != p[1]) lg->SetPoint(x, y);
+		}
 		const bool r = vtkChartXY::Paint(painter);
 		if (owner && xyAlive(owner)) xyLabelPaint(owner, this, painter);  // the page's own labels
 		if (owner && xyAlive(owner)) xyMagPaint(owner, this, painter);    // chron names, isochron picks
@@ -2768,6 +2785,73 @@ protected:
 			return true;
 		}
 		return QObject::eventFilter(obj, ev);
+	}
+};
+
+// Mouse for the chart legend: a left press inside its box grabs it and the drag moves it, box and
+// contents together, with the four-arrow cursor over it like every draggable. The first grab turns
+// the legend's alignment to CUSTOM, so the chart stops re-placing it in its corner on every paint
+// (vtkChartXY::SetLegendPosition) and it stays where it was dropped. Installed LAST, so it sees a
+// press before every tool's filter: the legend is drawn on top of the curves, so a press on it is
+// the legend's.
+class XYLegendFilter : public QObject {
+public:
+	XYPlot *s = nullptr;
+	explicit XYLegendFilter(XYPlot *sc, QObject *parent) : QObject(parent), s(sc) {}
+protected:
+	bool   drag = false;
+	double lastX = 0.0, lastY = 0.0;                  // previous drag position, scene px
+	bool eventFilter(QObject *obj, QEvent *ev) override {
+		const QEvent::Type t = ev->type();
+		if (t != QEvent::MouseButtonPress && t != QEvent::MouseButtonDblClick &&
+		    t != QEvent::MouseMove && t != QEvent::MouseButtonRelease)
+			return QObject::eventFilter(obj, ev);
+		if (!s || !xyAlive(s) || s->pages.empty() || !xyCur(s).chart) { drag = false; return QObject::eventFilter(obj, ev); }
+		vtkChartXY *chart = xyCur(s).chart;
+		vtkChartLegend *lg = chart->GetLegend();
+		if (!lg) return QObject::eventFilter(obj, ev);
+		QMouseEvent *me = static_cast<QMouseEvent *>(ev);
+		double sx, sy;
+		xyQtToScene(s, me->position(), sx, sy);
+		if (t == QEvent::MouseButtonRelease) {
+			if (drag && me->button() == Qt::LeftButton) { drag = false; return true; }
+			return QObject::eventFilter(obj, ev);
+		}
+		if (t == QEvent::MouseMove && drag) {
+			XYChart *c = static_cast<XYChart *>(chart);
+			const float W = (float)chart->GetScene()->GetSceneWidth(), H = (float)chart->GetScene()->GetSceneHeight();
+			if (W > 0.0f && H > 0.0f) {                // the place is a fraction (XYChart::legFx); Paint sets the px
+				// kept inside the scene here too, so a drag past an edge does not have to be undone
+				c->legFx = std::max(0.0f, std::min(c->legFx + (float)(sx - lastX) / W, std::max(0.0f, (W - c->legBoxW) / W)));
+				c->legFy = std::max(0.0f, std::min(c->legFy + (float)(sy - lastY) / H, std::max(0.0f, (H - c->legBoxH) / H)));
+			}
+			lastX = sx;  lastY = sy;
+			chart->GetScene()->SetDirty(true);
+			if (s->widget->renderWindow()) s->widget->renderWindow()->Render();
+			return true;
+		}
+		vtkContextMouseEvent cm;
+		cm.SetPos(vtkVector2f((float)sx, (float)sy));
+		const bool over = chart->GetShowLegend() && lg->Hit(cm);   // the box as last painted
+		if (t == QEvent::MouseMove) {
+			if (!over) return QObject::eventFilter(obj, ev);
+			if (s->widget->cursor().shape() != Qt::SizeAllCursor) s->widget->setCursor(Qt::SizeAllCursor);
+			return true;                              // over the legend, no other tool's hover
+		}
+		if (!over || me->button() != Qt::LeftButton) return QObject::eventFilter(obj, ev);
+		if (t == QEvent::MouseButtonPress) {
+			if (lg->GetHorizontalAlignment() != vtkChartLegend::CUSTOM) {   // first grab: from where it is
+				XYChart *c = static_cast<XYChart *>(chart);
+				const float W = (float)chart->GetScene()->GetSceneWidth(), H = (float)chart->GetScene()->GetSceneHeight();
+				if (W <= 0.0f || H <= 0.0f) return true;
+				c->legFx = lg->GetPoint()[0] / W;  c->legFy = lg->GetPoint()[1] / H;
+				lg->SetHorizontalAlignment(vtkChartLegend::CUSTOM);
+				lg->SetVerticalAlignment(vtkChartLegend::CUSTOM);
+			}
+			drag = true;
+			lastX = sx;  lastY = sy;
+		}
+		return true;                                  // a double-click on the legend is the legend's too
 	}
 };
 
@@ -4153,6 +4237,7 @@ static std::string xySessionState(XYPlot *s) {
 	kv("version", "1");
 	o += "[window]\n";
 	kv("title", xyEsc(s->win->windowTitle()));
+	kv("winsize", QString::number(s->win->width()) + " " + QString::number(s->win->height()));
 	kv("legend", QString::number(s->legendVisible ? 1 : 0));
 	kv("legendfont", xyNum(s->legendFontPt));
 	kv("info", xyEsc(s->infoLabel ? s->infoLabel->text() : QString()));
@@ -4173,6 +4258,12 @@ static std::string xySessionState(XYPlot *s) {
 		kv("square", QString::number(pg.square ? 1 : 0));
 		kv("axeshidden", QString::number(pg.axesHidden ? 1 : 0));
 		kv("axesshown", QString::number(pg.axesShown ? 1 : 0));
+		// Only a legend the user dragged has a place of its own (XYChart::legFx, scene fractions).
+		if (vtkChartLegend *lg = pg.chart->GetLegend())
+			if (lg->GetHorizontalAlignment() == vtkChartLegend::CUSTOM) {
+				const XYChart *c = static_cast<const XYChart *>(pg.chart.GetPointer());
+				kv("legendpos", xyNum(c->legFx) + " " + xyNum(c->legFy));
+			}
 		for (const auto &ap : pg.axProps)             // the Axes properties fields changed from the .ui's
 			kv("axprop", QString::fromStdString(ap.first) + " " + xyEsc(QString::fromStdString(ap.second)));
 		for (const XYLabel &l : pg.labels)               // one key per label, in order
@@ -4275,6 +4366,10 @@ static void xySessionApply(XYPlot *s, const char *text) {
 		const QString k = line.left(eq), v = line.mid(eq + 1);
 		if (sec == "window") {
 			if (k == "title") s->win->setWindowTitle(xyUnesc(v));
+			else if (k == "winsize") {
+				const QStringList f = v.split(' ');
+				if (f.size() == 2 && f[0].toInt() > 0 && f[1].toInt() > 0) s->win->resize(f[0].toInt(), f[1].toInt());
+			}
 			else if (k == "legend") s->legendVisible = v.toInt() != 0;
 			else if (k == "legendfont") s->legendFontPt = xyToNum(v);
 			else if (k == "info" && s->infoLabel) s->infoLabel->setText(xyUnesc(v));
@@ -4295,6 +4390,17 @@ static void xySessionApply(XYPlot *s, const char *text) {
 			else if (k == "square") { pg.square = v.toInt() != 0; xyApplyPageLook(s, pg); }
 			else if (k == "axeshidden") { pg.axesHidden = v.toInt() != 0; xyApplyPageLook(s, pg); }
 			else if (k == "axesshown") { pg.axesShown = v.toInt() != 0; xyApplyAxes(s, pg); }
+			else if (k == "legendpos") {
+				const std::vector<double> f = xyToNums(v);
+				if (f.size() == 2 && std::isfinite(f[0]) && std::isfinite(f[1])) {
+					XYChart *c = static_cast<XYChart *>(pg.chart.GetPointer());
+					c->legFx = (float)f[0];  c->legFy = (float)f[1];   // placed in px by every paint
+					if (vtkChartLegend *lg = pg.chart->GetLegend()) {
+						lg->SetHorizontalAlignment(vtkChartLegend::CUSTOM);
+						lg->SetVerticalAlignment(vtkChartLegend::CUSTOM);
+					}
+				}
+			}
 			else if (k == "axprop") {
 				const int sp = v.indexOf(' ');
 				if (sp > 0) { pg.axProps[v.left(sp).toStdString()] = xyUnesc(v.mid(sp + 1)).toStdString(); xyApplyAxes(s, pg); }
@@ -5861,6 +5967,8 @@ static XYPlot *buildXYPlot(const char *title) {
 	s->widget->installEventFilter(new XYMagFilter(s, s->win));
 	// --- "Reference a curve to another": its picks, and "Reference me" on them (sees a press first) ---
 	s->widget->installEventFilter(new XYRefFilter(s, s->win));
+	// --- the legend box: drag it anywhere (installed LAST: a press on the legend is the legend's) ---
+	s->widget->installEventFilter(new XYLegendFilter(s, s->win));
 	// --- a square page keeps its square through every resize: sized before each render ---
 	{
 		vtkNew<vtkCallbackCommand> cb;
