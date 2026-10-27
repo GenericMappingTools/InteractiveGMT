@@ -177,10 +177,10 @@ end
 	@test occursin("pen2 = \"0.25p,90/90/90\"", txt)
 	@test occursin("coast!(res=:i, shore=pen1, borders=(type=1, pen=pen2))", txt)
 	@test occursin("pen3 = \"1.0p,255/0/0,-\"", txt)
-	@test occursin("plot!(pen=pen3)", txt)
+	@test occursin("GMT.plot!(pen=pen3)", txt)   # iGMT has its own plot!, so the script names GMT's
 	# declared on the line(s) just above the call that uses it
 	ls = split(txt, '\n')
-	i = findfirst(l -> startswith(l, "plot!("), ls)
+	i = findfirst(l -> startswith(l, "GMT.plot!("), ls)
 	@test startswith(ls[i - 1], "pen3 = ")
 end
 

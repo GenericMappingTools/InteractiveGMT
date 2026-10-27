@@ -73,6 +73,17 @@ Right-click a series in the Object Manager: **Line properties…** (colour, widt
 bar width for bars), **Show in Data Table**, **Save data…**, **Rename…**, **Delete**. Analysis items
 act on the series selected in the Object Manager.
 
+## Axes
+
+Each page has an **Axes** row in the Object Manager, like the Axes row every raster has in the 3-D
+viewer's Scene Objects. Its checkbox draws or hides the page's axes; a click on its label (or
+right-click > **Properties…**) opens **Axes properties**, the same dialog the 3-D viewer uses, with
+GMT's own settings. On an X,Y page it sets the X and Y limits (`-R`), the axis labels and the
+annotation and grid intervals (`-B`), which sides are drawn and how, the frame and grid pens, the
+tick length, the fonts and the number format. Settings a 2-D chart cannot draw (the Z axis, 3-D,
+oblique and secondary annotations) are greyed out. Pages that draw their own frame (radar, polar,
+pie) have no Axes row. The settings are saved with the session.
+
 ## Time Series
 
 With X in Unix epoch seconds, the X axis can be labelled as dates or times. Ticks follow zoom and pan.

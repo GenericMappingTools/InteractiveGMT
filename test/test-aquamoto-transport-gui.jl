@@ -62,9 +62,8 @@
 
 	aqf_on_screen() do                     # the real mouse needs the window on the screen
 	mktempdir() do dir
-	# The small tank, one of a real model's size (765x476), and a big one whose slice takes longer than
-	# the arrow's repeat interval -- where the repeats used to run the slider ahead of the drawing.
-	for (nx, ny) in ((128, 96), (765, 476), (2000, 1500))
+	# ONE tank, of a real model's size (765x476). The small and the 2000x1500 ones are gone (user, 2026-10-27).
+	for (nx, ny) in ((765, 476),)
 		# 40 steps: enough that a working hold cannot run out of slices inside the hold window.
 		nc = aqf_make_tsunami_nc(joinpath(dir, "tsu_transport_$nx.nc"); nx, ny, nt = 40)
 		f = iview()

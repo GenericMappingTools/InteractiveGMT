@@ -80,6 +80,11 @@ struct XYSeries {
 	// what the magnetic model reads the profile azimuth and the bathymetry along the track from.
 	std::vector<double>       trackX, trackY;
 	int                       trackGeog = -1;
+	// Per-point values the gallery's errorbar (kind 9) and bubblechart (kind 10) draw; empty = none.
+	// Error bars are DELTAS from the point, lower and upper, on Y and on X (GMT.jl's error_bars); a
+	// bubble's size is in the series' own units, mapped to the bubble pixel range at draw time.
+	std::vector<double>       errYlo, errYhi, errXlo, errXhi;
+	std::vector<double>       bubble;
 };
 
 // One Spector-Grant fit line kept on a spectrum page (ecran's 'FitLine': the line a drag left behind,
@@ -183,6 +188,11 @@ struct XYPage {
 	bool                        square = false;
 	bool                        axesHidden = false;
 	std::vector<XYLabel>        labels;
+	// The page's own axes as its Object Manager "Axes" row shows them: drawn or not, and the Axes
+	// properties dialog's fields (deps/ui/axes_props.ui, GMT's own keys "KEY" / "KEY.part"), per page.
+	bool                        axesShown = true;
+	std::map<std::string, std::string> axProps;
+	bool                        example = false;   // made by the gallery's "Synthetic example"
 };
 
 // Reveal + unfold a viewer's Scene Objects dock (defined in 70_window.cpp, later in this same
@@ -343,16 +353,82 @@ class vtkXYShapePlot : public vtkPlotLine {
 public:
 	static vtkXYShapePlot *New();
 	vtkTypeMacro(vtkXYShapePlot, vtkPlotLine);
-	int Shape = 2;                     // XYSeries::kind: 2 area, 3 stem, 4 stairs, 6 bars, 7 horizontal bars, 8 polygons
+	int Shape = 2;                     // XYSeries::kind: 2 area, 3 stem, 4 stairs, 6 bars, 7 horizontal bars, 8 polygons,
+	                                   // 9 error bars, 10 bubbles
 	std::vector<double> Base;          // per row, data units: what an area / a bar stands on (empty = 0)
 	double BarW = 1.0;                 // bar width, data units of the position axis
 	double VLo = 0, VHi = 0, PLo = 0, PHi = 0;   // a based bar series' data extent: values / positions
+	// Error bars: per row, the bar's ENDS in data units (empty = none on that axis); CapPx the half
+	// width of a bar's caps, screen px. Bubbles: per row, the diameter in screen px (NaN = none).
+	std::vector<double> YLo, YHi, XLo, XHi, BubblePx;
+	double CapPx = 4.0;
 	bool Paint(vtkContext2D *painter) override {
 		if (!this->Visible || !this->Points || this->Points->GetNumberOfPoints() == 0)
 			return false;
 		const vtkIdType n = this->Points->GetNumberOfPoints();
 		const vtkRectd ss = this->GetShiftScale();
 		auto baseAt = [&](vtkIdType i) { return i < (vtkIdType)Base.size() ? Base[i] : 0.0; };
+		// Data -> the points' own (shifted, scaled, log'd) space, as Base is mapped below.
+		auto sx = [&](double v) { double t = (v + ss[0]) * ss[2]; return this->LogX ? std::log10(t) : t; };
+		auto sy = [&](double v) { double t = (v + ss[1]) * ss[3]; return this->LogY ? std::log10(t) : t; };
+		// Screen px -> that space, from the painter's own transform (the chart's zoom).
+		double pxX = 1.0, pxY = 1.0;
+		if (vtkTransform2D *tf = painter->GetTransform()) {
+			const double *m = tf->GetMatrix()->GetData();
+			if (m[0] != 0.0) pxX = 1.0 / std::abs(m[0]);
+			if (m[4] != 0.0) pxY = 1.0 / std::abs(m[4]);
+		}
+		if (Shape == 9) {
+			// A whisker from each point's lower to its upper end, capped, on Y and/or X; then the curve
+			// and its markers, drawn as any line is (vtkPlotLine::Paint), on top.
+			painter->ApplyPen(this->Pen);
+			painter->GetPen()->SetLineType(vtkPen::SOLID_LINE);
+			const float cx = (float)(CapPx * pxX), cy = (float)(CapPx * pxY);
+			for (vtkIdType i = 0; i < n; ++i) {
+				double p[3];
+				this->Points->GetPoint(i, p);
+				if (!std::isfinite(p[0]) || !std::isfinite(p[1])) continue;
+				if (i < (vtkIdType)YLo.size() && i < (vtkIdType)YHi.size()) {
+					const double a = sy(YLo[i]), b = sy(YHi[i]);
+					if (std::isfinite(a) && std::isfinite(b)) {
+						painter->DrawLine((float)p[0], (float)a, (float)p[0], (float)b);
+						painter->DrawLine((float)p[0] - cx, (float)a, (float)p[0] + cx, (float)a);
+						painter->DrawLine((float)p[0] - cx, (float)b, (float)p[0] + cx, (float)b);
+					}
+				}
+				if (i < (vtkIdType)XLo.size() && i < (vtkIdType)XHi.size()) {
+					const double a = sx(XLo[i]), b = sx(XHi[i]);
+					if (std::isfinite(a) && std::isfinite(b)) {
+						painter->DrawLine((float)a, (float)p[1], (float)b, (float)p[1]);
+						painter->DrawLine((float)a, (float)p[1] - cy, (float)a, (float)p[1] + cy);
+						painter->DrawLine((float)b, (float)p[1] - cy, (float)b, (float)p[1] + cy);
+					}
+				}
+			}
+			return this->Superclass::Paint(painter);
+		}
+		if (Shape == 10) {
+			// A filled, see-through circle per point, its diameter the point's bubble size in px.
+			painter->ApplyPen(this->Pen);
+			painter->GetPen()->SetLineType(vtkPen::SOLID_LINE);
+			painter->ApplyBrush(this->Brush);
+			for (vtkIdType i = 0; i < n; ++i) {
+				double p[3];
+				this->Points->GetPoint(i, p);
+				const double d = i < (vtkIdType)BubblePx.size() ? BubblePx[i] : NAN;
+				if (!std::isfinite(p[0]) || !std::isfinite(p[1]) || !std::isfinite(d) || d <= 0.0) continue;
+				// a 36-sided polygon: vtkContext2D's own ellipse is visibly faceted at bubble sizes
+				float ring[2 * 37];
+				for (int k = 0; k <= 36; ++k) {
+					const double a = k * 2.0 * M_PI / 36.0;
+					ring[2 * k] = (float)(p[0] + std::cos(a) * d / 2 * pxX);
+					ring[2 * k + 1] = (float)(p[1] + std::sin(a) * d / 2 * pxY);
+				}
+				painter->DrawPolygon(ring, 36);
+				painter->DrawPoly(ring, 37);
+			}
+			return true;
+		}
 		if (Shape == 6 || Shape == 7) {
 			// Rows -> rectangles. A vertical bar's value is on Y, a horizontal one's on X (its input
 			// columns are swapped, xyApplyStyle), so the base adds along that axis.
@@ -484,6 +560,26 @@ public:
 			bounds[2] = std::min(bounds[2], (lo + ss[1]) * ss[3]);
 			bounds[3] = std::max(bounds[3], (hi + ss[1]) * ss[3]);
 		}
+		if (Shape == 9) {                              // every error bar's ends are part of the extent
+			double lo, hi;
+			if (!this->LogX && EndsRange(XLo, XHi, lo, hi)) {
+				bounds[0] = std::min(bounds[0], (lo + ss[0]) * ss[2]);
+				bounds[1] = std::max(bounds[1], (hi + ss[0]) * ss[2]);
+			}
+			if (!this->LogY && EndsRange(YLo, YHi, lo, hi)) {
+				bounds[2] = std::min(bounds[2], (lo + ss[1]) * ss[3]);
+				bounds[3] = std::max(bounds[3], (hi + ss[1]) * ss[3]);
+			}
+		}
+		if (Shape == 10 && !this->LogX && !this->LogY) PadBubbles(bounds);
+	}
+	// The data extent of a pair of per-row end vectors; false when there is none.
+	static bool EndsRange(const std::vector<double> &a, const std::vector<double> &b, double &lo, double &hi) {
+		lo = std::numeric_limits<double>::max(); hi = -lo;
+		for (const std::vector<double> *v : { &a, &b })
+			for (double t : *v)
+				if (std::isfinite(t)) { lo = std::min(lo, t); hi = std::max(hi, t); }
+		return lo <= hi;
 	}
 	void GetUnscaledInputBounds(double bounds[4]) override {
 		if (Shape == 6) { bounds[0] = PLo; bounds[1] = PHi; bounds[2] = VLo; bounds[3] = VHi; return; }
@@ -494,6 +590,21 @@ public:
 			BaseRange(lo, hi);
 			bounds[2] = std::min(bounds[2], lo);
 			bounds[3] = std::max(bounds[3], hi);
+		}
+		if (Shape == 9) {
+			double lo, hi;
+			if (EndsRange(XLo, XHi, lo, hi)) { bounds[0] = std::min(bounds[0], lo); bounds[1] = std::max(bounds[1], hi); }
+			if (EndsRange(YLo, YHi, lo, hi)) { bounds[2] = std::min(bounds[2], lo); bounds[3] = std::max(bounds[3], hi); }
+		}
+		if (Shape == 10) PadBubbles(bounds);
+	}
+	// Bubbles have a size: the axes leave 6 % of the data range on every side, so the bubbles at the
+	// extremes are drawn whole (a bubble is pixels, the range is data: a fraction of the range is the
+	// only margin both sides know).
+	static void PadBubbles(double b[4]) {
+		for (int k = 0; k < 4; k += 2) {
+			const double d = b[k + 1] - b[k], m = (d > 0 ? d : std::max(1.0, std::abs(b[k]))) * 0.06;
+			b[k] -= m; b[k + 1] += m;
 		}
 	}
 	void BaseRange(double &lo, double &hi) const {
@@ -506,10 +617,15 @@ public:
 		if (lo > hi) lo = hi = 0.0;
 	}
 	bool PaintLegend(vtkContext2D *painter, const vtkRectf &rect, int idx) override {
-		if (Shape != 2 && Shape != 6 && Shape != 7 && Shape != 8)
+		if (Shape != 2 && Shape != 6 && Shape != 7 && Shape != 8 && Shape != 10)
 			return this->Superclass::PaintLegend(painter, rect, idx);
 		painter->ApplyPen(this->Pen);
 		painter->ApplyBrush(this->Brush);
+		if (Shape == 10) {                             // a bubble's legend is a bubble
+			const float r = 0.5f * std::min(rect[2], rect[3]);
+			painter->DrawEllipse(rect[0] + rect[2] / 2, rect[1] + rect[3] / 2, r, r);
+			return true;
+		}
 		painter->DrawRect(rect[0], rect[1], rect[2], rect[3]);
 		return true;
 	}
@@ -520,7 +636,7 @@ vtkStandardNewMacro(vtkXYShapePlot);
 // new series, a rebuild, a page copy and a session load all draw a kind the same way.
 static vtkPlot *xyAddPlotItem(vtkChartXY *chart, const XYSeries &se) {
 	vtkPlot *pl = nullptr;
-	if ((se.kind >= 2 && se.kind <= 4) || (se.kind >= 6 && se.kind <= 8)) {
+	if ((se.kind >= 2 && se.kind <= 4) || (se.kind >= 6 && se.kind <= 10)) {
 		vtkNew<vtkXYShapePlot> sp;
 		sp->Shape = se.kind;
 		chart->AddPlot(sp);                           // the chart keeps its own reference
@@ -576,6 +692,47 @@ static void xyRestack(XYPage &pg) {
 // shows back) -- scaled by devicePixelRatioF() here, at the one point it actually reaches VTK, so
 // a HiDPI display (this app runs on Windows, where 125%/150% scaling is the common case) doesn't
 // silently render a "size 18" marker at a fraction of that many physical pixels.
+// The bubble diameter range, in points (MATLAB bubblechart's default BubbleSizeRange, [5 20]).
+static const double XY_BUBBLE_PT_LO = 5.0, XY_BUBBLE_PT_HI = 20.0;
+
+// An error bar / bubble series' per-point values, onto its plot item: the bars' ENDS from the series'
+// deltas (point - lower, point + upper), the bubbles' diameters in px. Bubble AREA is linear in the size
+// value, between the smallest and largest value of the series (MATLAB's mapping); equal values -> the
+// middle of the range.
+static void xyShapeExtras(XYPlot *s, const XYSeries &se, vtkXYShapePlot *sp) {
+	sp->YLo.clear(); sp->YHi.clear(); sp->XLo.clear(); sp->XHi.clear(); sp->BubblePx.clear();
+	const double dpr = (s && s->widget) ? s->widget->devicePixelRatioF() : 1.0;
+	sp->CapPx = 4.0 * dpr;
+	const int n = se.table ? (int)se.table->GetNumberOfRows() : 0;
+	if (se.kind == 9) {
+		auto ends = [&](const std::vector<double> &lo, const std::vector<double> &hi, int col,
+		                std::vector<double> &a, std::vector<double> &b) {
+			if (lo.empty() && hi.empty()) return;
+			a.assign((size_t)n, NAN); b.assign((size_t)n, NAN);
+			for (int i = 0; i < n; ++i) {
+				const double v = se.table->GetValue(i, col).ToDouble();
+				const double l = i < (int)lo.size() ? lo[i] : (i < (int)hi.size() ? hi[i] : NAN);
+				const double h = i < (int)hi.size() ? hi[i] : l;
+				a[i] = v - l; b[i] = v + h;
+			}
+		};
+		ends(se.errYlo, se.errYhi, 1, sp->YLo, sp->YHi);
+		ends(se.errXlo, se.errXhi, 0, sp->XLo, sp->XHi);
+	}
+	else if (se.kind == 10 && !se.bubble.empty()) {
+		double lo = std::numeric_limits<double>::max(), hi = -lo;
+		for (double v : se.bubble) if (std::isfinite(v)) { lo = std::min(lo, v); hi = std::max(hi, v); }
+		const double d0 = XY_BUBBLE_PT_LO * 96.0 / 72.0 * dpr, d1 = XY_BUBBLE_PT_HI * 96.0 / 72.0 * dpr;
+		sp->BubblePx.assign((size_t)n, NAN);
+		for (int i = 0; i < n && i < (int)se.bubble.size(); ++i) {
+			const double v = se.bubble[i];
+			if (!std::isfinite(v)) continue;
+			const double t = hi > lo ? (v - lo) / (hi - lo) : 0.5;
+			sp->BubblePx[i] = std::sqrt(d0 * d0 + t * (d1 * d1 - d0 * d0));
+		}
+	}
+}
+
 static void xyApplyStyle(XYPlot *s, XYSeries &se) {
 	if (!se.plot)
 		return;
@@ -595,12 +752,13 @@ static void xyApplyStyle(XYPlot *s, XYSeries &se) {
 	if (se.plot->GetPen())
 		se.plot->GetPen()->SetLineType(se.lineType);
 	// An area is filled in its own colour, see-through so areas over areas show; a bar solid.
-	if ((se.kind == 2 || (se.kind >= 6 && se.kind <= 8)) && se.plot->GetBrush())
+	if ((se.kind == 2 || (se.kind >= 6 && se.kind <= 8) || se.kind == 10) && se.plot->GetBrush())
 		se.plot->GetBrush()->SetColor((unsigned char)(se.r * 255), (unsigned char)(se.g * 255),
-		                              (unsigned char)(se.b * 255), se.kind == 2 ? 150 : se.kind == 8 ? 110 : 255);
+		                              (unsigned char)(se.b * 255), se.kind == 2 || se.kind == 10 ? 150 : se.kind == 8 ? 110 : 255);
 	if (vtkXYShapePlot *sp = vtkXYShapePlot::SafeDownCast(se.plot)) {
 		sp->Base = se.base;
 		sp->BarW = se.barWidth;
+		xyShapeExtras(s, se, sp);
 		if (se.kind == 6 || se.kind == 7) {
 			if (se.kind == 7) sp->SetInputData(se.table, 1, 0);   // value on X, position on Y
 			// The data extent the axes must show: every bar's base and top, every bar's full width.
@@ -739,6 +897,18 @@ static void xyRebuildObjMgr(XYPlot *s) {
 		it->setFlags(it->flags() | Qt::ItemIsUserCheckable);
 		it->setCheckState(0, xyCur(s).chart->GetShowLegend() ? Qt::Checked : Qt::Unchecked);
 		it->setData(0, Qt::UserRole, -2);
+	}
+	// "Axes" row (UserRole -3): the page's own axes, as the 3-D viewer's Scene Objects has one per raster.
+	// Checkbox draws / hides them; clicking the label (or right-click > Properties…) opens their Axes
+	// properties. Not on a page that draws its own frame (radar, polar, pie): it has no chart axes.
+	if (!series.empty() && !xyCur(s).axesHidden) {
+		QTreeWidgetItem *it = new QTreeWidgetItem(s->objMgr);
+		it->setText(0, "Axes");
+		QFont f = it->font(0); f.setItalic(true); it->setFont(0, f);
+		it->setFlags(it->flags() | Qt::ItemIsUserCheckable);
+		it->setCheckState(0, xyCur(s).axesShown ? Qt::Checked : Qt::Unchecked);
+		it->setData(0, Qt::UserRole, -3);
+		it->setToolTip(0, "This page's axes · click the label for its Axes properties");
 	}
 	QTreeWidgetItem *toSelect = nullptr;
 	for (int i = 0; i < (int)series.size(); ++i) {
@@ -1041,6 +1211,17 @@ static void xyMouseMove(vtkObject *caller, unsigned long, void *clientData, void
 	const double dy = ay->GetMinimum() + fy * (ay->GetMaximum() - ay->GetMinimum());
 	s->win->statusBar()->showMessage(xyCoordText(pg.xTimeFmt, dx, dy));
 }
+// A page's axes: its Axes properties dialog and their apply (below, with the page look).
+static void xyAxesPropsOpen(XYPlot *s);
+static void xyApplyAxes(XYPlot *s, XYPage &pg);
+
+// Where an Object Manager row's LABEL starts (viewport x): past its check indicator. What tells a click
+// on the "Axes" row's label (open its properties) from one on its checkbox (draw / hide).
+static int xyObjMgrLabelX(XYPlot *s, QTreeWidgetItem *it) {
+	const QRect r = s->objMgr->visualItemRect(it);
+	return r.left() + s->objMgr->style()->pixelMetric(QStyle::PM_IndicatorWidth) + 6;
+}
+
 
 // Live per-series line-properties dialog: colour / width / line style / marker / marker size. Each
 // control applies immediately to the plot + records on the XYSeries (so the look survives a later
@@ -1203,6 +1384,19 @@ static void xyObjMgrMenu(XYPlot *s, const QPoint &pos) {
 		else if (ipick == aRemove && s->infoLabel) {
 			s->infoLabel->setText(QString());
 			s->infoLabel->setVisible(false);
+			xyRebuildObjMgr(s);
+		}
+		return;
+	}
+	if (idx == -3) {                                   // "Axes" row: its properties + its own show/hide
+		QMenu am(s->objMgr);
+		QAction *aProps = am.addAction("Properties…");
+		QAction *aHide = am.addAction(xyCur(s).axesShown ? "Hide" : "Show");
+		QAction *apick = am.exec(s->objMgr->viewport()->mapToGlobal(pos));
+		if (apick == aProps) xyAxesPropsOpen(s);
+		else if (apick == aHide) {
+			xyCur(s).axesShown = !xyCur(s).axesShown;
+			xyApplyAxes(s, xyCur(s));
 			xyRebuildObjMgr(s);
 		}
 		return;
@@ -2228,6 +2422,248 @@ static void xyApplyPageLook(XYPlot *s, XYPage &pg) {
 	c->SetSize(vtkRectf((w - side) / 2, (h - side) / 2, side, side));
 }
 
+// The Axes properties fields a 2-D chart draws. Every other field of axes_props.ui is greyed out in the
+// X,Y dialog (Z, 3-D, oblique and secondary annotations, the map-only settings): a field that does
+// nothing is not offered. Keys are matched as "KEY" or "KEY.part" prefixes.
+static bool xyAxpHonoured(const QString &key) {
+	static const char *const keys[] = {
+		"-R.xauto", "-R.xmin", "-R.xmax", "-R.yauto", "-R.ymin", "-R.ymax",
+		"-Bx.label", "-By.label", "-Bpx.a", "-Bpy.a", "-Bpx.g", "-Bpy.g", "-B.+t", "-B.+g",
+		"MAP_FRAME_AXES.W", "MAP_FRAME_AXES.E", "MAP_FRAME_AXES.S", "MAP_FRAME_AXES.N",
+		"MAP_FRAME_PEN", "MAP_GRID_PEN_PRIMARY", "MAP_TICK_LENGTH_PRIMARY.major",
+		"FONT", "FONT_ANNOT_PRIMARY", "FONT_LABEL", "FONT_TITLE", "FORMAT_FLOAT_MAP" };
+	for (const char *k : keys)
+		if (key == k || key.startsWith(QString(k) + "."))
+			return true;
+	return false;
+}
+
+// THE APPLY of a page's axes: its Object Manager row (drawn or not) and its stored Axes properties onto
+// the chart's own vtkAxis objects. The page stores only the fields CHANGED from the .ui's (GMT's)
+// defaults, so everything left alone keeps the chart's own look. A page that draws its own frame
+// (radar, pie, polar: axesHidden) is left to xyApplyPageLook.
+static void xyApplyAxes(XYPlot *s, XYPage &pg) {
+	vtkChartXY *c = pg.chart;
+	if (!c || pg.axesHidden) return;
+	QMap<QString, QString> v;
+	for (const auto &kv : pg.axProps) v[QString::fromStdString(kv.first)] = QString::fromStdString(kv.second);
+	vtkAxis *ax[4] = { c->GetAxis(vtkAxis::LEFT), c->GetAxis(vtkAxis::RIGHT), c->GetAxis(vtkAxis::BOTTOM), c->GetAxis(vtkAxis::TOP) };
+	static const char *const kSide[4] = { "W", "E", "S", "N" };
+	static const char *const kMode[4] = { "Annot. + ticks", "Line + ticks", "Line only", "Not drawn" };
+	bool sidesSet = false;
+	for (int i = 0; i < 4; ++i) sidesSet |= v.contains(QString("MAP_FRAME_AXES.") + kSide[i]);
+	// Sides: the row's checkbox hides them all; set sides take over from the chart's automatic axes.
+	c->SetAutoAxes(pg.axesShown && !sidesSet);
+	for (int i = 0; i < 4; ++i) {
+		int mode = -1;
+		const QString m = v.value(QString("MAP_FRAME_AXES.") + kSide[i]);
+		for (int j = 0; j < 4; ++j) if (m == kMode[j]) mode = j;
+		if (!pg.axesShown) mode = 3;
+		else if (!sidesSet) continue;                  // the chart's own choice of sides
+		else if (mode < 0) mode = (i == 0 || i == 2) ? 0 : 3;   // an unset side: as the chart draws it
+		ax[i]->SetVisible(mode != 3);
+		ax[i]->SetLabelsVisible(mode == 0);
+		ax[i]->SetTicksVisible(mode <= 1);
+	}
+	// The two data axes: limits, label, annotation interval, grid, number format.
+	struct A { vtkAxis *a; const char *x; };
+	for (const A &t : { A{ ax[2], "x" }, A{ ax[0], "y" } }) {
+		const QString X = t.x;
+		if (v.contains("-R." + X + "auto") || v.contains("-R." + X + "min") || v.contains("-R." + X + "max")) {
+			bool ok0 = false, ok1 = false;
+			const double lo = v.value("-R." + X + "min").toDouble(&ok0), hi = v.value("-R." + X + "max").toDouble(&ok1);
+			if (v.value("-R." + X + "auto") != "1" && ok0 && ok1 && hi > lo) {
+				t.a->SetBehavior(vtkAxis::FIXED);
+				t.a->SetRange(lo, hi);
+			}
+			else
+				t.a->SetBehavior(vtkAxis::AUTO);
+		}
+		if (v.contains("-B" + X + ".label")) t.a->SetTitle(v.value("-B" + X + ".label").toStdString());
+		bool on = false, isAuto = true, gon = false, gauto = true;
+		double val = 0.0, ph = 0.0, gval = 0.0, gph = 0.0;
+		axpStride(v, "-Bp" + X + ".a", on, isAuto, val, ph);
+		if (v.contains("-Bp" + X + ".a") && pg.xTimeFmt == 0) {       // a time axis makes its own ticks
+			if (on && !isAuto && val > 0.0) {
+				const double lo = t.a->GetMinimum(), hi = t.a->GetMaximum();
+				vtkNew<vtkDoubleArray> pos;
+				const double k0 = std::ceil((lo - ph) / val);
+				for (double k = k0; ph + k * val <= hi + 1e-9 * std::abs(val) && pos->GetNumberOfTuples() < 1000; k += 1.0)
+					pos->InsertNextValue(ph + k * val);
+				t.a->SetCustomTickPositions(pos);
+			}
+			else
+				t.a->SetCustomTickPositions(nullptr);
+			if (!on) t.a->SetLabelsVisible(false);
+		}
+		if (v.contains("-Bp" + X + ".g")) {
+			axpStride(v, "-Bp" + X + ".g", gon, gauto, gval, gph);
+			t.a->SetGridVisible(gon);
+		}
+		const QString fmt = v.value("FORMAT_FLOAT_MAP");
+		if (fmt.contains('%')) {
+			t.a->SetNotation(vtkAxis::PRINTF_NOTATION);
+			t.a->SetLabelFormat(fmt.toStdString());
+		}
+	}
+	// Pens, tick length, fonts: only what was changed.
+	double px = 0.0;
+	for (vtkAxis *a : ax) {
+		if (axpLengthPx(v.value("MAP_FRAME_PEN.width"), px)) a->GetPen()->SetWidth((float)px);
+		const QColor fc(v.value("MAP_FRAME_PEN.color"));
+		if (fc.isValid()) a->GetPen()->SetColor((unsigned char)fc.red(), (unsigned char)fc.green(), (unsigned char)fc.blue());
+		if (axpLengthPx(v.value("MAP_GRID_PEN_PRIMARY.width"), px)) a->GetGridPen()->SetWidth((float)px);
+		const QColor gc(v.value("MAP_GRID_PEN_PRIMARY.color"));
+		if (gc.isValid()) a->GetGridPen()->SetColor((unsigned char)gc.red(), (unsigned char)gc.green(), (unsigned char)gc.blue());
+		if (axpLengthPx(v.value("MAP_TICK_LENGTH_PRIMARY.major"), px)) a->SetTickLength((float)px);
+		axpApplyFont(a->GetLabelProperties(), v, "FONT_ANNOT_PRIMARY");
+		axpApplyFont(a->GetTitleProperties(), v, "FONT_LABEL");
+	}
+	if (v.contains("-B.+t")) c->SetTitle(v.value("-B.+t").toStdString());
+	axpApplyFont(c->GetTitleProperties(), v, "FONT_TITLE");
+	if (v.value("-B.+g") == "1") {
+		const QColor bg(v.value("-B.+g.color"));
+		if (bg.isValid()) c->GetBackgroundBrush()->SetColor((unsigned char)bg.red(), (unsigned char)bg.green(), (unsigned char)bg.blue(), 255);
+	}
+	else if (v.contains("-B.+g"))
+		c->GetBackgroundBrush()->SetColor(255, 255, 255, 0);
+	c->RecalculateBounds();
+	if (s && s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+}
+
+// The Axes properties dialog of ONE X,Y page: the SAME deps/ui/axes_props.ui the 3-D viewer's rasters
+// use, read and written with the same field helpers (axpKey / axpGet / axpSet / axpPaintSwatch), bound
+// here to a page (found again by its chart on every use: pages move when one is deleted). Only Apply
+// acts. The page keeps the fields changed from the .ui's defaults; xyApplyAxes draws them.
+static XYPage *xyPageOfChart(XYPlot *s, vtkChartXY *c) {
+	if (!xyAlive(s)) return nullptr;
+	for (XYPage &pg : s->pages) if (pg.chart == c) return &pg;
+	return nullptr;
+}
+
+static void xyAxesPropsOpen(XYPlot *s) {
+	if (!xyAlive(s)) return;
+	vtkChartXY *chart = xyCur(s).chart;
+	const QString objName = QString("xyAxesProps_%1").arg((quintptr)chart);
+	for (QDialog *d : s->win->findChildren<QDialog *>(objName)) { d->show(); d->raise(); d->activateWindow(); return; }
+	QFile uif(QDir(gmtvtkUiDir()).filePath("axes_props.ui"));
+	QUiLoader loader;
+	QDialog *dlg = uif.open(QIODevice::ReadOnly) ? qobject_cast<QDialog *>(loader.load(&uif, s->win)) : nullptr;
+	uif.close();
+	if (!dlg) { QMessageBox::warning(s->win, "Axes properties", "Cannot load " + uif.fileName()); return; }
+	auto *tabs = dlg->findChild<QTabWidget *>("tabs");
+	auto *apply = dlg->findChild<QPushButton *>("btnApply");
+	auto *defs = dlg->findChild<QPushButton *>("btnDefaults");
+	if (!(tabs && apply && defs)) {
+		QMessageBox::warning(s->win, "Axes properties", "axes_props.ui does not carry this dialog's controls (a renamed or removed widget).");
+		delete dlg;
+		return;
+	}
+	dlg->setObjectName(objName);
+	// The font lists and -B units, as the 3-D dialog fills them.
+	for (QComboBox *cb : dlg->findChildren<QComboBox *>())
+		if (cb->property("gmtPart").toString() == "name" && cb->count() == 0) {
+			for (const char *f : kGmtFontNames) cb->addItem(f);
+			if (cb->property("gmtKey").toString() == "FONT") cb->insertItem(0, QString());
+			cb->setCurrentIndex(0);
+		}
+	auto fields = std::make_shared<std::vector<QWidget *>>();
+	auto defaults = std::make_shared<QMap<QString, QString>>();
+	for (QWidget *w : dlg->findChildren<QWidget *>()) {
+		const QString key = axpKey(w);
+		if (key.isEmpty()) continue;
+		fields->push_back(w);
+		if (auto *b = qobject_cast<QPushButton *>(w)) axpPaintSwatch(b, b->property("gmtColor").toString());
+		(*defaults)[key] = axpGet(w);
+		if (!xyAxpHonoured(key) || w->property("vertical").toBool()) w->setEnabled(false);   // not drawn on a 2-D chart
+	}
+	for (QWidget *w : dlg->findChildren<QWidget *>())   // a vertical (Z / 3-D) tab: off as a tab
+		if (w->property("vertical").toBool()) { const int ti = tabs->indexOf(w); if (ti >= 0) tabs->setTabEnabled(ti, false); }
+	for (int ti = 0; ti < tabs->count(); ++ti) {        // a tab with nothing a 2-D chart draws: off
+		bool any = false;
+		for (QWidget *w : *fields) if (w->isEnabled() && tabs->widget(ti)->isAncestorOf(w)) { any = true; break; }
+		if (!any) tabs->setTabEnabled(ti, false);
+	}
+	auto field = [fields](const QString &k) -> QWidget * {
+		for (QWidget *w : *fields) if (axpKey(w) == k) return w;
+		return nullptr;
+	};
+	// Defaults, then the page's current labels and limits, then what the page has stored.
+	auto fill = [s, chart, fields, defaults, field](bool defaultsOnly) {
+		for (QWidget *w : *fields) axpSet(w, defaults->value(axpKey(w)));
+		XYPage *pg = xyPageOfChart(s, chart);
+		if (!pg) return;
+		vtkAxis *bx = chart->GetAxis(vtkAxis::BOTTOM), *ly = chart->GetAxis(vtkAxis::LEFT);
+		if (QWidget *w = field("-Bx.label")) axpSet(w, QString::fromStdString(bx->GetTitle()));
+		if (QWidget *w = field("-By.label")) axpSet(w, QString::fromStdString(ly->GetTitle()));
+		if (QWidget *w = field("-B.+t")) axpSet(w, QString::fromStdString(chart->GetTitle()));
+		struct L { vtkAxis *a; const char *x; };
+		for (const L &l : { L{ bx, "x" }, L{ ly, "y" } }) {
+			if (QWidget *w = field(QString("-R.") + l.x + "min")) axpSet(w, QString::number(l.a->GetMinimum(), 'g', 12));
+			if (QWidget *w = field(QString("-R.") + l.x + "max")) axpSet(w, QString::number(l.a->GetMaximum(), 'g', 12));
+			if (QWidget *w = field(QString("-R.") + l.x + "auto")) axpSet(w, l.a->GetBehavior() == vtkAxis::FIXED ? "0" : "1");
+		}
+		if (!defaultsOnly)
+			for (const auto &kv : pg->axProps)
+				if (QWidget *w = field(QString::fromStdString(kv.first))) axpSet(w, QString::fromStdString(kv.second));
+	};
+	for (QCheckBox *cb : { dlg->findChild<QCheckBox *>("chkDataLimitsX"), dlg->findChild<QCheckBox *>("chkDataLimitsY") }) {
+		if (!cb) continue;
+		const QString X = cb->objectName().endsWith('X') ? "X" : "Y";
+		auto sync = [dlg, cb, X] {
+			for (const char *e : { "min", "max" })
+				if (QLineEdit *le = dlg->findChild<QLineEdit *>("edit" + X + e)) le->setEnabled(!cb->isChecked());
+		};
+		QObject::connect(cb, &QCheckBox::toggled, dlg, sync);
+	}
+	for (QWidget *w : *fields)                          // colour buttons pick their colour
+		if (auto *b = qobject_cast<QPushButton *>(w))
+			QObject::connect(b, &QPushButton::clicked, dlg, [dlg, b] {
+				const QColor c = QColorDialog::getColor(QColor(b->property("gmtColor").toString()), dlg, "Colour");
+				if (c.isValid()) axpPaintSwatch(b, c.name());
+			});
+	QObject::connect(apply, &QPushButton::clicked, dlg, [s, chart, fields, defaults, dlg] {
+		XYPage *pg = xyPageOfChart(s, chart);
+		if (!pg) {
+			QMessageBox::warning(dlg, "Axes properties", "The page these axes belong to is no longer in the window.");
+			dlg->close();
+			return;
+		}
+		pg->axProps.clear();
+		for (QWidget *w : *fields) {
+			const QString k = axpKey(w), val = axpGet(w);
+			if (w->isEnabled() && defaults->value(k) != val) pg->axProps[k.toStdString()] = val.toStdString();
+		}
+		xyApplyAxes(s, *pg);
+	});
+	QObject::connect(defs, &QPushButton::clicked, dlg, [fill] { fill(true); });
+	// Only Apply acts: Enter in a box must never press a button.
+	for (QPushButton *b : dlg->findChildren<QPushButton *>()) { b->setAutoDefault(false); b->setDefault(false); }
+	struct NoEnter : QObject {
+		using QObject::QObject;
+		bool eventFilter(QObject *o, QEvent *e) override {
+			if (e->type() == QEvent::KeyPress) {
+				const int k = static_cast<QKeyEvent *>(e)->key();
+				if (k == Qt::Key_Return || k == Qt::Key_Enter) return true;
+			}
+			return QObject::eventFilter(o, e);
+		}
+	};
+	dlg->installEventFilter(new NoEnter(dlg));
+	dlg->setWindowIcon(appIcon());
+	dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint);
+	dlg->setAttribute(Qt::WA_DeleteOnClose);
+	const QString pn = QString::fromStdString(xyCur(s).name);
+	dlg->setWindowTitle(pn.isEmpty() ? QString("Axes properties") : "Axes properties - " + pn);
+	fill(false);
+	for (QCheckBox *cb : { dlg->findChild<QCheckBox *>("chkDataLimitsX"), dlg->findChild<QCheckBox *>("chkDataLimitsY") })
+		if (cb) emit cb->toggled(cb->isChecked());
+	wrapTooltips(dlg);
+	dlg->show();
+	dlg->raise();
+	dlg->activateWindow();
+}
+
 static void xyMagPaint(XYPlot *s, vtkChartXY *chart, vtkContext2D *p);   // the magnetic picks (below)
 static void xyRefPaint(XYPlot *s, vtkChartXY *chart, vtkContext2D *p);   // the reference picks (below)
 
@@ -2422,8 +2858,11 @@ static void xyDuplicatePage(XYPlot *s, int idx) {
 	dst.mag = src.mag;                                   // the copied series keep their mag roles, so the state goes too
 	dst.square = src.square;                             // a radar / corner plot page stays one
 	dst.axesHidden = src.axesHidden;
+	dst.axesShown = src.axesShown;
+	dst.axProps = src.axProps;
 	dst.labels = src.labels;
 	xyApplyPageLook(s, dst);
+	xyApplyAxes(s, dst);
 	for (const XYSeries &so : src.series) {
 		XYSeries se = so;                                // copies style/name; deep-copy the table next
 		se.table = vtkSmartPointer<vtkTable>::New();
@@ -3733,6 +4172,9 @@ static std::string xySessionState(XYPlot *s) {
 		kv("xtime", QString::number(pg.xTimeFmt));
 		kv("square", QString::number(pg.square ? 1 : 0));
 		kv("axeshidden", QString::number(pg.axesHidden ? 1 : 0));
+		kv("axesshown", QString::number(pg.axesShown ? 1 : 0));
+		for (const auto &ap : pg.axProps)             // the Axes properties fields changed from the .ui's
+			kv("axprop", QString::fromStdString(ap.first) + " " + xyEsc(QString::fromStdString(ap.second)));
 		for (const XYLabel &l : pg.labels)               // one key per label, in order
 			kv("label", xyNums({ l.x, l.y, l.r, l.g, l.b, l.size, (double)l.ha, (double)l.va }) + " " +
 			            xyEsc(QString::fromStdString(l.text)));
@@ -3800,6 +4242,11 @@ static std::string xySessionState(XYPlot *s) {
 			kv("trackgeog", QString::number(se.trackGeog));
 			kv("trackx", xyNums(se.trackX));
 			kv("tracky", xyNums(se.trackY));
+			kv("erryl", xyNums(se.errYlo));
+			kv("erryh", xyNums(se.errYhi));
+			kv("errxl", xyNums(se.errXlo));
+			kv("errxh", xyNums(se.errXhi));
+			kv("bubble", xyNums(se.bubble));
 			kv("npoints", QString::number(se.table ? (int)se.table->GetNumberOfRows() : 0));
 		}
 	}
@@ -3847,6 +4294,11 @@ static void xySessionApply(XYPlot *s, const char *text) {
 			else if (k == "xtime") pg.xTimeFmt = v.toInt();
 			else if (k == "square") { pg.square = v.toInt() != 0; xyApplyPageLook(s, pg); }
 			else if (k == "axeshidden") { pg.axesHidden = v.toInt() != 0; xyApplyPageLook(s, pg); }
+			else if (k == "axesshown") { pg.axesShown = v.toInt() != 0; xyApplyAxes(s, pg); }
+			else if (k == "axprop") {
+				const int sp = v.indexOf(' ');
+				if (sp > 0) { pg.axProps[v.left(sp).toStdString()] = xyUnesc(v.mid(sp + 1)).toStdString(); xyApplyAxes(s, pg); }
+			}
 			else if (k == "label") {
 				const QStringList f = v.split(' ');
 				if (f.size() >= 9) {
@@ -3943,6 +4395,11 @@ static void xySessionApply(XYPlot *s, const char *text) {
 			else if (k == "trackgeog") se.trackGeog = v.toInt();
 			else if (k == "trackx") se.trackX = xyToNums(v);
 			else if (k == "tracky") se.trackY = xyToNums(v);
+			else if (k == "erryl") se.errYlo = xyToNums(v);
+			else if (k == "erryh") se.errYhi = xyToNums(v);
+			else if (k == "errxl") se.errXlo = xyToNums(v);
+			else if (k == "errxh") se.errXhi = xyToNums(v);
+			else if (k == "bubble") se.bubble = xyToNums(v);
 			if (se.plot) xyApplyStyle(s, se);
 		}
 	}
@@ -4002,18 +4459,165 @@ static Scene *xyDefaultOwner() {
 // in Julia by GMT.jl's own helpers (xyanalysis.jl `_xy_stat`).
 enum { XY_PT_PLOT, XY_PT_AREA, XY_PT_BAR, XY_PT_SEMILOGX, XY_PT_SEMILOGY, XY_PT_LOGLOG, XY_PT_COMET,
        XY_PT_STEM, XY_PT_STAIRS, XY_PT_BARH, XY_PT_SCATTER, XY_PT_PLOTYY, XY_PT_FILLBETWEEN, XY_PT_BARSTACK,
-       XY_PT_BARHSTACK, XY_PT_WATERFALL, XY_PT_HIST, XY_PT_DENSITY, XY_PT_BOXPLOT, XY_PT_VIOLIN, XY_PT_ECDF,
-       XY_PT_QQNORM, XY_PT_QQPLOT, XY_PT_RADAR, XY_PT_ROSE, XY_PT_PARALLEL, XY_PT_CORNER, XY_PT_MARGINAL,
+       XY_PT_BARHSTACK, XY_PT_WATERFALL, XY_PT_ERRORBAR, XY_PT_BUBBLE, XY_PT_HIST, XY_PT_DENSITY, XY_PT_BOXPLOT,
+       XY_PT_VIOLIN, XY_PT_ECDF, XY_PT_QQNORM, XY_PT_QQPLOT, XY_PT_RADAR, XY_PT_ROSE, XY_PT_FEATHER,
+       XY_PT_POLARPLOT, XY_PT_POLARSCATTER, XY_PT_COMPASS, XY_PT_PIE, XY_PT_DONUT, XY_PT_PARALLEL, XY_PT_CORNER, XY_PT_MARGINAL,
        XY_PT_BIPLOT, XY_PT_COUNT };
 static const char *const xyPlotTypeNames[XY_PT_COUNT] = { "plot", "area", "bar", "semilogx", "semilogy", "loglog",
 	"comet", "stem", "stairs", "barh", "scatter", "plotyy", "fill_between", "bar stack", "barh stack", "waterfall",
-	"histogram", "density", "boxplot", "violin", "ecdfplot", "qqnorm", "qqplot", "radar", "rose", "parallelplot",
-	"cornerplot", "marginalhist", "biplot" };
+	"errorbar", "bubblechart", "histogram", "density", "boxplot", "violin", "ecdfplot", "qqnorm", "qqplot", "radar",
+	"rose", "feather", "polarplot", "polarscatter", "compassplot", "piechart", "donutchart", "parallelplot", "cornerplot", "marginalhist",
+	"biplot" };
 static void xyComet(XYPlot *s);   // below: comet is an animation, not a kind of series
 
 // Re-plot every series of the CURRENT page as `type`. The series keep their data and style; only the
 // plot item (line / bar, bar orientation) and the axis scaling change. The plot items are re-made by
 // xyRebuildPlots and the axes set by xySetLog — the same functions a delete and the Misc menu use.
+// Does a series carry the per-point values a per-point type (errorbar / bubblechart) draws?
+static bool xyHasPerPoint(const XYSeries &se, int type) {
+	return type == XY_PT_ERRORBAR ? !(se.errYlo.empty() && se.errYhi.empty() && se.errXlo.empty() && se.errXhi.empty())
+	                              : !se.bubble.empty();
+}
+
+// Re-plot the current page as error bars / bubbles: a series that carries the values is drawn with them,
+// one that does not stays a line. The same plot items, rebuild and axes reset as every gallery type.
+static void xyDrawPerPoint(XYPlot *s, int type) {
+	if (!xyAlive(s)) return;
+	XYPage &pg = xyCur(s);
+	for (XYSeries &se : pg.series) {
+		if (se.nowCross) continue;
+		se.kind = xyHasPerPoint(se, type) ? (type == XY_PT_ERRORBAR ? 9 : 10) : 0;
+		se.barH = false; se.stack = 0; se.rightAxis = false;
+	}
+	xyRebuildPlots(s);
+	pg.chart->GetAxis(vtkAxis::BOTTOM)->SetBehavior(vtkAxis::AUTO);
+	pg.chart->GetAxis(vtkAxis::LEFT)->SetBehavior(vtkAxis::AUTO);
+	xySetLog(s, 0, false);
+	xySetLog(s, 1, false);
+	s->win->statusBar()->showMessage(QString("Plot type: %1").arg(xyPlotTypeNames[type]), 3000);
+}
+
+// The values a series without them gets, from the dialog: from another series of the page (row by row),
+// a constant, or (error bars) a percentage of each point's Y. `dir` (error bars): 0 Y, 1 X, 2 both.
+// The source series is hidden, not deleted: its numbers are now the bars / sizes. THE one place the
+// dialog's answer becomes data, so the dialog and the test hook can never differ.
+static bool xyPerPointFrom(XYPlot *s, int type, int target, int source, int mode, double value, int dir, bool hideSource) {
+	if (!xyAlive(s)) return false;
+	XYPage &pg = xyCur(s);
+	if (target < 0 || target >= (int)pg.series.size() || !pg.series[target].table) return false;
+	XYSeries &se = pg.series[target];
+	const int n = (int)se.table->GetNumberOfRows();
+	std::vector<double> v((size_t)n, NAN);
+	if (mode == 0) {                                  // another series
+		if (source < 0 || source >= (int)pg.series.size() || source == target || !pg.series[source].table) return false;
+		vtkTable *t = pg.series[source].table;
+		const int m = std::min(n, (int)t->GetNumberOfRows());
+		for (int i = 0; i < m; ++i) v[i] = t->GetValue(i, 1).ToDouble();
+	}
+	else if (mode == 1) std::fill(v.begin(), v.end(), value);
+	else {                                            // a percentage of Y
+		for (int i = 0; i < n; ++i) v[i] = std::abs(se.table->GetValue(i, 1).ToDouble()) * value / 100.0;
+	}
+	if (type == XY_PT_ERRORBAR) {
+		for (double &e : v) e = std::abs(e);
+		if (dir == 0 || dir == 2) { se.errYlo = v; se.errYhi = v; }
+		if (dir == 1 || dir == 2) { se.errXlo = v; se.errXhi = v; }
+	}
+	else
+		se.bubble = v;
+	if (mode == 0 && hideSource) pg.series[source].visible = false;
+	return true;
+}
+
+// The dialog a per-point type opens when a series of the page carries no values for it. Window-modal
+// but not blocking (open(), not exec()), so the chart stays drawn behind it; OK goes through
+// xyPerPointFrom and then draws the page.
+static void xyPerPointDialog(XYPlot *s, int type) {
+	XYPage &pg = xyCur(s);
+	const bool eb = (type == XY_PT_ERRORBAR);
+	QDialog *dlg = new QDialog(s->win);
+	dlg->setAttribute(Qt::WA_DeleteOnClose);
+	dlg->setObjectName("xyPerPointDlg");
+	dlg->setWindowTitle(eb ? "Error bars" : "Bubble sizes");
+	QFormLayout *form = new QFormLayout(dlg);
+	QLabel *msg = new QLabel(eb ? "This series has no error values. Take them from:" :
+	                              "This series has no bubble sizes. Take them from:", dlg);
+	msg->setWordWrap(true);
+	form->addRow(msg);
+	QComboBox *tgt = new QComboBox(dlg);
+	tgt->setObjectName("ppSeries");
+	QComboBox *src = new QComboBox(dlg);
+	src->setObjectName("ppSource");
+	for (int k = 0; k < (int)pg.series.size(); ++k) {
+		const XYSeries &se = pg.series[k];
+		if (se.nowCross) continue;
+		const QString nm = QString::fromStdString(se.name.empty() ? "Line " + std::to_string(k + 1) : se.name);
+		if (!xyHasPerPoint(se, type)) tgt->addItem(nm, k);
+		src->addItem("Series: " + nm, k);
+	}
+	src->addItem("Constant", -1);
+	if (eb) src->addItem("% of Y", -2);
+	form->addRow("Series", tgt);
+	form->addRow("Values from", src);
+	QDoubleSpinBox *val = new QDoubleSpinBox(dlg);
+	val->setObjectName("ppValue");
+	val->setDecimals(6); val->setRange(0.0, 1e12); val->setValue(1.0);
+	form->addRow("Value", val);
+	QComboBox *dir = nullptr;
+	if (eb) {
+		dir = new QComboBox(dlg);
+		dir->setObjectName("ppDir");
+		dir->addItems(QStringList() << "Vertical (Y)" << "Horizontal (X)" << "Both");
+		form->addRow("Direction", dir);
+	}
+	QCheckBox *hide = new QCheckBox("Hide the series the values come from", dlg);
+	hide->setObjectName("ppHide");
+	hide->setChecked(true);
+	form->addRow(hide);
+	auto sync = [src, val, hide] {
+		const int m = src->currentData().toInt();
+		val->setEnabled(m < 0);
+		hide->setEnabled(m >= 0);
+	};
+	QObject::connect(src, qOverload<int>(&QComboBox::currentIndexChanged), dlg, sync);
+	if (tgt->count() > 0)                             // first source that is not the target
+		for (int i = 0; i < src->count(); ++i)
+			if (src->itemData(i).toInt() != tgt->currentData().toInt()) { src->setCurrentIndex(i); break; }
+	sync();
+	QDialogButtonBox *bb = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, dlg);
+	bb->button(QDialogButtonBox::Ok)->setObjectName("ppOk");
+	bb->button(QDialogButtonBox::Cancel)->setObjectName("ppCancel");
+	form->addRow(bb);
+	QObject::connect(bb, &QDialogButtonBox::rejected, dlg, &QDialog::reject);
+	QObject::connect(bb, &QDialogButtonBox::accepted, dlg, [s, type, dlg, tgt, src, val, dir, hide] {
+		const int t = tgt->currentData().toInt(), m = src->currentData().toInt();
+		const int mode = m >= 0 ? 0 : (m == -1 ? 1 : 2);
+		if (mode == 0 && m == t) {
+			QMessageBox::warning(dlg, dlg->windowTitle(), "A series cannot take its values from itself.");
+			return;
+		}
+		if (!xyPerPointFrom(s, type, t, m, mode, val->value(), dir ? dir->currentIndex() : 0, hide->isChecked())) {
+			QMessageBox::warning(dlg, dlg->windowTitle(), "Those values could not be taken.");
+			return;
+		}
+		dlg->accept();
+		xyDrawPerPoint(s, type);
+		xyRebuildObjMgr(s);
+	});
+	dlg->open();
+}
+
+// errorbar / bubblechart: draw at once when every series carries its values, else ask for them first.
+static void xyPerPoint(XYPlot *s, int type) {
+	XYPage &pg = xyCur(s);
+	for (const XYSeries &se : pg.series)
+		if (!se.nowCross && !xyHasPerPoint(se, type)) {
+			xyPerPointDialog(s, type);
+			return;
+		}
+	xyDrawPerPoint(s, type);
+}
+
 static void xySetPlotType(XYPlot *s, int type) {
 	if (!xyAlive(s) || type < 0 || type >= XY_PT_COUNT || s->cometBusy)
 		return;
@@ -4024,6 +4628,10 @@ static void xySetPlotType(XYPlot *s, int type) {
 	XYPage &pg = xyCur(s);
 	if (pg.series.empty()) {
 		s->win->statusBar()->showMessage("This page has no series to re-plot", 3000);
+		return;
+	}
+	if (type == XY_PT_ERRORBAR || type == XY_PT_BUBBLE) {   // per-point values: carried, or asked for
+		xyPerPoint(s, type);
 		return;
 	}
 	if (type >= XY_PT_HIST) {                         // a distribution: computed in Julia, on a new page
@@ -4508,6 +5116,108 @@ static QIcon xyPlotTypeIcon(int type, qreal dpr) {
 			const double r = R * (0.35 + 0.65 * std::abs(std::sin(k * 0.9 + 0.4)));
 			const QRectF box(c.x() - r, c.y() - r, 2 * r, 2 * r);
 			p.drawPie(box, k * 30 * 16, 30 * 16);
+		}
+		break;
+	}
+	case XY_PT_ERRORBAR: {
+		QPolygonF l;
+		for (int i = 0; i < 7; ++i) {
+			const double x = x0 + 3 + i * (x1 - x0 - 6) / 6.0;
+			const double y = (y0 + y1) / 2 - 0.25 * (y1 - y0) * std::sin(i * 0.9);
+			const double e = (0.08 + 0.05 * (i % 3)) * (y1 - y0);
+			p.setPen(QPen(orange, 1.0));
+			p.drawLine(QPointF(x, y - e), QPointF(x, y + e));
+			p.drawLine(QPointF(x - 2, y - e), QPointF(x + 2, y - e));
+			p.drawLine(QPointF(x - 2, y + e), QPointF(x + 2, y + e));
+			l << QPointF(x, y);
+		}
+		p.setPen(QPen(blue, 1.4));
+		p.drawPolyline(l);
+		break;
+	}
+	case XY_PT_BUBBLE: {
+		const double v[7][3] = { {0.12, 0.7, 3}, {0.28, 0.35, 6}, {0.42, 0.62, 4}, {0.55, 0.25, 8},
+		                         {0.68, 0.55, 5}, {0.82, 0.3, 9}, {0.9, 0.75, 3.5} };
+		p.setPen(QPen(blue, 0.8));
+		p.setBrush(QColor(0, 114, 189, 110));
+		for (const auto &b : v)
+			p.drawEllipse(QPointF(x0 + b[0] * (x1 - x0), y0 + b[1] * (y1 - y0)), b[2], b[2]);
+		break;
+	}
+	case XY_PT_FEATHER: {
+		p.setPen(QPen(QColor(150, 150, 150), 0.8));
+		const double yb = (y0 + y1) / 2 + 4;
+		p.drawLine(QPointF(x0, yb), QPointF(x1, yb));
+		p.setPen(QPen(blue, 1.2));
+		for (int i = 0; i < 9; ++i) {
+			const double x = x0 + 3 + i * (x1 - x0 - 8) / 8.0;
+			const double a = 0.4 + i * 0.35, L = 0.32 * (y1 - y0);
+			const QPointF tip(x + L * std::cos(a) * 0.6, yb - L * std::sin(a));
+			p.drawLine(QPointF(x, yb), tip);
+		}
+		break;
+	}
+	case XY_PT_POLARPLOT:
+	case XY_PT_POLARSCATTER:
+	case XY_PT_COMPASS: {
+		const QPointF c((x0 + x1) / 2, (y0 + y1) / 2);
+		const double R = (y1 - y0) / 2;
+		p.setPen(QPen(grid, 0.8));
+		p.setBrush(Qt::NoBrush);
+		p.drawEllipse(c, R, R);
+		p.drawEllipse(c, R / 2, R / 2);
+		for (int k = 0; k < 4; ++k) {
+			const double a = k * M_PI / 4;
+			p.drawLine(QPointF(c.x() - R * std::cos(a), c.y() + R * std::sin(a)),
+			           QPointF(c.x() + R * std::cos(a), c.y() - R * std::sin(a)));
+		}
+		const double pts[6][2] = { {0.5, 0.8}, {1.3, 0.55}, {2.2, 0.9}, {3.4, 0.4}, {4.3, 0.7}, {5.4, 0.6} };
+		if (type == XY_PT_POLARPLOT) {                // a closed rose curve, r = |cos 2θ|
+			QPolygonF l;
+			for (int i = 0; i <= 120; ++i) {
+				const double a = i * 2 * M_PI / 120, r = 0.9 * R * std::abs(std::cos(2 * a));
+				l << QPointF(c.x() + r * std::cos(a), c.y() - r * std::sin(a));
+			}
+			p.setPen(QPen(blue, 1.3));
+			p.setBrush(Qt::NoBrush);
+			p.drawPolyline(l);
+			break;
+		}
+		for (const auto &q : pts) {
+			const QPointF e(c.x() + q[1] * R * std::cos(q[0]), c.y() - q[1] * R * std::sin(q[0]));
+			if (type == XY_PT_COMPASS) {
+				p.setPen(QPen(blue, 1.2));
+				p.drawLine(c, e);
+				const double a = std::atan2(c.y() - e.y(), e.x() - c.x());   // arrow head: two short barbs
+				for (double d : { 2.6, -2.6 })
+					p.drawLine(e, QPointF(e.x() - 3.5 * std::cos(a + d / 6), e.y() + 3.5 * std::sin(a + d / 6)));
+			}
+			else {
+				p.setPen(QPen(blue, 0.8));
+				p.setBrush(QColor(0, 114, 189, 140));
+				p.drawEllipse(e, 2.0, 2.0);
+			}
+		}
+		break;
+	}
+	case XY_PT_PIE:
+	case XY_PT_DONUT: {
+		const QPointF c((x0 + x1) / 2, (y0 + y1) / 2);
+		const double R = (y1 - y0) / 2;
+		const QRectF box(c.x() - R, c.y() - R, 2 * R, 2 * R);
+		const int span[4] = { 140, 90, 75, 55 };
+		const QColor col[4] = { blue, orange, QColor(237, 177, 32), QColor(126, 47, 142) };
+		p.setPen(QPen(Qt::white, 0.6));
+		int a0 = 90 * 16;
+		for (int k = 0; k < 4; ++k) {
+			p.setBrush(col[k]);
+			p.drawPie(box, a0, -span[k] * 16);
+			a0 -= span[k] * 16;
+		}
+		if (type == XY_PT_DONUT) {
+			p.setPen(Qt::NoPen);
+			p.setBrush(Qt::white);
+			p.drawEllipse(c, R / 2, R / 2);
 		}
 		break;
 	}
@@ -5001,9 +5711,10 @@ static XYPlot *buildXYPlot(const char *title) {
 	static const int order[XY_PT_COUNT] = {
 		XY_PT_PLOT, XY_PT_AREA, XY_PT_BAR, XY_PT_BARH, XY_PT_BARSTACK, XY_PT_BARHSTACK, XY_PT_WATERFALL,
 		XY_PT_HIST, XY_PT_SEMILOGX, XY_PT_SEMILOGY, XY_PT_LOGLOG, XY_PT_COMET, XY_PT_STEM, XY_PT_STAIRS,
-		XY_PT_SCATTER, XY_PT_PLOTYY, XY_PT_FILLBETWEEN,
+		XY_PT_SCATTER, XY_PT_BUBBLE, XY_PT_ERRORBAR, XY_PT_PLOTYY, XY_PT_FILLBETWEEN, XY_PT_FEATHER,
 		XY_PT_DENSITY, XY_PT_BOXPLOT, XY_PT_VIOLIN, XY_PT_ECDF, XY_PT_QQNORM, XY_PT_QQPLOT,
-		XY_PT_RADAR, XY_PT_ROSE, XY_PT_PARALLEL, XY_PT_CORNER, XY_PT_MARGINAL, XY_PT_BIPLOT };
+		XY_PT_RADAR, XY_PT_ROSE, XY_PT_POLARPLOT, XY_PT_POLARSCATTER, XY_PT_COMPASS, XY_PT_PIE, XY_PT_DONUT,
+		XY_PT_PARALLEL, XY_PT_CORNER, XY_PT_MARGINAL, XY_PT_BIPLOT };
 	for (int t : order) {
 		if (t == XY_PT_SCATTER || t == XY_PT_DENSITY)
 			gal->addSeparator();                      // MATLAB's set | GMT.jl's other plots | statistics
@@ -5018,10 +5729,65 @@ static XYPlot *buildXYPlot(const char *title) {
 		              t == XY_PT_RADAR     ? QString("Each series of this page as one radar polygon (a spoke per point), on a new page") :
 		              t == XY_PT_ROSE      ? QString("Rose diagram of the selected series' values as azimuths (degrees), on a new page") :
 		              t == XY_PT_MARGINAL  ? QString("The selected series' x against y, with the histogram of each on the margins, on a new page") :
+		              t == XY_PT_ERRORBAR  ? QString("Each series with its error bars (asks for the errors of a series that carries none)") :
+		              t == XY_PT_BUBBLE    ? QString("Each series as bubbles sized by its values (asks for the sizes of a series that carries none)") :
+		              t == XY_PT_FEATHER   ? QString("The first two curves as U and V of a feather (stick) plot, on a new page") :
+		              t == XY_PT_POLARPLOT ? QString("Each series' x as angle (radians) and y as radius, as a line on polar axes, on a new page") :
+		              t == XY_PT_POLARSCATTER ? QString("Each series' x as angle (radians) and y as radius, as points on polar axes, on a new page") :
+		              t == XY_PT_COMPASS   ? QString("Each series' x as angle (radians) and y as radius, as arrows from the origin on polar axes, on a new page") :
+		              t == XY_PT_PIE       ? QString("Pie chart of the selected series' values, on a new page") :
+		              t == XY_PT_DONUT     ? QString("Donut chart of the selected series' values, on a new page") :
 		              t > XY_PT_HIST       ? QString("%1 of this page's series, on a new page").arg(xyPlotTypeNames[t]) :
 		                                     QString("Re-plot this page's series as %1").arg(xyPlotTypeNames[t]));
 		QObject::connect(a, &QAction::triggered, s->win, [s, t] { xySetPlotType(s, t); });
+		a->setData(t);
 	}
+	// Right-click on a type: "Help" opens that type's page of the manual (docs/src/41-xyplot-<name>.md),
+	// the same plain openUrl the dialogs' green ? disk uses. "Synthetic example" asks Julia for a new page
+	// of made-up data (xyanalysis.jl `_xy_example`) and then applies the type to it with xySetPlotType,
+	// the function a click on the icon runs.
+	gal->setContextMenuPolicy(Qt::CustomContextMenu);
+	QObject::connect(gal, &QWidget::customContextMenuRequested, s->win, [s, gal](const QPoint &p) {
+		QAction *a = gal->actionAt(p);
+		if (!a || a->isSeparator() || !a->data().isValid()) return;
+		const int t = a->data().toInt();
+		const QString name = xyPlotTypeNames[t];
+		auto *m = new QMenu(s->win);
+		m->setAttribute(Qt::WA_DeleteOnClose);
+		m->addAction(makeHelpDiskIcon(16), "Help", s->win, [s, name]() {
+			const QUrl u("https://www.generic-mapping-tools.org/InteractiveGMT/dev/41-xyplot-" +
+			             QString(name).replace(' ', '-') + "/");
+			if (!QDesktopServices::openUrl(u))
+				QMessageBox::warning(s->win, "Help", QString("Could not open a browser for\n\n%1").arg(u.toString()));
+		});
+		// Only THAT example is shown: the previous example's pages go first, and a type that draws its result
+		// on a page of its own (histogram, boxplot, pie, ...) leaves just that result, not the data page.
+		// A page is deleted while it is the one on screen: that is the case xyDeletePage unmounts its chart.
+		auto drop = [s](int i) { xySwitchPage(s, i); xyDeletePage(s, i); };
+		m->addAction("Synthetic example", s->win, [s, t, name, drop]() {
+			if (s->cometBusy) return;                     // a comet is still drawing on its page
+			for (int i = (int)s->pages.size() - 1; i >= 0; --i)
+				if (s->pages[i].example) drop(i);
+			for (XYPage &pg : s->pages) pg.example = false;   // a lone example page is cleared, not deleted
+			int first = (int)s->pages.size();
+			if (!xyRequest(s, "example:" + name, -1, "Building the example...") || !xyAlive(s))
+				return;
+			if (first == 1 && s->pages[0].series.empty()) {  // an empty window: the example is its only page
+				drop(0);
+				first = 0;
+			}
+			xySwitchPage(s, (int)s->pages.size() - 1);
+			xySetPlotType(s, t);
+			if (!xyAlive(s)) return;
+			if ((int)s->pages.size() > first + 1)
+				drop(first);
+			for (int i = first; i < (int)s->pages.size(); ++i)
+				s->pages[i].example = true;
+			xySwitchPage(s, (int)s->pages.size() - 1);
+			xyRebuildObjMgr(s);
+		});
+		m->popup(gal->mapToGlobal(p));
+	});
 
 	// --- Object Manager interactions ---
 	QObject::connect(s->objMgr, &QTreeWidget::itemChanged, s->win, [s](QTreeWidgetItem *it, int){
@@ -5037,6 +5803,11 @@ static XYPlot *buildXYPlot(const char *title) {
 			if (s->widget->renderWindow()) s->widget->renderWindow()->Render();
 			return;
 		}
+		if (idx == -3) {                                   // "Axes" row: draw / hide the page's axes
+			xyCur(s).axesShown = (it->checkState(0) == Qt::Checked);
+			xyApplyAxes(s, xyCur(s));
+			return;
+		}
 		std::vector<XYSeries> &series = xyCur(s).series;
 		if (idx < 0 || idx >= (int)series.size()) return;
 		const bool on = (it->checkState(0) == Qt::Checked);
@@ -5044,7 +5815,29 @@ static XYPlot *buildXYPlot(const char *title) {
 		if (series[idx].plot) series[idx].plot->SetVisible(on);
 		if (s->widget->renderWindow()) s->widget->renderWindow()->Render(); });
 	QObject::connect(s->objMgr, &QTreeWidget::itemDoubleClicked, s->win, [s](QTreeWidgetItem *it, int){
-		if (it) xyLineProperties(s, it->data(0, Qt::UserRole).toInt()); });
+		if (!it) return;
+		const int idx = it->data(0, Qt::UserRole).toInt();
+		if (idx == -3) xyAxesPropsOpen(s); else xyLineProperties(s, idx); });
+	// The "Axes" row's LABEL opens its Axes properties (its checkbox only draws / hides), as the 3-D
+	// viewer's Scene Objects Axes row does: a left click released right of the check indicator.
+	struct AxesRowClick : QObject {
+		XYPlot *s;
+		AxesRowClick(XYPlot *s_, QObject *parent) : QObject(parent), s(s_) {}
+		bool eventFilter(QObject *, QEvent *e) override {
+			if (e->type() != QEvent::MouseButtonRelease) return false;
+			auto *me = static_cast<QMouseEvent *>(e);
+			if (me->button() != Qt::LeftButton) return false;
+			const QPoint pt = me->position().toPoint();
+			QTreeWidgetItem *it = s->objMgr->itemAt(pt);
+			if (!it || it->data(0, Qt::UserRole).toInt() != -3) return false;
+			if (pt.x() > xyObjMgrLabelX(s, it)) {
+				XYPlot *sp = s;
+				QTimer::singleShot(0, sp->win, [sp] { xyAxesPropsOpen(sp); });
+			}
+			return false;
+		}
+	};
+	s->objMgr->viewport()->installEventFilter(new AxesRowClick(s, s->objMgr));
 	QObject::connect(s->objMgr, &QWidget::customContextMenuRequested, s->win, [s](const QPoint &p){ xyObjMgrMenu(s, p); });
 
 	// --- live coordinate readout ---

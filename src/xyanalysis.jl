@@ -524,7 +524,8 @@ function _xy_stat(plot::Ptr{Cvoid}, p::QtXYPlot, kind::AbstractString, sel::Int=
 		end
 		lo, hi = extrema(allqx)       # GMT.jl's default qqline=:identity: ys = xs over the x quantiles
 		_xyadd!(p, [lo, hi], [lo, hi]; name="identity", color=:black, linestyle=:dash)
-	elseif kind in ("radar", "rose", "parallelplot", "cornerplot", "marginalhist", "biplot")
+	elseif kind in ("radar", "rose", "parallelplot", "cornerplot", "marginalhist", "biplot", "feather", "polarscatter",
+	                "polarplot", "compassplot", "piechart", "donutchart")
 		_xy_framed(plot, p, kind, sel, page)
 	else
 		error("unknown statistical plot '$kind'")
@@ -600,7 +601,114 @@ end
 _xy_fmt(v) = string(round(v; sigdigits=4))
 _xy_lohi(v) = (r = GMT.round_wesn([extrema(v)..., 0.0, 0.0]); r[2] > r[1] ? (r[1], r[2]) : (r[1] - 0.5, r[1] + 0.5))
 
+# ---- polar axes, feather, pie / donut ---------------------------------------------------------------
+# MATLAB's polarplot / polarscatter / compassplot read each series' x as the ANGLE in radians and y as
+# the RADIUS. One frame for the three (_xy_polar_frame): rings at round_wesn of the largest radius,
+# spokes every 30°, angles counted counter-clockwise from the +x direction (MATLAB's polar axes).
+function _xy_polar_frame(p, plot, rmax)
+	gx, gy = Float64[], Float64[]
+	for f in 0.25:0.25:1.0
+		cx, cy = _xy_circle(f); append!(gx, cx); append!(gy, cy)
+	end
+	for a in 0:30:330  append!(gx, [0.0, cosd(a), NaN]); append!(gy, [0.0, sind(a), NaN])  end
+	_xyadd!(p, gx, gy; name="polar grid", color=_XY_GRID_RGB)
+	for a in 0:30:330
+		_xy_lbl(plot, 1.12cosd(a), 1.12sind(a), "$(a)°"; ha=a in (90, 270) ? 0 : (a < 90 || a > 270 ? -1 : 1), size=11)
+	end
+	for f in 0.25:0.25:1.0
+		_xy_lbl(plot, f * cosd(80), f * sind(80), _xy_fmt(f * rmax); ha=-1, va=-1, size=9, c=(0.35, 0.35, 0.35))
+	end
+	_xy_look(plot, true, true, (-1.3, 1.3, -1.3, 1.3))
+end
+
+function _xy_polar(plot, p, kind, page)
+	n = ccall(_fn(:gmtvtk_xyplot_series_count), Cint, (Ptr{Cvoid},), plot)
+	ser = Tuple{Vector{Float64},Vector{Float64},String}[]
+	for k in 0:n-1                                    # read BEFORE page(): the new page becomes current
+		x, y = _xy_get_series(plot, k)
+		ok = isfinite.(x) .& isfinite.(y)
+		any(ok) || continue
+		nm = _xy_series_name(plot, k)
+		push!(ser, (x[ok], abs.(y[ok]), isempty(nm) ? "series $k" : nm))
+	end
+	isempty(ser) && error("$kind: no series on this page has finite (angle, radius) points")
+	rmax = GMT.round_wesn([0.0 0 0 maximum(maximum(s[2]) for s in ser)])[4]
+	rmax > 0 || (rmax = 1.0)
+	page(kind, "", "")
+	_xy_polar_frame(p, plot, rmax)
+	for (θ, ρ, nm) in ser
+		u, v = ρ ./ rmax .* cos.(θ), ρ ./ rmax .* sin.(θ)
+		if kind == "polarplot"
+			_xyadd!(p, u, v; name=nm)
+		elseif kind == "polarscatter"
+			_xyadd!(p, u, v; name=nm, marker=:circle, linestyle=:none)
+		else                                          # compassplot: an arrow from the origin to each point
+			ax, ay = Float64[], Float64[]
+			for (a, b) in zip(u, v)
+				L = hypot(a, b); L > 0 || continue
+				t = atan(b, a); h = 0.06
+				append!(ax, [0.0, a, NaN, a, a - h * cos(t - 0.4), NaN, a, a - h * cos(t + 0.4), NaN])
+				append!(ay, [0.0, b, NaN, b, b - h * sin(t - 0.4), NaN, b, b - h * sin(t + 0.4), NaN])
+			end
+			_xyadd!(p, ax, ay; name=nm)
+		end
+	end
+end
+
+# The gallery's feather: the page's first two curves are U and V, X taken from the first; the sticks are
+# built by the same _stick_segments / _stick_scale `feather` uses.
+function _xy_feather_page(plot, p, page)
+	n = ccall(_fn(:gmtvtk_xyplot_series_count), Cint, (Ptr{Cvoid},), plot)
+	n < 2 && error("feather needs two curves on this page: U and V")
+	(t, u), (_, v) = _xy_get_series(plot, 0), _xy_get_series(plot, 1)
+	m = min(length(t), length(u), length(v))
+	t, u, v = Float64.(t[1:m]), Float64.(u[1:m]), Float64.(v[1:m])
+	ok = isfinite.(t) .& isfinite.(u) .& isfinite.(v)
+	t, u, v = t[ok], u[ok], v[ok]
+	isempty(t) && error("feather: the first two curves share no finite points")
+	segx, segy = _stick_segments(t, u, v, _stick_scale(t, u, v))
+	page("feather", "", "")
+	_xyadd!(p, segx, segy; name="sticks")
+	_xyadd!(p, [minimum(t), maximum(t)], [0.0, 0.0]; name="baseline", color=:gray)
+end
+
+# GMT.jl's piechart: the selected series' values as slices from 12 o'clock, clockwise; a sum of 1 or
+# more is normalized, a smaller sum leaves the pie partial. Labelled with the percentage. donutchart is
+# the same pie with a hole (MATLAB's default InnerRadius, 0.5). Slices are cut into pieces of at most
+# 10° so each piece is convex, which is what the filled-polygon item fills correctly.
+function _xy_pie(plot, p, kind, sel, page)
+	sel < 0 && error("$kind: select the series of values in the Object Manager first")
+	x = filter(isfinite, _xy_get_series(plot, sel)[2])
+	any(<(0), x) && error("$kind: the values must not be negative")
+	s = sum(x)
+	s > 0 || error("$kind: the values sum to zero")
+	X = s > 1 ? x ./ s : x
+	r0 = kind == "donutchart" ? 0.5 : 0.0
+	page(kind, "", "")
+	a1 = 90.0
+	for (k, f) in enumerate(X)
+		a0 = a1 - 360f
+		f > 0 || (a1 = a0; continue)
+		px, py = Float64[], Float64[]
+		nseg = max(1, ceil(Int, 360f / 10))
+		for j in 1:nseg                               # a piece: inner arc, out, outer arc (1° steps) back
+			b1 = a1 - (j - 1) * 360f / nseg; b0 = a1 - j * 360f / nseg
+			arc = range(b1, b0; length=max(2, ceil(Int, abs(b1 - b0)) + 1))
+			append!(px, vcat(r0 .* cosd.(reverse(arc)), cosd.(arc), NaN))
+			append!(py, vcat(r0 .* sind.(reverse(arc)), sind.(arc), NaN))
+		end
+		_xy_addk!(plot, p, px, py, "slice $k", 8; linestyle=:none)
+		m = (a0 + a1) / 2
+		_xy_lbl(plot, 1.15cosd(m), 1.15sind(m), string(round(Int, 100f), "%"); ha=abs(cosd(m)) < 0.2 ? 0 : (cosd(m) > 0 ? -1 : 1), size=11)
+		a1 = a0
+	end
+	_xy_look(plot, true, true, (-1.3, 1.3, -1.3, 1.3))
+end
+
 function _xy_framed(plot, p, kind, sel, page)
+	kind in ("polarplot", "polarscatter", "compassplot") && return _xy_polar(plot, p, kind, page)
+	kind == "feather" && return _xy_feather_page(plot, p, page)
+	kind in ("piechart", "donutchart") && return _xy_pie(plot, p, kind, sel, page)
 	if kind == "radar"
 		# GMT.jl radar(): one polygon per row, one axis per column. Here a row is a SERIES of the page
 		# (its points are the axes). Not normalized -> each axis scaled to round_wesn of its max, as radar()
@@ -1032,6 +1140,142 @@ function _xy_sg_bandpass(plot::Ptr{Cvoid}, d::Dict{String,String})
 	return
 end
 
+# The gallery's right-click "Synthetic example" (65_xyplot.cpp): a new page "<type> example" holding
+# made-up data of the shape that plot type reads. The C side then applies the type to it exactly as a
+# click on its icon does (xySetPlotType), so the example is drawn by the type's own code.
+# One small function per type in _XY_EXAMPLES, one data series each:
+# only the requested one is ever compiled and computed.
+struct _XYEx
+	plot::Ptr{Cvoid}
+	p::QtXYPlot
+	kind::String
+end
+_ex_page(e::_XYEx, xl, yl) = (ccall(_fn(:gmtvtk_xyplot_add_page), Cint, (Ptr{Cvoid}, Cstring), e.plot, "$(e.kind) example");
+                             ccall(_fn(:gmtvtk_xyplot_set_labels), Cvoid, (Ptr{Cvoid}, Cstring, Cstring), e.plot, String(xl), String(yl)))
+_ex_add(e::_XYEx, x, y, nm) = _xyadd!(e.p, collect(Float64, x), collect(Float64, y); name=nm)
+function _ex_vals(e::_XYEx, what, a::Vector{Float64})          # per-point values of the last series added
+	k = ccall(_fn(:gmtvtk_xyplot_series_count), Cint, (Ptr{Cvoid},), e.plot) - 1
+	ccall(_fn(:gmtvtk_xyplot_set_point_values), Cint, (Ptr{Cvoid}, Cint, Cint, Ptr{Float64}, Ptr{Float64}, Cint),
+	      e.plot, k, what, a, C_NULL, length(a))
+end
+
+function _ex_curves(e)
+	x = range(0, 4π; length=e.kind == "scatter" ? 50 : 120)
+	_ex_page(e, "x", "y")
+	_ex_add(e, x, sin.(x), "sin(x)")
+end
+function _ex_steps(e)
+	x = range(0, 2π; length=25)
+	_ex_page(e, "x", "y")
+	_ex_add(e, x, sin.(x), "sin(x)")
+end
+function _ex_bars(e)
+	_ex_page(e, "group", "value")
+	_ex_add(e, 1:6, [4, 7, 3, 8, 5, 6], "2024")
+end
+_ex_waterfall(e) = (_ex_page(e, "step", "change"); _ex_add(e, 1:8, [10, -3, 5, -2, 4, -6, 3, 2], "change"))
+function _ex_semilogx(e)
+	f = 10 .^ range(-1, 3; length=200)
+	_ex_page(e, "frequency (Hz)", "phase (deg)")
+	_ex_add(e, f, -atand.(f ./ 10), "phase")
+end
+function _ex_semilogy(e)
+	t = range(0, 10; length=100)
+	_ex_page(e, "time", "population")
+	_ex_add(e, t, 100 .* exp.(0.8 .* t), "growth")
+end
+function _ex_loglog(e)
+	f = 10 .^ range(-1, 3; length=200)
+	_ex_page(e, "frequency (Hz)", "gain")
+	_ex_add(e, f, 1 ./ sqrt.(1 .+ (f ./ 10) .^ 4), "low-pass")
+end
+function _ex_plotyy(e)
+	t = range(0, 20; length=200)
+	_ex_page(e, "time", "temperature / pressure")
+	_ex_add(e, t, 20 .+ 5 .* sin.(t ./ 3), "temperature")
+end
+function _ex_fillbetween(e)
+	x = range(0, 4π; length=150)
+	_ex_page(e, "x", "y")
+	_ex_add(e, x, sin.(x), "sin(x)")
+end
+function _ex_errorbar(e)
+	y = sqrt.(1.0:10.0)
+	_ex_page(e, "x", "y")
+	_ex_add(e, 1:10, y, "sqrt(x)")
+	_ex_vals(e, 0, 0.1 .* y)
+end
+function _ex_bubble(e)
+	_ex_page(e, "x", "y")
+	_ex_add(e, rand(20), rand(20), "bubbles")
+	_ex_vals(e, 2, rand(20))
+end
+function _ex_samples(e)
+	n = 300
+	_ex_page(e, "sample", "value")
+	_ex_add(e, 1:n, randn(n), "normal")
+end
+function _ex_qqplot(e)
+	n = 300
+	_ex_page(e, "sample", "value")
+	_ex_add(e, 1:n, randn(n), "normal")
+end
+function _ex_radar(e)
+	_ex_page(e, "spoke", "score")
+	_ex_add(e, 1:6, [8, 6, 7, 4, 9, 5], "scores")
+end
+function _ex_rose(e)
+	n = 400
+	_ex_page(e, "sample", "azimuth (deg)")
+	_ex_add(e, 1:n, mod.(vcat(40 .+ 20 .* randn(n ÷ 2), 220 .+ 30 .* randn(n - n ÷ 2)), 360), "azimuths")
+end
+function _ex_feather(e)
+	t = range(0, 2π; length=30)
+	_ex_page(e, "time", "U, V")
+	_ex_add(e, t, cos.(t), "U")
+end
+function _ex_polar(e)
+	θ = range(0, 2π; length=e.kind == "polarscatter" ? 60 : 300)
+	_ex_page(e, "angle (rad)", "radius")
+	_ex_add(e, θ, 1 .+ 0.5 .* sin.(3 .* θ), "r = 1 + 0.5 sin(3θ)")
+end
+_ex_compass(e) = (_ex_page(e, "angle (rad)", "radius");
+                  _ex_add(e, [0.3, 1.2, 2.5, 4.0, 5.2], [3.0, 2.0, 4.0, 1.5, 2.5], "vectors"))
+_ex_pie(e) = (_ex_page(e, "slice", "value"); _ex_add(e, 1:5, [35, 25, 20, 12, 8], "share"))
+function _ex_multivar(e)
+	n = 150
+	a = randn(n); b = 0.7 .* a .+ 0.5 .* randn(n)
+	_ex_page(e, "observation", "value")
+	_ex_add(e, 1:n, a, "length")
+end
+function _ex_marginal(e)
+	x = randn(400)
+	_ex_page(e, "x", "y")
+	_ex_add(e, x, 0.6 .* x .+ 0.6 .* randn(400), "y vs x")
+end
+
+const _XY_EXAMPLES = Dict{String,Function}(
+	"plot" => _ex_curves, "area" => _ex_curves, "comet" => _ex_curves, "scatter" => _ex_curves,
+	"stem" => _ex_steps, "stairs" => _ex_steps,
+	"bar" => _ex_bars, "barh" => _ex_bars, "bar stack" => _ex_bars, "barh stack" => _ex_bars,
+	"waterfall" => _ex_waterfall, "semilogx" => _ex_semilogx, "semilogy" => _ex_semilogy, "loglog" => _ex_loglog,
+	"plotyy" => _ex_plotyy, "fill_between" => _ex_fillbetween, "errorbar" => _ex_errorbar, "bubblechart" => _ex_bubble,
+	"histogram" => _ex_samples, "density" => _ex_samples, "boxplot" => _ex_samples, "violin" => _ex_samples,
+	"ecdfplot" => _ex_samples, "qqnorm" => _ex_samples, "qqplot" => _ex_qqplot,
+	"radar" => _ex_radar, "rose" => _ex_rose, "feather" => _ex_feather,
+	"polarplot" => _ex_polar, "polarscatter" => _ex_polar, "compassplot" => _ex_compass,
+	"piechart" => _ex_pie, "donutchart" => _ex_pie,
+	"parallelplot" => _ex_multivar, "cornerplot" => _ex_multivar, "biplot" => _ex_multivar,
+	"marginalhist" => _ex_marginal)
+
+function _xy_example(plot::Ptr{Cvoid}, p::QtXYPlot, kind::AbstractString)
+	f = get(_XY_EXAMPLES, kind, nothing)
+	f === nothing && error("no synthetic example for '$kind'")
+	f(_XYEx(plot, p, String(kind)))
+	_xy_log(plot, "Synthetic example: '$kind' → page '$kind example'")
+	return
+end
+
 function _on_xy_analysis(plot::Ptr{Cvoid}, cop::Cstring, sel::Cint)::Cvoid
 	op = unsafe_string(cop)
 	try
@@ -1084,6 +1328,16 @@ function _on_xy_analysis(plot::Ptr{Cvoid}, cop::Cstring, sel::Cint)::Cvoid
 				_xy_stat(plot, p, op[6:end], Int(sel))
 			catch e
 				_dbg("xy-stat", op, "ERR", sprint(showerror, e))
+				_xy_request_failed(plot, e isa ErrorException ? e.msg : sprint(showerror, e))
+			end
+			return
+		end
+		# The gallery's right-click "Synthetic example": a page of made-up data for that plot type.
+		if startswith(op, "example:")
+			try
+				_xy_example(plot, p, op[9:end])
+			catch e
+				_dbg("xy-example", op, "ERR", sprint(showerror, e))
 				_xy_request_failed(plot, e isa ErrorException ? e.msg : sprint(showerror, e))
 			end
 			return

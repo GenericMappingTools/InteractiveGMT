@@ -214,6 +214,10 @@ Save the VTK render surface belonging to `fig` to `path`. Unlike `save_png(path)
 variant is figure-specific and therefore safe when several InteractiveGMT windows are open.
 `scale` is an integer VTK capture magnification (1 keeps the window's current pixel size).
 """
+# An X,Y plot window: the current page's chart as it is on screen.
+save_png(p::QtXYPlot, path::AbstractString) =
+	ccall(_fn(:gmtvtk_xyplot_save_png), Cint, (Ptr{Cvoid}, Cstring), p.h, String(path)) != 0
+
 function save_png(fig::Union{QtFigure,QtPoints,QtFV,QtImage,QtEmpty}, path::AbstractString; scale::Integer=1)
 	scale >= 1 || throw(ArgumentError("save_png: `scale` must be >= 1"))
 	h = _fig_handle(fig)

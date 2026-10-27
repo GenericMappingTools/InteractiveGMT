@@ -7496,6 +7496,23 @@ GMTVTK_API int gmtvtk_dialog_button_test(const char *title, const char *name, in
 	return 0;
 }
 
+// test hook: in the top-level window titled `title`, bring its tab labelled `tab` to the front (as a
+// click on the tab does), so the fields on it are visible to the typing hooks. 1 = done, 0 = no such tab.
+GMTVTK_API int gmtvtk_dialog_tab_test(const char *title, const char *tab) {
+	if (!title || !tab) return 0;
+	for (QWidget *w : QApplication::topLevelWidgets()) {
+		if (w->windowTitle() != QString::fromUtf8(title)) continue;
+		for (QTabWidget *tw : w->findChildren<QTabWidget *>())
+			for (int i = 0; i < tw->count(); ++i)
+				if (tw->tabText(i) == QString::fromUtf8(tab) && tw->isTabEnabled(i)) {
+					tw->setCurrentIndex(i);
+					for (int k = 0; k < 5; ++k) QApplication::processEvents();
+					return 1;
+				}
+	}
+	return 0;
+}
+
 // test hook: WHERE a line overlay is and HOW it is drawn, read off the live actor -- what the grid-
 // independence tests need to tell "the row is checked but nothing is on screen" apart into its causes.
 // Writes "key=value;" pairs: visibility, which renderer holds it (main / the depth-cleared top layer),
@@ -7955,6 +7972,30 @@ GMTVTK_API int gmtvtk_xyplot_menu_test(void *handle, const char *name) {
 		}
 	return 0;
 }
+//  - The Object Manager row labelled `text`: what 0 = CLICK its label with the mouse (press + release
+//    on the tree's viewport), 1 = check its box, 2 = uncheck it. 1 = done, 0 = no such row.
+GMTVTK_API int gmtvtk_xyplot_objmgr_test(void *handle, const char *text, int what) {
+	XYPlot *p = static_cast<XYPlot*>(handle);
+	if (!p || !p->win || !p->objMgr || !text) return 0;   // not xyAlive: this copy of the code has its own registry
+	QTreeWidgetItem *it = nullptr;
+	for (int i = 0; i < p->objMgr->topLevelItemCount() && !it; ++i)
+		if (p->objMgr->topLevelItem(i)->text(0) == QString::fromUtf8(text)) it = p->objMgr->topLevelItem(i);
+	if (!it) return 0;
+	if (what == 1 || what == 2) {
+		it->setCheckState(0, what == 1 ? Qt::Checked : Qt::Unchecked);
+	}
+	else {
+		QWidget *vp = p->objMgr->viewport();
+		const QRect r = p->objMgr->visualItemRect(it);
+		const QPointF c(xyObjMgrLabelX(p, it) + 12, r.center().y());
+		QMouseEvent press(QEvent::MouseButtonPress, c, vp->mapToGlobal(c), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+		QApplication::sendEvent(vp, &press);
+		QMouseEvent rel(QEvent::MouseButtonRelease, c, vp->mapToGlobal(c), Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+		QApplication::sendEvent(vp, &rel);
+	}
+	for (int i = 0; i < 5; ++i) QApplication::processEvents();
+	return 1;
+}
 //  - TYPE `text` into the line edit `name` and press Enter; for a combo box, pick item number `text`.
 GMTVTK_API int gmtvtk_xyplot_type_test(void *handle, const char *name, const char *text) {
 	XYPlot *p = static_cast<XYPlot*>(handle);
@@ -8034,6 +8075,32 @@ GMTVTK_API int gmtvtk_xyplot_rclick_test(void *handle, double x, double y, const
 	delete f;
 	for (int i = 0; i < 5; ++i) QApplication::processEvents();
 	return *clicked == 1 ? 1 : 0;
+}
+//  - RIGHT-CLICK the gallery icon of plot type `type` ("bar stack", ...) and trigger its menu item `item`.
+//    1 = the item was triggered, 0 = no icon / no menu / no such item.
+GMTVTK_API int gmtvtk_xyplot_gallery_menu_test(void *handle, const char *type, const char *item) {
+	XYPlot *p = static_cast<XYPlot*>(handle);
+	if (!p || !p->win || !type || !item) return 0;    // not xyAlive: g_xyplots is this DLL's own, empty copy
+	auto *gal = p->win->findChild<QToolBar *>("xyPlotTypes");
+	if (!gal) return 0;
+	auto *a = gal->findChild<QAction *>(QString("xyPlotType_%1").arg(QString::fromUtf8(type).replace(' ', '_')));
+	QWidget *b = a ? gal->widgetForAction(a) : nullptr;
+	if (!b) return 0;
+	const QPoint at = b->rect().center();
+	QContextMenuEvent ev(QContextMenuEvent::Mouse, at, b->mapToGlobal(at));
+	QApplication::sendEvent(b, &ev);
+	for (int i = 0; i < 5; ++i) QApplication::processEvents();
+	for (QMenu *m : p->win->findChildren<QMenu *>()) {
+		if (!m->isVisible()) continue;
+		for (QAction *it : m->actions())
+			if (it->text() == QString::fromUtf8(item)) {
+				m->close();
+				it->trigger();
+				for (int i = 0; i < 5; ++i) QApplication::processEvents();
+				return 1;
+			}
+	}
+	return 0;
 }
 //  - DOUBLE-CLICK the bar code strip at `age` (drops a pico there, or removes the one under it).
 //    Returns the number of picos after it, -1 when the strip is not showing.
@@ -14864,17 +14931,64 @@ GMTVTK_API void gmtvtk_xyplot_set_page_look(void *handle, int square, int hideAx
 		p->widget->renderWindow()->Render();
 }
 
-// Draw series `idx` of the CURRENT page as plot kind `kind` (XYSeries::kind: 0 line ... 8 filled
-// polygons) — the host's way to make what the gallery's own types make. 1 = done, 0 = bad handle/index.
+// Draw series `idx` of the CURRENT page as plot kind `kind` (XYSeries::kind: 0 line ... 8 filled polygons, 9 error
+// bars, 10 bubbles) — the host's way to make what the gallery's own types make. 1 = done, 0 = bad handle/index.
 GMTVTK_API int gmtvtk_xyplot_set_series_kind(void *handle, int idx, int kind) {
 	XYPlot *p = static_cast<XYPlot*>(handle);
 	if (!xyAlive(p))
 		return 0;
 	XYPage &pg = xyCur(p);
-	if (idx < 0 || idx >= (int)pg.series.size() || kind < 0 || kind > 8)
+	if (idx < 0 || idx >= (int)pg.series.size() || kind < 0 || kind > 10)
 		return 0;
 	pg.series[idx].kind = kind;
 	xyRebuildPlots(p);
+	return 1;
+}
+
+// The CURRENT page's chart, as it is on screen, written to the PNG `path` (the chart only: no menus,
+// gallery or Object Manager). 1 = written.
+GMTVTK_API int gmtvtk_xyplot_save_png(void *handle, const char *path) {
+	XYPlot *p = static_cast<XYPlot*>(handle);
+	if (!xyAlive(p) || !path || !p->widget || !p->widget->renderWindow())
+		return 0;
+	vtkRenderWindow *rw = p->widget->renderWindow();
+	rw->Render();
+	vtkNew<vtkWindowToImageFilter> w2i;
+	w2i->SetInput(rw);
+	w2i->ReadFrontBufferOff();
+	w2i->Update();
+	vtkNew<vtkPNGWriter> wr;
+	wr->SetFileName(path);
+	wr->SetInputConnection(w2i->GetOutputPort());
+	wr->Write();
+	return 1;
+}
+
+// Resize the X,Y window to w x h pixels (what a figure for the documentation is taken at). 1 = done.
+GMTVTK_API int gmtvtk_xyplot_set_window_size(void *handle, int w, int h) {
+	XYPlot *p = static_cast<XYPlot*>(handle);
+	if (!xyAlive(p) || !p->win || w < 200 || h < 150)
+		return 0;
+	p->win->resize(w, h);
+	for (int i = 0; i < 5; ++i) QApplication::processEvents();
+	return 1;
+}
+
+// The per-point values of series `idx` of the CURRENT page (what errorbar / bubblechart draw): `what`
+// 0 = Y error bars, 1 = X error bars (lower deltas `a`, upper `b`; b NULL = symmetric), 2 = bubble
+// sizes (`a`). n values, one per row. Nothing is redrawn: the host sets the kind next. 1 = done.
+GMTVTK_API int gmtvtk_xyplot_set_point_values(void *handle, int idx, int what, const double *a, const double *b, int n) {
+	XYPlot *p = static_cast<XYPlot*>(handle);
+	if (!xyAlive(p) || !a || n < 0)
+		return 0;
+	XYPage &pg = xyCur(p);
+	if (idx < 0 || idx >= (int)pg.series.size() || what < 0 || what > 2)
+		return 0;
+	XYSeries &se = pg.series[idx];
+	const std::vector<double> va(a, a + n), vb = b ? std::vector<double>(b, b + n) : va;
+	if (what == 0)      { se.errYlo = va; se.errYhi = vb; }
+	else if (what == 1) { se.errXlo = va; se.errXhi = vb; }
+	else                  se.bubble = va;
 	return 1;
 }
 

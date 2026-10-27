@@ -93,7 +93,25 @@ function _xy_script_emit(h::Ptr{Cvoid}; figsize::Real = 15.0)
 			bind = DataBind(var, :live, bind.expr)
 			append!(kw, [:marker => :+, :ms => string(_xy_pt(2csz), "p"), :ml => string(_xy_pt(width), "p,", col)])
 			mod = :plot
+		elseif kind == 10            # bubbles: one circle per point, its diameter as the window maps it
+			sz = _xy_nums(get(d, "bubble", ""))
+			lo, hi = isempty(sz) ? (0.0, 0.0) : extrema(filter(isfinite, sz))
+			d0, d1 = 5.0, 20.0       # points: the window's bubble range (XY_BUBBLE_PT_LO/HI)
+			dia = [isfinite(v) ? sqrt(d0^2 + (hi > lo ? (v - lo) / (hi - lo) : 0.5) * (d1^2 - d0^2)) * 2.54 / 72 : 0.0 for v in sz]
+			append!(kw, [:marker => :circle, :ms => dia, :mc => col * "@40", :ml => string("0.5p,", col)])
+			mod = :plot
 		else
+			if kind == 9             # error bars: GMT.jl's error_bars, deltas from the point
+				eb = [(ax, _xy_nums(get(d, l, "")), _xy_nums(get(d, h, ""))) for (ax, l, h) in
+				      ((:x, "errxl", "errxh"), (:y, "erryl", "erryh"))]
+				filter!(e -> !isempty(e[2]), eb)
+				if !isempty(eb)       # one error_bars: symmetric vectors, or [lower upper] with asym=true
+					asym = any(e -> e[2] != e[3], eb)
+					ks = Tuple(vcat([e[1] for e in eb], asym ? [:asym] : Symbol[]))
+					vs = Tuple(vcat([asym ? [e[2] e[3]] : e[2] for e in eb], asym ? [true] : Any[]))
+					push!(kw, :error_bars => NamedTuple{ks}(vs))
+				end
+			end
 			lt = parse(Int, get(d, "ltype", "1")); mk = parse(Int, get(d, "marker", "0"))
 			lt != 0 && push!(kw, :pen => string(_xy_pt(width), "p,", col, haskey(_XY_GMT_LINE, lt) ? "," * _XY_GMT_LINE[lt] : ""))
 			if mk != 0 && haskey(_XY_GMT_MARKER, mk)

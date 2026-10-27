@@ -85,7 +85,10 @@ function _gmt_xy_kw(fname::Symbol, kw; adding::Bool=false)
 		elseif k in (:marker, :Marker, :shape)
 			o[:marker] = _gmt_marker(fname, v)
 		elseif k in (:ms, :markersize, :MarkerSize, :size)
-			o[:markersize] = _gmt_len_px(fname, k, v, 'c')
+			# one size per point (GMT.jl's bubblechart / scatter) -> the series is drawn as bubbles
+			v isa AbstractVector ? (o[:bubble] = collect(Float64, v)) : (o[:markersize] = _gmt_len_px(fname, k, v, 'c'))
+		elseif k in (:E, :error, :errorbars, :error_bars)
+			o[:ebars] = _gmt_ebars(fname, v)
 		elseif k in (:mc, :markercolor, :markerfacecolor, :MarkerFaceColor)
 			mc = v
 		elseif k in (:multi, :multicol, :multicols)
@@ -109,6 +112,49 @@ function _gmt_xy_kw(fname::Symbol, kw; adding::Bool=false)
 	c = lc !== nothing ? lc : mc
 	c === nothing || (o[:color] = c)
 	return o
+end
+
+# GMT.jl's error_bars: (y=e,), (x=e,), both, with `asym=true` a two-column [lower upper] per axis.
+# -> Dict(:y => (lower, upper), :x => ...), deltas from the point.
+function _gmt_ebars(fname, v)
+	v isa NamedTuple || error("$fname: give error_bars as a NamedTuple, e.g. error_bars=(y=err,) or (y=[lo hi], asym=true)")
+	asym = get(v, :asym, false) === true
+	out = Dict{Symbol,Tuple{Vector{Float64},Vector{Float64}}}()
+	for (k, e) in pairs(v)
+		k === :asym && continue
+		k in (:x, :y) || error("$fname: error_bars knows x, y and asym here; `$k` is not supported")
+		if asym
+			(e isa AbstractMatrix && size(e, 2) == 2) || error("$fname: with asym=true, error_bars $k must be a 2-column [lower upper] matrix")
+			out[k] = (collect(Float64, e[:, 1]), collect(Float64, e[:, 2]))
+		else
+			ev = e isa Real ? [Float64(e)] : collect(Float64, vec(e))
+			out[k] = (ev, ev)
+		end
+	end
+	isempty(out) && error("$fname: error_bars needs x and/or y")
+	return out
+end
+
+# A series just drawn gets its per-point values: error bars (kind 9) or bubble sizes (kind 10).
+function _gmt_xy_perpoint!(p::QtXYPlot, n::Int, ebars, bubble)
+	ebars === nothing && bubble === nothing && return
+	idx = ccall(_fn(:gmtvtk_xyplot_series_count), Cint, (Ptr{Cvoid},), p.h) - 1
+	fit(v) = length(v) == 1 ? fill(v[1], n) : (length(v) == n ? v : error("plot: per-point values must be one per point ($n), got $(length(v))"))
+	if ebars !== nothing
+		for (k, what) in ((:y, 0), (:x, 1))
+			haskey(ebars, k) || continue
+			lo, hi = fit(ebars[k][1]), fit(ebars[k][2])
+			ccall(_fn(:gmtvtk_xyplot_set_point_values), Cint, (Ptr{Cvoid}, Cint, Cint, Ptr{Float64}, Ptr{Float64}, Cint),
+			      p.h, idx, what, lo, hi, n)
+		end
+	end
+	if bubble !== nothing
+		b = fit(bubble)
+		ccall(_fn(:gmtvtk_xyplot_set_point_values), Cint, (Ptr{Cvoid}, Cint, Cint, Ptr{Float64}, Ptr{Float64}, Cint),
+		      p.h, idx, 2, b, C_NULL, n)
+	end
+	ccall(_fn(:gmtvtk_xyplot_set_series_kind), Cint, (Ptr{Cvoid}, Cint, Cint), p.h, idx, ebars !== nothing ? 9 : 10)
+	return
 end
 
 const _XY_SERIES_KW = (:color, :linewidth, :linestyle, :marker, :markersize)
@@ -150,8 +196,11 @@ function _gmt_xy_draw(p, segs, o::Dict{Symbol,Any})
 	legend = pop!(o, :name, nothing)
 	xlab = pop!(o, :xlabel, nothing)
 	track = pop!(o, :track, nothing)
+	ebars, bubble = pop!(o, :ebars, nothing), pop!(o, :bubble, nothing)
 	sk = (; (k => o[k] for k in _XY_SERIES_KW if haskey(o, k))...)
 	nser = sum(s -> length(s[2]), segs)
+	(ebars !== nothing || bubble !== nothing) && nser > 1 &&
+		error("plot: error_bars / per-point ms go with ONE series; this call draws $nser")
 	k = 0
 	for (x, ys, nms, xl) in segs, (y, nm) in zip(ys, nms)
 		k += 1
@@ -163,6 +212,7 @@ function _gmt_xy_draw(p, segs, o::Dict{Symbol,Any})
 		else
 			_xyadd!(p, x, y; name, sk..., tk...)
 		end
+		_gmt_xy_perpoint!(p, length(x), ebars, bubble)
 	end
 	return p
 end
@@ -174,7 +224,9 @@ GMT.jl's `plot`, drawn in iGMT's interactive **X,Y plot** window (a new page of 
 there is one). Same arguments and keywords as GMT.jl: column 2 against column 1 of a matrix or
 `GMTdataset`, every further column too with `multicol=true`; `lc`/`linecolor`, `lw`/`linewidth`
 (points), `ls`/`linestyle`, `pen=(w, color, style)`, `marker`, `ms`/`markersize` (cm), `mc`,
-`legend`, `title`, `xlabel`, `ylabel`, `proj=:logx`/`:logy`/`:loglog`. iGMT-only: `xtime` (X is Unix
+`legend`, `title`, `xlabel`, `ylabel`, `proj=:logx`/`:logy`/`:loglog`, `error_bars=(y=e,)` (also
+`x=`, and `asym=true` with `[lower upper]` columns) for error bars, and a vector `ms` (one size per
+point) for bubbles. iGMT-only: `xtime` (X is Unix
 epoch seconds: `:date`, `:date_ymd`, `:time`, `:decyear`, `:doy`), `track`, `trackgeog`.
 
 A GMT.jl keyword the window cannot honour (`region`, `frame`, `savefig`, ...) is an error; use
@@ -217,8 +269,16 @@ function bar!(p::QtXYPlot, x::AbstractVector, y::AbstractVector; width::Real = 0
 	for k in keys(o)
 		k in (:name, :color, :linewidth) || _gmt_kw_error(:bar!, k)
 	end
-	return _xyadd!(p, x, y; name = get(o, :name, ""), color = get(o, :color, nothing),
-	               linewidth = get(o, :linewidth, 0), kind = :bar, barwidth = width)
+	_xyadd!(p, x, y; name = get(o, :name, ""), color = get(o, :color, nothing),
+	        linewidth = get(o, :linewidth, 0), kind = :bar, barwidth = width)
+	# A plain bar item (vtkPlotBar) has its width recomputed by the chart on every paint, so a width
+	# given here would never show: such a series is drawn as bars on a zero base (kind 6, the item
+	# the stacked bars use), which keep their own width.
+	if width > 0
+		idx = ccall(_fn(:gmtvtk_xyplot_series_count), Cint, (Ptr{Cvoid},), p.h) - 1
+		ccall(_fn(:gmtvtk_xyplot_set_series_kind), Cint, (Ptr{Cvoid}, Cint, Cint), p.h, idx, 6)
+	end
+	return p
 end
 
 function _xy_current(fname)

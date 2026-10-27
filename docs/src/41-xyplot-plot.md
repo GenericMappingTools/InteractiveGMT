@@ -248,6 +248,45 @@ clear!(p)
 plot!(p, x, sqrt.(x); legend="√x")
 ```
 
+### Error Bars
+
+GMT.jl's `error_bars` gives each point its error, and the line is drawn with a capped bar at every
+point. `asym=true` takes a two-column `[lower upper]` matrix per axis.
+
+```julia
+x = 1:10
+y = sqrt.(x)
+p = plot(x, y; error_bars=(y=0.1 .* y,), marker=:circle)
+plot!(p, x, y .+ 1; error_bars=(y=[fill(0.1, 10) fill(0.3, 10)], asym=true), legend="asymmetric")
+```
+
+The gallery's **errorbar** icon re-plots the page with the error bars its series carry. A series with
+none opens a dialog: take its errors from another series of the page (which is then hidden), a
+constant, or a percentage of each point's Y; vertical, horizontal or both.
+
+### Bubble Chart
+
+A vector `ms`, one size per point, draws the series as bubbles (GMT.jl's `bubblechart`): the bubble
+area grows with the value, between 5 and 20 points across.
+
+```julia
+x = rand(20); y = rand(20); sz = rand(20)
+p = plot(x, y; ms=sz, legend="bubbles")
+```
+
+The gallery's **bubblechart** icon works like **errorbar**: the sizes a series carries, or the
+dialog for one that has none.
+
+### Polar Plots, Feather, Pie and Donut
+
+These gallery icons draw on a **new page**:
+
+- **polarplot**, **polarscatter**, **compassplot**: each series' X is the angle, in radians, and Y the
+  radius, drawn as a line, as points, or as arrows from the origin, on polar axes.
+- **feather**: the page's first two curves are U and V, drawn as sticks along X (as [`feather`](@ref)).
+- **piechart**, **donutchart**: the selected series' values as slices, from 12 o'clock clockwise,
+  labelled with their percentage. A sum below 1 leaves the pie partial, as in GMT.jl's `piechart`.
+
 ### Change a Line After Plotting
 
 Right-click the line in the **Object Manager** and pick **Line properties…** for its colour, width,
@@ -293,7 +332,8 @@ widths and centimetres for marker sizes; a string carries its unit (`"1p"`, `"0.
 | `ls`, `linestyle` | `:solid`/`"-"`, `:dash`/`"--"`, `:dot`/`":"`, `:dashdot`/`"-."`, `:dashdotdot`/`"-.."`, `:none` (markers only) | `:solid` |
 | `pen` | `(width, colour, style)`, or `"width,colour,style"`; any part may be left out | — |
 | `marker`, `shape` | `:cross` (`:x`), `:plus` (`"+"`), `:square` (`:s`), `:circle` (`:c`), `:diamond` (`:d`) | no marker |
-| `ms`, `markersize` | marker size, cm or a string with its unit | tool default |
+| `ms`, `markersize` | marker size, cm or a string with its unit; a vector (one per point) draws bubbles | tool default |
+| `error_bars`, `E` | `(y=e,)`, `(x=e,)`, both; `asym=true` with `[lower upper]` columns | none |
 | `mc`, `markercolor` | the series colour when `lc` is not given (one colour per series) | — |
 | `multicol` | `true`: every column after the first is a line | `false` |
 | `xlabel`, `ylabel` | axis titles (`plot` only) | `"X"`, `"Y"` |

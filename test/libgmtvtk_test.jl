@@ -125,13 +125,15 @@ const _TEST_SYMBOLS = (
 	:gmtvtk_widget_screen_test, :gmtvtk_objrow_screen_test, :gmtvtk_popup_item_screen_test, :gmtvtk_active_window_test, :gmtvtk_popup_autoclick_os_test, :gmtvtk_autoclick_trace_test, :gmtvtk_overlay_point_screen_test,  # screen positions + a real click inside a menu, for REAL-mouse tests
 	:gmtvtk_scene_remove_surface_test, # the base row's Remove (sceneRemoveSurface)
 	:gmtvtk_dock_probe_test,          # a dock's geometry ("x,y,w,h,floating,area")
-	:gmtvtk_xyplot_click_test, :gmtvtk_xyplot_type_test, :gmtvtk_xyplot_rclick_test,  # X,Y bar code tools: a click,
+	:gmtvtk_xyplot_click_test, :gmtvtk_xyplot_type_test, :gmtvtk_xyplot_rclick_test, :gmtvtk_xyplot_gallery_menu_test,  # X,Y bar code tools: a click,
 	:gmtvtk_xyplot_magbar_dblclick_test, :gmtvtk_xyplot_mag_state_test,               # typing, menus, the bar strip, state
 	:gmtvtk_xyplot_misc_state_test,   # what the X,Y Misc menu shows (log X/Y, time mode)
 	:gmtvtk_xyplot_drag_test, :gmtvtk_xyplot_sg_state_test,   # a left-drag on the chart; the kept S&G lines
 	:gmtvtk_xyplot_sg_on_test,        # the S&G tool on/off without its unit question
 	:gmtvtk_xyplot_menu_test,         # an X,Y menu item chosen
+	:gmtvtk_xyplot_objmgr_test,       # an X,Y Object Manager row: click its label, check / uncheck it
 	:gmtvtk_dialog_button_test,       # a dialog's push button by objectName: its text, and a click
+	:gmtvtk_dialog_tab_test,          # a dialog tab brought to the front, as a click on it does
 	:gmtvtk_set_remotes_callback,     # NOT test-only -- mirrored: this dll's Remote sensing dialogs call Julia too
 )
 

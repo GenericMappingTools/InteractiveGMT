@@ -312,6 +312,8 @@ static void mbnavadjustMenuOpen(QWidget *win, Scene *s);
 #include <vtkPoints2D.h>
 #include <vtkPlotBar.h>
 #include <vtkContext2D.h>
+#include <vtkTransform2D.h>
+#include <vtkMatrix3x3.h>
 #include <vtkAxis.h>
 #include <vtkTable.h>
 #include <vtkPen.h>
