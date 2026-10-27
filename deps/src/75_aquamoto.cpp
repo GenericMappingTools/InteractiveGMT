@@ -362,14 +362,15 @@ public:
 			registry().insert(scene, w);
 		}
 		w->win->show();
-		// A NEW Aquamoto window pops up against the RIGHT side of its iGMT window, tops level, kept on
-		// that window's screen. A re-shown one stays wherever the user put it.
+		// A NEW Aquamoto window pops up against the RIGHT side of its iGMT window, CENTRED on that
+		// window's height (top-aligned it covered iGMT's own title-bar X), kept on that window's screen.
+		// A re-shown one stays wherever the user put it.
 		if (fresh && scene && scene->win) {
 			const QRect vf = scene->win->frameGeometry();
 			const QRect af = w->win->frameGeometry();
 			QScreen *scr = scene->win->screen();
 			const QRect avail = scr ? scr->availableGeometry() : QRect(vf.right() + 1, vf.top(), af.width(), af.height());
-			int x = vf.right() + 1, y = vf.top();
+			int x = vf.right() + 1, y = vf.center().y() - af.height() / 2;
 			if (x + af.width() > avail.right() + 1) x = avail.right() + 1 - af.width();
 			if (y + af.height() > avail.bottom() + 1) y = avail.bottom() + 1 - af.height();
 			w->win->move(std::max(x, avail.left()), std::max(y, avail.top()));
@@ -1329,7 +1330,10 @@ public:
 			QMessageBox::warning(win, "Aquamoto", out.isEmpty() ? "could not open the file" : out);
 			return;
 		}
-		const QStringList parts = out.trimmed().split('|');   // "nsteps|activevar|var1,var2,…"
+		// "nsteps|activevar|var1,var2,…" is the reply's LAST line: whatever GMT said on stderr during the
+		// open (a grdinfo registration warning, say) comes first, and parsing the whole reply turned
+		// every such file into ONE time step.
+		const QStringList parts = out.trimmed().section('\n', -1).trimmed().split('|');
 		bool ok = false;
 		int n = parts.isEmpty() ? 0 : parts[0].toInt(&ok);
 		if (!ok || n < 1) n = 1;
