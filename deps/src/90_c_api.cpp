@@ -14995,13 +14995,13 @@ GMTVTK_API void gmtvtk_xyplot_set_page_look(void *handle, int square, int hideAx
 }
 
 // Draw series `idx` of the CURRENT page as plot kind `kind` (XYSeries::kind: 0 line ... 8 filled polygons, 9 error
-// bars, 10 bubbles) — the host's way to make what the gallery's own types make. 1 = done, 0 = bad handle/index.
+// bars, 10 bubbles, 11 arrows) — the host's way to make what the gallery's own types make. 1 = done, 0 = bad handle/index.
 GMTVTK_API int gmtvtk_xyplot_set_series_kind(void *handle, int idx, int kind) {
 	XYPlot *p = static_cast<XYPlot*>(handle);
 	if (!xyAlive(p))
 		return 0;
 	XYPage &pg = xyCur(p);
-	if (idx < 0 || idx >= (int)pg.series.size() || kind < 0 || kind > 10)
+	if (idx < 0 || idx >= (int)pg.series.size() || kind < 0 || kind > 11)
 		return 0;
 	pg.series[idx].kind = kind;
 	xyRebuildPlots(p);
@@ -15025,6 +15025,17 @@ GMTVTK_API int gmtvtk_xyplot_save_png(void *handle, const char *path) {
 	wr->SetInputConnection(w2i->GetOutputPort());
 	wr->Write();
 	return 1;
+}
+
+// The current page as a figure, format by the file's extension (.pdf .ps .svg .png .jpg) — the same
+// xyExportFigure File > Export figure runs. 1 = written, 0 = not (the reason goes to the Messages log).
+GMTVTK_API int gmtvtk_xyplot_export(void *handle, const char *path) {
+	XYPlot *p = static_cast<XYPlot*>(handle);
+	if (!xyAlive(p) || !path)
+		return 0;
+	const QString err = xyExportFigure(p, QString::fromUtf8(path));
+	if (!err.isEmpty()) xyLog(p, "Export figure: " + err);
+	return err.isEmpty() ? 1 : 0;
 }
 
 // Resize the X,Y window to w x h pixels (what a figure for the documentation is taken at). 1 = done.

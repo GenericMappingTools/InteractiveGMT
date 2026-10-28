@@ -175,6 +175,16 @@
 #include <vtkTextProperty.h>
 #include <vtkWindowToImageFilter.h>
 #include <vtkPNGWriter.h>
+#include <vtkJPEGWriter.h>
+#include <vtkPDFExporter.h>                 // the X,Y plot's vector exports (xyExportFigure)
+#include <vtkPDFContextDevice2D.h>
+#include <vtk_libharu.h>
+#include <vtkContextActor.h>
+#include <vtkRendererCollection.h>
+#include <vtkSVGExporter.h>
+#include <vtkSVGContextDevice2D.h>
+#include <vtkXMLDataElement.h>
+#include <vtkGL2PSExporter.h>
 #include <vtkNamedColors.h>
 #include <vtkSmartPointer.h>
 #include <vtkNew.h>

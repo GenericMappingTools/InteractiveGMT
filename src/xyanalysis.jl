@@ -456,6 +456,8 @@ end
 # the parent's quantity, so it lands on a NEW page of this window. Every series of the current page
 # takes part (one curve / box / violin each), except qqplot, which compares the first two.
 function _xy_stat(plot::Ptr{Cvoid}, p::QtXYPlot, kind::AbstractString, sel::Int=-1)
+	f = get(_XY_STAT_KINDS, kind, nothing)
+	f === nothing && error("unknown statistical plot '$kind'")
 	n = ccall(_fn(:gmtvtk_xyplot_series_count), Cint, (Ptr{Cvoid},), plot)
 	vals, names = Vector{Vector{Float64}}(), String[]
 	for k in 0:n-1
@@ -469,70 +471,81 @@ function _xy_stat(plot::Ptr{Cvoid}, p::QtXYPlot, kind::AbstractString, sel::Int=
 	(kind == "qqplot" && length(vals) < 2) && error("qqplot compares two curves: this page has only one")
 	page(name, xl, yl) = (ccall(_fn(:gmtvtk_xyplot_add_page), Cint, (Ptr{Cvoid}, Cstring), plot, String(name));
 	                      ccall(_fn(:gmtvtk_xyplot_set_labels), Cvoid, (Ptr{Cvoid}, Cstring, Cstring), plot, String(xl), String(yl)))
-	nan = NaN
-	if kind == "density"
-		page("density", "value", "density")
-		for (v, nm) in zip(vals, names)
-			D = GMT.kernelDensity(v)
-			_xyadd!(p, D.data[:, 1], D.data[:, 2]; name="$nm density")
-		end
-	elseif kind == "ecdfplot"
-		page("ECDF", "value", "cumulative probability")
-		for (v, nm) in zip(vals, names)
-			xF, F = GMT.ecdf(v)
-			_xyadd!(p, xF, F; name="$nm ECDF")
-		end
-		ccall(_fn(:gmtvtk_xyplot_set_plot_type), Cint, (Ptr{Cvoid}, Cstring), plot, "stairs")   # ecdfplot draws stairs
-	elseif kind == "boxplot"
-		page("boxplot", "series", "value")
-		# Rows of D: [x  q50  q0  q25  q75  q100  n]; Dol: the outliers (beyond 1.5 IQR) as [x y].
-		D, Dol = GMT.helper2_boxplot(vals, Float64[], Float64[], 0.0, "", true, true)
-		w = 0.25
-		for k in axes(D.data, 1)
-			c, q50, q0, q25, q75, q100 = D.data[k, 1:6]
-			bx = [c-w, c+w, c+w, c-w, c-w, nan, c-w, c+w, nan, c, c, nan, c, c, nan, c-w/2, c+w/2, nan, c-w/2, c+w/2]
-			by = [q25, q25, q75, q75, q25, nan, q50, q50, nan, q0, q25, nan, q75, q100, nan, q0, q0, nan, q100, q100]
-			_xyadd!(p, bx, by; name=names[k])
-		end
-		size(Dol.data, 1) > 0 && _xyadd!(p, Dol.data[:, 1], Dol.data[:, 2]; name="outliers", marker=:circle, linestyle=:none)
-	elseif kind == "violin"
-		page("violin", "series", "value")
-		Dv, _, xc = GMT.helper1_violin(vals)
-		for k in eachindex(Dv)
-			P = Dv[k].data
-			# Half-width scaled here to GMT.jl's own 1/(2*N_grp) * 0.75 * groupwidth (= 0.28): its
-			# helper1_violin computes that scale but its loop never applies it (GMT.jl statplots.jl).
-			hw = maximum(abs.(P[:, 1] .- xc[k]))
-			xs = hw > 0 ? xc[k] .+ (P[:, 1] .- xc[k]) .* (0.28 / hw) : P[:, 1]
-			_xyadd!(p, xs, P[:, 2]; name=names[k])
-		end
-	elseif kind == "qqnorm" || kind == "qqplot"
-		allqx = Float64[]
-		if kind == "qqnorm"           # GMT.jl's qqplot(x): x against the normal quantiles
-			page("qqnorm", "sample quantiles", "normal quantiles")
-			for (v, nm) in zip(vals, names)
-				pr = (0.5:length(v)) ./ length(v)
-				qx, qy = GMT.qqbuild(v, sqrt(2) .* GMT.erfinv(collect(2 .* pr .- 1)))
-				_xyadd!(p, qx, qy; name=nm, marker=:circle, linestyle=:none)
-				append!(allqx, qx)
-			end
-		else
-			page("qqplot", names[1], names[2])
-			qx, qy = GMT.qqbuild(vals[1], vals[2])
-			_xyadd!(p, qx, qy; name="$(names[1]) vs $(names[2])", marker=:circle, linestyle=:none)
-			append!(allqx, qx)
-		end
-		lo, hi = extrema(allqx)       # GMT.jl's default qqline=:identity: ys = xs over the x quantiles
-		_xyadd!(p, [lo, hi], [lo, hi]; name="identity", color=:black, linestyle=:dash)
-	elseif kind in ("radar", "rose", "parallelplot", "cornerplot", "marginalhist", "biplot", "feather", "polarscatter",
-	                "polarplot", "compassplot", "piechart", "donutchart")
-		_xy_framed(plot, p, kind, sel, page)
-	else
-		error("unknown statistical plot '$kind'")
-	end
+	f(plot, p, String(kind), sel, vals, names, page)
 	_xy_log(plot, "Plot type: $kind of $(length(vals)) series → new page")
 	return
 end
+
+function _xy_stat_density(plot, p, kind, sel, vals, names, page)
+	page("density", "value", "density")
+	for (v, nm) in zip(vals, names)
+		D = GMT.kernelDensity(v)
+		_xyadd!(p, D.data[:, 1], D.data[:, 2]; name="$nm density")
+	end
+end
+function _xy_stat_ecdf(plot, p, kind, sel, vals, names, page)
+	page("ECDF", "value", "cumulative probability")
+	for (v, nm) in zip(vals, names)
+		xF, F = GMT.ecdf(v)
+		_xyadd!(p, xF, F; name="$nm ECDF")
+	end
+	ccall(_fn(:gmtvtk_xyplot_set_plot_type), Cint, (Ptr{Cvoid}, Cstring), plot, "stairs")   # ecdfplot draws stairs
+end
+function _xy_stat_boxplot(plot, p, kind, sel, vals, names, page)
+	nan = NaN
+	page("boxplot", "series", "value")
+	# Rows of D: [x  q50  q0  q25  q75  q100  n]; Dol: the outliers (beyond 1.5 IQR) as [x y].
+	D, Dol = GMT.helper2_boxplot(vals, Float64[], Float64[], 0.0, "", true, true)
+	w = 0.25
+	for k in axes(D.data, 1)
+		c, q50, q0, q25, q75, q100 = D.data[k, 1:6]
+		bx = [c-w, c+w, c+w, c-w, c-w, nan, c-w, c+w, nan, c, c, nan, c, c, nan, c-w/2, c+w/2, nan, c-w/2, c+w/2]
+		by = [q25, q25, q75, q75, q25, nan, q50, q50, nan, q0, q25, nan, q75, q100, nan, q0, q0, nan, q100, q100]
+		_xyadd!(p, bx, by; name=names[k])
+	end
+	size(Dol.data, 1) > 0 && _xyadd!(p, Dol.data[:, 1], Dol.data[:, 2]; name="outliers", marker=:circle, linestyle=:none)
+end
+function _xy_stat_violin(plot, p, kind, sel, vals, names, page)
+	page("violin", "series", "value")
+	Dv, _, xc = GMT.helper1_violin(vals)
+	for k in eachindex(Dv)
+		P = Dv[k].data
+		# Half-width scaled here to GMT.jl's own 1/(2*N_grp) * 0.75 * groupwidth (= 0.28): its
+		# helper1_violin computes that scale but its loop never applies it (GMT.jl statplots.jl).
+		hw = maximum(abs.(P[:, 1] .- xc[k]))
+		xs = hw > 0 ? xc[k] .+ (P[:, 1] .- xc[k]) .* (0.28 / hw) : P[:, 1]
+		_xyadd!(p, xs, P[:, 2]; name=names[k])
+	end
+end
+function _xy_stat_qq(plot, p, kind, sel, vals, names, page)
+	allqx = Float64[]
+	if kind == "qqnorm"           # GMT.jl's qqplot(x): x against the normal quantiles
+		page("qqnorm", "sample quantiles", "normal quantiles")
+		for (v, nm) in zip(vals, names)
+			pr = (0.5:length(v)) ./ length(v)
+			qx, qy = GMT.qqbuild(v, sqrt(2) .* GMT.erfinv(collect(2 .* pr .- 1)))
+			_xyadd!(p, qx, qy; name=nm, marker=:circle, linestyle=:none)
+			append!(allqx, qx)
+		end
+	else
+		page("qqplot", names[1], names[2])
+		qx, qy = GMT.qqbuild(vals[1], vals[2])
+		_xyadd!(p, qx, qy; name="$(names[1]) vs $(names[2])", marker=:circle, linestyle=:none)
+		append!(allqx, qx)
+	end
+	lo, hi = extrema(allqx)       # GMT.jl's default qqline=:identity: ys = xs over the x quantiles
+	_xyadd!(p, [lo, hi], [lo, hi]; name="identity", color=:black, linestyle=:dash)
+end
+_xy_stat_framed(plot, p, kind, sel, vals, names, page) = _xy_framed(plot, p, kind, sel, page)
+
+# The statistical kinds, each with its own builder. Reached through this `Function`-typed table ON PURPOSE,
+# for the same reason as _XY_ANA_OPS: the first boxplot compiles the boxplot, not every kind (3.6 s
+# measured 2026-10-27, when they were the branches of one function).
+const _XY_STAT_KINDS = Dict{String,Function}(
+	"density" => _xy_stat_density, "ecdfplot" => _xy_stat_ecdf, "boxplot" => _xy_stat_boxplot,
+	"violin" => _xy_stat_violin, "qqnorm" => _xy_stat_qq, "qqplot" => _xy_stat_qq,
+	(k => _xy_stat_framed for k in ("radar", "rose", "parallelplot", "cornerplot", "marginalhist", "biplot", "feather",
+	                              "polarscatter", "polarplot", "compassplot", "piechart", "donutchart"))...)
 
 # ---- the gallery's plot types that draw their OWN frame -----------------------------------------------
 # radar, rose, parallelplot, cornerplot, marginalhist and biplot are not curves on an x,y frame: GMT.jl
@@ -669,6 +682,7 @@ function _xy_feather_page(plot, p, page)
 	segx, segy = _stick_segments(t, u, v, _stick_scale(t, u, v))
 	page("feather", "", "")
 	_xyadd!(p, segx, segy; name="sticks")
+	_stick_arrows!(plot)
 	_xyadd!(p, [minimum(t), maximum(t)], [0.0, 0.0]; name="baseline", color=:gray)
 end
 
@@ -705,202 +719,223 @@ function _xy_pie(plot, p, kind, sel, page)
 	_xy_look(plot, true, true, (-1.3, 1.3, -1.3, 1.3))
 end
 
-function _xy_framed(plot, p, kind, sel, page)
-	kind in ("polarplot", "polarscatter", "compassplot") && return _xy_polar(plot, p, kind, page)
-	kind == "feather" && return _xy_feather_page(plot, p, page)
-	kind in ("piechart", "donutchart") && return _xy_pie(plot, p, kind, sel, page)
-	if kind == "radar"
-		# GMT.jl radar(): one polygon per row, one axis per column. Here a row is a SERIES of the page
-		# (its points are the axes). Not normalized -> each axis scaled to round_wesn of its max, as radar()
-		# does with `axeslimts`; here the limits are the data's own maxima.
-		n = ccall(_fn(:gmtvtk_xyplot_series_count), Cint, (Ptr{Cvoid},), plot)
-		rows, nms = Vector{Vector{Float64}}(), String[]
-		for k in 0:n-1
-			y = _xy_get_series(plot, k)[2]
-			length(y) < 3 && continue
-			push!(rows, y); nm = _xy_series_name(plot, k); push!(nms, isempty(nm) ? "series $k" : nm)
-		end
-		isempty(rows) && error("radar: a series needs 3 or more points (one per spoke)")
-		na = length(rows[1])
-		all(length(r) == na for r in rows) || error("radar: every series must have the same number of points (one per spoke)")
-		data = reduce(vcat, permutedims.(rows))
-		isnorm = all(t -> 0 <= t <= 1, data)
-		lims = isnorm ? ones(na) : [GMT.round_wesn([0.0 0 0 maximum(data[:, k])])[4] for k in 1:na]
-		i_ang = (na == 5) ? 18.0 : 0.0                # radar(): a pentagon shows its second axis along y
-		angs = [i_ang + (k - 1) * 360 / na for k in 1:na]
-		page("radar", "", "")
-		gx, gy = Float64[], Float64[]
-		for r in 0.2:0.2:1.0                          # radar()'s yg0.2 rings
-			cx, cy = _xy_circle(r); append!(gx, cx); append!(gy, cy)
-		end
-		for a in angs  append!(gx, [0.0, cosd(a), NaN]); append!(gy, [0.0, sind(a), NaN])  end
-		_xyadd!(p, gx, gy; name="radar grid", color=_XY_GRID_RGB)
-		for (i, nm) in enumerate(nms)
-			r = data[i, :] ./ lims
-			_xy_addk!(plot, p, vcat(r .* cosd.(angs), r[1] * cosd(angs[1])), vcat(r .* sind.(angs), r[1] * sind(angs[1])), nm, 8)
-		end
-		for (k, a) in enumerate(angs)                 # radar()'s default axis names, and the ring values
-			_xy_lbl(plot, 1.12cosd(a), 1.12sind(a), "Label$k"; ha=abs(cosd(a)) < 0.2 ? 0 : (cosd(a) > 0 ? -1 : 1), size=12)
-			(k == 1 || !isnorm) || continue
-			for f in 0.2:0.2:1.0
-				_xy_lbl(plot, f * cosd(a), f * sind(a), _xy_fmt(f * lims[k]); ha=-1, va=-1, size=9, c=(0.35, 0.35, 0.35))
-			end
-		end
-		_xy_look(plot, true, true, (-1.3, 1.3, -1.3, 1.3))
-	elseif kind == "rose"
-		# GMT's rose (psrose): azimuths, clockwise from north, in 10° sectors, lengths normalized to the
-		# largest sector (the GMT.jl example's sector=(width=10, rose=true), normalize=true). The sector
-		# counts are GMT.jl's own histogram binning (hst_floats).
-		sel < 0 && error("rose: select the series of azimuths in the Object Manager first")
-		v = filter(isfinite, _xy_get_series(plot, sel)[2])
-		length(v) < 2 && error("rose: the selected series needs two or more values")
-		nm = _xy_series_name(plot, sel)
-		hst, inc, _ = GMT.hst_floats(mod.(v, 360.0), "10"; min_max=(0.0, 360.0))
-		r = hst[:, 2] ./ maximum(hst[:, 2])
-		page("rose", "", "")
-		gx, gy = Float64[], Float64[]
-		for rr in 0.25:0.25:1.0
-			cx, cy = _xy_circle(rr); append!(gx, cx); append!(gy, cy)
-		end
-		for a in 0:30:330  append!(gx, [0.0, sind(a), NaN]); append!(gy, [0.0, cosd(a), NaN])  end
-		_xyadd!(p, gx, gy; name="rose grid", color=_XY_GRID_RGB)
-		px, py = Float64[], Float64[]
-		for k in axes(hst, 1)
-			r[k] > 0 || continue
-			a = range(hst[k, 1], hst[k, 1] + inc; length=6)
-			append!(px, vcat(0.0, r[k] .* sind.(a), NaN)); append!(py, vcat(0.0, r[k] .* cosd.(a), NaN))
-		end
-		_xy_addk!(plot, p, px, py, isempty(nm) ? "rose" : nm, 8; color=_XY_BLUE)
-		for a in 0:30:330
-			_xy_lbl(plot, 1.1sind(a), 1.1cosd(a), "$(a)°"; ha=a in (0, 180) ? 0 : (a < 180 ? -1 : 1), size=11)
-		end
-		_xy_look(plot, true, true, (-1.3, 1.3, -1.3, 1.3))
-	elseif kind == "parallelplot"
-		# GMT.jl parallelplot(): one ruler per variable, every observation a line across them, values
-		# normalized per ruler to its own range (normalize="range", via its normalizeArray).
-		M, nms = _xy_page_matrix(plot)
-		nv = size(M, 2)
-		nv < 2 && error("parallelplot needs two or more series on this page (one per variable)")
-		bbox = reduce(vcat, [collect(extrema(M[:, k])) for k in 1:nv])
-		A = GMT.normalizeArray("range", copy(M), bbox)
-		page("parallelplot", "", "")
-		lx, ly = Float64[], Float64[]
-		for i in axes(A, 1)  append!(lx, vcat(1.0:nv, NaN)); append!(ly, vcat(A[i, :], NaN))  end
-		_xyadd!(p, lx, ly; name="observations")
-		ax, ay = Float64[], Float64[]
-		for k in 1:nv  append!(ax, [k, k, NaN]); append!(ay, [0.0, 1.0, NaN])  end
-		_xyadd!(p, ax, ay; name="rulers", color=(0.0, 0.0, 0.0))
-		for k in 1:nv
-			_xy_lbl(plot, k, 1.02, _xy_fmt(bbox[2k]); va=-1, size=10)
-			_xy_lbl(plot, k, -0.02, _xy_fmt(bbox[2k-1]); va=1, size=10)
-			_xy_lbl(plot, k, -0.09, nms[k]; va=1, size=12)
-		end
-		_xy_look(plot, false, true, (0.6, nv + 0.4, -0.18, 1.1))
-	elseif kind == "cornerplot"
-		# GMT.jl cornerplot(): an n x n lower-triangular matrix of panels, each variable's histogram on
-		# the diagonal (x range = round_wesn of its extrema, as cornerplot() sets it) and every pair's
-		# scatter below it. (cornerplot() switches to hexagon binning above 1000 points; here it is always
-		# the scatter its `scatter=true` gives.)
-		M, nms = _xy_page_matrix(plot)
-		nv = size(M, 2)
-		nv < 2 && error("cornerplot needs two or more series on this page (one per variable)")
-		g = 0.12
-		lohi = [_xy_lohi(M[:, k]) for k in 1:nv]
-		nx(k, v) = (v .- lohi[k][1]) ./ (lohi[k][2] - lohi[k][1])
-		X0(j) = (j - 1) * (1 + g);  Y0(i) = (nv - i) * (1 + g)
-		page("cornerplot", "", "")
-		fx, fy = Float64[], Float64[]
-		for i in 1:nv, j in 1:i
-			rx, ry = _xy_rect(X0(j), X0(j) + 1, Y0(i), Y0(i) + 1)
-			append!(fx, vcat(rx[1:4], rx[1], NaN)); append!(fy, vcat(ry[1:4], ry[1], NaN))
-		end
-		_xyadd!(p, fx, fy; name="panels", color=(0.3, 0.3, 0.3))
-		for k in 1:nv
-			hx, hy = _xy_panel_hist(M[:, k], lohi[k]..., X0(k), Y0(k), 0.95, false)
-			_xy_addk!(plot, p, hx, hy, "$(nms[k]) histogram", 8; color=_XY_BLUE)
-		end
-		for i in 2:nv, j in 1:i-1
-			_xyadd!(p, X0(j) .+ nx(j, M[:, j]), Y0(i) .+ nx(i, M[:, i]); name="$(nms[i]) vs $(nms[j])",
-			     marker=:circle, linestyle=:none, markersize=3, color=_XY_BLUE)
-		end
-		for j in 1:nv                                 # x scales + names under the bottom row
-			_xy_lbl(plot, X0(j), Y0(nv) - 0.02, _xy_fmt(lohi[j][1]); ha=-1, va=1, size=9)
-			_xy_lbl(plot, X0(j) + 1, Y0(nv) - 0.02, _xy_fmt(lohi[j][2]); ha=1, va=1, size=9)
-			_xy_lbl(plot, X0(j) + 0.5, Y0(nv) - 0.12, nms[j]; va=1, size=12)
-		end
-		for i in 2:nv                                 # y scales + names left of the first column
-			_xy_lbl(plot, X0(1) - 0.02, Y0(i), _xy_fmt(lohi[i][1]); ha=1, va=-1, size=9)
-			_xy_lbl(plot, X0(1) - 0.02, Y0(i) + 1, _xy_fmt(lohi[i][2]); ha=1, va=1, size=9)
-			_xy_lbl(plot, X0(1) - 0.2, Y0(i) + 0.5, nms[i]; ha=1, size=12)
-		end
-		W = nv * (1 + g) - g
-		_xy_look(plot, true, true, (-0.55, W + 0.05, -0.3, W + 0.3))
-	elseif kind == "marginalhist"
-		# GMT.jl marginalhist(): the x,y scatter with the histogram of x above it and of y on its right
-		# (scatter below 2000 points, hexagons above; here always the scatter).
-		sel < 0 && error("marginalhist: select a series in the Object Manager first")
-		x, y = _xy_get_series(plot, sel)
-		ok = isfinite.(x) .& isfinite.(y)
-		x, y = x[ok], y[ok]
-		length(x) < 2 && error("marginalhist: the selected series needs two or more points")
-		nm = _xy_series_name(plot, sel)
-		(xl, xh), (yl, yh) = _xy_lohi(x), _xy_lohi(y)
-		g, f = 0.06, 0.3
-		page("marginalhist", "", "")
-		fx, fy = Float64[], Float64[]
-		for (a, b, c, d) in ((0.0, 1.0, 0.0, 1.0), (0.0, 1.0, 1 + g, 1 + g + f), (1 + g, 1 + g + f, 0.0, 1.0))
-			rx, ry = _xy_rect(a, b, c, d)
-			append!(fx, vcat(rx[1:4], rx[1], NaN)); append!(fy, vcat(ry[1:4], ry[1], NaN))
-		end
-		_xyadd!(p, fx, fy; name="panels", color=(0.3, 0.3, 0.3))
-		_xyadd!(p, (x .- xl) ./ (xh - xl), (y .- yl) ./ (yh - yl); name=isempty(nm) ? "x vs y" : nm,
-		     marker=:circle, linestyle=:none, markersize=4, color=_XY_BLUE)
-		hx, hy = _xy_panel_hist(x, xl, xh, 0.0, 1 + g, f * 0.95, false)
-		_xy_addk!(plot, p, hx, hy, "x histogram", 8; color=_XY_BLUE)
-		hx, hy = _xy_panel_hist(y, yl, yh, 1 + g, 0.0, f * 0.95, true)
-		_xy_addk!(plot, p, hx, hy, "y histogram", 8; color=_XY_BLUE)
-		_xy_lbl(plot, 0.0, -0.02, _xy_fmt(xl); ha=-1, va=1, size=10)
-		_xy_lbl(plot, 1.0, -0.02, _xy_fmt(xh); ha=1, va=1, size=10)
-		_xy_lbl(plot, -0.02, 0.0, _xy_fmt(yl); ha=1, va=-1, size=10)
-		_xy_lbl(plot, -0.02, 1.0, _xy_fmt(yh); ha=1, va=1, size=10)
-		_xy_lbl(plot, 0.5, -0.09, "x"; va=1, size=12)
-		_xy_lbl(plot, -0.1, 0.5, "y"; ha=1, size=12)
-		_xy_look(plot, true, true, (-0.3, 1 + g + f + 0.05, -0.2, 1 + g + f + 0.05))
-	elseif kind == "biplot"
-		# GMT.jl biplot(): PCA of the z-scored variables (zscores, pca), PC1 vs PC2, with the scaling,
-		# sign convention and symmetric limits its biplot(coefs, scores, ...) method applies.
-		M, nms = _xy_page_matrix(plot)
-		size(M, 2) < 2 && error("biplot needs two or more series on this page (one per variable)")
-		scores, coefs, _, explained = GMT.pca(GMT.zscores(M))
-		coefs, scores = Float64.(coefs[:, [1, 2]]), Float64.(scores[:, [1, 2]])
-		explained = Float64.(explained[[1, 2]])
-		signs = sign.(coefs[findmax(abs, coefs, dims=1)[2]])
-		coefs = coefs .* signs                        # the largest coefficient of each column positive
-		maxlen = sqrt(maximum(sum(coefs .^ 2, dims=2)))
-		scores = maxlen .* scores ./ maximum(abs, scores) .* signs
-		mima, mima_c = extrema(scores), extrema(coefs)
-		mima = (min(mima[1], mima_c[1]), max(mima[2], mima_c[2]))
-		r = GMT.round_wesn([mima[1], mima[2], mima_c[1], mima_c[2]])
-		r[1] = -max(-r[1], r[2]);  r[2] = -r[1];  r[3] = -max(-r[3], r[4]);  r[4] = -r[3]
-		page("biplot", "PC1 ($(round(explained[1], digits=1))%)", "PC2 ($(round(explained[2], digits=1))%)")
-		_xyadd!(p, scores[:, 1], scores[:, 2]; name="observations", marker=:circle, linestyle=:none, markersize=4,
-		     color=(0.35, 0.35, 0.35))
-		axl, ayl = Float64[], Float64[]
-		hl = 0.06 * maxlen
-		for k in axes(coefs, 1)                       # feather!(…, endpt=true): an arrow from the origin
-			cx, cy = coefs[k, 1], coefs[k, 2]
-			L = hypot(cx, cy)
-			L > 0 || continue
-			ux, uy = cx / L, cy / L
-			append!(axl, [0.0, cx, NaN, cx - hl * (ux - 0.5uy), cx, cx - hl * (ux + 0.5uy), NaN])
-			append!(ayl, [0.0, cy, NaN, cy - hl * (uy + 0.5ux), cy, cy - hl * (uy - 0.5ux), NaN])
-			_xy_lbl(plot, cx * 1.08, cy * 1.08, nms[k]; ha=cx >= 0 ? -1 : 1, size=12, c=_XY_BLUE)
-		end
-		_xyadd!(p, axl, ayl; name="loadings", color=_XY_BLUE, linewidth=2)
-		# biplot()'s symmetric limits, widened 15%: its y limits come from the coefficients alone, which
-		# leaves an arrow tip on the frame and its name outside it (GMT text is not clipped; ours is).
-		_xy_look(plot, true, false, (1.15r[1], 1.15r[2], 1.15r[3], 1.15r[4]))
+function _xy_framed_radar(plot, p, kind, sel, page)
+	# GMT.jl radar(): one polygon per row, one axis per column. Here a row is a SERIES of the page
+	# (its points are the axes). Not normalized -> each axis scaled to round_wesn of its max, as radar()
+	# does with `axeslimts`; here the limits are the data's own maxima.
+	n = ccall(_fn(:gmtvtk_xyplot_series_count), Cint, (Ptr{Cvoid},), plot)
+	rows, nms = Vector{Vector{Float64}}(), String[]
+	for k in 0:n-1
+		y = _xy_get_series(plot, k)[2]
+		length(y) < 3 && continue
+		push!(rows, y); nm = _xy_series_name(plot, k); push!(nms, isempty(nm) ? "series $k" : nm)
 	end
+	isempty(rows) && error("radar: a series needs 3 or more points (one per spoke)")
+	na = length(rows[1])
+	all(length(r) == na for r in rows) || error("radar: every series must have the same number of points (one per spoke)")
+	data = reduce(vcat, permutedims.(rows))
+	isnorm = all(t -> 0 <= t <= 1, data)
+	lims = isnorm ? ones(na) : [GMT.round_wesn([0.0 0 0 maximum(data[:, k])])[4] for k in 1:na]
+	i_ang = (na == 5) ? 18.0 : 0.0                # radar(): a pentagon shows its second axis along y
+	angs = [i_ang + (k - 1) * 360 / na for k in 1:na]
+	page("radar", "", "")
+	gx, gy = Float64[], Float64[]
+	for r in 0.2:0.2:1.0                          # radar()'s yg0.2 rings
+		cx, cy = _xy_circle(r); append!(gx, cx); append!(gy, cy)
+	end
+	for a in angs  append!(gx, [0.0, cosd(a), NaN]); append!(gy, [0.0, sind(a), NaN])  end
+	_xyadd!(p, gx, gy; name="radar grid", color=_XY_GRID_RGB)
+	for (i, nm) in enumerate(nms)
+		r = data[i, :] ./ lims
+		_xy_addk!(plot, p, vcat(r .* cosd.(angs), r[1] * cosd(angs[1])), vcat(r .* sind.(angs), r[1] * sind(angs[1])), nm, 8)
+	end
+	for (k, a) in enumerate(angs)                 # radar()'s default axis names, and the ring values
+		_xy_lbl(plot, 1.12cosd(a), 1.12sind(a), "Label$k"; ha=abs(cosd(a)) < 0.2 ? 0 : (cosd(a) > 0 ? -1 : 1), size=12)
+		(k == 1 || !isnorm) || continue
+		for f in 0.2:0.2:1.0
+			_xy_lbl(plot, f * cosd(a), f * sind(a), _xy_fmt(f * lims[k]); ha=-1, va=-1, size=9, c=(0.35, 0.35, 0.35))
+		end
+	end
+	_xy_look(plot, true, true, (-1.3, 1.3, -1.3, 1.3))
+end
+
+function _xy_framed_rose(plot, p, kind, sel, page)
+	# GMT's rose (psrose): azimuths, clockwise from north, in 10° sectors, lengths normalized to the
+	# largest sector (the GMT.jl example's sector=(width=10, rose=true), normalize=true). The sector
+	# counts are GMT.jl's own histogram binning (hst_floats).
+	sel < 0 && error("rose: select the series of azimuths in the Object Manager first")
+	v = filter(isfinite, _xy_get_series(plot, sel)[2])
+	length(v) < 2 && error("rose: the selected series needs two or more values")
+	nm = _xy_series_name(plot, sel)
+	hst, inc, _ = GMT.hst_floats(mod.(v, 360.0), "10"; min_max=(0.0, 360.0))
+	r = hst[:, 2] ./ maximum(hst[:, 2])
+	page("rose", "", "")
+	gx, gy = Float64[], Float64[]
+	for rr in 0.25:0.25:1.0
+		cx, cy = _xy_circle(rr); append!(gx, cx); append!(gy, cy)
+	end
+	for a in 0:30:330  append!(gx, [0.0, sind(a), NaN]); append!(gy, [0.0, cosd(a), NaN])  end
+	_xyadd!(p, gx, gy; name="rose grid", color=_XY_GRID_RGB)
+	px, py = Float64[], Float64[]
+	for k in axes(hst, 1)
+		r[k] > 0 || continue
+		a = range(hst[k, 1], hst[k, 1] + inc; length=6)
+		append!(px, vcat(0.0, r[k] .* sind.(a), NaN)); append!(py, vcat(0.0, r[k] .* cosd.(a), NaN))
+	end
+	_xy_addk!(plot, p, px, py, isempty(nm) ? "rose" : nm, 8; color=_XY_BLUE)
+	for a in 0:30:330
+		_xy_lbl(plot, 1.1sind(a), 1.1cosd(a), "$(a)°"; ha=a in (0, 180) ? 0 : (a < 180 ? -1 : 1), size=11)
+	end
+	_xy_look(plot, true, true, (-1.3, 1.3, -1.3, 1.3))
+end
+
+function _xy_framed_parallel(plot, p, kind, sel, page)
+	# GMT.jl parallelplot(): one ruler per variable, every observation a line across them, values
+	# normalized per ruler to its own range (normalize="range", via its normalizeArray).
+	M, nms = _xy_page_matrix(plot)
+	nv = size(M, 2)
+	nv < 2 && error("parallelplot needs two or more series on this page (one per variable)")
+	bbox = reduce(vcat, [collect(extrema(M[:, k])) for k in 1:nv])
+	A = GMT.normalizeArray("range", copy(M), bbox)
+	page("parallelplot", "", "")
+	lx, ly = Float64[], Float64[]
+	for i in axes(A, 1)  append!(lx, vcat(1.0:nv, NaN)); append!(ly, vcat(A[i, :], NaN))  end
+	_xyadd!(p, lx, ly; name="observations")
+	ax, ay = Float64[], Float64[]
+	for k in 1:nv  append!(ax, [k, k, NaN]); append!(ay, [0.0, 1.0, NaN])  end
+	_xyadd!(p, ax, ay; name="rulers", color=(0.0, 0.0, 0.0))
+	for k in 1:nv
+		_xy_lbl(plot, k, 1.02, _xy_fmt(bbox[2k]); va=-1, size=10)
+		_xy_lbl(plot, k, -0.02, _xy_fmt(bbox[2k-1]); va=1, size=10)
+		_xy_lbl(plot, k, -0.09, nms[k]; va=1, size=12)
+	end
+	_xy_look(plot, false, true, (0.6, nv + 0.4, -0.18, 1.1))
+end
+
+function _xy_framed_corner(plot, p, kind, sel, page)
+	# GMT.jl cornerplot(): an n x n lower-triangular matrix of panels, each variable's histogram on
+	# the diagonal (x range = round_wesn of its extrema, as cornerplot() sets it) and every pair's
+	# scatter below it. (cornerplot() switches to hexagon binning above 1000 points; here it is always
+	# the scatter its `scatter=true` gives.)
+	M, nms = _xy_page_matrix(plot)
+	nv = size(M, 2)
+	nv < 2 && error("cornerplot needs two or more series on this page (one per variable)")
+	g = 0.12
+	lohi = [_xy_lohi(M[:, k]) for k in 1:nv]
+	nx(k, v) = (v .- lohi[k][1]) ./ (lohi[k][2] - lohi[k][1])
+	X0(j) = (j - 1) * (1 + g);  Y0(i) = (nv - i) * (1 + g)
+	page("cornerplot", "", "")
+	fx, fy = Float64[], Float64[]
+	for i in 1:nv, j in 1:i
+		rx, ry = _xy_rect(X0(j), X0(j) + 1, Y0(i), Y0(i) + 1)
+		append!(fx, vcat(rx[1:4], rx[1], NaN)); append!(fy, vcat(ry[1:4], ry[1], NaN))
+	end
+	_xyadd!(p, fx, fy; name="panels", color=(0.3, 0.3, 0.3))
+	for k in 1:nv
+		hx, hy = _xy_panel_hist(M[:, k], lohi[k]..., X0(k), Y0(k), 0.95, false)
+		_xy_addk!(plot, p, hx, hy, "$(nms[k]) histogram", 8; color=_XY_BLUE)
+	end
+	for i in 2:nv, j in 1:i-1
+		_xyadd!(p, X0(j) .+ nx(j, M[:, j]), Y0(i) .+ nx(i, M[:, i]); name="$(nms[i]) vs $(nms[j])",
+		     marker=:circle, linestyle=:none, markersize=3, color=_XY_BLUE)
+	end
+	for j in 1:nv                                 # x scales + names under the bottom row
+		_xy_lbl(plot, X0(j), Y0(nv) - 0.02, _xy_fmt(lohi[j][1]); ha=-1, va=1, size=9)
+		_xy_lbl(plot, X0(j) + 1, Y0(nv) - 0.02, _xy_fmt(lohi[j][2]); ha=1, va=1, size=9)
+		_xy_lbl(plot, X0(j) + 0.5, Y0(nv) - 0.12, nms[j]; va=1, size=12)
+	end
+	for i in 2:nv                                 # y scales + names left of the first column
+		_xy_lbl(plot, X0(1) - 0.02, Y0(i), _xy_fmt(lohi[i][1]); ha=1, va=-1, size=9)
+		_xy_lbl(plot, X0(1) - 0.02, Y0(i) + 1, _xy_fmt(lohi[i][2]); ha=1, va=1, size=9)
+		_xy_lbl(plot, X0(1) - 0.2, Y0(i) + 0.5, nms[i]; ha=1, size=12)
+	end
+	W = nv * (1 + g) - g
+	_xy_look(plot, true, true, (-0.55, W + 0.05, -0.3, W + 0.3))
+end
+
+function _xy_framed_marginal(plot, p, kind, sel, page)
+	# GMT.jl marginalhist(): the x,y scatter with the histogram of x above it and of y on its right
+	# (scatter below 2000 points, hexagons above; here always the scatter).
+	sel < 0 && error("marginalhist: select a series in the Object Manager first")
+	x, y = _xy_get_series(plot, sel)
+	ok = isfinite.(x) .& isfinite.(y)
+	x, y = x[ok], y[ok]
+	length(x) < 2 && error("marginalhist: the selected series needs two or more points")
+	nm = _xy_series_name(plot, sel)
+	(xl, xh), (yl, yh) = _xy_lohi(x), _xy_lohi(y)
+	g, f = 0.06, 0.3
+	page("marginalhist", "", "")
+	fx, fy = Float64[], Float64[]
+	for (a, b, c, d) in ((0.0, 1.0, 0.0, 1.0), (0.0, 1.0, 1 + g, 1 + g + f), (1 + g, 1 + g + f, 0.0, 1.0))
+		rx, ry = _xy_rect(a, b, c, d)
+		append!(fx, vcat(rx[1:4], rx[1], NaN)); append!(fy, vcat(ry[1:4], ry[1], NaN))
+	end
+	_xyadd!(p, fx, fy; name="panels", color=(0.3, 0.3, 0.3))
+	_xyadd!(p, (x .- xl) ./ (xh - xl), (y .- yl) ./ (yh - yl); name=isempty(nm) ? "x vs y" : nm,
+	     marker=:circle, linestyle=:none, markersize=4, color=_XY_BLUE)
+	hx, hy = _xy_panel_hist(x, xl, xh, 0.0, 1 + g, f * 0.95, false)
+	_xy_addk!(plot, p, hx, hy, "x histogram", 8; color=_XY_BLUE)
+	hx, hy = _xy_panel_hist(y, yl, yh, 1 + g, 0.0, f * 0.95, true)
+	_xy_addk!(plot, p, hx, hy, "y histogram", 8; color=_XY_BLUE)
+	_xy_lbl(plot, 0.0, -0.02, _xy_fmt(xl); ha=-1, va=1, size=10)
+	_xy_lbl(plot, 1.0, -0.02, _xy_fmt(xh); ha=1, va=1, size=10)
+	_xy_lbl(plot, -0.02, 0.0, _xy_fmt(yl); ha=1, va=-1, size=10)
+	_xy_lbl(plot, -0.02, 1.0, _xy_fmt(yh); ha=1, va=1, size=10)
+	_xy_lbl(plot, 0.5, -0.09, "x"; va=1, size=12)
+	_xy_lbl(plot, -0.1, 0.5, "y"; ha=1, size=12)
+	_xy_look(plot, true, true, (-0.3, 1 + g + f + 0.05, -0.2, 1 + g + f + 0.05))
+end
+
+function _xy_framed_biplot(plot, p, kind, sel, page)
+	# GMT.jl biplot(): PCA of the z-scored variables (zscores, pca), PC1 vs PC2, with the scaling,
+	# sign convention and symmetric limits its biplot(coefs, scores, ...) method applies.
+	M, nms = _xy_page_matrix(plot)
+	size(M, 2) < 2 && error("biplot needs two or more series on this page (one per variable)")
+	scores, coefs, _, explained = GMT.pca(GMT.zscores(M))
+	coefs, scores = Float64.(coefs[:, [1, 2]]), Float64.(scores[:, [1, 2]])
+	explained = Float64.(explained[[1, 2]])
+	signs = sign.(coefs[findmax(abs, coefs, dims=1)[2]])
+	coefs = coefs .* signs                        # the largest coefficient of each column positive
+	maxlen = sqrt(maximum(sum(coefs .^ 2, dims=2)))
+	scores = maxlen .* scores ./ maximum(abs, scores) .* signs
+	mima, mima_c = extrema(scores), extrema(coefs)
+	mima = (min(mima[1], mima_c[1]), max(mima[2], mima_c[2]))
+	r = GMT.round_wesn([mima[1], mima[2], mima_c[1], mima_c[2]])
+	r[1] = -max(-r[1], r[2]);  r[2] = -r[1];  r[3] = -max(-r[3], r[4]);  r[4] = -r[3]
+	page("biplot", "PC1 ($(round(explained[1], digits=1))%)", "PC2 ($(round(explained[2], digits=1))%)")
+	_xyadd!(p, scores[:, 1], scores[:, 2]; name="observations", marker=:circle, linestyle=:none, markersize=4,
+	     color=(0.35, 0.35, 0.35))
+	axl, ayl = Float64[], Float64[]
+	hl = 0.06 * maxlen
+	for k in axes(coefs, 1)                       # feather!(…, endpt=true): an arrow from the origin
+		cx, cy = coefs[k, 1], coefs[k, 2]
+		L = hypot(cx, cy)
+		L > 0 || continue
+		ux, uy = cx / L, cy / L
+		append!(axl, [0.0, cx, NaN, cx - hl * (ux - 0.5uy), cx, cx - hl * (ux + 0.5uy), NaN])
+		append!(ayl, [0.0, cy, NaN, cy - hl * (uy + 0.5ux), cy, cy - hl * (uy - 0.5ux), NaN])
+		_xy_lbl(plot, cx * 1.08, cy * 1.08, nms[k]; ha=cx >= 0 ? -1 : 1, size=12, c=_XY_BLUE)
+	end
+	_xyadd!(p, axl, ayl; name="loadings", color=_XY_BLUE, linewidth=2)
+	# biplot()'s symmetric limits, widened 15%: its y limits come from the coefficients alone, which
+	# leaves an arrow tip on the frame and its name outside it (GMT text is not clipped; ours is).
+	_xy_look(plot, true, false, (1.15r[1], 1.15r[2], 1.15r[3], 1.15r[4]))
+end
+
+# The framed kinds, each with its own builder: reached through this `Function`-typed table ON PURPOSE,
+# like _XY_ANA_OPS — the first radar compiles the radar only (3.0 s measured 2026-10-27, when every
+# kind was a branch of one function).
+const _XY_FRAMED_KINDS = Dict{String,Function}(
+	"radar" => _xy_framed_radar, "rose" => _xy_framed_rose, "parallelplot" => _xy_framed_parallel,
+	"cornerplot" => _xy_framed_corner, "marginalhist" => _xy_framed_marginal, "biplot" => _xy_framed_biplot,
+	"polarplot" => (plot, p, kind, sel, page) -> _xy_polar(plot, p, kind, page),
+	"polarscatter" => (plot, p, kind, sel, page) -> _xy_polar(plot, p, kind, page),
+	"compassplot" => (plot, p, kind, sel, page) -> _xy_polar(plot, p, kind, page),
+	"feather" => (plot, p, kind, sel, page) -> _xy_feather_page(plot, p, page),
+	"piechart" => _xy_pie, "donutchart" => _xy_pie)
+
+function _xy_framed(plot, p, kind, sel, page)
+	_XY_FRAMED_KINDS[kind](plot, p, kind, sel, page)
 	return
 end
 
@@ -1193,11 +1228,13 @@ function _ex_plotyy(e)
 	t = range(0, 20; length=200)
 	_ex_page(e, "time", "temperature / pressure")
 	_ex_add(e, t, 20 .+ 5 .* sin.(t ./ 3), "temperature")
+	_ex_add(e, t, 1013 .+ 8 .* cos.(t ./ 4), "pressure")
 end
 function _ex_fillbetween(e)
 	x = range(0, 4π; length=150)
 	_ex_page(e, "x", "y")
 	_ex_add(e, x, sin.(x), "sin(x)")
+	_ex_add(e, x, 0.5 .* cos.(x), "0.5 cos(x)")
 end
 function _ex_errorbar(e)
 	y = sqrt.(1.0:10.0)
@@ -1219,6 +1256,7 @@ function _ex_qqplot(e)
 	n = 300
 	_ex_page(e, "sample", "value")
 	_ex_add(e, 1:n, randn(n), "normal")
+	_ex_add(e, 1:n, -log.(rand(n)), "exponential")
 end
 function _ex_radar(e)
 	_ex_page(e, "spoke", "score")
@@ -1233,6 +1271,7 @@ function _ex_feather(e)
 	t = range(0, 2π; length=30)
 	_ex_page(e, "time", "U, V")
 	_ex_add(e, t, cos.(t), "U")
+	_ex_add(e, t, sin.(t), "V")
 end
 function _ex_polar(e)
 	θ = range(0, 2π; length=e.kind == "polarscatter" ? 60 : 300)
@@ -1244,9 +1283,11 @@ _ex_compass(e) = (_ex_page(e, "angle (rad)", "radius");
 _ex_pie(e) = (_ex_page(e, "slice", "value"); _ex_add(e, 1:5, [35, 25, 20, 12, 8], "share"))
 function _ex_multivar(e)
 	n = 150
-	a = randn(n); b = 0.7 .* a .+ 0.5 .* randn(n)
+	a = randn(n); b = 0.7 .* a .+ 0.5 .* randn(n); c = -0.4 .* a .+ 0.8 .* randn(n)
 	_ex_page(e, "observation", "value")
 	_ex_add(e, 1:n, a, "length")
+	_ex_add(e, 1:n, b, "width")
+	_ex_add(e, 1:n, c, "depth")
 end
 function _ex_marginal(e)
 	x = randn(400)
@@ -1276,6 +1317,63 @@ function _xy_example(plot::Ptr{Cvoid}, p::QtXYPlot, kind::AbstractString)
 	return
 end
 
+_xy_ana_failed(plot, e) = _xy_request_failed(plot, e isa ErrorException ? e.msg : sprint(showerror, e))
+
+# Every Analysis request, by op prefix, tried in this order ("" = the series ops, last). The handlers are
+# reached through this `Function`-typed table ON PURPOSE: a call through it is not inferred ahead, so the
+# first request compiles ONLY its own handler. Called directly from _on_xy_analysis, the first click of
+# anything (a 0.09 s synthetic example) compiled every handler and all they call -- the magnetic
+# synthetic, the grid FFT, trend1d, ... -- 467 methods, 8.6 s (measured 2026-10-27).
+const _XY_ANA_OPS = Pair{String,Function}[
+	# GMT-module front-ends (GMT menu) carry their own multi-output / multi-series logic.
+	"spectrum1d:" => (plot, p, op, s) -> _xy_spectrum1d(plot, p, op[12:end], s),
+	"svp:" => (plot, p, op, s) -> try
+			_xy_svp(plot, p, op[5:end])
+		catch e
+			_dbg("xy-svp", op, "ERR", sprint(showerror, e))
+			_xy_ana_failed(plot, e)
+		end,
+	# The "Geomagnetic bar code" strip (bar, synthetic RTP, age fit) — xymag.jl.
+	"mag" => (plot, p, op, s) -> _xy_mag(plot, op, s),
+	# The Spector-Grant fit (live, on every drag move): GMT trend1d on the band.
+	"sgfit:" => (plot, p, op, s) -> try
+			_xy_sgfit(plot, _parse_kv(op[7:end]), s)
+		catch e
+			_dbg("xy-sg", op, "ERR", sprint(showerror, e))     # no fit: the C side keeps the last one
+		end,
+	# "Reference me" (the reference picks): the stretched curve on its own page.
+	"reference:" => (plot, p, op, s) -> try
+			_xy_reference_op(plot, p, _parse_kv(op[11:end]), s)
+		catch e
+			_dbg("xy-ref", op, "ERR", sprint(showerror, e))
+			_xy_ana_failed(plot, e)
+		end,
+	# The plot-type gallery's statistical plots (density, boxplot, violin, ecdfplot, qqnorm, qqplot).
+	"stat:" => (plot, p, op, s) -> try
+			_xy_stat(plot, p, op[6:end], s)
+		catch e
+			_dbg("xy-stat", op, "ERR", sprint(showerror, e))
+			_xy_ana_failed(plot, e)
+		end,
+	# The gallery's right-click "Synthetic example": a page of made-up data for that plot type.
+	"example:" => (plot, p, op, s) -> try
+			_xy_example(plot, p, op[9:end])
+		catch e
+			_dbg("xy-example", op, "ERR", sprint(showerror, e))
+			_xy_ana_failed(plot, e)
+		end,
+	# A Spector-Grant fit line's "Bandpass Filter": the band on the grid the spectrum came from.
+	"sgbandpass:" => (plot, p, op, s) -> try
+			_xy_sg_bandpass(plot, _parse_kv(op[12:end]))
+		catch e
+			_dbg("xy-sg", op, "ERR", sprint(showerror, e))
+			_xy_request_failed(plot, "Bandpass: " * (e isa ErrorException ? e.msg : sprint(showerror, e)))
+		end,
+	"hist:" => (plot, p, op, s) -> _xy_series_hist(plot, p, op, s),
+	"bargraph" => (plot, p, op, s) -> _xy_series_bars(plot, p, op, s),
+	"" => (plot, p, op, s) -> _xy_series_op(plot, p, op, s),
+]
+
 function _on_xy_analysis(plot::Ptr{Cvoid}, cop::Cstring, sel::Cint)::Cvoid
 	op = unsafe_string(cop)
 	try
@@ -1284,134 +1382,90 @@ function _on_xy_analysis(plot::Ptr{Cvoid}, cop::Cstring, sel::Cint)::Cvoid
 			_xy_log(plot, "Analysis '$op': no Julia mirror for this window (open it via xyplot/iview, not File>Open)"; err=true)
 			return
 		end
-		# GMT-module front-ends (GMT menu) carry their own multi-output / multi-series logic.
-		if startswith(op, "spectrum1d:")
-			_xy_spectrum1d(plot, p, op[12:end], Int(sel))
-			return
-		end
-		if startswith(op, "svp:")
-			try
-				_xy_svp(plot, p, op[5:end])
-			catch e
-				_dbg("xy-svp", op, "ERR", sprint(showerror, e))
-				_xy_request_failed(plot, e isa ErrorException ? e.msg : sprint(showerror, e))
+		for (pre, f) in _XY_ANA_OPS
+			if startswith(op, pre)
+				f(plot, p, op, Int(sel))
+				return
 			end
-			return
-		end
-		# The "Geomagnetic bar code" strip (bar, synthetic RTP, age fit) — xymag.jl.
-		if startswith(op, "mag")
-			_xy_mag(plot, op, Int(sel))
-			return
-		end
-		# The Spector-Grant fit (live, on every drag move): GMT trend1d on the band.
-		if startswith(op, "sgfit:")
-			try
-				_xy_sgfit(plot, _parse_kv(op[7:end]), Int(sel))
-			catch e
-				_dbg("xy-sg", op, "ERR", sprint(showerror, e))     # no fit: the C side keeps the last one
-			end
-			return
-		end
-		# "Reference me" (the reference picks): the stretched curve on its own page.
-		if startswith(op, "reference:")
-			try
-				_xy_reference_op(plot, p, _parse_kv(op[11:end]), Int(sel))
-			catch e
-				_dbg("xy-ref", op, "ERR", sprint(showerror, e))
-				_xy_request_failed(plot, e isa ErrorException ? e.msg : sprint(showerror, e))
-			end
-			return
-		end
-		# The plot-type gallery's statistical plots (density, boxplot, violin, ecdfplot, qqnorm, qqplot).
-		if startswith(op, "stat:")
-			try
-				_xy_stat(plot, p, op[6:end], Int(sel))
-			catch e
-				_dbg("xy-stat", op, "ERR", sprint(showerror, e))
-				_xy_request_failed(plot, e isa ErrorException ? e.msg : sprint(showerror, e))
-			end
-			return
-		end
-		# The gallery's right-click "Synthetic example": a page of made-up data for that plot type.
-		if startswith(op, "example:")
-			try
-				_xy_example(plot, p, op[9:end])
-			catch e
-				_dbg("xy-example", op, "ERR", sprint(showerror, e))
-				_xy_request_failed(plot, e isa ErrorException ? e.msg : sprint(showerror, e))
-			end
-			return
-		end
-		# A Spector-Grant fit line's "Bandpass Filter": the band on the grid the spectrum came from.
-		if startswith(op, "sgbandpass:")
-			try
-				_xy_sg_bandpass(plot, _parse_kv(op[12:end]))
-			catch e
-				_dbg("xy-sg", op, "ERR", sprint(showerror, e))
-				_xy_request_failed(plot, "Bandpass: " * (e isa ErrorException ? e.msg : sprint(showerror, e)))
-			end
-			return
-		end
-		s = Int(sel)
-		# Pull the selected series straight from the C side (the live CURRENT page); the Julia mirror
-		# no longer tracks per-page series now that windows have pages/tabs.
-		xy = _xy_get_series(plot, s)
-		if isempty(xy[1])
-			_xy_log(plot, "Analysis '$op': could not read series #$s from the current page"; err=true)
-			return
-		end
-		x, y = xy
-		nm = _xy_series_name(plot, s); isempty(nm) && (nm = "series $s")
-		# Bar-drawn ops (ecran's "Show histogram" / "Show Bar graph"): their result is not a curve on
-		# the parent's axes, so — like every other different-domain op here — it lands on its OWN page.
-		if startswith(op, "hist:")
-			c, k, w = _histogram(y, parse(Int, op[6:end]))
-			_xy_addpage!(plot, p, "$nm histogram", c, k, "$nm histogram";
-			             xlabel=nm, ylabel="count", kind=:bar, barwidth=0.9w)
-			_xy_log(plot, "Analysis: histogram of '$nm' → new page ($(length(c)) bins, width $(round(w; sigdigits=4)))")
-			return
-		end
-		if op == "bargraph"
-			# Same x as the parent — so if that was a time axis, the bars' page must read x as dates too
-			# (same reasoning as the derivative pages below).
-			pfmt = ccall(_fn(:gmtvtk_xyplot_get_xtime), Cint, (Ptr{Cvoid},), plot)
-			_xy_addpage!(plot, p, "$nm bars", x, y, "$nm bars";
-			             xlabel=(pfmt != 0 ? "time" : "x"), ylabel=nm, kind=:bar)
-			pfmt != 0 && ccall(_fn(:gmtvtk_xyplot_set_xtime), Cvoid, (Ptr{Cvoid}, Cint), plot, pfmt)
-			_xy_log(plot, "Analysis: bar graph of '$nm' → new page ($(length(x)) bars)")
-			return
-		end
-		out = _xy_compute(op, x, y)
-		if out === nothing
-			_xy_log(plot, "Analysis: unknown op '$op'"; err=true)
-			return
-		end
-		nx, ny, suffix = out
-		if op in _XY_NEWWIN
-			# Units differ from the parent axes (d/dx, frequency, lag) -> own PAGE (Excel-like tab) in
-			# THIS window, not an overlay and not a new window. add_page switches the current page so
-			# the following add! lands on the fresh tab.
-			isderiv = startswith(op, "deriv")
-			# A derivative keeps the SAME x as the parent — if that was a time axis, the derivative's x
-			# is still time, so the new page must inherit the parent's time mode and read its x as dates.
-			parent_fmt = ccall(_fn(:gmtvtk_xyplot_get_xtime), Cint, (Ptr{Cvoid},), plot)
-			xl = isderiv ? (parent_fmt != 0 ? "time" : "x") : (op == "autocorr" ? "lag" : "frequency")
-			yl = isderiv ? suffix : (op == "fft_psd" ? "power" : (op == "fft_amp" ? "amplitude" : "autocorrelation"))
-			ccall(_fn(:gmtvtk_xyplot_add_page), Cint, (Ptr{Cvoid}, Cstring), plot, "$nm $suffix")
-			if isderiv && parent_fmt != 0
-				ccall(_fn(:gmtvtk_xyplot_set_xtime), Cvoid, (Ptr{Cvoid}, Cint), plot, parent_fmt)
-			end
-			ccall(_fn(:gmtvtk_xyplot_set_labels), Cvoid, (Ptr{Cvoid}, Cstring, Cstring), plot, String(xl), String(yl))
-			_xyadd!(p, nx, ny; name="$nm $suffix")
-			_xy_log(plot, "Analysis: $suffix → new page ($(length(nx)) pts)")
-		else
-			_xyadd!(p, nx, ny; name="$nm $suffix")
-			_xy_log(plot, "Analysis: added '$nm $suffix' ($(length(nx)) pts)")
 		end
 	catch e
 		_dbg("xy-ana", op, "ERR", sprint(showerror, e))
 		_xy_log(plot, "Analysis '$op' FAILED: $(sprint(showerror, e))"; err=true)
 		@tool_error "xyplot analysis '$op' failed" exception=e
+	end
+	return
+end
+
+# The selected series of the current page and its name; nothing (logged) when it cannot be read.
+function _xy_series_get(plot::Ptr{Cvoid}, op::String, s::Int)
+	# Pull the selected series straight from the C side (the live CURRENT page); the Julia mirror
+	# no longer tracks per-page series now that windows have pages/tabs.
+	xy = _xy_get_series(plot, s)
+	if isempty(xy[1])
+		_xy_log(plot, "Analysis '$op': could not read series #$s from the current page"; err=true)
+		return nothing
+	end
+	nm = _xy_series_name(plot, s); isempty(nm) && (nm = "series $s")
+	return xy[1], xy[2], nm
+end
+
+# Bar-drawn ops (ecran's "Show histogram" / "Show Bar graph"): their result is not a curve on
+# the parent's axes, so — like every other different-domain op here — it lands on its OWN page.
+function _xy_series_hist(plot::Ptr{Cvoid}, p::QtXYPlot, op::String, s::Int)
+	xyn = _xy_series_get(plot, op, s)
+	xyn === nothing && return
+	x, y, nm = xyn
+	c, k, w = _histogram(y, parse(Int, op[6:end]))
+	_xy_addpage!(plot, p, "$nm histogram", c, k, "$nm histogram";
+	             xlabel=nm, ylabel="count", kind=:bar, barwidth=0.9w)
+	_xy_log(plot, "Analysis: histogram of '$nm' → new page ($(length(c)) bins, width $(round(w; sigdigits=4)))")
+	return
+end
+function _xy_series_bars(plot::Ptr{Cvoid}, p::QtXYPlot, op::String, s::Int)
+	xyn = _xy_series_get(plot, op, s)
+	xyn === nothing && return
+	x, y, nm = xyn
+	# Same x as the parent — so if that was a time axis, the bars' page must read x as dates too
+	# (same reasoning as the derivative pages below).
+	pfmt = ccall(_fn(:gmtvtk_xyplot_get_xtime), Cint, (Ptr{Cvoid},), plot)
+	_xy_addpage!(plot, p, "$nm bars", x, y, "$nm bars";
+	             xlabel=(pfmt != 0 ? "time" : "x"), ylabel=nm, kind=:bar)
+	pfmt != 0 && ccall(_fn(:gmtvtk_xyplot_set_xtime), Cvoid, (Ptr{Cvoid}, Cint), plot, pfmt)
+	_xy_log(plot, "Analysis: bar graph of '$nm' → new page ($(length(x)) bars)")
+	return
+end
+
+# Every _xy_compute op on the selected series of the current page.
+function _xy_series_op(plot::Ptr{Cvoid}, p::QtXYPlot, op::String, s::Int)
+	xyn = _xy_series_get(plot, op, s)
+	xyn === nothing && return
+	x, y, nm = xyn
+	out = _xy_compute(op, x, y)
+	if out === nothing
+		_xy_log(plot, "Analysis: unknown op '$op'"; err=true)
+		return
+	end
+	nx, ny, suffix = out
+	if op in _XY_NEWWIN
+		# Units differ from the parent axes (d/dx, frequency, lag) -> own PAGE (Excel-like tab) in
+		# THIS window, not an overlay and not a new window. add_page switches the current page so
+		# the following add! lands on the fresh tab.
+		isderiv = startswith(op, "deriv")
+		# A derivative keeps the SAME x as the parent — if that was a time axis, the derivative's x
+		# is still time, so the new page must inherit the parent's time mode and read its x as dates.
+		parent_fmt = ccall(_fn(:gmtvtk_xyplot_get_xtime), Cint, (Ptr{Cvoid},), plot)
+		xl = isderiv ? (parent_fmt != 0 ? "time" : "x") : (op == "autocorr" ? "lag" : "frequency")
+		yl = isderiv ? suffix : (op == "fft_psd" ? "power" : (op == "fft_amp" ? "amplitude" : "autocorrelation"))
+		ccall(_fn(:gmtvtk_xyplot_add_page), Cint, (Ptr{Cvoid}, Cstring), plot, "$nm $suffix")
+		if isderiv && parent_fmt != 0
+			ccall(_fn(:gmtvtk_xyplot_set_xtime), Cvoid, (Ptr{Cvoid}, Cint), plot, parent_fmt)
+		end
+		ccall(_fn(:gmtvtk_xyplot_set_labels), Cvoid, (Ptr{Cvoid}, Cstring, Cstring), plot, String(xl), String(yl))
+		_xyadd!(p, nx, ny; name="$nm $suffix")
+		_xy_log(plot, "Analysis: $suffix → new page ($(length(nx)) pts)")
+	else
+		_xyadd!(p, nx, ny; name="$nm $suffix")
+		_xy_log(plot, "Analysis: added '$nm $suffix' ($(length(nx)) pts)")
 	end
 	return
 end

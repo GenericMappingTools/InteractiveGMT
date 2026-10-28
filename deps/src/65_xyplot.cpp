@@ -155,6 +155,8 @@ struct XYPage {
 	// regenerated on every range change (xyTicksOnRender observer).
 	int                         xTimeFmt = 0;
 	double                      lastLo = 0.0, lastHi = 0.0;
+	double                      lastYLo = 0.0, lastYHi = 0.0, lastRLo = 0.0, lastRHi = 0.0;   // left / right Y
+	bool                        yTicksUser = false;   // the Axes dialog set an explicit Y annotation stride
 	bool                        ticksBusy = false;
 	// Interactive Spector-Grant tool (left-drag a band on a spectrum -> live depth-to-sources).
 	bool                        sgActive = false;
@@ -354,7 +356,7 @@ public:
 	static vtkXYShapePlot *New();
 	vtkTypeMacro(vtkXYShapePlot, vtkPlotLine);
 	int Shape = 2;                     // XYSeries::kind: 2 area, 3 stem, 4 stairs, 6 bars, 7 horizontal bars, 8 polygons,
-	                                   // 9 error bars, 10 bubbles
+	                                   // 9 error bars, 10 bubbles, 11 arrows
 	std::vector<double> Base;          // per row, data units: what an area / a bar stands on (empty = 0)
 	double BarW = 1.0;                 // bar width, data units of the position axis
 	double VLo = 0, VHi = 0, PLo = 0, PHi = 0;   // a based bar series' data extent: values / positions
@@ -406,6 +408,44 @@ public:
 				}
 			}
 			return this->Superclass::Paint(painter);
+		}
+		if (Shape == 11) {
+			// Arrows (feather): every NaN-separated run is a shaft from its first point to its last, with a
+			// filled head on the last. The head is sized in screen px, so neither the axes' different x and
+			// y scales nor a zoom bend it.
+			painter->ApplyPen(this->Pen);
+			painter->ApplyBrush(this->Brush);
+			const double hl = 3.0 * std::max(2.5f, this->Pen->GetWidth()) + 4.0;   // head length, px
+			const double hw = 0.35 * hl;                                             // half width, px
+			vtkIdType i = 0;
+			while (i < n) {
+				double a[3], b[3];
+				this->Points->GetPoint(i, a);
+				if (!std::isfinite(a[0]) || !std::isfinite(a[1])) { ++i; continue; }
+				vtkIdType j = i;
+				while (j + 1 < n) {
+					double q[3];
+					this->Points->GetPoint(j + 1, q);
+					if (!std::isfinite(q[0]) || !std::isfinite(q[1])) break;
+					++j;
+				}
+				this->Points->GetPoint(j, b);
+				i = j + 1;
+				const double dx = (b[0] - a[0]) / pxX, dy = (b[1] - a[1]) / pxY;   // the shaft in px
+				const double len = std::hypot(dx, dy);
+				if (len <= 0.0) continue;
+				const double ux = dx / len, uy = dy / len;
+				const double h = std::min(hl, 0.6 * len), w = h * hw / hl;          // a short shaft: smaller head
+				// the shaft stops where the head begins, so a thick pen never pokes through its tip
+				painter->DrawLine((float)a[0], (float)a[1], (float)(b[0] - h * ux * pxX), (float)(b[1] - h * uy * pxY));
+				float tri[6] = {
+					(float)b[0], (float)b[1],
+					(float)(b[0] + (-h * ux - w * uy) * pxX), (float)(b[1] + (-h * uy + w * ux) * pxY),
+					(float)(b[0] + (-h * ux + w * uy) * pxX), (float)(b[1] + (-h * uy - w * ux) * pxY),
+				};
+				painter->DrawPolygon(tri, 3);
+			}
+			return true;
 		}
 		if (Shape == 10) {
 			// A filled, see-through circle per point, its diameter the point's bubble size in px.
@@ -636,7 +676,7 @@ vtkStandardNewMacro(vtkXYShapePlot);
 // new series, a rebuild, a page copy and a session load all draw a kind the same way.
 static vtkPlot *xyAddPlotItem(vtkChartXY *chart, const XYSeries &se) {
 	vtkPlot *pl = nullptr;
-	if ((se.kind >= 2 && se.kind <= 4) || (se.kind >= 6 && se.kind <= 10)) {
+	if ((se.kind >= 2 && se.kind <= 4) || (se.kind >= 6 && se.kind <= 11)) {
 		vtkNew<vtkXYShapePlot> sp;
 		sp->Shape = se.kind;
 		chart->AddPlot(sp);                           // the chart keeps its own reference
@@ -752,7 +792,7 @@ static void xyApplyStyle(XYPlot *s, XYSeries &se) {
 	if (se.plot->GetPen())
 		se.plot->GetPen()->SetLineType(se.lineType);
 	// An area is filled in its own colour, see-through so areas over areas show; a bar solid.
-	if ((se.kind == 2 || (se.kind >= 6 && se.kind <= 8) || se.kind == 10) && se.plot->GetBrush())
+	if ((se.kind == 2 || (se.kind >= 6 && se.kind <= 8) || se.kind == 10 || se.kind == 11) && se.plot->GetBrush())
 		se.plot->GetBrush()->SetColor((unsigned char)(se.r * 255), (unsigned char)(se.g * 255),
 		                              (unsigned char)(se.b * 255), se.kind == 2 || se.kind == 10 ? 150 : se.kind == 8 ? 110 : 255);
 	if (vtkXYShapePlot *sp = vtkXYShapePlot::SafeDownCast(se.plot)) {
@@ -2113,16 +2153,40 @@ static QString xyFmtTimeHover(double t, int fmt) {
 // because vtkChartXY's auto ticks crowd and OVERLAP whenever the labels are wide (e.g. epoch-second
 // X ~1.7e9). The only exception is a log axis, where VTK's own decade ticks are correct, so we hand
 // it back to auto.
+static void xyRefreshXTicks(XYPage &pg, vtkAxis *ax);
 static void xyRefreshTicks(XYPlot *s) {
 	XYPage &pg = xyCur(s);
 	vtkAxis *ax = pg.chart->GetAxis(vtkAxis::BOTTOM);
-	if (ax->GetLogScaleActive()) {
+	if (ax->GetLogScaleActive())
 		ax->SetCustomTickPositions(nullptr);
-		return;
+	else if (ax->GetMaximum() > ax->GetMinimum())
+		xyRefreshXTicks(pg, ax);
+	// The Y axes get the same ~6 round-number ticks: vtkChartXY's own pack them far too densely.
+	// A log axis keeps VTK's decades; a stride set in the Axes dialog is left as it was set.
+	for (int id : { (int)vtkAxis::LEFT, (int)vtkAxis::RIGHT }) {
+		vtkAxis *ay = pg.chart->GetAxis(id);
+		if (!ay || (id == vtkAxis::LEFT && pg.yTicksUser)) continue;
+		if (ay->GetLogScaleActive()) {
+			ay->SetCustomTickPositions(nullptr);
+			continue;
+		}
+		const double ylo = ay->GetMinimum(), yhi = ay->GetMaximum();
+		if (!(yhi > ylo)) continue;
+		const double step = xyNiceLinStep(yhi - ylo, 6);
+		vtkNew<vtkDoubleArray> ypos;
+		vtkNew<vtkStringArray> ylab;
+		for (double k = std::ceil(ylo / step - 1e-9); k * step <= yhi + 1e-9 * step; k += 1.0) {
+			const double t = std::abs(k) < 0.5 ? 0.0 : k * step;     // an exact 0, never -1e-17
+			ypos->InsertNextValue(t);
+			ylab->InsertNextValue(std::string(QString::number(t, 'g', 6).toUtf8().constData()));
+		}
+		ay->SetCustomTickPositions(ypos, ylab);
 	}
+}
+
+// The bottom axis' ticks, linear or time (xyRefreshTicks).
+static void xyRefreshXTicks(XYPage &pg, vtkAxis *ax) {
 	const double lo = ax->GetMinimum(), hi = ax->GetMaximum();
-	if (!(hi > lo))
-		return;
 	const double span = hi - lo;
 	vtkNew<vtkDoubleArray> pos;
 	vtkNew<vtkStringArray> lab;
@@ -2175,6 +2239,14 @@ static void xyTicksOnRender(vtkObject *, unsigned long, void *clientData, void *
 			needRender = true;
 		}
 	}
+	// a Y range change (autoscale to new data, a zoom) re-lays the Y ticks the same way
+	vtkAxis *al = pg.chart->GetAxis(vtkAxis::LEFT), *ar = pg.chart->GetAxis(vtkAxis::RIGHT);
+	const double yl = al->GetMinimum(), yh = al->GetMaximum(), rl = ar->GetMinimum(), rh = ar->GetMaximum();
+	if (!needRender && (yl != pg.lastYLo || yh != pg.lastYHi || rl != pg.lastRLo || rh != pg.lastRHi)) {
+		xyRefreshTicks(s);
+		needRender = true;
+	}
+	pg.lastYLo = yl; pg.lastYHi = yh; pg.lastRLo = rl; pg.lastRHi = rh;
 	for (auto &se : pg.series)
 		if (xyRecomputeCross(pg, se))
 			needRender = true;
@@ -2494,6 +2566,10 @@ static void xyApplyAxes(XYPlot *s, XYPage &pg) {
 			}
 			else
 				t.a->SetCustomTickPositions(nullptr);
+			if (X == "y") {                                  // auto: ours again (xyRefreshTicks)
+				pg.yTicksUser = on && !isAuto && val > 0.0;
+				pg.lastYLo = std::numeric_limits<double>::quiet_NaN();
+			}
 			if (!on) t.a->SetLabelsVisible(false);
 		}
 		if (v.contains("-Bp" + X + ".g")) {
@@ -5402,6 +5478,251 @@ static QIcon xyPlotTypeIcon(int type, qreal dpr) {
 	return QIcon(pm);
 }
 
+// Two fixes to the PostScript GL2PS writes:
+//  - it declares no page size, so a viewer or printer puts the chart on its default paper and cuts it
+//    off; the page is set to the chart's own %%BoundingBox.
+//  - on VTK's OpenGL2 backend it always writes the window background as a full-window raster
+//    (vtkGL2PSExporter.h: "On the OpenGL2 backend, the background is always drawn") — 10 MB of hex for
+//    a 2036x819 chart that is white everywhere. When that raster is ONE colour it is replaced by a
+//    filled rectangle of that colour; anything else in it is left exactly as written.
+static void xyPsFixUp(const QString &path) {
+	QFile f(path);
+	if (!f.open(QIODevice::ReadOnly)) return;
+	QByteArray ps = f.readAll();
+	f.close();
+	const int a = ps.indexOf("/rgbstr ");
+	const int c = a < 0 ? -1 : ps.indexOf("colorimage", a);
+	const int d = c < 0 ? -1 : ps.indexOf('\n', c) + 1;         // the first line of hex
+	const int e = d <= 0 ? -1 : ps.indexOf("grestore", d);        // the end of the image's block
+	bool uniform = e > 0;
+	QByteArray hex = uniform ? ps.mid(d, e - d) : QByteArray();
+	hex.replace('\n', QByteArray());
+	if (hex.size() < 6 || hex.size() % 6) uniform = false;
+	for (int i = 0; uniform && i < hex.size(); ++i)
+		if (!std::isxdigit((unsigned char)hex[i])) uniform = false;
+	for (int i = 6; uniform && i < hex.size(); i += 6)
+		if (memcmp(hex.constData() + i, hex.constData(), 6) != 0) uniform = false;
+	if (uniform) {
+		const double r = hex.mid(0, 2).toInt(nullptr, 16) / 255.0, g = hex.mid(2, 2).toInt(nullptr, 16) / 255.0,
+		             b = hex.mid(4, 2).toInt(nullptr, 16) / 255.0;
+		// the image was drawn into the unit square the preceding `scale` maps onto the page
+		ps.replace(a, e - a, QString("%1 %2 %3 setrgbcolor 0 0 1 1 rectfill\n").arg(r).arg(g).arg(b).toUtf8());
+	}
+	const QRegularExpressionMatch bb = QRegularExpression("%%BoundingBox: (\\d+) (\\d+) (\\d+) (\\d+)")
+	                                       .match(QString::fromLatin1(ps.left(4096)));
+	if (bb.hasMatch() && ps.indexOf("setpagedevice") < 0) {
+		const QString page = QString("<< /PageSize [%1 %2] >> setpagedevice\n")
+		                         .arg(bb.captured(3).toInt() - bb.captured(1).toInt())
+		                         .arg(bb.captured(4).toInt() - bb.captured(2).toInt());
+		const int bs = ps.indexOf("%%BeginSetup\n"), ep = ps.indexOf("%%EndProlog\n");
+		if (bs >= 0)                                  // into GL2PS's own setup section
+			ps.insert(bs + 13, page.toLatin1());
+		else if (ep >= 0)
+			ps.insert(ep + 12, ("%%BeginSetup\n" + page + "%%EndSetup\n").toLatin1());
+	}
+	if (f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+		f.write(ps);
+		f.close();
+	}
+}
+
+// VTK's vector devices (PDF, SVG) stroke a line INSIDE the chart's data transform, whose x and y scales
+// differ, so its width depended on its slope (feather sticks: hairline when steep, fat when flat). Here
+// the points are taken to page coordinates first and stroked under an identity transform: one width,
+// any slope. Where the transform scales x and y alike VTK's own stroke is right and is left alone.
+template <class Base>
+class XYFlatStroke : public Base {
+public:
+	void DrawPoly(float *pts, int n, unsigned char *c = nullptr, int nc = 0) override {
+		std::vector<float> q;
+		if (!toPage(pts, n, q)) { Base::DrawPoly(pts, n, c, nc); return; }
+		Base::DrawPoly(q.data(), n, c, nc);
+		this->PopMatrix();
+	}
+	void DrawLines(float *pts, int n, unsigned char *c = nullptr, int nc = 0) override {
+		std::vector<float> q;
+		if (!toPage(pts, n, q)) { Base::DrawLines(pts, n, c, nc); return; }
+		Base::DrawLines(q.data(), n, c, nc);
+		this->PopMatrix();
+	}
+private:
+	bool toPage(const float *pts, int n, std::vector<float> &q) {
+		vtkNew<vtkMatrix3x3> m;
+		this->GetMatrix(m);
+		const double *a = m->GetData();
+		const double sx = std::hypot(a[0], a[3]), sy = std::hypot(a[1], a[4]);
+		if (std::abs(sx - sy) <= 1e-6 * std::max(sx, sy)) return false;
+		q.resize(2 * (size_t)n);
+		for (int i = 0; i < n; ++i) {
+			const double x = pts[2 * i], y = pts[2 * i + 1];
+			q[2 * i]     = (float)(a[0] * x + a[1] * y + a[2]);
+			q[2 * i + 1] = (float)(a[3] * x + a[4] * y + a[5]);
+		}
+		this->PushMatrix();
+		vtkNew<vtkMatrix3x3> id;
+		this->SetMatrix(id);
+		return true;
+	}
+};
+
+// The PDF device also sizes text in points with no DPI, while the screen draws it at size * DPI / 72,
+// so every label came out a fraction of its on-screen size. `fontScale` is that DPI / 72. (The SVG
+// device already applies the window's DPI.)
+class XYPdfDevice : public XYFlatStroke<vtkPDFContextDevice2D> {
+public:
+	static XYPdfDevice *New();
+	double fontScale = 1.0;
+	void ApplyTextProp(vtkTextProperty *prop) override {
+		vtkPDFContextDevice2D::ApplyTextProp(prop);
+		if (prop && this->TextProp)
+			this->TextProp->SetFontSize((int)std::lround(prop->GetFontSize() * fontScale));
+	}
+};
+vtkStandardNewMacro(XYPdfDevice);
+
+class XYSvgDevice : public XYFlatStroke<vtkSVGContextDevice2D> {
+public:
+	static XYSvgDevice *New();
+};
+vtkStandardNewMacro(XYSvgDevice);
+
+// vtkSVGExporter with XYSvgDevice in place of its device: its own WriteSVG sequence otherwise.
+class XYSvgExporter : public vtkSVGExporter {
+public:
+	static XYSvgExporter *New();
+protected:
+	void WriteData() override {
+		if (!this->FileName || !*this->FileName || !this->RenderWindow) return;
+		this->PrepareDocument();
+		this->Device->Delete();
+		this->Device = XYSvgDevice::New();
+		this->Device->SetSVGContext(this->PageNode, this->DefinitionNode);
+		this->Device->SetTextAsPath(this->TextAsPath);
+		this->Device->SetSubdivisionThreshold(this->SubdivisionThreshold);
+		this->RenderContextActors();
+		if (this->DefinitionNode->GetNumberOfNestedElements() == 0) {
+			this->RootNode->RemoveNestedElement(this->DefinitionNode);
+			this->DefinitionNode = nullptr;
+		}
+		else
+			this->Device->GenerateDefinitions();
+		this->RootNode->PrintXML(this->FileName);
+		this->Device->Delete();
+		this->Device = nullptr;
+		this->RootNode->Delete();
+		this->RootNode = nullptr;
+		this->DefinitionNode = nullptr;
+		this->PageNode = nullptr;
+	}
+};
+vtkStandardNewMacro(XYSvgExporter);
+
+// The PDF writer: vtkPDFExporter's own sequence (one page the window's size, every context actor painted
+// into it), with XYPdfDevice in place of its device. "" when written, else why not.
+static void xyHaruError(HPDF_STATUS e, HPDF_STATUS d, void *) {
+	throw std::runtime_error(QString("libharu error 0x%1 (detail %2)").arg(e, 0, 16).arg(d).toStdString());
+}
+static QString xyWritePdf(vtkRenderWindow *rw, const std::string &fn) {
+	HPDF_Doc doc = HPDF_New(xyHaruError, nullptr);
+	if (!doc) return "Could not start the PDF document.";
+	QString err;
+	try {
+		HPDF_SetCompressionMode(doc, HPDF_COMP_ALL);
+		HPDF_SetInfoAttr(doc, HPDF_INFO_CREATOR, "iGMT X,Y plot");
+		HPDF_Page page = HPDF_AddPage(doc);
+		HPDF_Page_SetWidth(page, (HPDF_REAL)rw->GetSize()[0]);
+		HPDF_Page_SetHeight(page, (HPDF_REAL)rw->GetSize()[1]);
+		const double fontScale = rw->GetDPI() > 0 ? rw->GetDPI() / 72.0 : 1.0;
+		vtkRendererCollection *rc = rw->GetRenderers();
+		for (int layer = 0; layer < rw->GetNumberOfLayers(); ++layer) {
+			vtkCollectionSimpleIterator ri;
+			vtkRenderer *ren;
+			for (rc->InitTraversal(ri); (ren = rc->GetNextRenderer(ri));) {
+				if (ren->GetLayer() != layer) continue;
+				vtkCollectionSimpleIterator pi;
+				vtkProp *prop;
+				vtkPropCollection *props = ren->GetViewProps();
+				for (props->InitTraversal(pi); (prop = props->GetNextProp(pi));) {
+					vtkContextActor *actor = vtkContextActor::SafeDownCast(prop);
+					if (!actor) continue;
+					vtkContextDevice2D *old = actor->GetForceDevice();
+					vtkNew<XYPdfDevice> dev;
+					dev->fontScale = fontScale;
+					dev->SetHaruObjects(&doc, &page);
+					dev->SetRenderer(ren);
+					actor->SetForceDevice(dev);
+					actor->RenderOverlay(ren);
+					actor->SetForceDevice(old);
+				}
+			}
+		}
+		HPDF_SaveToFile(doc, fn.c_str());
+	}
+	catch (const std::exception &e) {
+		err = QString::fromStdString(e.what());
+	}
+	HPDF_Free(doc);
+	return err;
+}
+
+// File > Export figure: the current page as drawn, in the format the file's extension names. PNG and
+// JPEG are the window's pixels; PDF, SVG and PostScript are VECTOR — the chart's own lines, markers
+// and text, written by VTK's exporters from the same 2-D scene the window paints. Returns "" when the
+// file was written, else why not.
+static QString xyExportFigure(XYPlot *s, const QString &path) {
+	if (!xyAlive(s) || !s->widget || !s->widget->renderWindow())
+		return "The X,Y window is gone.";
+	vtkRenderWindow *rw = s->widget->renderWindow();
+	const QString ext = QFileInfo(path).suffix().toLower();
+	const std::string fn = path.toUtf8().constData();
+	rw->Render();
+	if (ext == "png" || ext == "jpg" || ext == "jpeg") {
+		vtkNew<vtkWindowToImageFilter> w2i;
+		w2i->SetInput(rw);
+		w2i->ReadFrontBufferOff();
+		w2i->Update();
+		vtkSmartPointer<vtkImageWriter> wr;
+		if (ext == "png") wr = vtkSmartPointer<vtkPNGWriter>::New();
+		else {
+			auto j = vtkSmartPointer<vtkJPEGWriter>::New();
+			j->SetQuality(95);
+			wr = j;
+		}
+		wr->SetFileName(fn.c_str());
+		wr->SetInputConnection(w2i->GetOutputPort());
+		wr->Write();
+	}
+	else if (ext == "pdf") {
+		const QString err = xyWritePdf(rw, fn);
+		if (!err.isEmpty()) return err;
+	}
+	else if (ext == "svg") {
+		vtkNew<XYSvgExporter> ex;
+		ex->SetRenderWindow(rw);
+		ex->SetFileName(fn.c_str());
+		ex->Write();
+	}
+	else if (ext == "ps") {
+		vtkNew<vtkGL2PSExporter> ex;
+		ex->SetRenderWindow(rw);
+		ex->SetFileFormatToPS();
+		ex->CompressOff();
+		ex->SetSortToOff();                           // a flat chart: nothing to depth-sort
+		// GL2PS appends the extension itself, so it is handed the name without it.
+		const QString prefix = path.left(path.size() - ext.size() - 1);
+		ex->SetFilePrefix(prefix.toUtf8().constData());
+		ex->Write();
+		rw->Render();                                 // GL2PS renders through its own feedback pass
+		xyPsFixUp(path);
+	}
+	else
+		return QString("Unknown figure format '.%1': use .pdf, .ps, .svg, .png or .jpg").arg(ext);
+	const QFileInfo fi(path);
+	if (!fi.exists() || fi.size() == 0)
+		return "VTK did not write " + path;
+	return QString();
+}
+
 static XYPlot *buildXYPlot(const char *title) {
 	ensureApp();
 
@@ -5552,6 +5873,24 @@ static XYPlot *buildXYPlot(const char *title) {
 	QAction *aNew  = mFile->addAction("New");
 	QAction *aOpen = mFile->addAction("Open…");
 	QAction *aSave = mFile->addAction("Save…");
+	QAction *aExport = mFile->addAction("Export figure…");
+	aExport->setObjectName("xyExportFigure");
+	aExport->setToolTip("The current page as a figure: PDF, PostScript and SVG are vector, PNG and JPEG pixels");
+	QObject::connect(aExport, &QAction::triggered, s->win, [s]{
+		QString sel;
+		QString fn = QFileDialog::getSaveFileName(s->win, "Export figure", prefStartDir("xyplot.pdf"),
+			"PDF (*.pdf);;PostScript (*.ps);;SVG (*.svg);;PNG (*.png);;JPEG (*.jpg *.jpeg)", &sel);
+		if (fn.isEmpty()) return;
+		if (QFileInfo(fn).suffix().isEmpty())           // no extension typed: the chosen filter's
+			fn += "." + sel.mid(sel.indexOf("*.") + 2).section(QRegularExpression("[ )]"), 0, 0);
+		rememberStartDir(fn);
+		QApplication::setOverrideCursor(Qt::WaitCursor);
+		const QString err = xyExportFigure(s, fn);
+		QApplication::restoreOverrideCursor();
+		if (!err.isEmpty())
+			QMessageBox::warning(s->win, "Export figure", err);
+		else
+			s->win->statusBar()->showMessage("Figure exported to " + fn, 5000); });
 	// ecran's File > Session: the whole window (pages, series, styles, axes, magnetic modelling) in the
 	// same .igmtz container the 3-D viewer's Save Session writes (xysession.jl).
 	QMenu *mSes = mFile->addMenu("Session");

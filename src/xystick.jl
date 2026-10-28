@@ -22,6 +22,14 @@ function _stick_segments(t, u, v, sc)
 	return segx, segy
 end
 
+# The sticks are arrows, as GMT's feather draws them: the series just added to the current page of
+# window `h` becomes plot kind 11, a head on every stick's tip (sized in screen px by the chart).
+function _stick_arrows!(h::Ptr{Cvoid})
+	k = ccall(_fn(:gmtvtk_xyplot_series_count), Cint, (Ptr{Cvoid},), h) - 1
+	ccall(_fn(:gmtvtk_xyplot_set_series_kind), Cint, (Ptr{Cvoid}, Cint, Cint), h, k, 11)
+	return
+end
+
 # Auto stick scale: a full-magnitude stick spans ~5% of the time axis.
 function _stick_scale(t, u, v)
 	xspan = maximum(t) - minimum(t)
@@ -55,7 +63,8 @@ function _stickplot(t::AbstractVector, u::AbstractVector, v::AbstractVector;
 	sc = scale === :auto ? _stick_scale(t, u, v) : Float64(scale)
 	segx, segy = _stick_segments(Float64.(t), Float64.(u), Float64.(v), sc)
 	p = _xyplot(segx, segy; name, color, title, kwargs...)
-	_xyadd!(p, [float(minimum(t)), float(maximum(t))], [0.0, 0.0]; name="baseline", color=:gray)
+	_stick_arrows!(p.h)
+	_xyadd!(p,[float(minimum(t)), float(maximum(t))], [0.0, 0.0]; name="baseline", color=:gray)
 	return p
 end
 

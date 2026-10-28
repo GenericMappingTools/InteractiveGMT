@@ -267,6 +267,7 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_xyplot_set_plot_type, :gmtvtk_xyplot_set_page_look, :gmtvtk_xyplot_add_label,
 	:gmtvtk_xyplot_set_series_kind, :gmtvtk_xyplot_set_point_values,   # per-point: error bars, bubble sizes
 	:gmtvtk_xyplot_save_png,                                     # the current page's chart to a PNG
+	:gmtvtk_xyplot_export,                                       # ...as .pdf/.ps/.svg/.png/.jpg (File > Export figure)
 	:gmtvtk_xyplot_set_window_size,                              # the X,Y window's size (documentation figures)
 	:gmtvtk_xyplot_specgrant, :gmtvtk_xyplot_set_new_callback, :gmtvtk_open_xyplot_from_host,
 	:gmtvtk_xyplot_log, :gmtvtk_xyplot_run_analysis,

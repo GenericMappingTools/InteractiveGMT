@@ -154,6 +154,12 @@ find_package(VTK REQUIRED COMPONENTS
   # closure against the published full bundle (check_dll_deps.ps1) before uploading a dll-only zip —
   # a module missing from the runtime the user already has is a load failure naming nothing useful.
   IOXML IOXMLParser IOLegacy IOHDF IOGeometry IOPLY
+  # The X,Y plot's File > Export figure: vector PDF (IOExportPDF), SVG (IOExport), PostScript
+  # (IOExportGL2PS + RenderingGL2PSOpenGL2). They put 10 DLLs in the import closure that the runtime
+  # bundle did not have (dumpbin closure vs gmtvtk_runtime, 2026-10-28): vtkIOExport, vtkIOExportPDF,
+  # vtkIOExportGL2PS, vtkRenderingGL2PSOpenGL2, vtkgl2ps, vtklibharu, vtkRenderingVtkJS,
+  # vtkRenderingSceneGraph, vtkDomainsChemistry, vtkjsoncpp.
+  IOExport IOExportPDF IOExportGL2PS RenderingGL2PSOpenGL2 libharu
   FiltersGeometry FiltersCore
   RenderingCore RenderingOpenGL2 RenderingAnnotation RenderingFreeType RenderingLOD
   RenderingContext2D RenderingContextOpenGL2
