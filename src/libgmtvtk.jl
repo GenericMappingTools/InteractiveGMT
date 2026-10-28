@@ -264,7 +264,7 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_xyplot_add_now_cross, :gmtvtk_xyplot_add_bars,
 	:gmtvtk_xyplot_set_analysis_callback, :gmtvtk_open_profile_in_xyplot,
 	:gmtvtk_xyplot_set_seed_callback, :gmtvtk_xyplot_set_xtime, :gmtvtk_xyplot_set_logscale,
-	:gmtvtk_xyplot_set_plot_type, :gmtvtk_xyplot_set_page_look, :gmtvtk_xyplot_add_label, :gmtvtk_xyplot_label_bold,
+	:gmtvtk_xyplot_set_plot_type, :gmtvtk_xyplot_set_page_look, :gmtvtk_xyplot_add_label, :gmtvtk_xyplot_label_bold, :gmtvtk_xyplot_label_owner,
 	:gmtvtk_xyplot_set_series_kind, :gmtvtk_xyplot_set_series_legend, :gmtvtk_xyplot_set_series_columns, :gmtvtk_xyplot_set_point_values,   # per-point: error bars, bubble sizes
 	:gmtvtk_xyplot_save_png,                                     # the current page's chart to a PNG
 	:gmtvtk_xyplot_export,                                       # ...as .pdf/.ps/.svg/.png/.jpg (File > Export figure)

@@ -51,9 +51,16 @@ p = biplot(D; PC=(3, 4), varlabels=["a", "b", "c"], xlabel="Component 3", ylabel
   `PC1 (<p>%)` and Y `PC2 (<p>%)`, with the percentage of the total variance each component explains.
   The limits are symmetric about 0, rounded to round numbers and widened by 15 % so the arrow names
   stay inside; the page is square.
-- In the Object Manager the points are one row, `observations`, and the arrows another, `loadings`.
-  When the data carry a trailing text (the species of the iris data, say), the observations are
-  grouped by it, as GMT.jl's `biplot` groups them: one series per group, each in its own colour.
+- The points are coloured by the variable each observation represents most: the one with the largest
+  standardized value (in absolute terms) in its row. So there is one colour group per variable — three
+  for three variables — and each variable's arrow and name are drawn in its group's colour. In the
+  Object Manager each group is a row named after its variable, and each arrow a row `<variable>
+  loading`. A variable's name belongs to its arrow's row: unchecking the row hides both, and
+  deleting it removes both.
+- When the data carry a trailing text (the species of the iris data, say), the observations are
+  grouped by it instead, as GMT.jl's `biplot` groups them: one series per group, each in its own
+  colour, and the arrows are one row, `loadings`. A single colour (`cmap="blue"`) puts every point in
+  one row, `observations`.
 - The variable names are labels on the page: **drag** any of them with the left mouse button to move
   it. A saved session keeps them where they were dropped.
 
@@ -189,7 +196,8 @@ GMT.jl's:
 - **`marker=:point`** — the observations' symbol: `:point` (a small circle), `:circle`, `:square`,
   `:diamond`, `:cross`, `:plus`.
 - **`ms="auto"`** — the symbols' size, e.g. `"4p"` or a number in cm.
-- **`cmap=:categorical`** — the observations' colour: one colour per group, `"none"` (all black), or
+- **`cmap=:categorical`** — the observations' colour: one colour per group (per variable, when the
+  data carry no groups), `"none"` (all black), or
   one colour for every point (`"blue"`, `"#0072BD"`).
 - **`arrow=(0.3, 0.5, 0.75, "#0072BD")`** — `(len, shape, width, color)`; the arrows take their width
   (points) and colour from it. Their heads are sized on the screen, so `len` and `shape` must stay at

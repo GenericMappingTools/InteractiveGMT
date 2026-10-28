@@ -152,6 +152,44 @@ end
 	end
 end
 
+@testitem "X,Y biplot without groups: one colour group per variable, its arrow and name in the same colour" tags=[:gui, :xyplot] setup=[GmtvtkTest] begin
+	IG = InteractiveGMT; tf = GmtvtkTest._test_fn
+	IG._XY_CURRENT[] = C_NULL
+	p = plot(collect(1.0:5.0), collect(1.0:5.0))
+	h = p.h
+	try
+		IG._pump_once()
+		IG._xy_example(h, p, "biplot"); IG._pump_once()            # 3 variables: length, width, depth
+		@test ccall(tf(:gmtvtk_xyplot_menu_test), Cint, (Ptr{Cvoid}, Cstring), h, "xyPlotType_biplot") == 1
+		IG._pump_once()
+		secs = IG._xy_manifest_sections(IG._xy_session_state(h))
+		cur = parse(Int, only([d for (s, d) in secs if s == "window"])["curpage"])
+		ser = [d for (s, d) in secs if s == "series" && parse(Int, d["page"]) == cur]
+		byname = Dict(IG._xy_unesc(d["name"]) => d for d in ser)
+		vars = ("length", "width", "depth")
+		@test all(v -> haskey(byname, v) && haskey(byname, "$v loading"), vars)
+		# every observation is in exactly one variable's group, and each group is painted as its arrow is
+		@test sum(v -> parse(Int, byname[v]["npoints"]), vars) == 150
+		@test all(v -> byname[v]["rgb"] == byname["$v loading"]["rgb"], vars)
+		@test length(unique(byname[v]["rgb"] for v in vars)) == 3
+		# the variable names are drawn in the same colours
+		labs = IG._xy_page_labels(h, cur)
+		col(v) = (l = only(filter(l -> l.text == v, labs)); join(map(x -> string(round(x; digits = 2)), (l.r, l.g, l.b)), " "))
+		@test all(v -> col(v) == join(map(x -> string(round(parse(Float64, x); digits = 2)), split(byname[v]["rgb"])), " "), vars)
+		# each name belongs to its arrow's row: unchecking "depth loading" hides the name "depth" too
+		@test all(v -> only(filter(l -> l.text == v, labs)).owner == "$v loading", vars)
+		om(t, w) = ccall(tf(:gmtvtk_xyplot_objmgr_test), Cint, (Ptr{Cvoid}, Cstring, Cint), h, t, w)
+		lblsteps() = [s.comment for s in first(IG._xy_script_emit(h)) if startswith(s.comment, "label ")]
+		@test "label \"depth\"" in lblsteps()
+		@test om("depth loading", 2) == 1; IG._pump_once()
+		@test !("label \"depth\"" in lblsteps()) && "label \"width\"" in lblsteps()
+		@test om("depth loading", 1) == 1; IG._pump_once()
+		@test "label \"depth\"" in lblsteps()
+	finally
+		close(p)
+	end
+end
+
 # The X,Y window's annotation tools (MATLAB's ANNOTATIONS: Text Arrow, Arrow, Double Arrow, Line, Text
 # Box, Rectangle, Ellipse): armed from the tool bar, drawn with the mouse, typed in place, listed in the
 # Object Manager, kept by a session and drawn by Plot with GMT.jl.

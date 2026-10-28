@@ -158,6 +158,9 @@ struct XYLabel {
 	double size = 11;
 	int ha = 0, va = 0;                        // -1 left / bottom, 0 centre, 1 right / top
 	bool bold = false;
+	// The series this label names (a biplot's variable name -> its arrow): it shows only while that
+	// series is checked, and goes with it when it is deleted. "" = the page's own label.
+	std::string owner;
 	// where it was last drawn, scene px (xyLabelPaint): what a press is tested against to drag it
 	bool  shown = false;
 	float bx = 0, by = 0, bw = 0, bh = 0;
@@ -1395,7 +1398,10 @@ static void xyDeleteSeries(XYPlot *s, int idx) {
 	std::vector<XYSeries> &series = xyCur(s).series;
 	if (idx < 0 || idx >= (int)series.size())
 		return;
+	const std::string gone = series[idx].name;
 	series.erase(series.begin() + idx);
+	std::vector<XYLabel> &lb = xyCur(s).labels;   // the labels naming it go with it
+	lb.erase(std::remove_if(lb.begin(), lb.end(), [&gone](const XYLabel &l) { return !l.owner.empty() && l.owner == gone; }), lb.end());
 	int &ms = xyCur(s).markSel;            // the marker stays on ITS curve, or goes with it
 	if (ms == idx) ms = -1;
 	else if (ms > idx) --ms;
@@ -1717,6 +1723,8 @@ static void xyObjMgrMenu(XYPlot *s, const QPoint &pos) {
 		const QString nn = QInputDialog::getText(s->win, "Rename series", "Name:",
 			QLineEdit::Normal, QString::fromStdString(series[idx].name), &ok);
 		if (ok && !nn.isEmpty()) {
+			for (XYLabel &l : xyCur(s).labels)              // its labels follow it to the new name
+				if (!l.owner.empty() && l.owner == series[idx].name) l.owner = nn.toStdString();
 			series[idx].name = nn.toStdString();
 			if (series[idx].plot) series[idx].plot->SetLabel(nn.toStdString());
 			xyRebuildObjMgr(s);
@@ -2687,6 +2695,11 @@ static void xyLabelPaint(XYPlot *s, vtkChartXY *chart, vtkContext2D *p) {
 	const float tol = 40.0f * dpr;                    // labels just outside a hidden frame (spoke names) still show
 	for (XYLabel &l : pg->labels) {
 		l.shown = false;
+		if (!l.owner.empty()) {                       // a series' label: hidden with its series
+			bool hidden = false;
+			for (const XYSeries &se : pg->series) if (se.name == l.owner) { hidden = !se.visible; break; }
+			if (hidden) continue;
+		}
 		double sx, sy;
 		if (!xyDataToScene(*pg, l.x, l.y, sx, sy)) continue;
 		if (sx < x0[0] - tol || sx > x1[0] + tol || sy < y0[1] - tol || sy > y1[1] + tol) continue;
@@ -5336,6 +5349,7 @@ static std::string xySessionState(XYPlot *s) {
 			kv("label", xyNums({ l.x, l.y, l.r, l.g, l.b, l.size, (double)l.ha, (double)l.va }) + " " +
 			            xyEsc(QString::fromStdString(l.text)));
 			if (l.bold) kv("labelbold", "1");            // of the label just written
+			if (!l.owner.empty()) kv("labelowner", xyEsc(QString::fromStdString(l.owner)));
 		}
 		for (const XYAnnot &a : pg.annots) {             // one key per annotation, in drawing order
 			kv("annot", xyNums({ (double)a.kind, a.x0, a.y0, a.x1, a.y1, a.r, a.g, a.b, a.width, (double)a.lineType,
@@ -5495,6 +5509,9 @@ static void xySessionApply(XYPlot *s, const char *text) {
 			}
 			else if (k == "labelbold") {
 				if (!pg.labels.empty()) pg.labels.back().bold = v.toInt() != 0;
+			}
+			else if (k == "labelowner") {
+				if (!pg.labels.empty()) pg.labels.back().owner = xyUnesc(v).toStdString();
 			}
 			else if (k == "annot") {
 				const QStringList f = v.split(' ');

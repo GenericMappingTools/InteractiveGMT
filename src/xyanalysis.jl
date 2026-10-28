@@ -556,6 +556,12 @@ const _XY_STAT_KINDS = Dict{String,Function}(
 # stretched (polar, panels) get a SQUARE plot area.
 const _XY_GRID_RGB = (0.6, 0.6, 0.6)
 const _XY_BLUE     = (0.0, 0.447, 0.741)             # GMT.jl's "#0072BD"
+# Category colour k (1-based): the chart's own series palette (xyPalette, 65_xyplot.cpp), so a group
+# painted on purpose matches what the chart would have given it.
+const _XY_CAT = ((0.12, 0.47, 0.71), (1.00, 0.50, 0.05), (0.17, 0.63, 0.17), (0.84, 0.15, 0.16),
+                 (0.58, 0.40, 0.74), (0.55, 0.34, 0.29), (0.89, 0.47, 0.76), (0.50, 0.50, 0.50),
+                 (0.74, 0.74, 0.13), (0.09, 0.75, 0.81))
+_xy_catcolor(k::Integer) = _XY_CAT[mod1(k, length(_XY_CAT))]
 
 _xy_lbl(plot, x, y, t; ha=0, va=0, size=11, c=(0.0, 0.0, 0.0)) =
 	ccall(_fn(:gmtvtk_xyplot_add_label), Cvoid,
@@ -941,9 +947,24 @@ function _xy_biplot_page(plot, p, M::AbstractMatrix{<:Real}, nms::Vector{String}
 		      plot, ccall(_fn(:gmtvtk_xyplot_series_count), Cint, (Ptr{Cvoid},), plot) - 1, size(A, 2), size(A, 1), A,
 		      srcnames) == 1 || error("biplot: the input rows do not match the observations series")
 	end
-	if isempty(groups) || color !== nothing
+	# No categories given and no single colour asked for: each observation is painted with the colour of
+	# the VARIABLE it represents most — the one with the largest |z-score| in its row, on the z-scores the
+	# PCA ran on — so there is one group of points per variable, and that variable's arrow and name wear
+	# the same colour.
+	byvar = isempty(groups) && color === nothing
+	if byvar
+		Z = GMT.zscores(Float64.(M))
+		dom = [argmax(abs.(@view Z[i, :])) for i in axes(Z, 1)]
+		for k in 1:nv
+			i = findall(==(k), dom)
+			isempty(i) && continue
+			_xyadd!(p, scores[i, 1], scores[i, 2]; name=nms[k], marker, linestyle=:none, markersize=ms,
+			     color=_xy_catcolor(k))
+			addsrc(i)
+		end
+	elseif isempty(groups)
 		_xyadd!(p, scores[:, 1], scores[:, 2]; name="observations", marker, linestyle=:none, markersize=ms,
-		     color=color === nothing ? (0.35, 0.35, 0.35) : color)
+		     color=color)
 		addsrc(1:size(M, 1))
 	else
 		for g in unique(groups)                   # one series per category, in the chart's own colours
@@ -953,17 +974,30 @@ function _xy_biplot_page(plot, p, M::AbstractMatrix{<:Real}, nms::Vector{String}
 		end
 	end
 	ax, ay = Float64[], Float64[]
+	nser() = ccall(_fn(:gmtvtk_xyplot_series_count), Cint, (Ptr{Cvoid},), plot)
 	for k in axes(coefs, 1)                       # feather!(…, endpt=true): an arrow from the origin
 		cx, cy = coefs[k, 1], coefs[k, 2]
 		hypot(cx, cy) > 0 || continue
-		append!(ax, [0.0, cx, NaN]);  append!(ay, [0.0, cy, NaN])
+		ck = byvar ? _xy_catcolor(k) : arrowcolor
+		if byvar                                  # the variable's own arrow, in its points' colour
+			_xyadd!(p, [0.0, cx], [0.0, cy]; name="$(nms[k]) loading", color=ck, linewidth=arrowwidth)
+			_stick_arrows!(plot)
+			ccall(_fn(:gmtvtk_xyplot_set_series_legend), Cint, (Ptr{Cvoid}, Cint, Cint), plot, nser() - 1, 0)
+		else
+			append!(ax, [0.0, cx, NaN]);  append!(ay, [0.0, cy, NaN])
+		end
 		if varlabels
-			_xy_lbl(plot, cx * 1.08, cy * 1.08, nms[k]; ha=cx >= 0 ? -1 : 1, size=12, c=arrowcolor)
+			_xy_lbl(plot, cx * 1.08, cy * 1.08, nms[k]; ha=cx >= 0 ? -1 : 1, size=12, c=ck)
 			bold && ccall(_fn(:gmtvtk_xyplot_label_bold), Cvoid, (Ptr{Cvoid}, Cint), plot, 1)
+			# the name belongs to its arrow's row: unchecking the arrow hides the name with it
+			ccall(_fn(:gmtvtk_xyplot_label_owner), Cvoid, (Ptr{Cvoid}, Cstring), plot,
+			      byvar ? "$(nms[k]) loading" : "loadings")
 		end
 	end
-	_xyadd!(p, ax, ay; name="loadings", color=arrowcolor, linewidth=arrowwidth)
-	_stick_arrows!(plot)
+	if !byvar
+		_xyadd!(p, ax, ay; name="loadings", color=arrowcolor, linewidth=arrowwidth)
+		_stick_arrows!(plot)
+	end
 	_xy_look(plot, true, false, (X[1], X[2], Y[1], Y[2]))
 end
 

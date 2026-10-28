@@ -39,8 +39,8 @@ end
 # off the window's state text. Every label is its own `label=` key, so they are read from the raw lines:
 # the section dicts keep only the last of a repeated key.
 function _xy_page_labels(h::Ptr{Cvoid}, page::Integer)
-	labs = NamedTuple{(:x, :y, :r, :g, :b, :size, :ha, :va, :text, :bold),
-	                  Tuple{Float64,Float64,Float64,Float64,Float64,Float64,Int,Int,String,Bool}}[]
+	labs = NamedTuple{(:x, :y, :r, :g, :b, :size, :ha, :va, :text, :bold, :owner),
+	                  Tuple{Float64,Float64,Float64,Float64,Float64,Float64,Int,Int,String,Bool,String}}[]
 	p = -1; sec = ""
 	for raw in split(_xy_session_state(h), '\n')
 		line = rstrip(raw, '\r')
@@ -55,9 +55,11 @@ function _xy_page_labels(h::Ptr{Cvoid}, page::Integer)
 			length(f) == 9 || continue
 			v = _xy_nums(join(f[1:8], ' '))
 			push!(labs, (x = v[1], y = v[2], r = v[3], g = v[4], b = v[5], size = v[6], ha = round(Int, v[7]),
-			             va = round(Int, v[8]), text = _xy_unesc(f[9]), bold = false))
+			             va = round(Int, v[8]), text = _xy_unesc(f[9]), bold = false, owner = ""))
 		elseif startswith(line, "labelbold=") && !isempty(labs)
 			labs[end] = merge(labs[end], (bold = line[11:end] == "1",))
+		elseif startswith(line, "labelowner=") && !isempty(labs)
+			labs[end] = merge(labs[end], (owner = _xy_unesc(line[12:end]),))
 		end
 	end
 	return labs
@@ -312,7 +314,9 @@ function _xy_script_emit(h::Ptr{Cvoid}; figsize::Real = 15.0)
 	end
 	# The page's own labels (a biplot's variable names…): one text! each, its colour, size, weight and
 	# anchor as on screen, not clipped by the frame (the window draws them just outside it too).
+	hidden = Set(_xy_unesc(get(d, "name", "")) for d in series if parse(Int, d["page"]) == cur && get(d, "visible", "1") != "1")
 	for (k, l) in enumerate(_xy_page_labels(h, cur))
+		l.owner in hidden && continue              # its series is unchecked: hidden with it, as on screen
 		var = _script_var!(ctx, "T", nothing)
 		var = ScriptVar(var.name, _xy_label_data(h, cur, k))
 		bind = DataBind(var, :live, "InteractiveGMT._xy_label_data(Ptr{Nothing}(UInt($(UInt(h)))), $cur, $k)")
