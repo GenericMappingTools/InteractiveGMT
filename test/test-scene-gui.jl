@@ -737,18 +737,28 @@ end
 	end
 end
 
-@testitem "Tools > X,Y plot opens a mirror-registered blank window" tags=[:gui, :xyplot] begin
-	IG = InteractiveGMT
-	h = ccall(IG._fn(:gmtvtk_open_xyplot_from_host), Ptr{Cvoid}, ())   # same path as the menu action
+@testitem "the toolbar's X,Y plot button opens a mirror-registered blank window" tags=[:gui, :xyplot] setup=[GmtvtkTest] begin
+	IG = InteractiveGMT; tf = GmtvtkTest._test_fn
+	IG._XY_CURRENT[] = C_NULL
+	f = viz(IG.GMT.peaks())
+	h = C_NULL
 	try
 		IG._pump_once()
+		# it left the Tools menu: the button before the Info flyout is the only door
+		buf = Vector{UInt8}(undef, 1 << 16)
+		ccall(tf(:gmtvtk_menu_dump_test), Cint, (Ptr{Cvoid}, Ptr{UInt8}, Cint), f.h, buf, length(buf))
+		@test !occursin("X,Y plot", unsafe_string(pointer(buf)))
+		@test ccall(tf(:gmtvtk_menu_trigger_test), Cint, (Ptr{Cvoid}, Cstring), f.h, "X,Y plot") == 1
+		IG._pump_once()
+		h = IG._XY_CURRENT[]
 		@test h != C_NULL
 		p = get(IG._FIGREG, h, nothing)
 		@test p isa QtXYPlot                              # the new-window callback registered a mirror
 		@test isalive(p)
 		@test length(p.series) == 0                       # blank
 	finally
-		ccall(IG._fn(:gmtvtk_xyplot_close), Cvoid, (Ptr{Cvoid},), h)
+		h == C_NULL || ccall(IG._fn(:gmtvtk_xyplot_close), Cvoid, (Ptr{Cvoid},), h)
+		ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), f.h)
 	end
 end
 
@@ -1039,7 +1049,8 @@ end
 	rclick(x, y, it) = ccall(tf(:gmtvtk_xyplot_rclick_test), Cint, (Ptr{Cvoid}, Cdouble, Cdouble, Cstring), p.h, x, y, it)
 	try
 		IG._pump_once()
-		@test click("xyMagTool") == 1                      # the toolbar toggle shows the control strip
+		# Analysis > Synthetic geomag anomalies shows the control strip
+		@test ccall(tf(:gmtvtk_xyplot_menu_test), Cint, (Ptr{Cvoid}, Cstring), p.h, "xyMagTool") == 1
 		@test st(p.h)[11] == 1
 		@test typ("xyMagStart", "0") == 1 && typ("xyMagEnd", "10") == 1
 		@test click("xyMagCreateBar") == 1
@@ -1157,7 +1168,7 @@ end
 		@test any(u -> isapprox(ratio, u; rtol=0.01), (1000.0, 1.0, 1 / 1.852, 1 / 1.609344))
 		click(n) = ccall(tf(:gmtvtk_xyplot_click_test), Cint, (Ptr{Cvoid}, Cstring), q.h, n)
 		typ(n, t) = ccall(tf(:gmtvtk_xyplot_type_test), Cint, (Ptr{Cvoid}, Cstring, Cstring), q.h, n, t)
-		click("xyMagTool"); typ("xyMagStart", "0"); typ("xyMagEnd", "10"); click("xyMagCreateBar")
+		ccall(tf(:gmtvtk_xyplot_menu_test), Cint, (Ptr{Cvoid}, Cstring), q.h, "xyMagTool"); typ("xyMagStart", "0"); typ("xyMagEnd", "10"); click("xyMagCreateBar")
 		@test click("xyMagSynthetic") == 1
 		# rate from the track's length measured EXACTLY as the panel measures it (Preferences type): the
 		# panel's last distance, in whichever Preferences unit, gives the same km to the last digits

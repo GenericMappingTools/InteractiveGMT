@@ -242,8 +242,7 @@ function _on_talwani2d(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 				x = Float64.(@view m[:, 1])
 				y = Float64.(@view m[:, 2])
 				if p === nothing
-					p = _xyplot(x, y; name = nm, title = "talwani2d", xlabel = "x",
-					           ylabel = _tal_fieldlabel(field))
+					p = _xyplot(x, y; name = nm, title = "talwani2d", ylabel = _tal_fieldlabel(field))
 				else
 					_xyadd!(p, x, y; name = nm)
 				end

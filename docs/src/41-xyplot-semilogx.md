@@ -36,8 +36,7 @@ logscale!(p; x=false)            # back to linear
 
 Clicking **semilogx** acts on the whole current page and needs no series selected. It also puts the
 Y axis back to linear, if it was logarithmic. The **plot** icon puts both axes back to linear; the
-**semilogy** and **loglog** icons set the others. The same switches are in the **Misc** menu, as
-**Log X axis** and **Log Y axis**.
+**semilogy** and **loglog** icons set the others.
 
 `proj=:logx` is a keyword of `plot` only: `plot!` adds lines to a page and leaves its axes as they
 are.

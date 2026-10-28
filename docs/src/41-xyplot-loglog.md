@@ -37,8 +37,7 @@ A power law, `y = a·xᵇ`, is a straight line on these axes, with slope `b`.
 ### The loglog icon
 
 Clicking **loglog** acts on the whole current page and needs no series selected. The **plot** icon
-puts both axes back to linear; **semilogx** and **semilogy** make only one of them logarithmic. The
-same switches are in the **Misc** menu, as **Log X axis** and **Log Y axis**.
+puts both axes back to linear; **semilogx** and **semilogy** make only one of them logarithmic.
 
 `proj=:loglog` is a keyword of `plot` only: `plot!` adds lines to a page and leaves its axes as they
 are.

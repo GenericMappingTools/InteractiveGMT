@@ -134,6 +134,7 @@ const _TEST_SYMBOLS = (
 	:gmtvtk_xyplot_menu_test,         # an X,Y menu item chosen
 	:gmtvtk_xyplot_objmgr_test,       # an X,Y Object Manager row: click its label, check / uncheck it
 	:gmtvtk_dialog_button_test,       # a dialog's push button by objectName: its text, and a click
+	:gmtvtk_xyplot_annot_props_test,  # an X,Y annotation's properties dialog, one control clicked
 	:gmtvtk_dialog_tab_test,          # a dialog tab brought to the front, as a click on it does
 	:gmtvtk_set_remotes_callback,     # NOT test-only -- mirrored: this dll's Remote sensing dialogs call Julia too
 )

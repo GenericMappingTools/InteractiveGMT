@@ -294,7 +294,7 @@ fig = plot(data; proj=:loglog)
 logscale!(fig; x=true, y=false)
 ```
 
-Or use **Misc → Log X axis / Log Y axis**.
+Or use the plot-type gallery's **semilogx**, **semilogy** and **loglog** icons.
 
 ### Plot Types
 
@@ -348,7 +348,7 @@ are added to the current page.
 
 **Usage:** Select a row in Object Manager first, then choose analysis.
 
-The **GMT** menu has a full **spectrum1d…** dialog (auto- and cross-spectra).
+**Misc > GMT** has a full **spectrum1d…** dialog (auto- and cross-spectra).
 
 ### Saving
 

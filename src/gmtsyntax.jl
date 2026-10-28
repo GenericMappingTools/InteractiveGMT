@@ -163,12 +163,13 @@ const _XY_SERIES_KW = (:color, :linewidth, :linestyle, :marker, :markersize)
 # What plot/plot! draw, in GMT.jl's reading: column 2 against column 1, and with `multicol=true` every
 # further column its own line. -> segments of (x, [y columns], [names], xlabel).
 _xy_cols(n::Int, multi::Bool) = multi ? (2:n) : (2:min(n, 2))
-_gmt_xy_segs(y::AbstractVector{<:Real}, multi::Bool) = [(collect(1.0:length(y)), [collect(Float64, y)], [""], "X")]
-_gmt_xy_segs(x::AbstractVector, y::AbstractVector, multi::Bool) = [(collect(Float64, x), [collect(Float64, y)], [""], "X")]
+# (xlabel "" = nothing is known about X: the axis gets no title)
+_gmt_xy_segs(y::AbstractVector{<:Real}, multi::Bool) = [(collect(1.0:length(y)), [collect(Float64, y)], [""], "")]
+_gmt_xy_segs(x::AbstractVector, y::AbstractVector, multi::Bool) = [(collect(Float64, x), [collect(Float64, y)], [""], "")]
 function _gmt_xy_segs(x::AbstractVector, Y::AbstractMatrix, multi::Bool)
 	cs = multi ? axes(Y, 2) : (1:1)
 	return [(collect(Float64, x), [collect(Float64, @view Y[:, c]) for c in cs],
-	         [multi ? "Line $c" : "" for c in cs], "X")]
+	         [multi ? "Line $c" : "" for c in cs], "")]
 end
 function _gmt_xy_segs(M::AbstractMatrix{<:Real}, multi::Bool)
 	size(M, 2) < 2 && error("plot: a matrix needs at least 2 columns (x, y)")
@@ -179,7 +180,7 @@ function _gmt_xy_segs(D::GMTdataset{<:Real,2}, multi::Bool)
 	n < 2 && error("plot: a dataset needs at least 2 columns (x, y)")
 	cn = _ds_colnames(D, n)
 	cs = _xy_cols(n, multi)
-	return [(collect(Float64, @view D.data[:, 1]), [collect(Float64, @view D.data[:, c]) for c in cs], cn[cs], cn[1])]
+	return [(collect(Float64, @view D.data[:, 1]), [collect(Float64, @view D.data[:, c]) for c in cs], cn[cs], _xy_known_label(cn[1]))]   # a real name, else no x label
 end
 function _gmt_xy_segs(D::AbstractVector{<:GMTdataset}, multi::Bool)
 	segs = [s for s in D if size(s.data, 2) >= 2]

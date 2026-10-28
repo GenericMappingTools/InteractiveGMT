@@ -69,6 +69,88 @@ function _xy_label_data(h::Ptr{Cvoid}, page::Integer, k::Integer)
 	return GMT.mat2ds([l.x l.y]; text = [l.text])
 end
 
+# A page's annotations (XYPage::annots: the tool bar's Text Arrow ... Ellipse), in drawing order, read
+# off the window's state text the way `_xy_page_labels` reads the labels. `kind` is the window's
+# XY_AN_*: 0 text arrow, 1 arrow, 2 double arrow, 3 line, 4 text box, 5 rectangle, 6 ellipse.
+const _XY_ANNOT_NAMES = ("text arrow", "arrow", "double arrow", "line", "text box", "rectangle", "ellipse")
+function _xy_page_annots(h::Ptr{Cvoid}, page::Integer)
+	ans = NamedTuple[]
+	p = -1; sec = ""
+	for raw in split(_xy_session_state(h), '\n')
+		line = rstrip(raw, '\r')
+		if startswith(line, "[") && endswith(line, "]")
+			sec = line[2:end-1]
+			sec == "page" && (p += 1)
+			continue
+		end
+		(sec == "page" && p == page) || continue
+		if startswith(line, "annotbox=") && !isempty(ans)   # of the annotation just read: its box shown or not
+			ans[end] = merge(ans[end], (box = line[10:end] != "0",))
+			continue
+		end
+		startswith(line, "annot=") || continue
+		f = split(line[7:end], ' '; limit = 18)
+		length(f) >= 17 || continue
+		v = _xy_nums(join(f[1:17], ' '))
+		push!(ans, (kind = round(Int, v[1]), x0 = v[2], y0 = v[3], x1 = v[4], y1 = v[5], r = v[6], g = v[7], b = v[8],
+		            width = v[9], ltype = round(Int, v[10]), size = v[11], filled = v[12] != 0, fr = v[13], fg = v[14],
+		            fb = v[15], visible = v[16] != 0, text = length(f) == 18 ? _xy_unesc(f[18]) : "", box = true))
+	end
+	return ans
+end
+
+# The window's XY_AN_* kinds as annotation!'s (gmtannot.jl).
+const _XY_ANNOT_KIND = (:textarrow, :arrow, :doublearrow, :line, :textbox, :rectangle, :ellipse)
+
+# The page's annotations as script steps: ONE `annotation!` call each (gmtannot.jl, defined at the top
+# of the script), its coordinates, pen, head, fill and text written out, so the script draws them with
+# GMT.jl alone and a user edits one by editing its call. The text is placed as the window places it: a
+# text arrow's at its tail, on the side away from the head (that side decided on the PAPER, where the
+# axes' scales differ); a text box's inside its top-left corner.
+function _xy_annot_steps!(steps, ctx, h::Ptr{Cvoid}, page::Integer, logx::Bool, logy::Bool)
+	xr = ctx.region; w = ctx.figsize; hgt = w * 2 / 3
+	sc(v, l) = l ? log10(abs(v)) : v
+	for a in _xy_page_annots(h, page)
+		a.visible || continue
+		col = _xy_hex(a.r, a.g, a.b)
+		r8(v) = round(v; sigdigits = 8)               # a dragged point's float noise is not a coordinate
+		kw = Pair{Symbol,Any}[:x => (r8(a.x0), r8(a.x1)), :y => (r8(a.y0), r8(a.y1)),
+		                      :pen => string(_xy_pt(a.width), "p,", col, haskey(_XY_GMT_LINE, a.ltype) ? "," * _XY_GMT_LINE[a.ltype] : "")]
+		0 <= a.kind <= 2 && push!(kw, :head => string(_xy_pt(3 * max(2.5, a.width) + 4), "p"))   # xyAnnotHead's length
+		a.kind >= 4 && a.filled && push!(kw, :fill => _xy_hex(a.fr, a.fg, a.fb))
+		a.kind == 4 && !a.box && push!(kw, :box => false)        # a text box showing its text only
+		if (a.kind == 0 || a.kind == 4) && !isempty(a.text)
+			push!(kw, :text => a.text, :font => (a.size, "Helvetica", col))
+			if a.kind == 4
+				push!(kw, :justify => "TL", :offset => string(_xy_pt(4), "p/-", _xy_pt(4), "p"))
+			else
+				dx = (sc(a.x1, logx) - sc(a.x0, logx)) / (sc(xr[2], logx) - sc(xr[1], logx)) * w
+				dy = (sc(a.y1, logy) - sc(a.y0, logy)) / (sc(xr[4], logy) - sc(xr[3], logy)) * hgt
+				L = hypot(dx, dy); ux, uy = L > 0 ? (dx / L, dy / L) : (1.0, 0.0)
+				push!(kw, :justify => abs(ux) >= abs(uy) ? (ux >= 0 ? "MR" : "ML") : (uy >= 0 ? "TC" : "BC"),
+				          :offset => string(round(-ux * _xy_pt(3); digits = 2), "p/", round(-uy * _xy_pt(3); digits = 2), "p"))
+			end
+		end
+		a.kind == 6 && logx && push!(kw, :logx => true)
+		a.kind == 6 && logy && push!(kw, :logy => true)
+		push!(steps, ScriptStep("annotation: $(_XY_ANNOT_NAMES[a.kind + 1])", DataBind[], :annotation,
+		                        _XY_ANNOT_KIND[a.kind + 1], kw, true))
+	end
+	return steps
+end
+
+# The script's text, with `annotation!`'s definition (gmtannot.jl) right after `using GMT` when any step
+# draws an annotation — so the script carries everything it calls and runs with GMT.jl alone.
+function _xy_with_annot_helpers(txt::String, steps)::String
+	any(s -> s.mod === :annotation, steps) || return txt
+	block = "\n# ── annotation!: MATLAB's figure annotations drawn with GMT.jl (used by the calls at the end)\n" *
+	        _GMT_ANNOT_SRC
+	return replace(txt, "using GMT\n" => "using GMT\n" * block; count = 1)
+end
+
+# File > Plot with GMT.jl's text for an X,Y window: the rendered steps, plus what they call.
+_xy_script_text(steps, ctx)::String = _xy_with_annot_helpers(_script_render_text(steps, ctx), steps)
+
 # One series' legend entry as a pslegend "S" line, drawn as the window's legend draws it: an arrow as an
 # arrow (its head as on the chart), bars as a box, bubbles as a circle, a marker-only curve as its
 # marker, any other curve as its pen.
@@ -123,9 +205,15 @@ function _xy_script_emit(h::Ptr{Cvoid}; figsize::Real = 15.0)
 	length(pages) > 1 && push!(ctx.notes, "only the page shown ('$(_xy_unesc(pg["name"]))') is exported; " *
 	                                      "the window has $(length(pages)) pages")
 	timefmt = parse(Int, get(pg, "xtime", "0"))
-	gridon = get(win, "grid", "1") == "1"
-	frame = gridon ? (axes = :WSen, annot = :auto, ticks = :auto, grid = :auto) :
-	                 (axes = :WSen, annot = :auto, ticks = :auto)
+	# the page's own grid, per direction (Grid / X-Grid / Y-Grid); an older window state has only the
+	# window-wide "grid"
+	gwin = get(win, "grid", "1")
+	gridx = get(pg, "gridx", gwin) == "1"; gridy = get(pg, "gridy", gwin) == "1"
+	frame = (axes = :WSen, annot = :auto, ticks = :auto)
+	# the page's title and subtitle (Title / Subtitle buttons, Axes properties): -B+t / -B+s
+	ttl = _xy_unesc(get(pg, "title", "")); sub = _xy_unesc(get(pg, "subtitle", ""))
+	isempty(ttl) || (frame = merge(frame, (title = ttl,)))
+	isempty(sub) || (frame = merge(frame, (subtitle = sub,)))
 	legendon = get(win, "legend", "1") == "1"
 
 	steps = ScriptStep[]
@@ -142,6 +230,8 @@ function _xy_script_emit(h::Ptr{Cvoid}; figsize::Real = 15.0)
 		kw = Pair{Symbol,Any}[]
 		if isempty(steps)
 			append!(kw, [:region => ScriptVar(:REG, ctx.region), :proj => ScriptVar(:PROJ, ctx.proj), :frame => frame])
+			gridx && push!(kw, :xaxis => (grid = :auto,))       # -Bpxg: the vertical lines
+			gridy && push!(kw, :yaxis => (grid = :auto,))       # -Bpyg: the horizontal ones
 			xl = _xy_unesc(get(pg, "xlabel", "")); yl = _xy_unesc(get(pg, "ylabel", ""))
 			isempty(xl) || push!(kw, :xlabel => xl)
 			isempty(yl) || push!(kw, :ylabel => yl)
@@ -231,6 +321,7 @@ function _xy_script_emit(h::Ptr{Cvoid}; figsize::Real = 15.0)
 		                      :justify => just, :noclip => true]
 		push!(steps, ScriptStep("label \"$(l.text)\"", DataBind[bind], :text, var, kw, true))
 	end
+	_xy_annot_steps!(steps, ctx, h, cur, logx, logy)   # the hand-drawn annotations, over everything
 	# Drawn by the X,Y window itself, not curves: say so rather than drop them silently.
 	get(pg, "mag.barOn", "0") == "1" && push!(ctx.notes, "the geomagnetic bar code strip, its chron names and picks")
 	(get(pg, "mag.starIdx", "-1") != "-1" || get(pg, "mag.ageLineX", "nan") != "nan" || !isempty(strip(get(pg, "mag.pinned", "")))) &&
@@ -249,7 +340,7 @@ as the viewer's does.
 """
 function _xy_script_open_editor(h::Ptr{Cvoid})::Nothing
 	steps, ctx = _xy_script_emit(h)
-	txt = _script_render_text(steps, ctx)
+	txt = _xy_script_text(steps, ctx)
 	for n in ctx.notes
 		_xy_log(h, "script: NOT EXPORTED: $n"; err = false)
 	end

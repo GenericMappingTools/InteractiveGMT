@@ -8,9 +8,9 @@
 # the X,Y tool window that's already open, NOT a second X,Y Tool instance -- one tool, many pages,
 # each page keeping its own axes/time-mode/series, same as an Excel workbook's sheets. `_XY_CURRENT`
 # tracks the most recently opened/seeded X,Y window (from ANY of its spawn paths: `_xyplot()` itself,
-# Profile -> X,Y, the 3-D viewer's Tools > X,Y plot, File > New); `_xyplot()` checks it and adds a
+# Profile -> X,Y, the 3-D viewer's X,Y plot toolbar button, File > New); `_xyplot()` checks it and adds a
 # page instead of a window when it's still alive. Explicit "open a new window" GESTURES (File > New,
-# Tools > X,Y plot) still always create a fresh window on request -- they just also become the new
+# the X,Y plot toolbar button) still always create a fresh window on request -- they just also become the new
 # `_XY_CURRENT` target for whatever `_xyplot()` call comes next.
 const _XY_CURRENT = Ref{Ptr{Cvoid}}(C_NULL)
 
@@ -26,11 +26,12 @@ _style_code(d, v, what) = v === nothing ? -1 :
 	get(d, v, nothing) === nothing ? error("plot: unknown $what :$v (have $(sort(collect(keys(d)))))") : d[v]
 
 """
-    _xyplot(x, y; name="", color=nothing, linewidth=0, title="", xlabel="X", ylabel="Y") -> QtXYPlot
+    _xyplot(x, y; name="", color=nothing, linewidth=0, title="", xlabel="", ylabel="") -> QtXYPlot
 
 Open a standalone **X,Y plot** window and draw the `(x, y)` series. `y` may be a matrix whose
 columns are separate lines sharing the same `x`. `color` accepts a name (`:red`, `"blue"`), a
-0–255 / 0–1 triple, or `nothing` for the default. `xlabel`/`ylabel` set the axis titles. Returns
+0–255 / 0–1 triple, or `nothing` for the default. `xlabel`/`ylabel` set the axis titles (none by
+default: an axis is labelled only when something says what it is). Returns
 a live QtXYPlot handle; add more lines with add!. Non-blocking.
 
 ```julia
@@ -42,7 +43,7 @@ _xyadd!(p, t, cos.(t); name="cos", color=:blue)
 function _xyplot(x::AbstractVector, y::AbstractVecOrMat; name::AbstractString="", color=nothing,
                 linewidth::Real=0, linestyle=nothing, marker=nothing, markersize::Real=0,
                 title::AbstractString="",
-                xlabel::AbstractString="X", ylabel::AbstractString="Y", xtime::Union{Symbol,Bool}=:linear,
+                xlabel::AbstractString="", ylabel::AbstractString="", xtime::Union{Symbol,Bool}=:linear,
                 xscale::Symbol=:linear, yscale::Symbol=:linear, track=nothing, trackgeog::Bool=true)
 	local p::QtXYPlot
 	if _XY_CURRENT[] != C_NULL &&
@@ -110,6 +111,12 @@ function _ds_colnames(seg, ncol::Integer)
 	         (i == 1 ? "X" : "col $i") for i in 1:ncol ]
 end
 
+# A column name as an AXIS label only when it is a REAL name: not the "X" / "col N" _ds_colnames makes
+# up for a nameless column, nor GMT's own "col.1". Otherwise "": an axis is labelled only when
+# something says what it is.
+_xy_known_label(nm::AbstractString)::String =
+	(uppercase(nm) in ("X", "Y") || occursin(r"^col\.?\s*\d+$", nm)) ? "" : String(nm)
+
 """
     _xyplot(y::Vector; kwargs...) -> QtXYPlot
 
@@ -134,7 +141,7 @@ function _xyplot(D::GMTdataset; xlabel=nothing, name=nothing, kwargs...)
 	cn = _ds_colnames(D, size(m, 2))
 	x  = Float64.(@view m[:, 1])
 	p  = _xyplot(x, Float64.(@view m[:, 2]); name=cn[2],
-	            xlabel=(xlabel === nothing ? cn[1] : xlabel), kwargs...)
+	            xlabel=(xlabel === nothing ? _xy_known_label(cn[1]) : xlabel), kwargs...)
 	for c in 3:size(m, 2)
 		_xyadd!(p, x, Float64.(@view m[:, c]); name=cn[c])
 	end
@@ -154,7 +161,7 @@ function _xyplot(D::AbstractVector{<:GMTdataset}; xlabel=nothing, name=nothing, 
 			nm = multi ? "$(cn[c]) (seg $i)" : cn[c]
 			if i == 1 && c == 2
 				p = _xyplot(x, Float64.(@view m[:, c]); name=nm,
-				           xlabel=(xlabel === nothing ? cn[1] : xlabel), kwargs...)
+				           xlabel=(xlabel === nothing ? _xy_known_label(cn[1]) : xlabel), kwargs...)
 			else
 				_xyadd!(p, x, Float64.(@view m[:, c]); name=nm)
 			end
@@ -346,11 +353,11 @@ function _register_xy_seed()
 	return
 end
 
-# "New blank X,Y window" callback (3-D viewer Tools > X,Y plot opened an empty window in C++):
+# "New blank X,Y window" callback (the 3-D viewer's X,Y plot button opened an empty window in C++):
 # register a Julia mirror so its File>Open / Save / Analysis work.
 function _on_xy_new(plot::Ptr{Cvoid})::Cvoid
 	try
-		_XY_CURRENT[] = plot   # Tools > X,Y plot is an explicit "open a window" gesture; it still
+		_XY_CURRENT[] = plot   # the X,Y plot button is an explicit "open a window" gesture; it still
 		                       # becomes the target for whatever _xyplot() call comes next
 		# ALWAYS a fresh mirror. This callback fires only when C++ has just BUILT a window, so any
 		# `_FIGREG` entry already sitting at this address belongs to a destroyed window whose pointer

@@ -26805,6 +26805,7 @@ static QIcon makeCylinderIcon();
 static QIcon makePolyhedronIcon();
 static QIcon makeViewModeIcon(bool twoD);   // "2D"/"3D" glyph for the icon-only view-toggle button
 static QIcon makeInfoIcon();                // stylised 'i' glyph for the grdinfo/gdalinfo flyout
+static QIcon makeXYPlotIcon();              // axes + two stepped curves, the X,Y plot tool (85_polygon.cpp)
 static QIcon makeRulerIcon();               // graduated ruler glyph (85_polygon.cpp)
 static QIcon makeGlobeIcon();               // graticule globe for the status-corner CRS chip (85_polygon.cpp)
 static QIcon makeCubeViewIcon();            // wireframe cube glyph for the CUBE view mode (85_polygon.cpp)
@@ -31680,10 +31681,8 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	mRs->addSeparator();
 	mRs->addAction("MODIS scenes (Terra/Aqua)…",  [win, s]() { openRemoteSDialog(win, s, "modisscenes"); });
 
-	// --- Tools menu: open the standalone X,Y plot tool (blank; ready for File>Open or Julia) ----
+	// --- Tools menu (the X,Y plot tool is the toolbar's button, before the Info flyout) ----
 	QMenu *mTools = win->menuBar()->addMenu("&Tools");
-	// Opened FROM this viewer, so this viewer's Scene Objects dock is where it parks when closed.
-	mTools->addAction("X,Y plot", [s] { if (XYPlot *p = xyOpenBlankFromHost()) p->owner = s; });
 	// Make movie: render this window frame by frame and encode it (MovieDialog, above). Non-modal;
 	// WA_DeleteOnClose frees it when closed. Warmed up on open like every other tool dialog, because
 	// the first movie would otherwise pay the scheduler's JIT in front of the user.
@@ -32565,6 +32564,13 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// window-destroyed handler's own re-check).
 	for (Scene *o : g_scenes) swipeRefreshAvailability(o);
 
+	// The X,Y plot tool (blank; ready for File > Open or Julia), just before the Info flyout. Opened FROM
+	// this viewer, so this viewer's Scene Objects dock is where it parks when closed.
+	tb->addSeparator();
+	QAction *actXY = tb->addAction(makeXYPlotIcon(), "X,Y plot");   // icon-only row: the text is its name
+	actXY->setObjectName("tbXYPlot");
+	actXY->setToolTip("X,Y plot: open the X,Y plotting tool");
+	QObject::connect(actXY, &QAction::triggered, [s] { if (XYPlot *p = xyOpenBlankFromHost()) p->owner = s; });
 	// Info flyout sits LAST on the toolbar row (built earlier, added here so it's the rightmost item).
 	tb->addSeparator();
 	tb->addWidget(tbInfo);

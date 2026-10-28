@@ -8103,6 +8103,40 @@ GMTVTK_API int gmtvtk_xyplot_rclick_test(void *handle, double x, double y, const
 	for (int i = 0; i < 5; ++i) QApplication::processEvents();
 	return *clicked == 1 ? 1 : 0;
 }
+//  - OPEN the properties of annotation `idx` of the current page (xyAnnotProps — what its Object Manager
+//    row's double-click opens) and, once the modal dialog is up, CLICK its control named `name` (a check
+//    box, a button), then close it with its Close button. 1 = the control was clicked, 0 = not.
+GMTVTK_API int gmtvtk_xyplot_annot_props_test(void *handle, int idx, const char *name) {
+	XYPlot *p = static_cast<XYPlot*>(handle);
+	if (!p || !p->win || p->pages.empty() || !name || idx < 0 || idx >= (int)xyCur(p).annots.size()) return 0;
+	auto clicked = std::make_shared<int>(0);
+	struct Clicker : QObject {
+		QString want; std::shared_ptr<int> clicked;
+		bool eventFilter(QObject *o, QEvent *e) override {
+			auto *d = qobject_cast<QDialog *>(o);
+			if (d && e->type() == QEvent::Show && *clicked == 0 && d->windowTitle().endsWith(" properties")) {
+				QPointer<QDialog> pd(d);
+				QString w = want; auto c = clicked;
+				QTimer::singleShot(30, d, [pd, w, c] {
+					if (!pd) return;
+					if (auto *b = pd->findChild<QAbstractButton *>(w)) { b->click(); *c = 1; }
+					for (QDialogButtonBox *bb : pd->findChildren<QDialogButtonBox *>())
+						if (QPushButton *cl = bb->button(QDialogButtonBox::Close)) { cl->click(); return; }
+					pd->accept();
+				});
+			}
+			return QObject::eventFilter(o, e);
+		}
+	};
+	auto *f = new Clicker;
+	f->want = QString::fromUtf8(name); f->clicked = clicked;
+	qApp->installEventFilter(f);
+	xyAnnotProps(p, idx);
+	qApp->removeEventFilter(f);
+	delete f;
+	for (int i = 0; i < 5; ++i) QApplication::processEvents();
+	return *clicked;
+}
 //  - RIGHT-CLICK the gallery icon of plot type `type` ("bar stack", ...) and trigger its menu item `item`.
 //    1 = the item was triggered, 0 = no icon / no menu / no such item.
 GMTVTK_API int gmtvtk_xyplot_gallery_menu_test(void *handle, const char *type, const char *item) {

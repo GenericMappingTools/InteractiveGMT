@@ -90,7 +90,7 @@ function _paste_text(scene::Ptr{Cvoid}, txt::AbstractString)
 	W, E, S, N = _dataset_bbox(_paste_to_dataset(segs, cn))
 	_viewer_log_error(scene, ncol >= 2 ?
 		"Paste: the data ($(W)/$(E)/$(S)/$(N)) lies outside this window, and no X,Y plot window is open" :
-		"Paste: single-column data needs an X,Y plot window (Tools > X,Y plot), none is open")
+		"Paste: single-column data needs an X,Y plot window (the toolbar's X,Y plot button), none is open")
 	return
 end
 

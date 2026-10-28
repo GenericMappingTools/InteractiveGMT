@@ -1241,12 +1241,12 @@ end
 
 function _ex_curves(e)
 	x = range(0, 4π; length=e.kind == "scatter" ? 50 : 120)
-	_ex_page(e, "x", "y")
+	_ex_page(e, "", "")
 	_ex_add(e, x, sin.(x), "sin(x)")
 end
 function _ex_steps(e)
 	x = range(0, 2π; length=25)
-	_ex_page(e, "x", "y")
+	_ex_page(e, "", "")
 	_ex_add(e, x, sin.(x), "sin(x)")
 end
 function _ex_bars(e)
@@ -1277,18 +1277,18 @@ function _ex_plotyy(e)
 end
 function _ex_fillbetween(e)
 	x = range(0, 4π; length=150)
-	_ex_page(e, "x", "y")
+	_ex_page(e, "", "")
 	_ex_add(e, x, sin.(x), "sin(x)")
 	_ex_add(e, x, 0.5 .* cos.(x), "0.5 cos(x)")
 end
 function _ex_errorbar(e)
 	y = sqrt.(1.0:10.0)
-	_ex_page(e, "x", "y")
+	_ex_page(e, "", "")
 	_ex_add(e, 1:10, y, "sqrt(x)")
 	_ex_vals(e, 0, 0.1 .* y)
 end
 function _ex_bubble(e)
-	_ex_page(e, "x", "y")
+	_ex_page(e, "", "")
 	_ex_add(e, rand(20), rand(20), "bubbles")
 	_ex_vals(e, 2, rand(20))
 end
@@ -1336,7 +1336,7 @@ function _ex_multivar(e)
 end
 function _ex_marginal(e)
 	x = randn(400)
-	_ex_page(e, "x", "y")
+	_ex_page(e, "", "")
 	_ex_add(e, x, 0.6 .* x .+ 0.6 .* randn(400), "y vs x")
 end
 
@@ -1467,6 +1467,15 @@ function _xy_series_hist(plot::Ptr{Cvoid}, p::QtXYPlot, op::String, s::Int)
 end
 
 # Every _xy_compute op on the selected series of the current page.
+# The x axis label of the page on screen ("" when it has none), off the window's state text.
+function _xy_cur_xlabel(plot::Ptr{Cvoid})::String
+	secs = _xy_manifest_sections(_xy_session_state(plot))
+	pages = [d for (s, d) in secs if s == "page"]
+	win = something(findfirst(x -> x[1] == "window", secs), 0)
+	cur = win == 0 ? 0 : parse(Int, get(secs[win][2], "curpage", "0"))
+	return (0 <= cur < length(pages)) ? _xy_unesc(get(pages[cur + 1], "xlabel", "")) : ""
+end
+
 function _xy_series_op(plot::Ptr{Cvoid}, p::QtXYPlot, op::String, s::Int)
 	xyn = _xy_series_get(plot, op, s)
 	xyn === nothing && return
@@ -1485,7 +1494,9 @@ function _xy_series_op(plot::Ptr{Cvoid}, p::QtXYPlot, op::String, s::Int)
 		# A derivative keeps the SAME x as the parent — if that was a time axis, the derivative's x
 		# is still time, so the new page must inherit the parent's time mode and read its x as dates.
 		parent_fmt = ccall(_fn(:gmtvtk_xyplot_get_xtime), Cint, (Ptr{Cvoid},), plot)
-		xl = isderiv ? (parent_fmt != 0 ? "time" : "x") : (op == "autocorr" ? "lag" : "frequency")
+		# a derivative's x IS the parent's x: its label goes along ("" when the parent has none — never a
+		# made-up "x")
+		xl = isderiv ? (parent_fmt != 0 ? "time" : _xy_cur_xlabel(plot)) : (op == "autocorr" ? "lag" : "frequency")
 		yl = isderiv ? suffix : (op == "fft_psd" ? "power" : (op == "fft_amp" ? "amplitude" : "autocorrelation"))
 		ccall(_fn(:gmtvtk_xyplot_add_page), Cint, (Ptr{Cvoid}, Cstring), plot, "$nm $suffix")
 		if isderiv && parent_fmt != 0

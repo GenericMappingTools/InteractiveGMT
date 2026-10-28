@@ -185,6 +185,28 @@ static QIcon makeInfoIcon() {
 	p.end(); return QIcon(pm);
 }
 
+// Toolbar glyph of the X,Y plot tool: a ticked pair of axes with two stepped curves, a light one over
+// a dark one.
+static QIcon makeXYPlotIcon() {
+	QPixmap pm = iconCanvas();
+	QPainter p(&pm);
+	p.setRenderHint(QPainter::Antialiasing, true);
+	const QColor navy(22, 52, 110), sky(70, 175, 232);
+	p.setPen(QPen(navy, 1.6, Qt::SolidLine, Qt::FlatCap));
+	p.drawLine(QPointF(3.5, 2.5), QPointF(3.5, 20.5));          // y axis
+	p.drawLine(QPointF(3.5, 20.5), QPointF(22.0, 20.5));        // x axis
+	p.setPen(QPen(navy, 1.2, Qt::SolidLine, Qt::FlatCap));
+	for (double y : { 5.0, 8.0, 11.0, 14.0, 17.0 }) p.drawLine(QPointF(1.5, y), QPointF(3.5, y));
+	for (double x : { 7.0, 10.0, 13.0, 16.0, 19.0 }) p.drawLine(QPointF(x, 20.5), QPointF(x, 22.5));
+	const QPointF upper[] = { { 6.0, 13.0 }, { 8.5, 13.0 }, { 10.5, 9.0 }, { 12.5, 9.0 }, { 14.5, 6.0 }, { 18.0, 6.0 }, { 21.0, 4.5 } };
+	const QPointF lower[] = { { 6.0, 16.0 }, { 8.0, 16.0 }, { 10.0, 18.0 }, { 12.5, 14.5 }, { 15.0, 14.5 }, { 17.0, 11.0 }, { 20.0, 11.0 } };
+	p.setPen(QPen(sky, 2.0, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+	p.drawPolyline(upper, 7);
+	p.setPen(QPen(navy, 2.0, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+	p.drawPolyline(lower, 7);
+	p.end(); return QIcon(pm);
+}
+
 // Status-corner CRS chip glyph: a wire globe (outline + equator + central meridian + two parallels),
 // the universal "coordinate reference system" mark — QGIS wears the same one beside its EPSG code.
 static QIcon makeGlobeIcon() {

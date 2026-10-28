@@ -38,8 +38,7 @@ An exponential, `y = a·bˣ`, is a straight line on these axes.
 
 Clicking **semilogy** acts on the whole current page and needs no series selected. It also puts the
 X axis back to linear, if it was logarithmic. The **plot** icon puts both axes back to linear; the
-**semilogx** and **loglog** icons set the others. The same switches are in the **Misc** menu, as
-**Log X axis** and **Log Y axis**.
+**semilogx** and **loglog** icons set the others.
 
 `proj=:logy` is a keyword of `plot` only: `plot!` adds lines to a page and leaves its axes as they
 are.

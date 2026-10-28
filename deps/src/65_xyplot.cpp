@@ -96,6 +96,11 @@ struct XYSeries {
 	// bubble's size is in the series' own units, mapped to the bubble pixel range at draw time.
 	std::vector<double>       errYlo, errYhi, errXlo, errXhi;
 	std::vector<double>       bubble;
+	// On a LOG axis (xyLogInput): what the plot is drawn from instead of `table` — a copy with every point
+	// a log axis cannot place (<= 0) made NaN, so the curve breaks there, as MATLAB's does. `table` itself
+	// is never touched. logDropped = how many points that left out.
+	vtkSmartPointer<vtkTable> logTable;
+	int                       logDropped = 0;
 };
 
 // One Spector-Grant fit line kept on a spectrum page (ecran's 'FitLine': the line a drag left behind,
@@ -158,6 +163,36 @@ struct XYLabel {
 	float bx = 0, by = 0, bw = 0, bh = 0;
 };
 
+// A hand-drawn annotation (MATLAB's figure ANNOTATIONS: text arrow, arrow, double arrow, line, text
+// box, rectangle, ellipse), made with the tool bar's annotation tools. Placed in DATA coordinates, like
+// XYLabel, so it moves with zoom and pan, a saved session keeps it, and Plot with GMT.jl draws it at
+// the same place on the same axes. Painted by the chart itself (xyAnnotPaint).
+enum { XY_AN_TEXTARROW, XY_AN_ARROW, XY_AN_DARROW, XY_AN_LINE, XY_AN_TEXTBOX, XY_AN_RECT, XY_AN_ELLIPSE, XY_AN_COUNT };
+static const char *const xyAnnotNames[XY_AN_COUNT] = {
+	"Text Arrow", "Arrow", "Double Arrow", "Line", "Text Box", "Rectangle", "Ellipse" };
+struct XYAnnot {
+	int    kind = XY_AN_ARROW;
+	// Line kinds: from (x0,y0) to (x1,y1), the head at (x1,y1) (the text of a text arrow at its tail).
+	// Box kinds: two opposite corners, in any order.
+	double x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+	std::string text;
+	double r = 0, g = 0, b = 0;                // line and text colour
+	double width = 1.5;                        // pen width, px (as a series' width)
+	int    lineType = 1;                       // vtkPen: SOLID=1 DASH=2 DOT=3 DASH_DOT=4 DASH_DOT_DOT=5
+	double size = 11;                          // font size
+	bool   filled = false;                     // box kinds: painted inside
+	double fr = 1, fg = 1, fb = 1;             // ...with this colour
+	bool   visible = true;
+	bool   fit = false;                        // a text box made by a click: its box follows its text
+	bool   boxed = true;                       // a text box draws its box (outline + fill); off = the text alone
+	// where it was last drawn, scene px (xyAnnotPaint): what a press is tested against
+	bool   shown = false;
+	float  sx0 = 0, sy0 = 0, sx1 = 0, sy1 = 0;
+	float  tbx = 0, tby = 0, tbw = 0, tbh = 0;  // its text's box (text kinds), 0 wide = none
+};
+static bool xyAnnotIsLine(int k) { return k == XY_AN_TEXTARROW || k == XY_AN_ARROW || k == XY_AN_DARROW || k == XY_AN_LINE; }
+static bool xyAnnotHasText(int k) { return k == XY_AN_TEXTARROW || k == XY_AN_TEXTBOX; }
+
 // One PAGE inside an X,Y window: its own chart, its own series list, its own axis
 // time-mode + Spector-Grant drag state. Only the current page's chart is mounted
 // in the window's shared scene.
@@ -205,6 +240,9 @@ struct XYPage {
 	bool                        square = false;
 	bool                        axesHidden = false;
 	std::vector<XYLabel>        labels;
+	std::vector<XYAnnot>        annots;           // the annotations drawn on it (the tool bar's annotation tools)
+	int                         annotSel = -1;    // the selected one (its handles show), -1 none
+	bool                        annotOpen = false;   // its Object Manager group is unfolded
 	// The page's own axes as its Object Manager "Axes" row shows them: drawn or not, and the Axes
 	// properties dialog's fields (deps/ui/axes_props.ui, GMT's own keys "KEY" / "KEY.part"), per page.
 	bool                        axesShown = true;
@@ -256,7 +294,12 @@ struct XYPlot {
 	bool                                legendVisible = true;    // legend show/hide, driven by the Object Manager's
 	                                                              // "Legend" row (replaces the old toolbar toggle)
 	double                              legendFontPt = 12.0;     // legend label font size (Legend row's "Font size…")
+	// Misc > Grid (checkable: it SHOWS the current page's grid, xyGridSyncUi) and the tool bar's Grid,
+	// X-Grid, Y-Grid buttons (plain clicks that flip it, like every button of that row). All set the grid
+	// through the page's Axes properties (xyGridSet).
 	QAction                            *actGrid = nullptr;
+	QAction                            *actGridTb[3] = {};    // tool bar Grid / X-Grid / Y-Grid: exclusive modes
+	QToolBar                           *toolsBar = nullptr;   // the Tools row: off until the page has data
 	QAction                            *actConsole = nullptr;
 	// Misc menu items that SHOW the current page's axis state (xySyncMiscMenu keeps them true to it,
 	// whoever changed it: the menu, Julia's xtime!/logscale!, a page switch, a session load).
@@ -291,6 +334,11 @@ struct XYPlot {
 	bool                                cometBusy = false;     // the gallery's "comet" is animating
 	QTimer                             *profTimer = nullptr;   // a redrawn 3-D track re-runs the mag tools once it settles
 	QAction                            *actRef = nullptr;      // Analysis > Reference a curve to another (checkable)
+	// The tool bar's annotation tools: the one armed (XY_AN_*, -1 none) — the next press on the chart
+	// draws one — and the in-place text editor a text annotation is typed in.
+	QAction                            *actAnnot[XY_AN_COUNT] = {};
+	int                                 annotTool = -1;
+	QPointer<QLineEdit>                 annotEdit;
 	// The Spector-Grant fit's answer from GMT's trend1d (xyanalysis.jl, gmtvtk_xyplot_sg_set_fit).
 	bool                                sgFitGot = false;
 	double                              sgFitM = 0.0, sgFitB = 0.0;
@@ -306,6 +354,11 @@ static bool xyAlive(XYPlot *p) { return p && g_xyplots.count(p) != 0 && !p->tear
 // The current page of a window (always valid once the window is built: there is
 // always at least one page).
 static inline XYPage &xyCur(XYPlot *s) { return s->pages[s->curPageIdx]; }
+
+// The annotations' menu / properties / redraw (defined with the annotation tools, below).
+static void xyAnnotMenu(XYPlot *s, int i, const QPoint &global);
+static void xyAnnotProps(XYPlot *s, int i);
+static void xyAnnotRender(XYPlot *s);
 
 // Append one timestamped line to the collapsible Console panel AND echo it on the status bar, so a
 // failing Analysis op (or any callback) is VISIBLE in the window instead of vanishing into the
@@ -808,6 +861,37 @@ static void xyShapeExtras(XYPlot *s, const XYSeries &se, vtkXYShapePlot *sp) {
 	}
 }
 
+// A LOG axis can only place positive values. MATLAB's semilogx / semilogy / loglog leave the others out
+// ("Negative data ignored") and draw the rest: so a series on a page with a log axis is drawn from a copy
+// of its table in which every point that axis cannot take (<= 0, or not finite) is NaN — the curve breaks
+// there — and the axis, seeing only placeable data, can really go logarithmic. The series' own `table`
+// (its data: saved, analysed, shown in the Data Table) is never touched; with no log axis the plot
+// reads it again. Called by xyApplyStyle, the step every plot build / rebuild / restyle goes through.
+static void xyLogInput(XYSeries &se) {
+	se.logDropped = 0;
+	if (!se.plot || !se.table || se.nowCross) return;   // the "now" cross rebuilds its own table every render
+	const int xc = se.kind == 7 ? 1 : 0, yc = 1 - xc;     // horizontal bars: the value on X
+	const bool lx = se.plot->GetXAxis() && se.plot->GetXAxis()->GetLogScale();
+	const bool ly = se.plot->GetYAxis() && se.plot->GetYAxis()->GetLogScale();
+	if (!lx && !ly) {
+		if (se.logTable) { se.logTable = nullptr; se.plot->SetInputData(se.table, xc, yc); }
+		return;
+	}
+	if (!se.logTable) se.logTable = vtkSmartPointer<vtkTable>::New();
+	se.logTable->DeepCopy(se.table);
+	const double nan = std::numeric_limits<double>::quiet_NaN();
+	for (vtkIdType r = 0; r < se.table->GetNumberOfRows(); ++r) {
+		const double vx = se.table->GetValue(r, xc).ToDouble(), vy = se.table->GetValue(r, yc).ToDouble();
+		if (!std::isfinite(vx) || !std::isfinite(vy)) continue;          // already a break
+		if ((lx && !(vx > 0.0)) || (ly && !(vy > 0.0))) {
+			se.logTable->SetValue(r, xc, nan);
+			se.logTable->SetValue(r, yc, nan);
+			++se.logDropped;
+		}
+	}
+	se.plot->SetInputData(se.logTable, xc, yc);
+}
+
 static void xyApplyStyle(XYPlot *s, XYSeries &se) {
 	if (!se.plot)
 		return;
@@ -858,6 +942,7 @@ static void xyApplyStyle(XYPlot *s, XYSeries &se) {
 		pp->SetMarkerStyle((se.kind == 3 || se.kind == 5) && se.marker == 0 ? vtkPlotPoints::CIRCLE : se.marker);
 		pp->SetMarkerSize((float)(se.markerSize * dpr));
 	}
+	xyLogInput(se);
 }
 
 // Recompute a "now cross" series' 5-point path (H arm, NaN gap, V arm) from the CURRENT axis pixel
@@ -1027,7 +1112,44 @@ static void xyRebuildObjMgr(XYPlot *s) {
 		if (i == prevSel) toSelect = it;               // restore the prior selection if it survived
 		if (!toSelect && i == (int)series.size() - 1) toSelect = it;  // else default to the last
 	}
+	// "Annotations" group (UserRole -4) and one child per annotation (UserRole -1000 - i): every drawn
+	// annotation has its handle — find it, hide it, open its properties, delete it. The group starts
+	// folded; its box shows / hides every child.
+	const std::vector<XYAnnot> &an = xyCur(s).annots;
+	s->objMgr->setRootIsDecorated(!an.empty());          // the group's fold arrow
+	if (!an.empty()) {
+		int nvis = 0;
+		for (const XYAnnot &a : an) nvis += a.visible ? 1 : 0;
+		QTreeWidgetItem *grp = new QTreeWidgetItem(s->objMgr);
+		grp->setText(0, "Annotations");
+		QFont f = grp->font(0); f.setItalic(true); grp->setFont(0, f);
+		grp->setFlags(grp->flags() | Qt::ItemIsUserCheckable);
+		grp->setCheckState(0, nvis == 0 ? Qt::Unchecked : nvis == (int)an.size() ? Qt::Checked : Qt::PartiallyChecked);
+		grp->setData(0, Qt::UserRole, -4);
+		grp->setToolTip(0, "The annotations drawn on this page · the box shows / hides them all");
+		for (int i = 0; i < (int)an.size(); ++i) {
+			QTreeWidgetItem *c = new QTreeWidgetItem(grp);
+			QString t = xyAnnotNames[an[i].kind];
+			if (xyAnnotHasText(an[i].kind) && !an[i].text.empty()) t += ": " + QString::fromStdString(an[i].text);
+			c->setText(0, t);
+			c->setFlags(c->flags() | Qt::ItemIsUserCheckable);
+			c->setCheckState(0, (an[i].visible && nvis > 0) ? Qt::Checked : Qt::Unchecked);
+			c->setForeground(0, QColor((int)(an[i].r * 255), (int)(an[i].g * 255), (int)(an[i].b * 255)));
+			c->setData(0, Qt::UserRole, -1000 - i);
+		}
+		grp->setExpanded(xyCur(s).annotOpen);
+	}
 	s->rebuilding = false;
+	// The Tools row acts on what the page shows: nothing to act on before it has data.
+	if (s->toolsBar) {
+		const bool on = !series.empty();
+		for (QAction *a : s->toolsBar->actions()) a->setEnabled(on);
+		if (!on && s->annotTool >= 0) {                 // an armed annotation tool goes off with it
+			for (QAction *a : s->actAnnot) if (a && a->isChecked()) { QSignalBlocker b(a); a->setChecked(false); }
+			s->annotTool = -1;
+			if (s->widget) s->widget->unsetCursor();
+		}
+	}
 	if (toSelect)
 		s->objMgr->setCurrentItem(toSelect);            // guarantee a current row for Analysis
 }
@@ -1503,6 +1625,24 @@ static void xyObjMgrMenu(XYPlot *s, const QPoint &pos) {
 			s->infoLabel->setVisible(false);
 			xyRebuildObjMgr(s);
 		}
+		return;
+	}
+	if (idx <= -1000) {                                // one annotation: the same menu as on the chart
+		xyAnnotMenu(s, -1000 - idx, s->objMgr->viewport()->mapToGlobal(pos));
+		return;
+	}
+	if (idx == -4) {                                   // the "Annotations" group: all of them at once
+		std::vector<XYAnnot> &an = xyCur(s).annots;
+		QMenu gm(s->objMgr);
+		QAction *aShow = gm.addAction("Show all");
+		QAction *aHide = gm.addAction("Hide all");
+		QAction *aDel = gm.addAction("Delete all");
+		QAction *gpick = gm.exec(s->objMgr->viewport()->mapToGlobal(pos));
+		if (!gpick || !xyAlive(s)) return;
+		if (gpick == aDel) { an.clear(); xyCur(s).annotSel = -1; }
+		else for (XYAnnot &a : an) a.visible = (gpick == aShow);
+		xyRebuildObjMgr(s);
+		xyAnnotRender(s);
 		return;
 	}
 	if (idx == -3) {                                   // "Axes" row: its properties + its own show/hide
@@ -2347,13 +2487,23 @@ static void xySyncMiscMenu(XYPlot *s) {
 		s->actTime[pg.xTimeFmt]->setChecked(true);
 }
 
-// Toggle log scaling on a current-page axis (axis 0 = bottom/X, 1 = left/Y). Data must be positive
-// for VTK to actually activate it. Recomputes bounds + renders.
+// Toggle log scaling on a current-page axis (axis 0 = bottom/X, 1 = left/Y). A log axis places only
+// positive values, so — as MATLAB does — the points it cannot take are left out of the drawing
+// (xyLogInput, through xyApplyStyle) and the window says how many: the axis then really goes log
+// instead of VTK silently keeping it linear. Recomputes bounds + renders.
 static void xySetLog(XYPlot *s, int axis, bool on) {
 	XYPage &pg = xyCur(s);
 	vtkAxis *ax = pg.chart->GetAxis(axis == 0 ? vtkAxis::BOTTOM : vtkAxis::LEFT);
 	ax->SetLogScale(on);
+	int dropped = 0;
+	for (XYSeries &se : pg.series) {                       // each plot re-reads its (masked) data
+		xyApplyStyle(s, se);
+		dropped += se.logDropped;
+	}
 	pg.chart->RecalculateBounds();
+	if (on && dropped > 0)
+		xyLog(s, QString("Log %1 axis: %2 point(s) <= 0 left out of the drawing (a log axis cannot place them; "
+		                 "the data itself is unchanged)").arg(axis == 0 ? "X" : "Y").arg(dropped));
 	pg.lastLo = std::numeric_limits<double>::quiet_NaN();   // X log on/off changes the tick scheme
 	pg.lastHi = std::numeric_limits<double>::quiet_NaN();
 	xyRefreshTicks(s);
@@ -2583,7 +2733,7 @@ static void xyApplyPageLook(XYPlot *s, XYPage &pg) {
 static bool xyAxpHonoured(const QString &key) {
 	static const char *const keys[] = {
 		"-R.xauto", "-R.xmin", "-R.xmax", "-R.yauto", "-R.ymin", "-R.ymax",
-		"-Bx.label", "-By.label", "-Bpx.a", "-Bpy.a", "-Bpx.g", "-Bpy.g", "-B.+t", "-B.+g",
+		"-Bx.label", "-By.label", "-Bpx.a", "-Bpy.a", "-Bpx.g", "-Bpy.g", "-B.+t", "-B.+s", "-B.+g",
 		"MAP_FRAME_AXES.W", "MAP_FRAME_AXES.E", "MAP_FRAME_AXES.S", "MAP_FRAME_AXES.N",
 		"MAP_FRAME_AXES.Wg", "MAP_FRAME_AXES.Sg",
 		"MAP_FRAME_PEN", "MAP_GRID_PEN_PRIMARY", "MAP_TICK_LENGTH_PRIMARY.major",
@@ -2592,6 +2742,31 @@ static bool xyAxpHonoured(const QString &key) {
 		if (key == k || key.startsWith(QString(k) + "."))
 			return true;
 	return false;
+}
+
+// A chart's title WITHOUT the subtitle line xyApplyAxes puts under it.
+static QString xyChartTitle(vtkChartXY *c) {
+	return QString::fromStdString(c->GetTitle()).section('\n', 0, 0);
+}
+
+// The grid toggles show the CURRENT page's grid as drawn: Grid = both directions, X-Grid = the vertical
+// lines (the x axis'), Y-Grid = the horizontal ones. Called after anything that can change it.
+static void xyGridSyncUi(XYPlot *s) {
+	if (!xyAlive(s) || s->pages.empty() || !xyCur(s).chart) return;
+	vtkChartXY *c = xyCur(s).chart;
+	const bool gx = c->GetAxis(vtkAxis::BOTTOM)->GetGridVisible(), gy = c->GetAxis(vtkAxis::LEFT)->GetGridVisible();
+	auto put = [](QAction *a, bool on) { if (a && a->isChecked() != on) { QSignalBlocker b(a); a->setChecked(on); } };
+	put(s->actGrid, gx && gy);
+	// the tool bar's three are one choice: both = Grid, vertical only = X-Grid, horizontal only = Y-Grid
+	put(s->actGridTb[0], gx && gy);
+	put(s->actGridTb[1], gx && !gy);
+	put(s->actGridTb[2], !gx && gy);
+	// ...and so does this page's Axes properties dialog when it is open (its Apply must not undo a toggle)
+	if (s->win)
+		for (QDialog *d : s->win->findChildren<QDialog *>(QString("xyAxesProps_%1").arg((quintptr)c))) {
+			if (auto *cb = d->findChild<QCheckBox *>("chkGridS")) cb->setChecked(gx);
+			if (auto *cb = d->findChild<QCheckBox *>("chkGridW")) cb->setChecked(gy);
+		}
 }
 
 // THE APPLY of a page's axes: its Object Manager row (drawn or not) and its stored Axes properties onto
@@ -2682,7 +2857,12 @@ static void xyApplyAxes(XYPlot *s, XYPage &pg) {
 		axpApplyFont(a->GetLabelProperties(), v, "FONT_ANNOT_PRIMARY");
 		axpApplyFont(a->GetTitleProperties(), v, "FONT_LABEL");
 	}
-	if (v.contains("-B.+t")) c->SetTitle(v.value("-B.+t").toStdString());
+	// The title, and the subtitle as its second line (a chart has one title; GMT has -B+t and -B+s).
+	if (v.contains("-B.+t") || v.contains("-B.+s")) {
+		const QString t = v.contains("-B.+t") ? v.value("-B.+t") : xyChartTitle(c);
+		const QString sub = v.value("-B.+s");
+		c->SetTitle((sub.isEmpty() ? t : t + "\n" + sub).toStdString());
+	}
 	axpApplyFont(c->GetTitleProperties(), v, "FONT_TITLE");
 	if (v.value("-B.+g") == "1") {
 		const QColor bg(v.value("-B.+g.color"));
@@ -2691,7 +2871,68 @@ static void xyApplyAxes(XYPlot *s, XYPage &pg) {
 	else if (v.contains("-B.+g"))
 		c->GetBackgroundBrush()->SetColor(255, 255, 255, 0);
 	c->RecalculateBounds();
+	xyGridSyncUi(s);                                   // the grid toggles show what was just applied
 	if (s && s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+}
+
+// A grid toggle: the current page's grid in direction x (the vertical lines) and / or y, set THROUGH its
+// Axes properties — the same "MAP_FRAME_AXES.Sg" / ".Wg" fields the dialog's Grid boxes write — so the
+// toggles, the dialog and a saved session never disagree.
+static void xyGridSet(XYPlot *s, bool x, bool y, bool on) {
+	if (!xyAlive(s) || s->pages.empty()) return;
+	XYPage &pg = xyCur(s);
+	if (x) pg.axProps["MAP_FRAME_AXES.Sg"] = on ? "1" : "0";
+	if (y) pg.axProps["MAP_FRAME_AXES.Wg"] = on ? "1" : "0";
+	xyApplyAxes(s, pg);
+	xyGridSyncUi(s);                                   // a page with hidden axes is not re-applied: say so anyway
+}
+
+// The tool bar icon of a Title / Subtitle / X-Label / Y-Label button (0..3): a little chart on a light
+// tile with a bar where that text goes — over it (a thinner, shorter one for the subtitle), under it,
+// or beside it.
+static QIcon xyAxisTextIcon(int which, double dpr) {
+	const int S = 18;
+	QPixmap pm((int)std::ceil(S * dpr), (int)std::ceil(S * dpr));
+	pm.setDevicePixelRatio(dpr);
+	pm.fill(Qt::transparent);
+	QPainter g(&pm);
+	g.setRenderHint(QPainter::Antialiasing, true);
+	const QRectF tile = which == 3 ? QRectF(4.5, 3.5, 13, 12) : which == 2 ? QRectF(2.5, 1.5, 13, 12) : QRectF(2.5, 4.5, 13, 12);
+	g.setPen(QPen(QColor(100, 100, 100), 1.0));
+	g.setBrush(QColor(244, 244, 244));
+	g.drawRoundedRect(tile, 1.5, 1.5);
+	g.setPen(QPen(QColor(150, 150, 150), 1.0));                 // the chart's zigzag
+	const QPointF c = tile.center();
+	const QPointF zz[4] = { c + QPointF(-4.5, 1.5), c + QPointF(-1.5, -1.5), c + QPointF(1.5, 1.5), c + QPointF(4.5, -1.5) };
+	g.drawPolyline(zz, 4);
+	g.setPen(Qt::NoPen);
+	g.setBrush(QColor(110, 110, 110));
+	switch (which) {
+	case 0:  g.drawRect(QRectF(4.0, 1.0, 10.0, 2.0)); break;        // title: a bar over it
+	case 1:  g.drawRect(QRectF(5.5, 1.5, 7.0, 1.2)); break;         // subtitle: a thinner, shorter one
+	case 2:  g.drawRect(QRectF(4.0, 15.0, 10.0, 2.0)); break;       // x label: under it
+	default: g.drawRect(QRectF(1.0, 5.5, 2.0, 9.0)); break;         // y label: beside it
+	}
+	return QIcon(pm);
+}
+
+// The tool bar icon of a grid toggle (0 Grid, 1 X-Grid, 2 Y-Grid): a framed tile ruled as it draws.
+static QIcon xyGridIcon(int mode, double dpr) {
+	const int S = 18;
+	QPixmap pm((int)std::ceil(S * dpr), (int)std::ceil(S * dpr));
+	pm.setDevicePixelRatio(dpr);
+	pm.fill(Qt::transparent);
+	QPainter g(&pm);
+	g.setRenderHint(QPainter::Antialiasing, true);
+	g.setPen(QPen(QColor(100, 100, 100), 1.0));
+	g.setBrush(QColor(244, 244, 244));
+	g.drawRoundedRect(QRectF(0.5, 1.5, S - 1, S - 3), 2, 2);
+	g.setPen(QPen(QColor(150, 150, 150), 1.0));
+	for (int k = 1; k <= 3; ++k) {
+		if (mode != 2) g.drawLine(QPointF(0.5 + k * 4.25, 2.5), QPointF(0.5 + k * 4.25, S - 2.5));   // vertical
+		if (mode != 1) g.drawLine(QPointF(1.5, 1.5 + k * 3.75), QPointF(S - 1.5, 1.5 + k * 3.75));    // horizontal
+	}
+	return QIcon(pm);
 }
 
 // The Axes properties dialog of ONE X,Y page: the SAME deps/ui/axes_props.ui the 3-D viewer's rasters
@@ -2759,12 +3000,20 @@ static void xyAxesPropsOpen(XYPlot *s) {
 		vtkAxis *bx = chart->GetAxis(vtkAxis::BOTTOM), *ly = chart->GetAxis(vtkAxis::LEFT);
 		if (QWidget *w = field("-Bx.label")) axpSet(w, QString::fromStdString(bx->GetTitle()));
 		if (QWidget *w = field("-By.label")) axpSet(w, QString::fromStdString(ly->GetTitle()));
-		if (QWidget *w = field("-B.+t")) axpSet(w, QString::fromStdString(chart->GetTitle()));
+		if (QWidget *w = field("-B.+t")) axpSet(w, xyChartTitle(chart));   // its subtitle line is -B.+s's
 		struct L { vtkAxis *a; const char *x; };
 		for (const L &l : { L{ bx, "x" }, L{ ly, "y" } }) {
 			if (QWidget *w = field(QString("-R.") + l.x + "min")) axpSet(w, QString::number(l.a->GetMinimum(), 'g', 12));
 			if (QWidget *w = field(QString("-R.") + l.x + "max")) axpSet(w, QString::number(l.a->GetMaximum(), 'g', 12));
 			if (QWidget *w = field(QString("-R.") + l.x + "auto")) axpSet(w, l.a->GetBehavior() == vtkAxis::FIXED ? "0" : "1");
+		}
+		// the grid as drawn — the tool bar's Grid / X-Grid / Y-Grid toggles set it too — and its pen colour
+		if (!defaultsOnly) {
+			if (QWidget *w = field("MAP_FRAME_AXES.Sg")) axpSet(w, bx->GetGridVisible() ? "1" : "0");
+			if (QWidget *w = field("MAP_FRAME_AXES.Wg")) axpSet(w, ly->GetGridVisible() ? "1" : "0");
+			unsigned char gc[4];
+			bx->GetGridPen()->GetColor(gc);
+			if (QWidget *w = field("MAP_GRID_PEN_PRIMARY.color")) axpSet(w, QColor(gc[0], gc[1], gc[2]).name());
 		}
 		if (!defaultsOnly)
 			for (const auto &kv : pg->axProps)
@@ -2795,7 +3044,9 @@ static void xyAxesPropsOpen(XYPlot *s) {
 		pg->axProps.clear();
 		for (QWidget *w : *fields) {
 			const QString k = axpKey(w), val = axpGet(w);
-			if (w->isEnabled() && defaults->value(k) != val) pg->axProps[k.toStdString()] = val.toStdString();
+			// the two Grid boxes always: "off" must turn off a grid the toggles turned on, default or not
+			const bool grid = (k == "MAP_FRAME_AXES.Sg" || k == "MAP_FRAME_AXES.Wg");
+			if (w->isEnabled() && (grid || defaults->value(k) != val)) pg->axProps[k.toStdString()] = val.toStdString();
 		}
 		xyApplyAxes(s, *pg);
 	});
@@ -2828,6 +3079,7 @@ static void xyAxesPropsOpen(XYPlot *s) {
 }
 
 static void xyMagPaint(XYPlot *s, vtkChartXY *chart, vtkContext2D *p);   // the magnetic picks (below)
+static void xyAnnotPaint(XYPlot *s, vtkChartXY *chart, vtkContext2D *p); // the annotations (below)
 static void xyRefPaint(XYPlot *s, vtkChartXY *chart, vtkContext2D *p);   // the reference picks (below)
 
 class XYChart : public vtkChartXY {
@@ -2855,6 +3107,7 @@ public:
 		}
 		const bool r = vtkChartXY::Paint(painter);
 		if (owner && xyAlive(owner)) xyLabelPaint(owner, this, painter);  // the page's own labels
+		if (owner && xyAlive(owner)) xyAnnotPaint(owner, this, painter);  // the hand-drawn annotations
 		if (owner && xyAlive(owner)) xyMagPaint(owner, this, painter);    // chron names, isochron picks
 		if (owner && xyAlive(owner)) xyRefPaint(owner, this, painter);    // the reference pick markers
 		if (owner && xyAlive(owner)) xyMarkPaint(owner, this, painter);   // the curve marker, on top
@@ -3088,6 +3341,569 @@ protected:
 	}
 };
 
+// ---- annotations (the tool bar's Text Arrow ... Ellipse tools) -------------------------------------
+
+// The head of an arrow: a filled triangle with its tip at (tx,ty), pointing away from (fx,fy). Same
+// shape as an arrow series' (vtkXYShapePlot, kind 11): length 3*max(2.5, w)+4 px, half width 0.35 of it.
+static float xyAnnotHeadLen(const XYAnnot &a, float dpr) { return (float)(3.0 * std::max(2.5, a.width) + 4.0) * dpr; }
+static void xyAnnotHead(vtkContext2D *p, float tx, float ty, float fx, float fy, float hl) {
+	const float dx = tx - fx, dy = ty - fy, L = std::hypot(dx, dy);
+	if (!(L > 0.0f)) return;
+	const float ux = dx / L, uy = dy / L, hw = 0.35f * hl;
+	float pts[6] = { tx, ty, tx - ux * hl - uy * hw, ty - uy * hl + ux * hw, tx - ux * hl + uy * hw, ty - uy * hl - ux * hw };
+	p->DrawPolygon(pts, 3);
+}
+
+// The page's annotations, at their data positions, with the selected one's grab handles. Not clipped
+// to the plot frame: an annotation belongs to the figure, as in MATLAB, and may point at anything.
+static void xyAnnotPaint(XYPlot *s, vtkChartXY *chart, vtkContext2D *p) {
+	if (!s || s->pages.empty()) return;
+	XYPage *pg = nullptr;
+	for (auto &q : s->pages) if (q.chart.Get() == chart) { pg = &q; break; }
+	if (!pg || pg->annots.empty()) return;
+	const float dpr = s->widget ? (float)s->widget->devicePixelRatioF() : 1.0f;
+	vtkAxis *ax = chart->GetAxis(vtkAxis::BOTTOM), *ay = chart->GetAxis(vtkAxis::LEFT);
+	for (int i = 0; i < (int)pg->annots.size(); ++i) {
+		XYAnnot &a = pg->annots[i];
+		a.shown = false;
+		a.tbw = 0;
+		double sx0, sy0, sx1, sy1;
+		if (!a.visible || !xyDataToScene(*pg, a.x0, a.y0, sx0, sy0) || !xyDataToScene(*pg, a.x1, a.y1, sx1, sy1)) continue;
+		vtkTextProperty *tp = p->GetTextProp();
+		tp->SetColor(a.r, a.g, a.b);
+		tp->SetFontSize((int)std::lround(a.size));
+		tp->SetBold(false);
+		if (a.kind == XY_AN_TEXTBOX && a.fit) {       // made by a click: the box wraps its text
+			float b[4] = { 0, 0, 0, 0 };
+			const std::string t = a.text.empty() ? std::string("Text") : a.text;
+			tp->SetJustificationToLeft(); tp->SetVerticalJustificationToBottom();
+			p->ComputeStringBounds(t, b);
+			const float pad = 4.0f * dpr;
+			sx1 = sx0 + b[2] + 2 * pad;  sy1 = sy0 - b[3] - 2 * pad;
+			a.x1 = xySceneToAxis(ax, sx1, 0);  a.y1 = xySceneToAxis(ay, sy1, 1);
+		}
+		a.sx0 = (float)sx0; a.sy0 = (float)sy0; a.sx1 = (float)sx1; a.sy1 = (float)sy1;
+		p->GetPen()->SetColorF(a.r, a.g, a.b);
+		p->GetPen()->SetWidth((float)a.width * dpr);
+		p->GetPen()->SetLineType(a.lineType);
+		if (xyAnnotIsLine(a.kind)) {
+			const float hl = xyAnnotHeadLen(a, dpr);
+			const float L = std::hypot(a.sx1 - a.sx0, a.sy1 - a.sy0);
+			const float ux = L > 0 ? (a.sx1 - a.sx0) / L : 0, uy = L > 0 ? (a.sy1 - a.sy0) / L : 0;
+			const bool he = a.kind != XY_AN_LINE, hb = a.kind == XY_AN_DARROW;
+			// the shaft stops inside the head, so a thick pen never pokes out past its tip
+			const float e = (he && L > hl) ? 0.8f * hl : 0.0f, bgn = (hb && L > 2 * hl) ? 0.8f * hl : 0.0f;
+			p->DrawLine(a.sx0 + ux * bgn, a.sy0 + uy * bgn, a.sx1 - ux * e, a.sy1 - uy * e);
+			p->GetPen()->SetLineType(vtkPen::SOLID_LINE);
+			p->GetBrush()->SetColorF(a.r, a.g, a.b, 1.0);
+			if (he) xyAnnotHead(p, a.sx1, a.sy1, a.sx0, a.sy0, hl);
+			if (hb) xyAnnotHead(p, a.sx0, a.sy0, a.sx1, a.sy1, hl);
+			if (a.kind == XY_AN_TEXTARROW && !a.text.empty()) {
+				// the text sits at the TAIL, on the far side from the head
+				const float off = 3.0f * dpr;
+				if (std::abs(ux) >= std::abs(uy)) {
+					if (ux >= 0) tp->SetJustificationToRight(); else tp->SetJustificationToLeft();
+					tp->SetVerticalJustificationToCentered();
+				}
+				else {
+					tp->SetJustificationToCentered();
+					if (uy >= 0) tp->SetVerticalJustificationToTop(); else tp->SetVerticalJustificationToBottom();
+				}
+				const float tx = a.sx0 - ux * off, ty = a.sy0 - uy * off;
+				p->DrawString(tx, ty, a.text);
+				float b[4];
+				p->ComputeJustifiedStringBounds(a.text.c_str(), b);
+				a.tbx = tx + b[0]; a.tby = ty + b[1]; a.tbw = b[2]; a.tbh = b[3];
+			}
+		}
+		else {
+			const float bx = std::min(a.sx0, a.sx1), by = std::min(a.sy0, a.sy1);
+			const float bw = std::abs(a.sx1 - a.sx0), bh = std::abs(a.sy1 - a.sy0);
+			p->GetBrush()->SetColorF(a.fr, a.fg, a.fb, a.filled ? 1.0 : 0.0);
+			if (a.kind == XY_AN_ELLIPSE) p->DrawEllipse(bx + bw / 2, by + bh / 2, bw / 2, bh / 2);
+			else if (a.kind != XY_AN_TEXTBOX || a.boxed) p->DrawRect(bx, by, bw, bh);   // a text box may hide its box
+			if (a.kind == XY_AN_TEXTBOX && !a.text.empty()) {   // top-left inside the box, as MATLAB's
+				const float pad = 4.0f * dpr;
+				tp->SetJustificationToLeft(); tp->SetVerticalJustificationToTop();
+				p->DrawString(bx + pad, by + bh - pad, a.text);
+			}
+		}
+		a.shown = true;
+		if (i == pg->annotSel) {                       // the grab handles
+			const float h = 3.5f * dpr;
+			p->GetPen()->SetColor(0, 0, 0, 255);
+			p->GetPen()->SetWidth(1.0f);
+			p->GetPen()->SetLineType(vtkPen::SOLID_LINE);
+			p->GetBrush()->SetColor(255, 255, 255, 255);
+			std::vector<std::pair<float, float>> hs;
+			if (xyAnnotIsLine(a.kind)) hs = { { a.sx0, a.sy0 }, { a.sx1, a.sy1 } };
+			else hs = { { a.sx0, a.sy0 }, { a.sx1, a.sy0 }, { a.sx1, a.sy1 }, { a.sx0, a.sy1 } };
+			for (const auto &c : hs) p->DrawRect(c.first - h, c.second - h, 2 * h, 2 * h);
+		}
+	}
+}
+
+// What a press at scene (sx,sy) is on: the topmost annotation's index (-1 none) and its part: -1 the
+// body, else the handle — 0/1 a line's ends, 0..3 a box's corners (x0y0, x1y0, x1y1, x0y1). With
+// `only` >= 0 just that annotation is tested (the one in edit).
+static int xyAnnotHit(XYPlot *s, const XYPage &pg, double sx, double sy, int &part, int only = -1) {
+	const double dpr = s->widget ? s->widget->devicePixelRatioF() : 1.0;
+	const double tol = 5.0 * dpr, htol = 7.0 * dpr;
+	part = -1;
+	for (int i = (int)pg.annots.size() - 1; i >= 0; --i) {     // the last drawn is on top
+		const XYAnnot &a = pg.annots[i];
+		if (!a.shown || (only >= 0 && i != only)) continue;
+		std::vector<std::pair<double, double>> hs;
+		if (xyAnnotIsLine(a.kind)) hs = { { a.sx0, a.sy0 }, { a.sx1, a.sy1 } };
+		else hs = { { a.sx0, a.sy0 }, { a.sx1, a.sy0 }, { a.sx1, a.sy1 }, { a.sx0, a.sy1 } };
+		for (int k = 0; k < (int)hs.size(); ++k)
+			if (std::hypot(sx - hs[k].first, sy - hs[k].second) <= htol) { part = k; return i; }
+		if (xyAnnotIsLine(a.kind)) {
+			const double vx = a.sx1 - a.sx0, vy = a.sy1 - a.sy0, L2 = vx * vx + vy * vy;
+			const double t = L2 > 0 ? std::max(0.0, std::min(1.0, ((sx - a.sx0) * vx + (sy - a.sy0) * vy) / L2)) : 0.0;
+			if (std::hypot(sx - (a.sx0 + t * vx), sy - (a.sy0 + t * vy)) <= tol) return i;
+			if (a.tbw > 0 && sx >= a.tbx - 3 && sx <= a.tbx + a.tbw + 3 && sy >= a.tby - 3 && sy <= a.tby + a.tbh + 3) return i;
+			continue;
+		}
+		const double bx0 = std::min(a.sx0, a.sx1), bx1 = std::max(a.sx0, a.sx1);
+		const double by0 = std::min(a.sy0, a.sy1), by1 = std::max(a.sy0, a.sy1);
+		// a text box is grabbed anywhere inside (it is a block of text); an empty shape by its outline,
+		// so the chart under a big rectangle can still be panned and zoomed
+		const bool inside = a.kind == XY_AN_TEXTBOX || a.filled;
+		if (a.kind == XY_AN_ELLIPSE) {
+			const double rx = std::max(1e-9, (bx1 - bx0) / 2), ry = std::max(1e-9, (by1 - by0) / 2);
+			const double r = std::hypot((sx - (bx0 + rx)) / rx, (sy - (by0 + ry)) / ry);
+			if (std::abs(r - 1.0) * std::min(rx, ry) <= tol || (inside && r < 1.0)) return i;
+			continue;
+		}
+		const bool in = sx >= bx0 - tol && sx <= bx1 + tol && sy >= by0 - tol && sy <= by1 + tol;
+		const bool deep = sx > bx0 + tol && sx < bx1 - tol && sy > by0 + tol && sy < by1 - tol;
+		if (in && (inside || !deep)) return i;
+	}
+	return -1;
+}
+
+static void xyAnnotRender(XYPlot *s) {
+	if (!xyAlive(s) || s->pages.empty()) return;
+	if (xyCur(s).chart && xyCur(s).chart->GetScene()) xyCur(s).chart->GetScene()->SetDirty(true);
+	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+}
+
+static void xyAnnotDelete(XYPlot *s, int i) {
+	XYPage &pg = xyCur(s);
+	if (i < 0 || i >= (int)pg.annots.size()) return;
+	pg.annots.erase(pg.annots.begin() + i);
+	if (pg.annotSel == i) pg.annotSel = -1;
+	else if (pg.annotSel > i) --pg.annotSel;
+	xyRebuildObjMgr(s);
+	xyAnnotRender(s);
+}
+
+// THE in-place text editor of the X,Y chart: a line edit over the chart, where the text goes (`place`
+// gets it sized and returns its top-left, widget px; kept inside the widget here). Enter, or leaving
+// the box, hands what was typed to `keep`; Esc drops it. One at a time: a new one replaces an open one.
+// The annotation tools and the Title / Subtitle / X-Label / Y-Label buttons all type through it.
+static void xyEditInPlace(XYPlot *s, const QString &text, const QString &tip,
+                          const std::function<QPoint(QLineEdit *)> &place, std::function<void(const QString &)> keep) {
+	if (!xyAlive(s) || !s->widget) return;
+	if (s->annotEdit) s->annotEdit->deleteLater();
+	auto *e = new QLineEdit(s->widget);
+	e->setObjectName("xyTextEdit");
+	e->setText(text);
+	e->setPlaceholderText("Type the text, Enter");
+	e->setToolTip(tip + " · Enter keeps it, Esc leaves it as it was");
+	e->resize(220, e->sizeHint().height());
+	const QPoint at = place(e);
+	e->move(std::max(0, std::min(at.x(), s->widget->width() - e->width())),
+	        std::max(0, std::min(at.y(), s->widget->height() - e->height())));
+	s->annotEdit = e;
+	auto done = std::make_shared<bool>(false);
+	auto commit = [s, e, done, keep](bool ok) {
+		if (*done || !xyAlive(s)) return;
+		*done = true;
+		const QString t = e->text();
+		e->hide();
+		e->deleteLater();
+		if (ok) keep(t);
+	};
+	QObject::connect(e, &QLineEdit::returnPressed, e, [commit] { commit(true); });
+	QObject::connect(e, &QLineEdit::editingFinished, e, [commit] { commit(true); });
+	struct EscKey : QObject {
+		std::function<void(bool)> f;
+		EscKey(QObject *parent, std::function<void(bool)> fn) : QObject(parent), f(std::move(fn)) {}
+		bool eventFilter(QObject *o, QEvent *ev) override {
+			if (ev->type() == QEvent::KeyPress && static_cast<QKeyEvent *>(ev)->key() == Qt::Key_Escape) { f(false); return true; }
+			return QObject::eventFilter(o, ev);
+		}
+	};
+	e->installEventFilter(new EscKey(e, commit));
+	e->show();
+	e->setFocus();
+	e->selectAll();
+}
+
+// Type the text of annotation `i` in place, where its text goes (a text arrow's at its tail, left of it
+// when the head points right; a text box's at its top-left corner).
+static void xyAnnotEditText(XYPlot *s, int i) {
+	XYPage &pg = xyCur(s);
+	if (i < 0 || i >= (int)pg.annots.size() || !xyAnnotHasText(pg.annots[i].kind) || !s->widget) return;
+	const XYAnnot &a = pg.annots[i];
+	const double dpr = s->widget->devicePixelRatioF();
+	const int H = s->widget->renderWindow() ? s->widget->renderWindow()->GetSize()[1] : s->widget->height();
+	const double ax = a.kind == XY_AN_TEXTBOX ? std::min(a.sx0, a.sx1) : a.sx0;
+	const double ay = a.kind == XY_AN_TEXTBOX ? std::max(a.sy0, a.sy1) : a.sy0;
+	const bool leftOf = a.kind == XY_AN_TEXTARROW && a.sx1 >= a.sx0;
+	const int page = s->curPageIdx;
+	xyEditInPlace(s, QString::fromStdString(a.text), "The annotation's text",
+		[ax, ay, dpr, H, leftOf](QLineEdit *e) {
+			const int qx = (int)std::lround(ax / dpr) - (leftOf ? e->width() : 0);
+			return QPoint(qx, (int)std::lround((H - ay) / dpr) - e->height() / 2);
+		},
+		[s, i, page](const QString &t) {
+			if (page < (int)s->pages.size() && i < (int)s->pages[page].annots.size())
+				s->pages[page].annots[i].text = t.toStdString();
+			xyRebuildObjMgr(s);
+			xyAnnotRender(s);
+		});
+}
+
+// The Title / Subtitle / X-Label / Y-Label buttons (MATLAB's): type that text in place, where it is
+// drawn — the top of the chart, under the title, the bottom, the left side. What is typed goes into
+// the page's Axes properties ("-B.+t", "-B.+s", "-Bx.label", "-By.label": the dialog's own fields, so the
+// two never disagree) and is applied by xyApplyAxes. 0 title, 1 subtitle, 2 x label, 3 y label.
+static void xyEditAxisText(XYPlot *s, int which) {
+	if (!xyAlive(s) || s->pages.empty() || !s->widget) return;
+	XYPage &pg = xyCur(s);
+	static const char *const kKey[4] = { "-B.+t", "-B.+s", "-Bx.label", "-By.label" };
+	static const char *const kTip[4] = { "The page's title", "The page's subtitle (under the title)",
+	                                     "The x axis label", "The y axis label" };
+	QString cur;
+	if (pg.axProps.count(kKey[which])) cur = QString::fromStdString(pg.axProps.at(kKey[which]));
+	else if (which == 0) cur = xyChartTitle(pg.chart);
+	else if (which == 2) cur = QString::fromStdString(pg.chart->GetAxis(vtkAxis::BOTTOM)->GetTitle());
+	else if (which == 3) cur = QString::fromStdString(pg.chart->GetAxis(vtkAxis::LEFT)->GetTitle());
+	const int page = s->curPageIdx;
+	xyEditInPlace(s, cur, kTip[which],
+		[s, which](QLineEdit *e) {
+			const int W = s->widget->width(), Hh = s->widget->height();
+			switch (which) {
+			case 0:  return QPoint((W - e->width()) / 2, 4);
+			case 1:  return QPoint((W - e->width()) / 2, 8 + e->height());
+			case 2:  return QPoint((W - e->width()) / 2, Hh - e->height() - 4);
+			default: return QPoint(4, (Hh - e->height()) / 2);
+			}
+		},
+		[s, which, page](const QString &t) {
+			if (page >= (int)s->pages.size()) return;
+			XYPage &p = s->pages[page];
+			p.axProps[kKey[which]] = t.toStdString();
+			xyApplyAxes(s, p);
+		});
+}
+
+// Properties of annotation `i`: text, colour, line width / style, font size, fill. Every control applies
+// at once (the Line properties dialog's way). Modal, so no annotation comes or goes while it is open.
+static void xyAnnotProps(XYPlot *s, int i) {
+	XYPage &pg = xyCur(s);
+	if (i < 0 || i >= (int)pg.annots.size()) return;
+	XYAnnot &a = pg.annots[i];
+	QDialog dlg(s->win);
+	dlg.setWindowTitle(QString("%1 properties").arg(xyAnnotNames[a.kind]));
+	QFormLayout *form = new QFormLayout(&dlg);
+	auto rr = [s] { xyAnnotRender(s); };
+	if (xyAnnotHasText(a.kind)) {
+		QLineEdit *te = new QLineEdit(QString::fromStdString(a.text), &dlg);
+		form->addRow("Text", te);
+		QObject::connect(te, &QLineEdit::textChanged, &dlg, [&a, s, rr](const QString &t) {
+			a.text = t.toStdString(); xyRebuildObjMgr(s); rr(); });
+		QSpinBox *fs = new QSpinBox(&dlg);
+		fs->setRange(6, 72); fs->setValue((int)std::lround(a.size));
+		form->addRow("Font size", fs);
+		QObject::connect(fs, qOverload<int>(&QSpinBox::valueChanged), &dlg, [&a, rr](int v) { a.size = v; rr(); });
+	}
+	auto colourRow = [&](const char *label, double &r, double &g, double &b, const char *title) {
+		QPushButton *btn = new QPushButton(&dlg);
+		auto swatch = [btn, &r, &g, &b] {
+			btn->setStyleSheet(QString("background:%1").arg(QColor((int)(r * 255), (int)(g * 255), (int)(b * 255)).name()));
+		};
+		swatch();
+		form->addRow(label, btn);
+		QObject::connect(btn, &QPushButton::clicked, &dlg, [&dlg, &r, &g, &b, swatch, title, s, rr] {
+			const QColor c = QColorDialog::getColor(QColor((int)(r * 255), (int)(g * 255), (int)(b * 255)), &dlg, title);
+			if (!c.isValid()) return;
+			r = c.redF(); g = c.greenF(); b = c.blueF();
+			swatch(); xyRebuildObjMgr(s); rr();
+		});
+		return btn;
+	};
+	colourRow("Colour", a.r, a.g, a.b, "Annotation colour");
+	QDoubleSpinBox *wsp = new QDoubleSpinBox(&dlg);
+	wsp->setRange(0.5, 12.0); wsp->setSingleStep(0.5); wsp->setValue(a.width);
+	form->addRow("Width (px)", wsp);
+	QObject::connect(wsp, qOverload<double>(&QDoubleSpinBox::valueChanged), &dlg, [&a, rr](double v) { a.width = v; rr(); });
+	static const int kPen[] = { 1, 2, 3, 4, 5 };      // Solid Dashed Dotted Dash-Dot Dash-Dot-Dot
+	QComboBox *lsc = new QComboBox(&dlg);
+	lsc->addItems(QStringList() << "Solid" << "Dashed" << "Dotted" << "Dash-Dot" << "Dash-Dot-Dot");
+	for (int k = 0; k < 5; ++k) if (kPen[k] == a.lineType) lsc->setCurrentIndex(k);
+	form->addRow("Line style", lsc);
+	QObject::connect(lsc, qOverload<int>(&QComboBox::currentIndexChanged), &dlg, [&a, rr](int k) { a.lineType = kPen[k]; rr(); });
+	if (a.kind == XY_AN_TEXTBOX) {                    // the box itself on or off: off leaves the text alone
+		QCheckBox *bc = new QCheckBox("Show box", &dlg);
+		bc->setObjectName("annotShowBox");
+		bc->setChecked(a.boxed);
+		bc->setToolTip("Draw the box around the text (its outline and fill); unchecked, only the text shows");
+		form->addRow("Box", bc);
+		QObject::connect(bc, &QCheckBox::toggled, &dlg, [&a, rr](bool on) { a.boxed = on; rr(); });
+	}
+	if (!xyAnnotIsLine(a.kind)) {
+		QCheckBox *fc = new QCheckBox("Filled", &dlg);
+		fc->setChecked(a.filled);
+		form->addRow("Fill", fc);
+		QPushButton *fb = colourRow("Fill colour", a.fr, a.fg, a.fb, "Fill colour");
+		fb->setEnabled(a.filled);
+		QObject::connect(fc, &QCheckBox::toggled, &dlg, [&a, fb, rr](bool on) { a.filled = on; fb->setEnabled(on); rr(); });
+	}
+	QDialogButtonBox *bb = new QDialogButtonBox(QDialogButtonBox::Close, &dlg);
+	form->addRow(bb);
+	QObject::connect(bb, &QDialogButtonBox::rejected, &dlg, &QDialog::accept);
+	QObject::connect(bb, &QDialogButtonBox::clicked, &dlg, &QDialog::accept);
+	for (QPushButton *b : dlg.findChildren<QPushButton *>()) { b->setAutoDefault(false); b->setDefault(false); }
+	wrapTooltips(&dlg);
+	dlg.exec();
+}
+
+// The right-click menu of annotation `i` (on the chart and on its Object Manager row).
+static void xyAnnotMenu(XYPlot *s, int i, const QPoint &global) {
+	XYPage &pg = xyCur(s);
+	if (i < 0 || i >= (int)pg.annots.size()) return;
+	QMenu m(s->win);
+	QAction *aProps = m.addAction("Properties…");
+	QAction *aText = xyAnnotHasText(pg.annots[i].kind) ? m.addAction("Edit text") : nullptr;
+	QAction *aDel = m.addAction("Delete");
+	QAction *pick = m.exec(global);
+	if (!xyAlive(s)) return;
+	if (pick == aProps)              xyAnnotProps(s, i);
+	else if (aText && pick == aText) xyAnnotEditText(s, i);
+	else if (pick == aDel)           xyAnnotDelete(s, i);
+}
+
+// Arm (or disarm) the tool bar's annotation tool `k`: the next left press on the chart draws one.
+static void xyAnnotArm(XYPlot *s, int k) {
+	s->annotTool = k;
+	for (int j = 0; j < XY_AN_COUNT; ++j)
+		if (s->actAnnot[j] && s->actAnnot[j]->isChecked() != (j == k)) {
+			QSignalBlocker blk(s->actAnnot[j]);
+			s->actAnnot[j]->setChecked(j == k);
+		}
+	if (s->widget) {
+		if (k >= 0) s->widget->setCursor(Qt::CrossCursor);
+		else        s->widget->unsetCursor();
+	}
+	if (s->win) {
+		if (k >= 0) s->win->statusBar()->showMessage(QString("%1: press and drag on the chart to draw it (a click gives the default size)").arg(xyAnnotNames[k]));
+		else        s->win->statusBar()->clearMessage();
+	}
+}
+
+// Mouse for the annotations. With a tool armed, a left press draws a new one (the drag sizes it, a
+// bare click gives it a default size) and the tool disarms, as MATLAB's do; a text kind then takes
+// its text in place. With none armed, an annotation is inert until DOUBLE-CLICKED: that puts it in edit
+// (its grab handles show), and then a drag on it moves it, a drag on a handle reshapes it, and Delete
+// removes it; a press elsewhere ends the edit. Its properties are reached only through its Object
+// Manager row. Installed LAST: annotations are drawn over everything else.
+class XYAnnotFilter : public QObject {
+public:
+	XYPlot *s = nullptr;
+	explicit XYAnnotFilter(XYPlot *sc, QObject *parent) : QObject(parent), s(sc) {}
+protected:
+	enum { NONE, CREATE, MOVE, RESIZE } mode = NONE;
+	int    grab = -1, part = -1;
+	double px = 0, py = 0;                            // press point, scene px
+	float  o0x = 0, o0y = 0, o1x = 0, o1y = 0;        // the grabbed annotation's points at the press, scene px
+	bool   moved = false;
+	void toData(XYPage &pg, XYAnnot &a, double x0, double y0, double x1, double y1) {
+		vtkAxis *ax = pg.chart->GetAxis(vtkAxis::BOTTOM), *ay = pg.chart->GetAxis(vtkAxis::LEFT);
+		a.x0 = xySceneToAxis(ax, x0, 0); a.y0 = xySceneToAxis(ay, y0, 1);
+		a.x1 = xySceneToAxis(ax, x1, 0); a.y1 = xySceneToAxis(ay, y1, 1);
+	}
+	bool eventFilter(QObject *obj, QEvent *ev) override {
+		const QEvent::Type t = ev->type();
+		if (!s || !xyAlive(s) || s->pages.empty() || !xyCur(s).chart) { mode = NONE; return QObject::eventFilter(obj, ev); }
+		XYPage &pg = xyCur(s);
+		if (t == QEvent::KeyPress) {
+			const int k = static_cast<QKeyEvent *>(ev)->key();
+			if ((k == Qt::Key_Delete || k == Qt::Key_Backspace) && pg.annotSel >= 0 && pg.annotSel < (int)pg.annots.size()) {
+				xyAnnotDelete(s, pg.annotSel);
+				return true;
+			}
+			if (k == Qt::Key_Escape && s->annotTool >= 0) { xyAnnotArm(s, -1); return true; }
+			return QObject::eventFilter(obj, ev);
+		}
+		if (t != QEvent::MouseButtonPress && t != QEvent::MouseButtonDblClick &&
+		    t != QEvent::MouseMove && t != QEvent::MouseButtonRelease)
+			return QObject::eventFilter(obj, ev);
+		QMouseEvent *me = static_cast<QMouseEvent *>(ev);
+		double sx, sy;
+		xyQtToScene(s, me->position(), sx, sy);
+		const double dpr = s->widget->devicePixelRatioF();
+		if (t == QEvent::MouseButtonRelease) {
+			if (mode == NONE || me->button() != Qt::LeftButton) return QObject::eventFilter(obj, ev);
+			const int was = mode, i = grab;
+			mode = NONE;
+			if (was == CREATE && i >= 0 && i < (int)pg.annots.size()) {
+				XYAnnot &a = pg.annots[i];
+				if (!moved) {                             // a bare click: the default size, down and right
+					const double w = (xyAnnotIsLine(a.kind) ? 60.0 : 90.0) * dpr, h = (xyAnnotIsLine(a.kind) ? 40.0 : 45.0) * dpr;
+					toData(pg, a, px, py, px + w, py - h);
+					a.fit = a.kind == XY_AN_TEXTBOX;
+				}
+				xyAnnotArm(s, -1);
+				xyRebuildObjMgr(s);
+				xyAnnotRender(s);
+				if (xyAnnotHasText(a.kind)) xyAnnotEditText(s, i);
+			}
+			return true;
+		}
+		if (t == QEvent::MouseMove) {
+			if (mode != NONE && grab >= 0 && grab < (int)pg.annots.size()) {
+				if (!moved && std::hypot(sx - px, sy - py) > 3.0 * dpr) moved = true;
+				if (!moved) return true;
+				XYAnnot &a = pg.annots[grab];
+				const double dx = sx - px, dy = sy - py;
+				if (mode == CREATE) toData(pg, a, px, py, sx, sy);
+				else if (mode == MOVE) toData(pg, a, o0x + dx, o0y + dy, o1x + dx, o1y + dy);
+				else {                                    // a handle: a line's end, or a box's corner
+					double x0 = o0x, y0 = o0y, x1 = o1x, y1 = o1y;
+					if (xyAnnotIsLine(a.kind)) { if (part == 0) { x0 += dx; y0 += dy; } else { x1 += dx; y1 += dy; } }
+					else {
+						if (part == 0 || part == 3) x0 += dx; else x1 += dx;
+						if (part == 0 || part == 1) y0 += dy; else y1 += dy;
+					}
+					a.fit = false;
+					toData(pg, a, x0, y0, x1, y1);
+				}
+				xyAnnotRender(s);
+				return true;
+			}
+			if (s->annotTool >= 0) {
+				if (s->widget->cursor().shape() != Qt::CrossCursor) s->widget->setCursor(Qt::CrossCursor);
+				return true;
+			}
+			// only the annotation in edit (double-clicked) is grabbable; the others are just drawing
+			int hp = -1;
+			const int i = pg.annotSel >= 0 ? xyAnnotHit(s, pg, sx, sy, hp, pg.annotSel) : -1;
+			if (i < 0) return QObject::eventFilter(obj, ev);
+			const Qt::CursorShape want = hp >= 0 ? Qt::CrossCursor : Qt::SizeAllCursor;
+			if (s->widget->cursor().shape() != want) s->widget->setCursor(want);
+			return true;                                  // over an annotation, no other tool's hover
+		}
+		// a press or a double-click
+		if (me->button() == Qt::LeftButton && s->annotTool >= 0 && t == QEvent::MouseButtonPress) {
+			XYAnnot a;
+			a.kind = s->annotTool;
+			pg.annots.push_back(a);
+			grab = (int)pg.annots.size() - 1;
+			pg.annotSel = grab;
+			px = sx; py = sy; moved = false;
+			toData(pg, pg.annots[grab], sx, sy, sx, sy);
+			mode = CREATE;
+			return true;
+		}
+		if (me->button() != Qt::LeftButton) return QObject::eventFilter(obj, ev);
+		int hp = -1;
+		if (t == QEvent::MouseButtonDblClick) {           // a double-click puts an annotation in edit
+			const int d = xyAnnotHit(s, pg, sx, sy, hp);
+			if (d < 0) return QObject::eventFilter(obj, ev);
+			mode = NONE;
+			pg.annotSel = d;
+			s->widget->setFocus();                        // so Delete reaches this filter
+			xyAnnotRender(s);
+			return true;
+		}
+		// a press: grabs only the annotation in edit, by its body (move) or a handle (reshape)
+		const int i = pg.annotSel >= 0 ? xyAnnotHit(s, pg, sx, sy, hp, pg.annotSel) : -1;
+		if (i < 0) {
+			if (pg.annotSel >= 0) {
+				pg.annotSel = -1;                         // a press elsewhere ends the edit
+				xyAnnotRender(s);
+			}
+			return QObject::eventFilter(obj, ev);
+		}
+		const XYAnnot &a = pg.annots[i];
+		grab = i; part = hp; px = sx; py = sy; moved = false;
+		o0x = a.sx0; o0y = a.sy0; o1x = a.sx1; o1y = a.sy1;
+		mode = hp >= 0 ? RESIZE : MOVE;
+		s->widget->setFocus();                            // so Delete reaches this filter
+		xyAnnotRender(s);
+		return true;
+	}
+};
+
+// The tool bar icon of annotation tool `k`: MATLAB's — a light tile with the shape drawn on it.
+static QIcon xyAnnotIcon(int k, double dpr) {
+	const int S = 18;
+	QPixmap pm((int)std::ceil(S * dpr), (int)std::ceil(S * dpr));
+	pm.setDevicePixelRatio(dpr);
+	pm.fill(Qt::transparent);
+	QPainter g(&pm);
+	g.setRenderHint(QPainter::Antialiasing, true);
+	g.setPen(QPen(QColor(100, 100, 100), 1.0));
+	g.setBrush(QColor(244, 244, 244));
+	g.drawRoundedRect(QRectF(0.5, 0.5, S - 1, S - 1), 2, 2);
+	const QColor ink(40, 40, 40);
+	g.setPen(QPen(ink, 1.2, Qt::SolidLine, Qt::RoundCap));
+	g.setBrush(ink);
+	auto head = [&g](QPointF tip, QPointF from) {
+		const QPointF d = tip - from;
+		const double L = std::hypot(d.x(), d.y()), hl = 4.5, hw = 2.2;
+		const QPointF u = d / L, n(-u.y(), u.x());
+		const QPointF pts[3] = { tip, tip - u * hl + n * hw, tip - u * hl - n * hw };
+		g.drawPolygon(pts, 3);
+	};
+	auto shaft = [&g](QPointF a, QPointF b, bool ha, bool hb) {
+		const QPointF d = b - a;
+		const double L = std::hypot(d.x(), d.y());
+		const QPointF u = d / L;
+		g.drawLine(ha ? a + u * 3.5 : a, hb ? b - u * 3.5 : b);
+	};
+	QFont f = g.font();
+	f.setPixelSize(6); f.setBold(true);
+	g.setFont(f);
+	switch (k) {
+	case XY_AN_TEXTARROW:
+		g.drawText(QRectF(2, 1.5, 6, 6), Qt::AlignCenter, "T");
+		shaft(QPointF(5.5, 6.5), QPointF(14.5, 14.5), false, true);
+		head(QPointF(14.5, 14.5), QPointF(5.5, 6.5));
+		break;
+	case XY_AN_ARROW:
+		shaft(QPointF(3.5, 3.5), QPointF(14.5, 14.5), false, true);
+		head(QPointF(14.5, 14.5), QPointF(3.5, 3.5));
+		break;
+	case XY_AN_DARROW:
+		shaft(QPointF(3.5, 3.5), QPointF(14.5, 14.5), true, true);
+		head(QPointF(14.5, 14.5), QPointF(3.5, 3.5));
+		head(QPointF(3.5, 3.5), QPointF(14.5, 14.5));
+		break;
+	case XY_AN_LINE:
+		g.drawLine(QPointF(3.5, 3.5), QPointF(14.5, 14.5));
+		break;
+	case XY_AN_TEXTBOX:
+		g.setBrush(Qt::NoBrush);
+		g.drawRect(QRectF(3.5, 4.5, 11, 9));
+		g.drawText(QRectF(3.5, 4.5, 11, 9), Qt::AlignCenter, "T");
+		break;
+	case XY_AN_RECT:
+		g.setBrush(Qt::NoBrush);
+		g.drawRoundedRect(QRectF(3.5, 4.5, 11, 9), 1, 1);
+		break;
+	case XY_AN_ELLIPSE:
+		g.setBrush(Qt::NoBrush);
+		g.drawEllipse(QRectF(3.5, 3.5, 11, 11));
+		break;
+	}
+	return QIcon(pm);
+}
+
 // ---- pages (Excel-like tabs) -----------------------------------------------
 
 // Build a fresh chart configured like the window's first one: owner set (so the tooltip can read
@@ -3098,9 +3914,14 @@ static vtkSmartPointer<vtkChartXY> xyMakeChart(XYPlot *s) {
 	chart->SetShowLegend(s->legendVisible);
 	if (vtkChartLegend *lg = chart->GetLegend())
 		lg->GetLabelProperties()->SetFontSize((int)s->legendFontPt);
-	chart->GetAxis(vtkAxis::BOTTOM)->SetTitle("X");      // sensible defaults; set_labels overrides
-	chart->GetAxis(vtkAxis::LEFT)->SetTitle("Y");
-	const bool grid = s->actGrid ? s->actGrid->isChecked() : true;
+	// No axis titles: an axis is labelled only when something says what it is (set_labels, a file's
+	// column names, the X-Label / Y-Label buttons). A bare "X" / "Y" tells the reader nothing.
+	chart->GetAxis(vtkAxis::BOTTOM)->SetTitle("");
+	chart->GetAxis(vtkAxis::LEFT)->SetTitle("");
+	// a new page's grid is the one the page on screen has (both, for the first page)
+	vtkChartXY *cur = s->pages.empty() ? nullptr : xyCur(s).chart.GetPointer();
+	const bool gx = cur ? cur->GetAxis(vtkAxis::BOTTOM)->GetGridVisible() : true;
+	const bool gy = cur ? cur->GetAxis(vtkAxis::LEFT)->GetGridVisible() : true;
 	// Compact tick labels: smaller font + bounded precision so x ticks stop colliding. STANDARD
 	// notation trims trailing-zero clutter.
 	for (int an : { vtkAxis::BOTTOM, vtkAxis::LEFT }) {
@@ -3109,8 +3930,12 @@ static vtkSmartPointer<vtkChartXY> xyMakeChart(XYPlot *s) {
 		ax->GetTitleProperties()->SetFontSize(13);
 		ax->SetNotation(vtkAxis::STANDARD_NOTATION);
 		ax->SetPrecision(4);
-		ax->SetGridVisible(grid);
+		ax->SetGridVisible(an == vtkAxis::BOTTOM ? gx : gy);
 	}
+	// VTK's grid grey is barely visible on white: a darker one, on every side (the Axes properties'
+	// grid pen colour shows and changes it)
+	for (int an : { vtkAxis::BOTTOM, vtkAxis::LEFT, vtkAxis::RIGHT, vtkAxis::TOP })
+		chart->GetAxis(an)->GetGridPen()->SetColor(190, 190, 190, 255);
 	return chart;
 }
 
@@ -3154,7 +3979,8 @@ static void xySwitchPage(XYPlot *s, int idx) {
 	pg.lastHi = std::numeric_limits<double>::quiet_NaN();
 	xyRefreshTicks(s);
 	xySyncMiscMenu(s);                                       // log / time items show THIS page's
-	xyMagSyncUi(s);                                          // the bar strip + controls show THIS page's
+	xyGridSyncUi(s);                                         // ...and the grid toggles
+	xyMagSyncUi(s);                                       // the bar strip + controls show THIS page's
 	if (s->widget && s->widget->renderWindow())
 		s->widget->renderWindow()->Render();
 }
@@ -3178,6 +4004,7 @@ static void xyDuplicatePage(XYPlot *s, int idx) {
 	dst.axesShown = src.axesShown;
 	dst.axProps = src.axProps;
 	dst.labels = src.labels;
+	dst.annots = src.annots;
 	xyApplyPageLook(s, dst);
 	xyApplyAxes(s, dst);
 	for (const XYSeries &so : src.series) {
@@ -4491,6 +5318,12 @@ static std::string xySessionState(XYPlot *s) {
 		kv("square", QString::number(pg.square ? 1 : 0));
 		kv("axeshidden", QString::number(pg.axesHidden ? 1 : 0));
 		kv("axesshown", QString::number(pg.axesShown ? 1 : 0));
+		// the grid as drawn, per direction (read by Plot with GMT.jl; a session restores it from axprop)
+		// the title and subtitle as drawn (read by Plot with GMT.jl; a session restores them from axprop)
+		kv("title", xyEsc(xyChartTitle(pg.chart)));
+		kv("subtitle", xyEsc(pg.axProps.count("-B.+s") ? QString::fromStdString(pg.axProps.at("-B.+s")) : QString()));
+		kv("gridx", QString::number(ax->GetGridVisible() ? 1 : 0));
+		kv("gridy", QString::number(ay->GetGridVisible() ? 1 : 0));
 		// Only a legend the user dragged has a place of its own (XYChart::legFx, scene fractions).
 		if (vtkChartLegend *lg = pg.chart->GetLegend())
 			if (lg->GetHorizontalAlignment() == vtkChartLegend::CUSTOM) {
@@ -4504,6 +5337,15 @@ static std::string xySessionState(XYPlot *s) {
 			            xyEsc(QString::fromStdString(l.text)));
 			if (l.bold) kv("labelbold", "1");            // of the label just written
 		}
+		for (const XYAnnot &a : pg.annots) {             // one key per annotation, in drawing order
+			kv("annot", xyNums({ (double)a.kind, a.x0, a.y0, a.x1, a.y1, a.r, a.g, a.b, a.width, (double)a.lineType,
+			                     a.size, a.filled ? 1.0 : 0.0, a.fr, a.fg, a.fb, a.visible ? 1.0 : 0.0, a.fit ? 1.0 : 0.0 }) +
+			            " " + xyEsc(QString::fromStdString(a.text)));
+			if (!a.boxed) kv("annotbox", "0");           // of the annotation just written (a text box without its box)
+		}
+		// whether VTK really DRAWS the axis log (only when it can place every value it shows); read-only
+		kv("logxactive", QString::number(ax->GetLogScaleActive() ? 1 : 0));
+		kv("logyactive", QString::number(ay->GetLogScaleActive() ? 1 : 0));
 		kv("logx", QString::number(ax->GetLogScale() ? 1 : 0));
 		kv("logy", QString::number(ay->GetLogScale() ? 1 : 0));
 		kv("xfixed", QString::number(ax->GetBehavior() == vtkAxis::FIXED ? 1 : 0));
@@ -4654,6 +5496,24 @@ static void xySessionApply(XYPlot *s, const char *text) {
 			else if (k == "labelbold") {
 				if (!pg.labels.empty()) pg.labels.back().bold = v.toInt() != 0;
 			}
+			else if (k == "annot") {
+				const QStringList f = v.split(' ');
+				if (f.size() >= 18) {
+					XYAnnot a;
+					a.kind = std::max(0, std::min(XY_AN_COUNT - 1, f[0].toInt()));
+					a.x0 = xyToNum(f[1]); a.y0 = xyToNum(f[2]); a.x1 = xyToNum(f[3]); a.y1 = xyToNum(f[4]);
+					a.r = xyToNum(f[5]); a.g = xyToNum(f[6]); a.b = xyToNum(f[7]);
+					a.width = xyToNum(f[8]); a.lineType = f[9].toInt(); a.size = xyToNum(f[10]);
+					a.filled = f[11].toInt() != 0;
+					a.fr = xyToNum(f[12]); a.fg = xyToNum(f[13]); a.fb = xyToNum(f[14]);
+					a.visible = f[15].toInt() != 0; a.fit = f[16].toInt() != 0;
+					a.text = xyUnesc(f.mid(17).join(' ')).toStdString();
+					pg.annots.push_back(a);
+				}
+			}
+			else if (k == "annotbox") {
+				if (!pg.annots.empty()) pg.annots.back().boxed = v.toInt() != 0;
+			}
 			else if (k == "logx") ax->SetLogScale(v.toInt() != 0);
 			else if (k == "logy") ay->SetLogScale(v.toInt() != 0);
 			else if (k == "xfixed" || k == "yfixed") (k == "xfixed" ? ax : ay)->SetBehavior(v.toInt() ? vtkAxis::FIXED : vtkAxis::AUTO);
@@ -4755,11 +5615,12 @@ static void xySessionApply(XYPlot *s, const char *text) {
 			if (se.plot) xyApplyStyle(s, se);
 		pg.chart->SetShowLegend(s->legendVisible);
 		if (vtkChartLegend *lg = pg.chart->GetLegend()) lg->GetLabelProperties()->SetFontSize((int)s->legendFontPt);
-		pg.chart->GetAxis(vtkAxis::BOTTOM)->SetGridVisible(grid);
-		pg.chart->GetAxis(vtkAxis::LEFT)->SetGridVisible(grid);
+		// the window-wide "grid" of an older session; a page whose grid is its own (X-Grid / Y-Grid, or
+		// its Axes properties) keeps it
+		if (!pg.axProps.count("MAP_FRAME_AXES.Sg")) pg.chart->GetAxis(vtkAxis::BOTTOM)->SetGridVisible(grid);
+		if (!pg.axProps.count("MAP_FRAME_AXES.Wg")) pg.chart->GetAxis(vtkAxis::LEFT)->SetGridVisible(grid);
 		pg.chart->RecalculateBounds();
 	}
-	if (s->actGrid) { QSignalBlocker b(s->actGrid); s->actGrid->setChecked(grid); }
 	xySwitchPage(s, std::clamp(cur, 0, (int)s->pages.size() - 1));   // remounts, rebuilds the panels + mag UI
 	xyMagRender(s);
 }
@@ -6292,10 +7153,21 @@ static XYPlot *buildXYPlot(const char *title) {
 		});
 	}
 
-	// GMT menu — GUI front-ends for GMT modules that operate on table data. Each item pops an options
+	{
+		// ecran's isocs tools: the geomagnetic bar code strip over the chart and its controls under it
+		// (ages, synthetic RTP anomaly, isochron fit). A toggle: checked shows them, unchecked hides them.
+		s->actMag = mAna->addAction(xyMagIcon(), "Synthetic geomag anomalies");
+		s->actMag->setObjectName("xyMagTool");
+		s->actMag->setCheckable(true);
+		s->actMag->setToolTip("Enter ages & plot a geomagnetic bar code, its synthetic anomaly and the isochron fit");
+		QObject::connect(s->actMag, &QAction::toggled, s->win, [s](bool) { xyMagSyncUi(s); xyMagRender(s); });
+	}
+
+	QMenu *mMisc = mb->addMenu("Misc");
+	// Misc > GMT — GUI front-ends for GMT modules that operate on table data. Each item pops an options
 	// dialog, then hands an encoded op string to Julia (through the same Analysis callback) which runs
 	// the module via GMT.jl and lands the result on its own page(s).
-	QMenu *mGMT = mb->addMenu("GMT");
+	QMenu *mGMT = mMisc->addMenu("GMT");
 	{
 		QAction *a = mGMT->addAction("spectrum1d…");
 		QObject::connect(a, &QAction::triggered, s->win, [s, gate] {
@@ -6306,10 +7178,12 @@ static XYPlot *buildXYPlot(const char *title) {
 		});
 	}
 
-	QMenu *mMisc = mb->addMenu("Misc");
-	s->actGrid = mMisc->addAction("Grid");
+	// Grid, Panels, Log X / Log Y are no longer menu items (the tool bar's grid buttons, the Panels fold,
+	// the Axes properties and logscale! do those jobs); their actions stay, unlisted, as the state the
+	// window keeps in step (xyGridSyncUi, xySyncMiscMenu, a session's "grid").
+	s->actGrid = new QAction("Grid", s->win);
 	s->actGrid->setCheckable(true); s->actGrid->setChecked(true);
-	s->actConsole = mMisc->addAction("Panels");
+	s->actConsole = new QAction("Panels", s->win);
 	s->actConsole->setCheckable(true); s->actConsole->setChecked(false);
 	QObject::connect(s->actConsole, &QAction::toggled, s->win, [s](bool on){
 		if (s->consoleToggle && s->consoleToggle->isChecked() != on) s->consoleToggle->setChecked(on); });
@@ -6332,18 +7206,16 @@ static XYPlot *buildXYPlot(const char *title) {
 	addTime("Decimal year",     4, false);
 	addTime("Day-of-Year",      5, false);
 	// Log scaling (X / Y). Independent checkable toggles. Data must be positive.
-	QAction *aLogX = mMisc->addAction("Log X axis");
+	QAction *aLogX = new QAction("Log X axis", s->win);
 	aLogX->setCheckable(true);
 	s->actLogX = aLogX;
 	QObject::connect(aLogX, &QAction::toggled, s->win, [s](bool on){ xySetLog(s, 0, on); });
-	QAction *aLogY = mMisc->addAction("Log Y axis");
+	QAction *aLogY = new QAction("Log Y axis", s->win);
 	aLogY->setCheckable(true);
 	s->actLogY = aLogY;
 	QObject::connect(aLogY, &QAction::toggled, s->win, [s](bool on){ xySetLog(s, 1, on); });
-	QObject::connect(s->actGrid, &QAction::toggled, s->win, [s](bool on){
-		xyCur(s).chart->GetAxis(vtkAxis::BOTTOM)->SetGridVisible(on);
-		xyCur(s).chart->GetAxis(vtkAxis::LEFT)->SetGridVisible(on);
-		if (s->widget->renderWindow()) s->widget->renderWindow()->Render(); });
+	// the Grid state = both directions, through xyGridSet like the tool bar's Grid / X-Grid / Y-Grid (below)
+	QObject::connect(s->actGrid, &QAction::toggled, s->win, [s](bool on) { xyGridSet(s, true, true, on); });
 
 	// --- toolbar ---
 	QToolBar *tb = s->win->addToolBar("Tools");
@@ -6356,13 +7228,65 @@ static XYPlot *buildXYPlot(const char *title) {
 		xyCur(s).chart->GetAxis(vtkAxis::BOTTOM)->SetBehavior(vtkAxis::AUTO);
 		xyCur(s).chart->GetAxis(vtkAxis::LEFT)->SetBehavior(vtkAxis::AUTO);
 		if (s->widget->renderWindow()) s->widget->renderWindow()->Render(); });
-	tb->addAction(s->actGrid);
+	// Title, Subtitle, X-Label, Y-Label (MATLAB's): type that text in place on the chart (xyEditAxisText)
 	tb->addSeparator();
-	s->actMag = tb->addAction(xyMagIcon(), "Geomagnetic bar code");
-	s->actMag->setObjectName("xyMagTool");
-	s->actMag->setCheckable(true);
-	s->actMag->setToolTip("Enter ages & plot a geomagnetic barcode");
-	QObject::connect(s->actMag, &QAction::toggled, s->win, [s](bool) { xyMagSyncUi(s); xyMagRender(s); });
+	static const char *const kText[4][3] = {
+		{ "Title",    "xyTitle",    "Title — type the page's title, at the top of the chart" },
+		{ "Subtitle", "xySubtitle", "Subtitle — type the line under the title" },
+		{ "X-Label",  "xyXLabel",   "X-Label — type the x axis label" },
+		{ "Y-Label",  "xyYLabel",   "Y-Label — type the y axis label" } };
+	for (int m = 0; m < 4; ++m) {
+		QAction *a = tb->addAction(xyAxisTextIcon(m, s->win->devicePixelRatioF()), kText[m][0]);
+		a->setObjectName(kText[m][1]);
+		a->setToolTip(kText[m][2]);
+		QObject::connect(a, &QAction::triggered, s->win, [s, m] { xyEditAxisText(s, m); });
+	}
+	tb->addSeparator();
+	// Grid, X-Grid, Y-Grid: ONE choice of three (both directions / the vertical lines only / the
+	// horizontal ones only); a click on the active one turns the grid off. The active one wears a light
+	// face — the app-wide checked look's own 2 px border, so its size never changes, in a soft colour.
+	static const char *const kGrid[3][3] = {
+		{ "Grid",   "xyGrid",  "Grid — the grid lines of both axes (click again: no grid)" },
+		{ "X-Grid", "xyGridX", "X-Grid — only the vertical grid lines, at the x axis' ticks (click again: no grid)" },
+		{ "Y-Grid", "xyGridY", "Y-Grid — only the horizontal grid lines, at the y axis' ticks (click again: no grid)" } };
+	QActionGroup *gridGrp = new QActionGroup(s->win);
+	gridGrp->setExclusionPolicy(QActionGroup::ExclusionPolicy::ExclusiveOptional);
+	for (int m = 0; m < 3; ++m) {
+		QAction *a = tb->addAction(xyGridIcon(m, s->win->devicePixelRatioF()), kGrid[m][0]);
+		a->setObjectName(kGrid[m][1]);
+		a->setToolTip(kGrid[m][2]);
+		a->setCheckable(true);
+		a->setChecked(m == 0);                          // a new window draws both
+		gridGrp->addAction(a);
+		s->actGridTb[m] = a;
+		if (QWidget *b = tb->widgetForAction(a))
+			b->setStyleSheet("QToolButton:checked { background-color: #e4eaf1; border: 2px solid #c3cfdc; }");
+		QObject::connect(a, &QAction::triggered, s->win, [s, m](bool on) {
+			if (!xyAlive(s) || s->pages.empty()) return;
+			XYPage &pg = xyCur(s);
+			pg.axProps["MAP_FRAME_AXES.Sg"] = (on && m != 2) ? "1" : "0";
+			pg.axProps["MAP_FRAME_AXES.Wg"] = (on && m != 1) ? "1" : "0";
+			xyApplyAxes(s, pg);
+			xyGridSyncUi(s);
+		});
+	}
+	// MATLAB's ANNOTATIONS: arm a tool, then press and drag on the chart to draw it (XYAnnotFilter).
+	tb->addSeparator();
+	for (int k = 0; k < XY_AN_COUNT; ++k) {
+		QAction *a = tb->addAction(xyAnnotIcon(k, s->win->devicePixelRatioF()), xyAnnotNames[k]);
+		a->setObjectName(QString("xyAnnot_%1").arg(QString(xyAnnotNames[k]).remove(' ')));
+		a->setCheckable(true);
+		a->setToolTip(QString("%1 — press and drag on the chart to draw it; double-click it later to edit it (drag it "
+		                      "or its handles); its properties are in its Object Manager row").arg(xyAnnotNames[k]));
+		s->actAnnot[k] = a;
+		QObject::connect(a, &QAction::toggled, s->win, [s, k](bool on) {
+			if (on) xyAnnotArm(s, k);
+			else if (s->annotTool == k) xyAnnotArm(s, -1);
+		});
+	}
+	// the row stays off until the page shows data (xyRebuildObjMgr turns it on / off from then on)
+	s->toolsBar = tb;
+	for (QAction *a : tb->actions()) a->setEnabled(!s->pages.empty() && !xyCur(s).series.empty());
 
 	// --- plot-type gallery: its own row under the tool bar; a click re-plots the current page ---
 	s->win->addToolBarBreak(Qt::TopToolBarArea);
@@ -6476,6 +7400,16 @@ static XYPlot *buildXYPlot(const char *title) {
 			if (s->widget->renderWindow()) s->widget->renderWindow()->Render();
 			return;
 		}
+		if (idx == -4 || idx <= -1000) {                  // "Annotations" group (all of them) or one of them
+			std::vector<XYAnnot> &an = xyCur(s).annots;
+			const bool on = (it->checkState(0) == Qt::Checked);
+			if (idx == -4) for (XYAnnot &a : an) a.visible = on;
+			else if (-1000 - idx < (int)an.size()) an[-1000 - idx].visible = on;
+			// the group's box follows its children: rebuilt after this signal, not inside it
+			QTimer::singleShot(0, s->win, [s] { if (xyAlive(s)) xyRebuildObjMgr(s); });
+			xyAnnotRender(s);
+			return;
+		}
 		if (idx == -3) {                                   // "Axes" row: draw / hide the page's axes
 			xyCur(s).axesShown = (it->checkState(0) == Qt::Checked);
 			xyApplyAxes(s, xyCur(s));
@@ -6490,7 +7424,20 @@ static XYPlot *buildXYPlot(const char *title) {
 	QObject::connect(s->objMgr, &QTreeWidget::itemDoubleClicked, s->win, [s](QTreeWidgetItem *it, int){
 		if (!it) return;
 		const int idx = it->data(0, Qt::UserRole).toInt();
-		if (idx == -3) xyAxesPropsOpen(s); else xyLineProperties(s, idx); });
+		if (idx <= -1000) xyAnnotProps(s, -1000 - idx);
+		else if (idx == -3) xyAxesPropsOpen(s); else xyLineProperties(s, idx); });
+	// An annotation's row picked: that annotation is selected on the chart (its handles show).
+	QObject::connect(s->objMgr, &QTreeWidget::currentItemChanged, s->win, [s](QTreeWidgetItem *it, QTreeWidgetItem *) {
+		if (s->rebuilding || !it || !xyAlive(s)) return;
+		const int idx = it->data(0, Qt::UserRole).toInt();
+		if (idx > -1000 || -1000 - idx >= (int)xyCur(s).annots.size()) return;
+		xyCur(s).annotSel = -1000 - idx;
+		xyAnnotRender(s); });
+	auto annotFold = [s](QTreeWidgetItem *it, bool open) {
+		if (it && it->data(0, Qt::UserRole).toInt() == -4 && xyAlive(s)) xyCur(s).annotOpen = open;
+	};
+	QObject::connect(s->objMgr, &QTreeWidget::itemExpanded,  s->win, [annotFold](QTreeWidgetItem *it) { annotFold(it, true); });
+	QObject::connect(s->objMgr, &QTreeWidget::itemCollapsed, s->win, [annotFold](QTreeWidgetItem *it) { annotFold(it, false); });
 	// The "Axes" row's LABEL opens its Axes properties (its checkbox only draws / hides), as the 3-D
 	// viewer's Scene Objects Axes row does: a left click released right of the check indicator.
 	struct AxesRowClick : QObject {
@@ -6538,6 +7485,8 @@ static XYPlot *buildXYPlot(const char *title) {
 	s->widget->installEventFilter(new XYLabelFilter(s, s->win));
 	// --- the legend box: drag it anywhere (installed LAST: a press on the legend is the legend's) ---
 	s->widget->installEventFilter(new XYLegendFilter(s, s->win));
+	// --- the annotations: drawn over everything, so a press on one is theirs (installed after the legend) ---
+	s->widget->installEventFilter(new XYAnnotFilter(s, s->win));
 	// --- a square page keeps its square through every resize: sized before each render ---
 	{
 		vtkNew<vtkCallbackCommand> cb;

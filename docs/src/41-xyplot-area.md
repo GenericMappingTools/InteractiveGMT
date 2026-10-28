@@ -42,7 +42,7 @@ Clicking **area** acts on the whole current page and needs no series selected. E
 its data, name, colour and style. Any log axis goes back to linear. Click **plot** to go back to
 lines.
 
-If you turn on **Misc > Log Y axis** afterwards, the fill reaches down to the lowest point of the
+If you make the Y axis logarithmic afterwards (the **semilogy** icon), the fill reaches down to the lowest point of the
 curve, since a log axis has no zero.
 
 ## Running the Examples

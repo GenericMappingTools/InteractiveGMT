@@ -6,12 +6,12 @@ CurrentModule = InteractiveGMT
 
 A standalone 2-D plotter for profiles, time series and spectra: its own window, with a chart, an
 **Object Manager** (one row per series), a foldable **Data Viewer**, pages (tabs), and the
-**File / Analysis / GMT / Misc** menus. It is a port of Mirone's `ecran`.
+**File / Analysis / Misc** menus (GMT's table modules are in **Misc > GMT**). It is a port of Mirone's `ecran`.
 
 Ways to open it:
 
 - from Julia, with `plot` (below);
-- from the 3-D viewer, **Tools > X,Y plot** (an empty window);
+- from the 3-D viewer, the **X,Y plot** button of the toolbar, just before the **i** (an empty window);
 - from a 3-D profile: right-click the profile panel > **Open in X,Y plot tool**;
 - by dropping (or `viz`-ing) a two-column table that is not geographic.
 
@@ -117,7 +117,9 @@ or later (`true` = log, `false` = linear):
 logscale!(fig; x=true, y=false)
 ```
 
-Same in **Misc > Log X axis / Log Y axis**.
+Same with the plot-type gallery's **semilogx**, **semilogy** and **loglog** icons. As in MATLAB, a
+log axis can only place positive values: points that are zero or negative on it are left out of
+the drawing (the curve breaks there), and the Errors tab says how many. The data itself is unchanged.
 
 ## Stick Diagrams
 
@@ -209,4 +211,27 @@ Click **+** to add a page. Right-click a tab: **New**, **Duplicate**, **Renameâ€
 
 ## Toolbar and Misc
 
-**Zoom to fit**, **Grid** (also Misc > Grid), and Misc > **Panels** (shows or hides the side panels).
+The Tools row is off until the page shows data. **Zoom to fit**; **Title**, **Subtitle**, **X-Label**
+and **Y-Label** open a text box where that text goes on the chart (the text already there is in it):
+Enter keeps what you type, Esc leaves it as it was. They set the same fields as the page's Axes
+properties, and Plot with GMT.jl writes them as the frame's title, subtitle and axis labels. Then
+**Grid**, **X-Grid** and
+**Y-Grid**, one choice of three: the grid lines of both axes, only the vertical ones, or only the
+horizontal ones. The active one is highlighted; click it again for no grid. They set the same Grid
+boxes as the page's Axes properties. Then the annotation tools: **Text Arrow**, **Arrow**,
+**Double Arrow**, **Line**, **Text Box**, **Rectangle** and **Ellipse**. Pick one, then press and drag
+on the chart. On the chart an annotation is changed only after a double-click on it: its handles
+show, and dragging it moves it, dragging a handle reshapes it, Delete removes it; a click elsewhere
+ends the edit. Its properties (text, colour, line, fill; for a text box also **Show box**, off for the
+text alone) and its Delete are on its row in the Object
+Manager, under **Annotations**. They are kept in a session and drawn by Plot with GMT.jl: each one is
+a call of `annotation!`, for example
+`annotation!(:textarrow, x=(5, 7), y=(0.8, 0.2), pen="1.12p,#000000", text="peak")`. The kinds are
+`:textarrow`, `:arrow`, `:doublearrow`, `:line`, `:textbox`, `:rectangle` and `:ellipse`. The script
+defines `annotation!` at its top in plain GMT.jl, so it needs nothing else to draw them.
+
+The geomagnetic bar code tools are in **Analysis > Synthetic geomag anomalies**. **Misc** holds
+**GMT** (the table modules, e.g. spectrum1d) and **Time axis (X)**.
+
+No axis is labelled by default: an X,Y axis gets a title only when something says what it is (a
+`xlabel` / `ylabel`, a file's column name, the X-Label / Y-Label buttons).
