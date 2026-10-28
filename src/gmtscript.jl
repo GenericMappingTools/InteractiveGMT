@@ -295,6 +295,8 @@ end
 # window's colours come from one source. Emitted as its own variable because the colorbar needs the
 # very same object; a name-only `cmap=:geo` would leave the bar without a range.
 function _script_cpt!(ctx::ScriptCtx, r::ElementRecipe, G::GMTgrid)
+	aq = _script_aqua_water_cpt!(ctx, r)
+	aq === nothing || return aq
 	zr = _script_zrange(G)
 	zr === nothing && return nothing
 	tag = String(get(r.params, "cmap", ""))
@@ -303,6 +305,39 @@ function _script_cpt!(ctx::ScriptCtx, r::ElementRecipe, G::GMTgrid)
 	mk = (cmap=Symbol(tag), range=zr, continuous=true)
 	expr = "makecpt(cmap=$(_lit(mk.cmap)), range=$(_lit(mk.range)), continuous=true)"
 	return DataBind(var, :cpt, expr, mk)
+end
+
+# A TSUNAMI layer's palette is the "Color Bar water" one: the water side's palette over the water span
+# of the slice on screen — the SAME `_aqua_side_pal` / `_aqua_layer_water_range` the layer is coloured
+# with and its bar is built from. The layer's grid (the stage, dry cells holding land elevation) and a
+# default colormap describe neither. `nothing` for any layer that is not this window's tsunami.
+function _script_aqua_water_cpt!(ctx::ScriptCtx, r::ElementRecipe)
+	st = get(_AQUA, ctx.scene, nothing)
+	(st === nothing || r.name != basename(st.path)) && return nothing
+	lo, hi = _aqua_layer_water_range(st, st.cur, st.split, st.globalmm)
+	p = _aqua_side_pal(st, 0)
+	if p isa Symbol
+		var = _script_var!(ctx, "C", nothing)
+		mk = (cmap=p, range=(lo, hi), continuous=true)
+		expr = "makecpt(cmap=$(_lit(mk.cmap)), range=$(_lit(mk.range)), continuous=true)"
+		return DataBind(var, :cpt, expr, mk)
+	end
+	# A "Color Palettes…" editor palette carries its own node z (log spacing included), which makecpt
+	# over a range cannot express: the CPT is written out from those nodes, slice by slice.
+	cz, crgb = p
+	n = length(cz)
+	n < 2 && return nothing
+	rgb = permutedims(reshape(Float64.(crgb), 3, n))
+	m = n - 1
+	col, far = rgb[1:m, :], rgb[2:n, :]
+	rg = hcat(Float64.(cz[1:m]), Float64.(cz[2:n]))
+	bfn = [1.0 1.0 1.0; 0.0 0.0 0.0; 0.5 0.5 0.5]
+	C = GMTcpt(col, zeros(m), rg, [Float64(cz[1]), Float64(cz[n])], bfn, Cint(24), NaN, hcat(col, far),
+	           0, String[], String[], "rgb", String[])
+	var = _script_var!(ctx, "C", C)
+	expr = "GMTcpt($(col), $(zeros(m)), $(rg), $(C.minmax), $(bfn), Cint(24), NaN, $(hcat(col, far)), " *
+	       "0, String[], String[], \"rgb\", String[])"
+	return DataBind(var, :cpt, expr)
 end
 
 # What the window is DOING to this layer's colours, and where the layer sits: `repro` says whether GMT
