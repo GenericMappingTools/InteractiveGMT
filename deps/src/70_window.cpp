@@ -19406,6 +19406,27 @@ public:
 			if (h > availH - 300) { h = availH - 300;  w = int(std::lround(h / aspect)); }
 			map->setFixedSize(w, h);
 			dlg->adjustSize();
+			// The dialog was already shown at its first, small size and has just grown to the map: keep
+			// ALL of it on its screen. A dialog still taller/wider than the screen (the 300 px above is
+			// only a guess at the rest of it) gives the excess back from the map; then it is moved in.
+			if (scr) {
+				// a few px in from the edges: at fractional scaling (225 %) Qt's frameGeometry rounds the
+				// native frame, and a dialog placed flush with the work area measured 1 px past it
+				const QRect av = scr->availableGeometry().adjusted(4, 4, -4, -4);
+				QRect fr = dlg->frameGeometry();
+				const int exH = fr.height() - av.height(), exW = fr.width() - av.width();
+				if (exH > 0 || exW > 0) {
+					if (exH > 0) { h -= exH;  w = int(std::lround(h / aspect)); }
+					if (exW > 0 && w > map->width() - exW) { w = map->width() - exW;  h = int(std::lround(w * aspect)); }
+					map->setFixedSize(std::max(w, 100), std::max(h, 100));
+					dlg->adjustSize();
+					fr = dlg->frameGeometry();
+				}
+				const int x = std::clamp(fr.left(), av.left(), std::max(av.left(), av.right() + 1 - fr.width()));
+				const int y = std::clamp(fr.top(),  av.top(),  std::max(av.top(),  av.bottom() + 1 - fr.height()));
+				if (x != fr.left() || y != fr.top())
+					dlg->move(x, y);
+			}
 		}
 		frame();
 		showTilesHit();

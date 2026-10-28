@@ -887,13 +887,31 @@ function _xy_framed_marginal(plot, p, kind, sel, page)
 end
 
 function _xy_framed_biplot(plot, p, kind, sel, page)
-	# GMT.jl biplot(): PCA of the z-scored variables (zscores, pca), PC1 vs PC2, with the scaling,
-	# sign convention and symmetric limits its biplot(coefs, scores, ...) method applies.
 	M, nms = _xy_page_matrix(plot)
-	size(M, 2) < 2 && error("biplot needs two or more series on this page (one per variable)")
-	scores, coefs, _, explained = GMT.pca(GMT.zscores(M))
-	coefs, scores = Float64.(coefs[:, [1, 2]]), Float64.(scores[:, [1, 2]])
-	explained = Float64.(explained[[1, 2]])
+	_xy_biplot_page(plot, p, M, nms, page)
+end
+
+# THE biplot page — the gallery icon (the page's series, PC1 and PC2) and biplot() from the console
+# (gmtsyntax.jl) both draw it here. GMT.jl biplot()'s maths: PCA of the z-scored variables (zscores,
+# pca), components `PC`; each coefficient column's largest element made positive; the scores scaled so
+# the largest of them equals the longest coefficient vector, with the same sign changes; symmetric
+# limits. `groups` (one name per observation, e.g. the iris species) puts each group's points in a
+# series of its own, in its own colour, as GMT.jl colours them by category; `color` puts every point
+# in that one colour instead. The loadings are arrows (series kind 11, heads in screen px), the
+# variable names labels the user can drag.
+function _xy_biplot_page(plot, p, M::AbstractMatrix{<:Real}, nms::Vector{String}, page;
+                         groups::Vector{String}=String[], PC=(1, 2), xlabel::AbstractString="",
+                         ylabel::AbstractString="", xlim=nothing, ylim=nothing, varlabels::Bool=true,
+                         marker::Symbol=:circle, ms::Real=4, color=nothing, arrowcolor=_XY_BLUE,
+                         arrowwidth::Real=2, bold::Bool=false)
+	nv = size(M, 2)
+	nv < 2 && error("biplot needs two or more series on this page (one per variable)")
+	(length(PC) == 2 && PC[1] != PC[2] && all(k -> 1 <= k <= nv, PC)) ||
+		error("biplot: PC=$(PC) — give two different components between 1 and $nv")
+	scores, coefs, _, explained = GMT.pca(GMT.zscores(Float64.(M)))
+	c = [PC[1], PC[2]]
+	coefs, scores = Float64.(coefs[:, c]), Float64.(scores[:, c])
+	explained = Float64.(explained[c])
 	signs = sign.(coefs[findmax(abs, coefs, dims=1)[2]])
 	coefs = coefs .* signs                        # the largest coefficient of each column positive
 	maxlen = sqrt(maximum(sum(coefs .^ 2, dims=2)))
@@ -902,24 +920,35 @@ function _xy_framed_biplot(plot, p, kind, sel, page)
 	mima = (min(mima[1], mima_c[1]), max(mima[2], mima_c[2]))
 	r = GMT.round_wesn([mima[1], mima[2], mima_c[1], mima_c[2]])
 	r[1] = -max(-r[1], r[2]);  r[2] = -r[1];  r[3] = -max(-r[3], r[4]);  r[4] = -r[3]
-	page("biplot", "PC1 ($(round(explained[1], digits=1))%)", "PC2 ($(round(explained[2], digits=1))%)")
-	_xyadd!(p, scores[:, 1], scores[:, 2]; name="observations", marker=:circle, linestyle=:none, markersize=4,
-	     color=(0.35, 0.35, 0.35))
-	axl, ayl = Float64[], Float64[]
-	hl = 0.06 * maxlen
+	xl = (isempty(xlabel) ? "PC$(PC[1])" : xlabel) * " ($(round(explained[1], digits=1))%)"
+	yl = (isempty(ylabel) ? "PC$(PC[2])" : ylabel) * " ($(round(explained[2], digits=1))%)"
+	page("biplot", xl, yl)
+	if isempty(groups) || color !== nothing
+		_xyadd!(p, scores[:, 1], scores[:, 2]; name="observations", marker, linestyle=:none, markersize=ms,
+		     color=color === nothing ? (0.35, 0.35, 0.35) : color)
+	else
+		for g in unique(groups)                   # one series per category, in the chart's own colours
+			i = groups .== g
+			_xyadd!(p, scores[i, 1], scores[i, 2]; name=g, marker, linestyle=:none, markersize=ms)
+		end
+	end
+	ax, ay = Float64[], Float64[]
 	for k in axes(coefs, 1)                       # feather!(…, endpt=true): an arrow from the origin
 		cx, cy = coefs[k, 1], coefs[k, 2]
-		L = hypot(cx, cy)
-		L > 0 || continue
-		ux, uy = cx / L, cy / L
-		append!(axl, [0.0, cx, NaN, cx - hl * (ux - 0.5uy), cx, cx - hl * (ux + 0.5uy), NaN])
-		append!(ayl, [0.0, cy, NaN, cy - hl * (uy + 0.5ux), cy, cy - hl * (uy - 0.5ux), NaN])
-		_xy_lbl(plot, cx * 1.08, cy * 1.08, nms[k]; ha=cx >= 0 ? -1 : 1, size=12, c=_XY_BLUE)
+		hypot(cx, cy) > 0 || continue
+		append!(ax, [0.0, cx, NaN]);  append!(ay, [0.0, cy, NaN])
+		if varlabels
+			_xy_lbl(plot, cx * 1.08, cy * 1.08, nms[k]; ha=cx >= 0 ? -1 : 1, size=12, c=arrowcolor)
+			bold && ccall(_fn(:gmtvtk_xyplot_label_bold), Cvoid, (Ptr{Cvoid}, Cint), plot, 1)
+		end
 	end
-	_xyadd!(p, axl, ayl; name="loadings", color=_XY_BLUE, linewidth=2)
+	_xyadd!(p, ax, ay; name="loadings", color=arrowcolor, linewidth=arrowwidth)
+	_stick_arrows!(plot)
 	# biplot()'s symmetric limits, widened 15%: its y limits come from the coefficients alone, which
 	# leaves an arrow tip on the frame and its name outside it (GMT text is not clipped; ours is).
-	_xy_look(plot, true, false, (1.15r[1], 1.15r[2], 1.15r[3], 1.15r[4]))
+	X = xlim === nothing ? (1.15r[1], 1.15r[2]) : (Float64(xlim[1]), Float64(xlim[2]))
+	Y = ylim === nothing ? (1.15r[3], 1.15r[4]) : (Float64(ylim[1]), Float64(ylim[2]))
+	_xy_look(plot, true, false, (X[1], X[2], Y[1], Y[2]))
 end
 
 # The framed kinds, each with its own builder: reached through this `Function`-typed table ON PURPOSE,

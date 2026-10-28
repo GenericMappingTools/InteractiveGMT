@@ -1,0 +1,103 @@
+# MATLAB's carsmall (Statistics and Machine Learning Toolbox): 100 cars of 1970, 1976 and 1982 from the
+# UCI Auto MPG data. NaN = missing. The trailing text is the car's model.
+#Acceleration,Displacement,Horsepower,MPG,Weight,Model
+12	307	130	18	3504 chevrolet chevelle malibu
+11.5	350	165	15	3693 buick skylark 320
+11	318	150	18	3436 plymouth satellite
+12	304	150	16	3433 amc rebel sst
+10.5	302	140	17	3449 ford torino
+10	429	198	15	4341 ford galaxie 500
+9	454	220	14	4354 chevrolet impala
+8.5	440	215	14	4312 plymouth fury iii
+10	455	225	14	4425 pontiac catalina
+8.5	390	190	15	3850 amc ambassador dpl
+17.5	133	115	NaN	3090 citroen ds-21 pallas
+11.5	350	165	NaN	4142 chevrolet chevelle concours (sw)
+11	351	153	NaN	4034 ford torino (sw)
+10.5	383	175	NaN	4166 plymouth satellite (sw)
+11	360	175	NaN	3850 amc rebel sst (sw)
+10	383	170	15	3563 dodge challenger se
+8	340	160	14	3609 plymouth 'cuda 340
+8	302	140	NaN	3353 ford mustang boss 302
+9.5	400	150	15	3761 chevrolet monte carlo
+10	455	225	14	3086 buick estate wagon (sw)
+15	113	95	24	2372 toyota corona mark ii
+15.5	198	95	22	2833 plymouth duster
+15.5	199	97	18	2774 amc hornet
+16	200	85	21	2587 ford maverick
+14.5	97	88	27	2130 datsun pl510
+20.5	97	46	26	1835 volkswagen 1131 deluxe sedan
+17.5	110	87	25	2672 peugeot 504
+14.5	107	90	24	2430 audi 100 ls
+17.5	104	95	25	2375 saab 99e
+12.5	121	113	26	2234 bmw 2002
+15	199	90	21	2648 amc gremlin
+14	360	215	10	4615 ford f250
+15	307	200	10	4376 chevrolet c20
+13.5	318	210	11	4382 dodge d200
+18.5	304	193	9	4732 ih 1200d
+15.5	107	86	28	2464 fiat 131
+16.9	116	81	25	2220 opel 1900
+14.9	140	92	25	2572 ford capri ii
+17.7	98	79	26	2255 dodge colt
+15.3	101	83	27	2202 renault 12tl
+13	305	140	17.5	4215 chevrolet chevelle malibu classic
+13	318	150	16	4190 dodge coronet brougham
+13.9	304	120	15.5	3962 amc matador
+12.8	351	152	14.5	4215 ford gran torino
+15.4	225	100	22	3233 plymouth valiant
+14.5	250	105	22	3353 chevrolet nova
+17.6	200	81	24	3012 ford maverick
+17.6	232	90	22.5	3085 amc hornet
+22.2	85	52	29	2035 chevrolet chevette
+22.1	98	60	24.5	2164 chevrolet woody
+14.2	90	70	29	1937 volkswagen rabbit
+17.4	91	53	33	1795 honda civic
+17.7	225	100	20	3651 dodge aspen se
+21	250	78	18	3574 ford granada ghia
+16.2	250	110	18.5	3645 pontiac ventura sj
+17.8	258	95	17.5	3193 amc pacer d/l
+12.2	97	71	29.5	1825 volkswagen rabbit
+17	85	70	32	1990 datsun b-210
+16.4	97	75	28	2155 toyota corolla
+13.6	140	72	26.5	2565 ford pinto
+15.7	130	102	20	3150 volvo 245
+13.2	318	150	13	3940 plymouth volare premier v8
+21.9	120	88	19	3270 peugeot 504
+15.5	156	108	19	2930 toyota mark ii
+16.7	168	120	16.5	3820 mercedes-benz 280s
+12.1	350	180	16.5	4380 cadillac seville
+12	350	145	13	4055 chevrolet c10
+15	302	130	13	3870 ford f108
+14	318	150	13	3755 dodge d100
+19.6	112	88	28	2605 chevrolet cavalier
+18.6	112	88	27	2640 chevrolet cavalier wagon
+18	112	88	34	2395 chevrolet cavalier 2-door
+16.2	112	85	31	2575 pontiac j2000 se hatchback
+16	135	84	29	2525 dodge aries se
+18	151	90	27	2735 pontiac phoenix
+16.4	140	92	24	2865 ford fairmont futura
+20.5	151	NaN	23	3035 amc concord dl
+15.3	105	74	36	1980 volkswagen rabbit l
+18.2	91	68	37	2025 mazda glc custom l
+17.6	91	68	31	1970 mazda glc custom
+14.7	105	63	38	2125 plymouth horizon miser
+17.3	98	70	36	2125 mercury lynx l
+14.5	120	88	36	2160 nissan stanza xe
+14.5	107	75	36	2205 honda accord
+16.9	108	70	34	2245 toyota corolla
+15	91	67	38	1965 honda civic
+15.7	91	67	32	1965 honda civic (auto)
+16.2	91	67	38	1995 datsun 310 gx
+16.4	181	110	25	2945 buick century limited
+17	262	85	38	3015 oldsmobile cutlass ciera (diesel)
+14.5	156	92	26	2585 chrysler lebaron medallion
+14.7	232	112	22	2835 ford granada l
+13.9	144	96	32	2665 toyota celica gt
+13	135	84	36	2370 dodge charger 2.2
+17.3	151	90	27	2950 chevrolet camaro
+15.6	140	86	27	2790 ford mustang gl
+24.6	97	52	44	2130 volkswagen pickup
+11.6	135	84	32	2295 dodge rampage
+18.6	120	79	28	2625 ford ranger
+19.4	119	82	31	2720 chevrolet s-10

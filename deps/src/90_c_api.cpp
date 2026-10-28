@@ -15081,6 +15081,16 @@ GMTVTK_API void gmtvtk_xyplot_add_label(void *handle, double x, double y, const 
 		p->widget->renderWindow()->Render();
 }
 
+// Make the label just added to the CURRENT page (gmtvtk_xyplot_add_label) bold, or not.
+GMTVTK_API void gmtvtk_xyplot_label_bold(void *handle, int bold) {
+	XYPlot *p = static_cast<XYPlot*>(handle);
+	if (!xyAlive(p) || xyCur(p).labels.empty())
+		return;
+	xyCur(p).labels.back().bold = bold != 0;
+	if (p->widget && p->widget->renderWindow())
+		p->widget->renderWindow()->Render();
+}
+
 // Spector-Grant depth-to-sources over band [xa,xb] of series `sel` (the SAME fit the interactive
 // drag tool runs): fit ln(power) vs wavenumber, return depth = |slope|/(4Ï€)·unit in metres. Returns
 // NaN on a dead handle / bad series / < 2 positive-power points in the band. Programmatic twin of

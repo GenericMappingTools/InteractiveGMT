@@ -22,6 +22,7 @@ import GMT: movie, scatter!, orbits, orbits!, bar!
 function plot end
 function plot! end
 function feather end
+function biplot end
 function viz end
 using Distributed: addprocs, workers, rmprocs, remotecall, remotecall_eval
 using PrecompileTools: @setup_workload, @compile_workload
@@ -208,7 +209,7 @@ include("crsselect.jl")   # the Coordinate Reference System selector (PROJ catal
 include("gmtsyntax.jl")   # ONE NAME PER JOB: plot/plot!/feather/viz/scatter!/orbits! in GMT.jl's syntax
 
 export gmtscript, gmtreplay,
-       plot, plot!, feather, viz, view_demo, iview, iview_recipe,
+       plot, plot!, feather, biplot, viz, view_demo, iview, iview_recipe,
        add!, setvisible!, setopacity!, add_curtain!, add_isosurface!, show_table, selection, selection_ids, isalive,
        poly2fv, colorize_by_z!, save_png, wait_windows, stereo!, movie, MovieFrame, orbit!, replace_grid!,
        set_layer!, nlayers, add_label!, add_progress!, remove_annotation!, movie_annotations,

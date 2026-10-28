@@ -3,6 +3,7 @@
 #
 #   plot / plot!   the X,Y plot tool          (iGMT's own: shadows GMT.plot / GMT.plot!)
 #   feather        stick (vector) diagrams    (iGMT's own: shadows GMT.feather)
+#   biplot         principal component biplot (iGMT's own: shadows GMT.biplot)
 #   viz            the 3-D viewer front door  (iGMT's own: shadows GMT.viz; `iview` is its alias)
 #   scatter!       symbols on an open window  (a METHOD of GMT.scatter!, on iGMT's window types)
 #   orbits!        a satellite ground track   (a METHOD of GMT.orbits!, on iGMT's Satellite)
@@ -308,6 +309,56 @@ function feather(args...; rtheta = nothing, scale = :auto, kw...)
 	pop!(o, :multicol, nothing)
 	return _stickplot(collect(Float64, @view M[:, 1]), u, v; scale, (; (kk => vv for (kk, vv) in o)...)...)
 end
+
+"""
+    biplot(D::GMTdataset; PC=(1,2), varlabels=:yes, xlabel="", ylabel="", marker=:point, ms="auto",
+           cmap=:categorical, arrow=(0.3, 0.5, 0.75, "#0072BD"), kw...) -> QtXYPlot
+    biplot(fname::String; kw...)  /  biplot(M::Matrix; kw...)
+
+GMT.jl's `biplot` — the **principal component biplot** — in iGMT's interactive X,Y plot window. Every
+column of `D` is a variable; the variables go on a page (one series each) and the biplot of components
+`PC` on a new page, made by the same code the gallery's **biplot** icon runs. As in GMT.jl, a dataset's
+trailing text (the iris species, say) groups the observations, one colour per group. `varlabels`:
+`:yes` (the column names, else A, B, ...), `:no`, or a vector of names; `cmap`: `:categorical` (a
+colour per group), `"none"` (all black) or one colour for every point; `arrow`: `(len, shape, width,
+color)`, of which the arrows honour width and colour (their heads are sized on the screen).
+iGMT-only: `xlim`, `ylim` (the axes' limits), `bold` (bold variable names).
+"""
+function biplot(D::GMTdataset; PC = (1, 2), varlabels = :yes, xlabel = "", ylabel = "", marker = :point,
+                ms = "auto", cmap = :categorical, arrow = (0.3, 0.5, 0.75, "#0072BD"),
+                xlim = nothing, ylim = nothing, bold::Bool = false, colorbar = true, show = nothing, kw...)
+	isempty(kw) || _gmt_kw_error(:biplot, first(keys(kw)))
+	colorbar === true || _gmt_kw_error(:biplot, :colorbar)          # the groups are in the legend here
+	(arrow[1] == 0.3 && arrow[2] == 0.5) ||
+		error("biplot: the arrow heads are sized on the screen here; only arrow's width and colour are honoured")
+	X = Matrix{Float64}(D.data)
+	nv = size(X, 2)
+	labs = varlabels isa AbstractVector ? String.(varlabels) :
+	       (isempty(D.colnames) || startswith(D.colnames[1], "col.")) ? string.(collect('A':'Z')[1:nv]) :
+	       String.(D.colnames[1:nv])
+	length(labs) == nv || error("biplot: $(length(labs)) varlabels for $nv variables")
+	ok = vec(all(isfinite, X; dims=2))
+	groups = length(D.text) == size(X, 1) ? String.(strip.(D.text[ok])) : String[]
+	_rgb(c) = (t = _parse_gmt_color(string(c)); (t[1] / 255, t[2] / 255, t[3] / 255))
+	cm = lowercase(string(cmap))
+	color = cm == "none" ? (0.0, 0.0, 0.0) :
+	        (cm != "categorical" && !occursin(',', cm) && (startswith(cm, "#") || haskey(_NAMED_COLORS, Symbol(cm)))) ? _rgb(cmap) : nothing
+	mk = string(marker) in ("point", "p", ".") ? :circle : _gmt_marker(:biplot, marker)
+	msz = ms == "auto" ? (string(marker) in ("point", "p", ".") ? 3.0 : 5.0) : _gmt_len_px(:biplot, :ms, ms, 'c')
+	n = size(X, 1)
+	p = _xyplot(collect(1.0:n), X[:, 1]; name=labs[1], title="biplot data", xlabel="observation", ylabel="value")
+	for k in 2:nv
+		_xyadd!(p, collect(1.0:n), X[:, k]; name=labs[k])
+	end
+	page(name, xl, yl) = (ccall(_fn(:gmtvtk_xyplot_add_page), Cint, (Ptr{Cvoid}, Cstring), p.h, String(name));
+	                      ccall(_fn(:gmtvtk_xyplot_set_labels), Cvoid, (Ptr{Cvoid}, Cstring, Cstring), p.h, String(xl), String(yl)))
+	_xy_biplot_page(p.h, p, X[ok, :], labs, page; groups, PC, xlabel=string(xlabel), ylabel=string(ylabel), xlim, ylim,
+	                varlabels=!(varlabels isa Symbol && lowercase(string(varlabels)) == "no"), marker=mk, ms=msz, color,
+	                arrowcolor=_rgb(arrow[4]), arrowwidth=_gmt_len_px(:biplot, :arrow, arrow[3], 'p'), bold)
+	return p
+end
+biplot(fname::AbstractString; kw...) = biplot(GMT.gmtread(fname)::GMTdataset; kw...)
+biplot(M::AbstractMatrix{<:Real}; kw...) = biplot(GMT.mat2ds(Matrix{Float64}(M)); kw...)
 
 "Alias of [`viz`](@ref)."
 const iview = viz

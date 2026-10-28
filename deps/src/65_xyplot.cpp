@@ -141,6 +141,10 @@ struct XYLabel {
 	double r = 0, g = 0, b = 0;
 	double size = 11;
 	int ha = 0, va = 0;                        // -1 left / bottom, 0 centre, 1 right / top
+	bool bold = false;
+	// where it was last drawn, scene px (xyLabelPaint): what a press is tested against to drag it
+	bool  shown = false;
+	float bx = 0, by = 0, bw = 0, bh = 0;
 };
 
 // One PAGE inside an X,Y window: its own chart, its own series list, its own axis
@@ -2458,16 +2462,22 @@ static void xyLabelPaint(XYPlot *s, vtkChartXY *chart, vtkContext2D *p) {
 	const float *x0 = chart->GetAxis(vtkAxis::BOTTOM)->GetPoint1(), *x1 = chart->GetAxis(vtkAxis::BOTTOM)->GetPoint2();
 	const float *y0 = chart->GetAxis(vtkAxis::LEFT)->GetPoint1(),   *y1 = chart->GetAxis(vtkAxis::LEFT)->GetPoint2();
 	const float tol = 40.0f * dpr;                    // labels just outside a hidden frame (spoke names) still show
-	for (const XYLabel &l : pg->labels) {
+	for (XYLabel &l : pg->labels) {
+		l.shown = false;
 		double sx, sy;
 		if (!xyDataToScene(*pg, l.x, l.y, sx, sy)) continue;
 		if (sx < x0[0] - tol || sx > x1[0] + tol || sy < y0[1] - tol || sy > y1[1] + tol) continue;
 		vtkTextProperty *tp = p->GetTextProp();
 		tp->SetColor(l.r, l.g, l.b);
 		tp->SetFontSize((int)std::lround(l.size));
+		tp->SetBold(l.bold);
 		if (l.ha < 0) tp->SetJustificationToLeft(); else if (l.ha > 0) tp->SetJustificationToRight(); else tp->SetJustificationToCentered();
 		if (l.va < 0) tp->SetVerticalJustificationToBottom(); else if (l.va > 0) tp->SetVerticalJustificationToTop(); else tp->SetVerticalJustificationToCentered();
 		p->DrawString((float)sx, (float)sy, l.text);
+		float b[4];
+		p->ComputeJustifiedStringBounds(l.text.c_str(), b);   // justified offsets from the anchor
+		l.bx = (float)sx + b[0];  l.by = (float)sy + b[1];  l.bw = b[2];  l.bh = b[3];
+		l.shown = true;
 	}
 }
 
@@ -2928,6 +2938,76 @@ protected:
 			lastX = sx;  lastY = sy;
 		}
 		return true;                                  // a double-click on the legend is the legend's too
+	}
+};
+
+// Scene px -> data along axis `a` (k: 0 x, 1 y), the inverse of xyAxisToScene.
+static double xySceneToAxis(vtkAxis *a, double s, int k) {
+	const double lo = a->GetMinimum(), hi = a->GetMaximum();
+	const float *p1 = a->GetPoint1(), *p2 = a->GetPoint2();
+	const double v = (p2[k] == p1[k]) ? lo : lo + (s - p1[k]) / (p2[k] - p1[k]) * (hi - lo);
+	return a->GetLogScaleActive() ? std::pow(10.0, v) : v;
+}
+
+// Mouse for the page's own labels (XYPage::labels: a biplot's variable names, a radar's spoke names,
+// ...): a left press on one grabs it and the drag moves it, with the four-arrow cursor over it as over
+// every draggable. It keeps its DATA position, so it still moves with zoom and pan, and a saved session
+// keeps it where it was dropped. Installed just before the legend's filter: the legend, drawn on top,
+// wins a press on both.
+class XYLabelFilter : public QObject {
+public:
+	XYPlot *s = nullptr;
+	explicit XYLabelFilter(XYPlot *sc, QObject *parent) : QObject(parent), s(sc) {}
+protected:
+	int    grab = -1;                                 // the label being dragged, index in the page's list
+	double offX = 0.0, offY = 0.0;                    // press point -> label anchor, scene px
+	int hit(XYPage &pg, double sx, double sy) {
+		const float pad = 3.0f * (s->widget ? (float)s->widget->devicePixelRatioF() : 1.0f);
+		for (int i = (int)pg.labels.size() - 1; i >= 0; --i) {   // the last drawn is on top
+			const XYLabel &l = pg.labels[i];
+			if (l.shown && sx >= l.bx - pad && sx <= l.bx + l.bw + pad && sy >= l.by - pad && sy <= l.by + l.bh + pad)
+				return i;
+		}
+		return -1;
+	}
+	bool eventFilter(QObject *obj, QEvent *ev) override {
+		const QEvent::Type t = ev->type();
+		if (t != QEvent::MouseButtonPress && t != QEvent::MouseButtonDblClick &&
+		    t != QEvent::MouseMove && t != QEvent::MouseButtonRelease)
+			return QObject::eventFilter(obj, ev);
+		if (!s || !xyAlive(s) || s->pages.empty() || !xyCur(s).chart) { grab = -1; return QObject::eventFilter(obj, ev); }
+		XYPage &pg = xyCur(s);
+		QMouseEvent *me = static_cast<QMouseEvent *>(ev);
+		double sx, sy;
+		xyQtToScene(s, me->position(), sx, sy);
+		if (t == QEvent::MouseButtonRelease) {
+			if (grab >= 0 && me->button() == Qt::LeftButton) { grab = -1; return true; }
+			return QObject::eventFilter(obj, ev);
+		}
+		if (t == QEvent::MouseMove && grab >= 0) {
+			if (grab < (int)pg.labels.size()) {
+				XYLabel &l = pg.labels[grab];
+				l.x = xySceneToAxis(pg.chart->GetAxis(vtkAxis::BOTTOM), sx + offX, 0);
+				l.y = xySceneToAxis(pg.chart->GetAxis(vtkAxis::LEFT), sy + offY, 1);
+				pg.chart->GetScene()->SetDirty(true);
+				if (s->widget->renderWindow()) s->widget->renderWindow()->Render();
+			}
+			return true;
+		}
+		const int i = hit(pg, sx, sy);
+		if (t == QEvent::MouseMove) {
+			if (i < 0) return QObject::eventFilter(obj, ev);
+			if (s->widget->cursor().shape() != Qt::SizeAllCursor) s->widget->setCursor(Qt::SizeAllCursor);
+			return true;                              // over a label, no other tool's hover
+		}
+		if (i < 0 || me->button() != Qt::LeftButton) return QObject::eventFilter(obj, ev);
+		if (t == QEvent::MouseButtonPress) {
+			double ax, ay;
+			if (!xyDataToScene(pg, pg.labels[i].x, pg.labels[i].y, ax, ay)) return QObject::eventFilter(obj, ev);
+			grab = i;
+			offX = ax - sx;  offY = ay - sy;
+		}
+		return true;
 	}
 };
 
@@ -4342,9 +4422,11 @@ static std::string xySessionState(XYPlot *s) {
 			}
 		for (const auto &ap : pg.axProps)             // the Axes properties fields changed from the .ui's
 			kv("axprop", QString::fromStdString(ap.first) + " " + xyEsc(QString::fromStdString(ap.second)));
-		for (const XYLabel &l : pg.labels)               // one key per label, in order
+		for (const XYLabel &l : pg.labels) {             // one key per label, in order
 			kv("label", xyNums({ l.x, l.y, l.r, l.g, l.b, l.size, (double)l.ha, (double)l.va }) + " " +
 			            xyEsc(QString::fromStdString(l.text)));
+			if (l.bold) kv("labelbold", "1");            // of the label just written
+		}
 		kv("logx", QString::number(ax->GetLogScale() ? 1 : 0));
 		kv("logy", QString::number(ay->GetLogScale() ? 1 : 0));
 		kv("xfixed", QString::number(ax->GetBehavior() == vtkAxis::FIXED ? 1 : 0));
@@ -4490,6 +4572,9 @@ static void xySessionApply(XYPlot *s, const char *text) {
 					l.text = xyUnesc(f.mid(8).join(' ')).toStdString();
 					pg.labels.push_back(l);
 				}
+			}
+			else if (k == "labelbold") {
+				if (!pg.labels.empty()) pg.labels.back().bold = v.toInt() != 0;
 			}
 			else if (k == "logx") ax->SetLogScale(v.toInt() != 0);
 			else if (k == "logy") ay->SetLogScale(v.toInt() != 0);
@@ -6306,6 +6391,8 @@ static XYPlot *buildXYPlot(const char *title) {
 	s->widget->installEventFilter(new XYMagFilter(s, s->win));
 	// --- "Reference a curve to another": its picks, and "Reference me" on them (sees a press first) ---
 	s->widget->installEventFilter(new XYRefFilter(s, s->win));
+	// --- the page's own labels: drag them anywhere ---
+	s->widget->installEventFilter(new XYLabelFilter(s, s->win));
 	// --- the legend box: drag it anywhere (installed LAST: a press on the legend is the legend's) ---
 	s->widget->installEventFilter(new XYLegendFilter(s, s->win));
 	// --- a square page keeps its square through every resize: sized before each render ---
