@@ -3252,7 +3252,8 @@ static double sceneZoomFactor(Scene *s) {
 static void updateTitleZoom(Scene *s) {
 	if (!s || !s->win) return;
 	QString t = QString::fromStdString(s->titleBase);
-	const double z = sceneZoomFactor(s);
+	// the zoom of what is displayed: an empty launcher displays nothing (its placeholder is hidden), so none
+	const double z = s->emptyStart ? 0.0 : sceneZoomFactor(s);
 	if (z > 0.0) t += QString("   —   %1%").arg(qRound(z * 100.0));
 	// …and whatever the DATA on screen has to say about itself, after the zoom: an Aquamoto slice puts
 	// its model time here, so the window says WHEN as well as what. Set through sceneSetTitleExtra

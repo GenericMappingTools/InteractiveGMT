@@ -915,6 +915,7 @@ function _xy_biplot_page(plot, p, M::AbstractMatrix{<:Real}, nms::Vector{String}
 	(length(PC) == 2 && PC[1] != PC[2] && all(k -> 1 <= k <= nv, PC)) ||
 		error("biplot: PC=$(PC) — give two different components between 1 and $nv")
 	scores, coefs, _, explained = GMT.pca(GMT.zscores(Float64.(M)))
+	allexp = Float64.(vec(explained))             # every component's share, for the side panel
 	c = [PC[1], PC[2]]
 	coefs, scores = Float64.(coefs[:, c]), Float64.(scores[:, c])
 	explained = Float64.(explained[c])
@@ -931,8 +932,11 @@ function _xy_biplot_page(plot, p, M::AbstractMatrix{<:Real}, nms::Vector{String}
 	page("biplot", xl, yl)
 	# biplot()'s symmetric limits, widened 15%: its y limits come from the coefficients alone, which
 	# leaves an arrow tip on the frame and its name outside it (GMT text is not clipped; ours is).
+	# Never beyond [-1, 1]: the coefficients and the scaled scores all lie inside it.
 	X = xlim === nothing ? (1.15r[1], 1.15r[2]) : (Float64(xlim[1]), Float64(xlim[2]))
 	Y = ylim === nothing ? (1.15r[3], 1.15r[4]) : (Float64(ylim[1]), Float64(ylim[2]))
+	X = (max(-1.0, X[1]), min(1.0, X[2]))
+	Y = (max(-1.0, Y[1]), min(1.0, Y[2]))
 	# MATLAB's biplot: the x = 0 and y = 0 lines across the whole frame, under the points and arrows
 	_xyadd!(p, [X[1], X[2], NaN, 0.0, 0.0], [0.0, 0.0, NaN, Y[1], Y[2]]; name="x = 0, y = 0",
 	     color=(0.0, 0.0, 0.0), linewidth=1.5)
@@ -987,7 +991,13 @@ function _xy_biplot_page(plot, p, M::AbstractMatrix{<:Real}, nms::Vector{String}
 			append!(ax, [0.0, cx, NaN]);  append!(ay, [0.0, cy, NaN])
 		end
 		if varlabels
-			_xy_lbl(plot, cx * 1.08, cy * 1.08, nms[k]; ha=cx >= 0 ? -1 : 1, size=12, c=ck)
+			# past the tip, inside the frame: a tip near a side has its name end there instead, above or
+			# below it, so the name never leaves the [-1, 1] frame
+			lx = clamp(cx * 1.08, X[1], X[2]);  ly = clamp(cy * 1.08, Y[1], Y[2])
+			near = abs(lx) > 0.6 * max(abs(X[1]), abs(X[2]))
+			_xy_lbl(plot, lx, ly, nms[k]; ha=near ? (cx >= 0 ? 1 : -1) : (cx >= 0 ? -1 : 1),
+			        va=near ? (cy >= 0 ? 1 : -1) * (abs(ly) > 0.9 * max(abs(Y[1]), abs(Y[2])) ? 1 : -1) : 0,
+			        size=12, c=ck)
 			bold && ccall(_fn(:gmtvtk_xyplot_label_bold), Cvoid, (Ptr{Cvoid}, Cint), plot, 1)
 			# the name belongs to its arrow's row: unchecking the arrow hides the name with it
 			ccall(_fn(:gmtvtk_xyplot_label_owner), Cvoid, (Ptr{Cvoid}, Cstring), plot,
@@ -999,6 +1009,49 @@ function _xy_biplot_page(plot, p, M::AbstractMatrix{<:Real}, nms::Vector{String}
 		_stick_arrows!(plot)
 	end
 	_xy_look(plot, true, false, (X[1], X[2], Y[1], Y[2]))
+	# The side panel: what every component explains, the pair drawn, and this input to redraw another pair
+	spec = _xy_biplot_spec(M, nms, groups; xlim, ylim, varlabels, marker, ms, color, arrowcolor, arrowwidth, bold)
+	ccall(_fn(:gmtvtk_xyplot_set_biplot), Cint, (Ptr{Cvoid}, Cint, Ptr{Float64}, Cint, Cint, Cstring),
+	      plot, length(allexp), allexp, PC[1], PC[2], spec)
+end
+
+# A biplot's input as the text its page keeps (XYPage::bpSpec, saved with a session): one "key=value" line
+# each, lists tab-separated, the data column by column. The side panel hands it back to _xy_biplot_repc.
+function _xy_biplot_spec(M, nms, groups; xlim, ylim, varlabels, marker, ms, color, arrowcolor, arrowwidth, bold)
+	flat(s) = replace(string(s), r"[\t\r\n]" => " ")
+	rgb(c) = c === nothing ? "" : join(string.(Float64.(collect(c))), ' ')
+	lim(l) = l === nothing ? "" : "$(Float64(l[1])) $(Float64(l[2]))"
+	return join(["nrows=$(size(M, 1))", "names=" * join(flat.(nms), '\t'), "groups=" * join(flat.(groups), '\t'),
+	             "marker=$marker", "ms=$(Float64(ms))", "color=" * rgb(color), "arrowcolor=" * rgb(arrowcolor),
+	             "arrowwidth=$(Float64(arrowwidth))", "bold=$(Int(bold))", "varlabels=$(Int(varlabels))",
+	             "xlim=" * lim(xlim), "ylim=" * lim(ylim), "data=" * join(string.(Float64.(vec(M))), ' ')], '\n')
+end
+
+# The side panel picked another pair of components ("biplotpc:i,j\n<spec>"): the page is redrawn in place
+# by the same _xy_biplot_page, from the input it was drawn from. Its own axis titles (PCi, PCj) replace
+# any given for the old pair.
+function _xy_biplot_repc(plot, p, op)
+	head, spec = split(op[10:end], '\n'; limit=2)
+	pc = parse.(Int, split(head, ','))
+	kv = Dict{String,String}()
+	for l in split(spec, '\n')
+		i = findfirst('=', l)
+		i === nothing || (kv[l[1:i-1]] = l[i+1:end])
+	end
+	nums(k) = parse.(Float64, split(get(kv, k, "")))
+	tup(v) = isempty(v) ? nothing : Tuple(v)
+	nms = String.(split(kv["names"], '\t'))
+	M = reshape(nums("data"), parse(Int, kv["nrows"]), length(nms))
+	g = get(kv, "groups", "")
+	ccall(_fn(:gmtvtk_xyplot_clear), Cvoid, (Ptr{Cvoid},), plot)
+	ccall(_fn(:gmtvtk_xyplot_clear_labels), Cvoid, (Ptr{Cvoid},), plot)
+	page(name, xl, yl) = ccall(_fn(:gmtvtk_xyplot_set_labels), Cvoid, (Ptr{Cvoid}, Cstring, Cstring), plot, String(xl), String(yl))
+	_xy_biplot_page(plot, p, M, nms, page; groups=isempty(g) ? String[] : String.(split(g, '\t')), PC=(pc[1], pc[2]),
+	                xlim=tup(nums("xlim")), ylim=tup(nums("ylim")), varlabels=kv["varlabels"] == "1",
+	                marker=Symbol(kv["marker"]), ms=nums("ms")[1], color=tup(nums("color")),
+	                arrowcolor=tup(nums("arrowcolor")), arrowwidth=nums("arrowwidth")[1], bold=kv["bold"] == "1")
+	_xy_log(plot, "biplot: components $(pc[1]) and $(pc[2])")
+	return
 end
 
 # The framed kinds, each with its own builder: reached through this `Function`-typed table ON PURPOSE,
@@ -1449,6 +1502,13 @@ const _XY_ANA_OPS = Pair{String,Function}[
 			_xy_request_failed(plot, "Bandpass: " * (e isa ErrorException ? e.msg : sprint(showerror, e)))
 		end,
 	"hist:" => (plot, p, op, s) -> _xy_series_hist(plot, p, op, s),   # the gallery's histogram icon
+	# The biplot side panel's pair of components: the page redrawn on it.
+	"biplotpc:" => (plot, p, op, s) -> try
+			_xy_biplot_repc(plot, p, op)
+		catch e
+			_dbg("xy-biplot", first(op, 40), "ERR", sprint(showerror, e))
+			_xy_ana_failed(plot, e)
+		end,
 	"" => (plot, p, op, s) -> _xy_series_op(plot, p, op, s),
 ]
 

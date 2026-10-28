@@ -50,7 +50,9 @@ p = biplot(D; PC=(3, 4), varlabels=["a", "b", "c"], xlabel="Component 3", ylabel
 - Unlike the other plot types that draw their own frame, the page keeps its X,Y axes: X is titled
   `PC1 (<p>%)` and Y `PC2 (<p>%)`, with the percentage of the total variance each component explains.
   The limits are symmetric about 0, rounded to round numbers and widened by 15 % so the arrow names
-  stay inside; the page is square.
+  stay inside, but never beyond [-1, 1]: every coefficient and every scaled score lies inside it. A
+  name whose arrow ends near a side is written ending at the tip, so it stays inside too. The page is
+  square.
 - The points are coloured by the variable each observation represents most: the one with the largest
   standardized value (in absolute terms) in its row. So there is one colour group per variable — three
   for three variables — and each variable's arrow and name are drawn in its group's colour. In the
@@ -61,6 +63,12 @@ p = biplot(D; PC=(3, 4), varlabels=["a", "b", "c"], xlabel="Component 3", ylabel
   grouped by it instead, as GMT.jl's `biplot` groups them: one series per group, each in its own
   colour, and the arrows are one row, `loadings`. A single colour (`cmap="blue"`) puts every point in
   one row, `observations`.
+- **The Principal components panel**, right of the chart on a biplot page, lists every component
+  with the percentage of the total variance it explains and the running total; the two drawn are in
+  bold. Its **X axis** and **Y axis** lists pick the pair: the page is redrawn on the new components
+  from the data it was made from (picking the component the other axis shows swaps the two). The panel
+  is part of the window, not of the figure: **Export figure** and **Plot with GMT.jl** leave it out.
+  A saved session keeps it, and its data, so a restored biplot can still change components.
 - The variable names are labels on the page: **drag** any of them with the left mouse button to move
   it. A saved session keeps them where they were dropped.
 

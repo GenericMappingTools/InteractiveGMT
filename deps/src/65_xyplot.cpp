@@ -251,6 +251,12 @@ struct XYPage {
 	bool                        axesShown = true;
 	std::map<std::string, std::string> axProps;
 	bool                        example = false;   // made by the gallery's "Synthetic example"
+	// A biplot page (_xy_biplot_page, xyanalysis.jl): the percentage of the variance EVERY principal
+	// component explains, the two drawn (1-based), and the input it was drawn from (Julia's own text),
+	// handed back when the side panel (xyBiplotSyncUi) picks another pair. Empty bpVar = not a biplot.
+	std::vector<double>         bpVar;
+	int                         bpPC[2] = { 0, 0 };
+	std::string                 bpSpec;
 };
 
 // Reveal + unfold a viewer's Scene Objects dock (defined in 70_window.cpp, later in this same
@@ -333,6 +339,13 @@ struct XYPlot {
 	QComboBox                          *magAgeCombo = nullptr;
 	bool                                magGuiding = false;    // "Guide me": next left click sets the first guess
 	bool                                magSyncing = false;    // filling the widgets: their signals do nothing
+	// The biplot side panel, right of the chart (shown on a biplot page only): the variance each component
+	// explains and the pair drawn. A widget of the window, not of the chart: no figure export or GMT.jl
+	// script ever sees it.
+	QWidget                            *bpPanel = nullptr;
+	QTreeWidget                        *bpTable = nullptr;
+	QComboBox                          *bpX = nullptr, *bpY = nullptr;
+	bool                                bpSyncing = false;     // filling the widgets: their signals do nothing
 	QString                             reqErr;                // a failed Julia request's message (xyRequest shows it)
 	bool                                cometBusy = false;     // the gallery's "comet" is animating
 	QTimer                             *profTimer = nullptr;   // a redrawn 3-D track re-runs the mag tools once it settles
@@ -1374,6 +1387,8 @@ static int xyAddNowCross(XYPlot *s, double cx, double cy, double r, double g, do
 	return idx;
 }
 
+static void xyBiplotSyncUi(XYPlot *s);
+
 // Drop every series on the current page.
 static void xyClear(XYPlot *s) {
 	if (!xyAlive(s))
@@ -1381,6 +1396,10 @@ static void xyClear(XYPlot *s) {
 	XYPage &pg = xyCur(s);
 	pg.chart->ClearPlots();
 	pg.series.clear();
+	pg.bpVar.clear();                      // no longer a biplot: its panel goes
+	pg.bpPC[0] = pg.bpPC[1] = 0;
+	pg.bpSpec.clear();
+	xyBiplotSyncUi(s);
 	pg.sgLines.clear();                    // ClearPlots took their plots
 	pg.refLine[0] = pg.refLine[1] = -1;    // the reference picks went with their curves
 	pg.refRows[0].clear(); pg.refRows[1].clear(); pg.refPicking = false;
@@ -3141,6 +3160,16 @@ protected:
 };
 vtkStandardNewMacro(XYChart);
 
+// Can the curve marker be dropped on series `sel`? Only on a drawn LINE (it slides along it) of a page
+// with its own X,Y axes: never on points (a scatter, a biplot's observations), arrows, bars, and never on
+// a plot type that draws its own frame (biplot, radar, rose, corner plot...) -- a click there must not
+// leave a data tip on the plot.
+static bool xyMarkable(const XYPage &pg, int sel) {
+	if (pg.square || pg.axesHidden || sel < 0 || sel >= (int)pg.series.size()) return false;
+	const XYSeries &se = pg.series[sel];
+	return se.kind == 0 && se.lineType != 0 && !se.nowCross;
+}
+
 // Mouse for the curve marker, on the chart widget. Consumes only what is the marker's (a press on a
 // curve or on the marker, its drag, its double-click), so the chart's own pan/zoom keeps everything
 // else. Stands aside while the Spector-Grant band tool owns the left button.
@@ -3168,7 +3197,7 @@ protected:
 		if (t == QEvent::MouseButtonPress && me->button() == Qt::LeftButton) {
 			pg.markPress = qp;  pg.markMoved = false;
 			if (xyMarkHit(s, qp)) { pg.markDrag = true; pg.markNew = false; return true; }
-			if (xyCurveNearest(pg, -1, sx, sy, tol, sel, u)) {   // click ON a curve: drop it there, grabbed
+			if (xyCurveNearest(pg, -1, sx, sy, tol, sel, u) && xyMarkable(pg, sel)) {   // click ON a curve: drop it there, grabbed
 				pg.markSel = sel;  pg.markU = u;  pg.markDrag = true;  pg.markNew = true;
 				xyMarkToPanel(s);
 				render();
@@ -3186,7 +3215,7 @@ protected:
 				render();
 				return true;
 			}
-			if (xyCurveNearest(pg, -1, sx, sy, tol, sel, u)) {
+			if (xyCurveNearest(pg, -1, sx, sy, tol, sel, u) && xyMarkable(pg, sel)) {
 				pg.markSel = sel;  pg.markU = u;  pg.markNew = false;
 				xyMarkToPanel(s);
 				render();
@@ -3994,6 +4023,7 @@ static void xySwitchPage(XYPlot *s, int idx) {
 	xySyncMiscMenu(s);                                       // log / time items show THIS page's
 	xyGridSyncUi(s);                                         // ...and the grid toggles
 	xyMagSyncUi(s);                                       // the bar strip + controls show THIS page's
+	xyBiplotSyncUi(s);                                    // ...and the biplot panel, on a biplot page only
 	if (s->widget && s->widget->renderWindow())
 		s->widget->renderWindow()->Render();
 }
@@ -4018,6 +4048,9 @@ static void xyDuplicatePage(XYPlot *s, int idx) {
 	dst.axProps = src.axProps;
 	dst.labels = src.labels;
 	dst.annots = src.annots;
+	dst.bpVar = src.bpVar;                               // a biplot's copy keeps its panel
+	dst.bpPC[0] = src.bpPC[0];  dst.bpPC[1] = src.bpPC[1];
+	dst.bpSpec = src.bpSpec;
 	xyApplyPageLook(s, dst);
 	xyApplyAxes(s, dst);
 	for (const XYSeries &so : src.series) {
@@ -4266,6 +4299,102 @@ static bool xyRequest(XYPlot *s, const QString &op, int sel, const char *busy, b
 		return false;
 	}
 	return true;
+}
+
+// ---- the biplot side panel ---------------------------------------------------------------------------
+// A biplot page has no place of its own for what its components explain, nor for which two are drawn:
+// this panel, right of the chart, shows the percentage of the variance every component explains (and the
+// running total), the two drawn in bold, and picks the pair. A new pair is redrawn by Julia from the
+// page's own input (XYPage::bpSpec, a "biplotpc:" request), by the same _xy_biplot_page that drew it.
+static void xyBiplotSyncUi(XYPlot *s) {
+	if (!xyAlive(s) || !s->bpPanel || s->pages.empty()) return;
+	const XYPage &pg = xyCur(s);
+	const int n = (int)pg.bpVar.size();
+	s->bpSyncing = true;
+	s->bpTable->clear();
+	s->bpX->clear();
+	s->bpY->clear();
+	double cum = 0;
+	for (int k = 0; k < n; ++k) {
+		cum += pg.bpVar[k];
+		QTreeWidgetItem *it = new QTreeWidgetItem(s->bpTable, QStringList() << QString("PC%1").arg(k + 1)
+			<< QString::number(pg.bpVar[k], 'f', 1) << QString::number(cum, 'f', 1));
+		const bool drawn = k + 1 == pg.bpPC[0] || k + 1 == pg.bpPC[1];
+		for (int c = 0; c < 3; ++c) {
+			QFont f = it->font(c);
+			f.setBold(drawn);
+			it->setFont(c, f);
+			if (c) it->setTextAlignment(c, Qt::AlignRight | Qt::AlignVCenter);
+		}
+		const QString lab = QString("PC%1 (%2%)").arg(k + 1).arg(pg.bpVar[k], 0, 'f', 1);
+		s->bpX->addItem(lab);
+		s->bpY->addItem(lab);
+	}
+	if (n >= 2) {
+		s->bpX->setCurrentIndex(pg.bpPC[0] - 1);
+		s->bpY->setCurrentIndex(pg.bpPC[1] - 1);
+	}
+	for (int c = 0; c < 3; ++c) s->bpTable->resizeColumnToContents(c);
+	s->bpPanel->setVisible(n >= 2);
+	s->bpSyncing = false;
+}
+
+// A component picked for the X (axis 0) or Y (axis 1) axis. Picking the one the other axis shows swaps
+// the two. Deferred: the redraw refills these very combo boxes.
+static void xyBiplotPick(XYPlot *s, int axis) {
+	if (s->bpSyncing || !xyAlive(s)) return;
+	const XYPage &pg = xyCur(s);
+	if (pg.bpVar.size() < 2) return;
+	int a = s->bpX->currentIndex() + 1, b = s->bpY->currentIndex() + 1;
+	if (a == b) {
+		if (axis == 0) b = pg.bpPC[0];
+		else           a = pg.bpPC[1];
+	}
+	QTimer::singleShot(0, s->win, [s, a, b] {
+		if (!xyAlive(s)) return;
+		const XYPage &cp = xyCur(s);
+		if (cp.bpVar.size() < 2) return;
+		if (a != cp.bpPC[0] || b != cp.bpPC[1])
+			xyRequest(s, QString("biplotpc:%1,%2\n").arg(a).arg(b) + QString::fromStdString(cp.bpSpec), -1,
+			          "Redrawing the biplot...");
+		xyBiplotSyncUi(s);                        // the pair drawn now (the old one if the redraw failed)
+	});
+}
+
+static QWidget *xyBiplotBuildPanel(XYPlot *s) {
+	QWidget *w = new QWidget();
+	w->setObjectName("xyBiplotPanel");
+	QVBoxLayout *col = new QVBoxLayout(w);
+	col->setContentsMargins(6, 6, 6, 6);
+	col->setSpacing(4);
+	col->addWidget(new QLabel("<b>Principal components</b>", w));
+	s->bpTable = new QTreeWidget(w);
+	s->bpTable->setObjectName("xyBiplotTable");
+	s->bpTable->setHeaderLabels(QStringList() << "PC" << "Variance %" << "Cumulative %");
+	s->bpTable->setRootIsDecorated(false);
+	s->bpTable->setSelectionMode(QAbstractItemView::NoSelection);
+	s->bpTable->setFocusPolicy(Qt::NoFocus);
+	s->bpTable->setToolTip("The percentage of the total variance each principal component explains; the two drawn in bold");
+	col->addWidget(s->bpTable, 1);
+	QGridLayout *g = new QGridLayout();
+	g->setContentsMargins(0, 0, 0, 0);
+	s->bpX = new QComboBox(w);
+	s->bpX->setObjectName("xyBiplotPCX");
+	s->bpX->setToolTip("The principal component on the X axis");
+	s->bpY = new QComboBox(w);
+	s->bpY->setObjectName("xyBiplotPCY");
+	s->bpY->setToolTip("The principal component on the Y axis");
+	g->addWidget(new QLabel("X axis:", w), 0, 0);
+	g->addWidget(s->bpX, 0, 1);
+	g->addWidget(new QLabel("Y axis:", w), 1, 0);
+	g->addWidget(s->bpY, 1, 1);
+	g->setColumnStretch(1, 1);
+	col->addLayout(g);
+	QObject::connect(s->bpX, QOverload<int>::of(&QComboBox::currentIndexChanged), w, [s](int) { xyBiplotPick(s, 0); });
+	QObject::connect(s->bpY, QOverload<int>::of(&QComboBox::currentIndexChanged), w, [s](int) { xyBiplotPick(s, 1); });
+	w->setMaximumWidth(260);
+	w->setVisible(false);
+	return w;
 }
 
 // The page's series playing `role` (XYSeries::magRole), -1 if none.
@@ -5357,6 +5486,11 @@ static std::string xySessionState(XYPlot *s) {
 			            " " + xyEsc(QString::fromStdString(a.text)));
 			if (!a.boxed) kv("annotbox", "0");           // of the annotation just written (a text box without its box)
 		}
+		if (!pg.bpVar.empty()) {                         // a biplot page: its side panel, and what redraws it
+			kv("biplot.var", xyNums(pg.bpVar));
+			kv("biplot.pc", QString::number(pg.bpPC[0]) + " " + QString::number(pg.bpPC[1]));
+			kv("biplot.spec", xyEsc(QString::fromStdString(pg.bpSpec)));
+		}
 		// whether VTK really DRAWS the axis log (only when it can place every value it shows); read-only
 		kv("logxactive", QString::number(ax->GetLogScaleActive() ? 1 : 0));
 		kv("logyactive", QString::number(ay->GetLogScaleActive() ? 1 : 0));
@@ -5531,6 +5665,12 @@ static void xySessionApply(XYPlot *s, const char *text) {
 			else if (k == "annotbox") {
 				if (!pg.annots.empty()) pg.annots.back().boxed = v.toInt() != 0;
 			}
+			else if (k == "biplot.var") pg.bpVar = xyToNums(v);
+			else if (k == "biplot.pc") {
+				const QStringList f = v.split(' ');
+				if (f.size() == 2) { pg.bpPC[0] = f[0].toInt(); pg.bpPC[1] = f[1].toInt(); }
+			}
+			else if (k == "biplot.spec") pg.bpSpec = xyUnesc(v).toStdString();
 			else if (k == "logx") ax->SetLogScale(v.toInt() != 0);
 			else if (k == "logy") ay->SetLogScale(v.toInt() != 0);
 			else if (k == "xfixed" || k == "yfixed") (k == "xfixed" ? ax : ay)->SetBehavior(v.toInt() ? vtkAxis::FIXED : vtkAxis::AUTO);
@@ -6913,7 +7053,14 @@ static XYPlot *buildXYPlot(const char *title) {
 	s->magBar = new XYMagBarStrip(s);                  // geomagnetic bar code, over the chart (hidden until made)
 	s->magBar->setVisible(false);
 	centralLayout->addWidget(s->magBar, 0);
-	centralLayout->addWidget(s->widget, 1);            // chart takes all the stretch
+	QWidget *chartRow = new QWidget();                 // the chart, and right of it the biplot panel
+	QHBoxLayout *chartLayout = new QHBoxLayout(chartRow);
+	chartLayout->setContentsMargins(0, 0, 0, 0);
+	chartLayout->setSpacing(0);
+	chartLayout->addWidget(s->widget, 1);
+	s->bpPanel = xyBiplotBuildPanel(s);
+	chartLayout->addWidget(s->bpPanel, 0);
+	centralLayout->addWidget(chartRow, 1);             // chart takes all the stretch
 	s->magCtl = xyMagBuildCtl(s);                      // its controls, under the chart (toolbar toggle)
 	centralLayout->addWidget(s->magCtl, 0);
 	centralLayout->addWidget(tabRow, 0);               // page tabs just under the chart
@@ -6976,8 +7123,8 @@ static XYPlot *buildXYPlot(const char *title) {
 	// carries its width across that move, same as every dock in the 3-D viewer.
 	installDockGeometryMemory(s->win, omDock, "objectManagerDock");
 
-	// --- menubar ---
-	QMenuBar *mb = s->win->menuBar();
+	// --- menubar --- (its own: it shares one row with the Tools buttons, see "menu row" below)
+	QMenuBar *mb = new QMenuBar();
 	QMenu *mFile = mb->addMenu("File");
 	QAction *aNew  = mFile->addAction("New");
 	QAction *aOpen = mFile->addAction("Open…");
@@ -7235,8 +7382,12 @@ static XYPlot *buildXYPlot(const char *title) {
 	QObject::connect(s->actGrid, &QAction::toggled, s->win, [s](bool on) { xyGridSet(s, true, true, on); });
 
 	// --- toolbar ---
-	QToolBar *tb = s->win->addToolBar("Tools");
-	tb->setObjectName("xyToolBar");     // named for saveState/restoreState (see installDockGeometryMemory)
+	// Not in the tool bar area: it sits in the MENU row, ~2 cm right of the menus (no row of its own).
+	// Renamed from the old docked "xyToolBar" so a saved window state never pulls it back into a dock row.
+	QToolBar *tb = new QToolBar("Tools");
+	tb->setObjectName("xyMenuRowTools");
+	tb->setMovable(false);
+	tb->setFloatable(false);
 	tb->setIconSize(QSize(18, 18));
 	QStyle *st = s->win->style();
 	QAction *tFit = tb->addAction(st->standardIcon(QStyle::SP_BrowserReload), "Zoom to fit");
@@ -7305,8 +7456,21 @@ static XYPlot *buildXYPlot(const char *title) {
 	s->toolsBar = tb;
 	for (QAction *a : tb->actions()) a->setEnabled(!s->pages.empty() && !xyCur(s).series.empty());
 
-	// --- plot-type gallery: its own row under the tool bar; a click re-plots the current page ---
-	s->win->addToolBarBreak(Qt::TopToolBarArea);
+	// --- menu row: the menus, a ~2 cm gap, the Tools buttons, all in the window's menu widget ---
+	{
+		QWidget *row = new QWidget();
+		row->setObjectName("xyMenuRow");
+		QHBoxLayout *hl = new QHBoxLayout(row);
+		hl->setContentsMargins(0, 0, 0, 0);
+		hl->setSpacing(0);
+		hl->addWidget(mb, 0, Qt::AlignVCenter);
+		hl->addSpacing(qRound(s->win->logicalDpiX() * 2.0 / 2.54));
+		hl->addWidget(tb, 0, Qt::AlignVCenter);
+		hl->addStretch(1);
+		s->win->setMenuWidget(row);
+	}
+
+	// --- plot-type gallery: the first tool bar row, under the menu row; a click re-plots the current page ---
 	QToolBar *gal = s->win->addToolBar("Plot types");
 	gal->setObjectName("xyPlotTypes");
 	gal->setIconSize(QSize(50, 32));   // 90% of the drawn 56x36 (xyPlotTypeIcon) — the user's size, keep it

@@ -219,7 +219,7 @@ function _xy_script_emit(h::Ptr{Cvoid}; figsize::Real = 15.0)
 	legendon = get(win, "legend", "1") == "1"
 
 	steps = ScriptStep[]
-	legs = String[]; hasarrow = false              # the legend's entries, as pslegend "S" lines
+	legs = String[]                                # the legend's entries, as pslegend "S" lines
 	for d in series
 		parse(Int, d["page"]) == cur || continue
 		get(d, "visible", "1") == "1" || continue
@@ -290,21 +290,15 @@ function _xy_script_emit(h::Ptr{Cvoid}; figsize::Real = 15.0)
 			mod = :plot
 		end
 		if legendon && !isempty(name) && get(d, "inlegend", "1") == "1"
-			push!(kw, :legend => name)
 			push!(legs, _xy_legend_line(d, kind, width, col, name))
-			kind == 11 && (hasarrow = true)
 		end
 		push!(steps, ScriptStep("$(name) — " * (kind == 1 ? "bars" : kind == 11 ? "arrows" : "curve"),
 		                        DataBind[bind], mod, var, kw, !isempty(steps)))
 	end
 	isempty(steps) && error("gmtscript: this X,Y page has no visible curve to plot")
-	# GMT.jl's own legend (the `legend=` of each call) writes a vector's head attributes where pslegend
-	# wants its length, so an arrow entry comes out garbled. A page with arrows gets its legend written
-	# out instead — every entry, one box, the arrows as arrows — and the per-call `legend=` are dropped.
-	if hasarrow
-		for (i, s) in enumerate(steps)
-			steps[i] = ScriptStep(s.comment, s.binds, s.mod, s.pos, filter(p -> p.first !== :legend, s.kw), s.bang)
-		end
+	# The legend is ALWAYS drawn by GMT's legend module, from the entries written out — every entry, one
+	# box, each drawn as the window draws it (an arrow as an arrow) — never by the `legend=` of each call.
+	if !isempty(legs)
 		lv = _script_var!(ctx, "LEG", nothing)
 		lv = ScriptVar(lv.name, GMT.text_record(legs))
 		lb = DataBind(lv, :command, "text_record([\n\t" * join(repr.(legs), ",\n\t") * "])")

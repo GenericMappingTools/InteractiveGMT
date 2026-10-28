@@ -190,6 +190,99 @@ end
 	end
 end
 
+@testitem "X,Y biplot side panel: each component's variance %, the pair picked there redraws the page" tags=[:gui, :xyplot] setup=[GmtvtkTest] begin
+	IG = InteractiveGMT; tf = GmtvtkTest._test_fn
+	IG._XY_CURRENT[] = C_NULL
+	k = 1:60
+	f, g = sin.(0.3 .* k), cos.(0.7 .* k)
+	M = [f .+ 0.1 .* cos.(2.1 .* k)  0.8 .* f .+ 0.2 .* g  g .+ 0.1 .* sin.(1.9 .* k)  0.5 .* g .- f]
+	p = IG.biplot(M; PC=(1, 2)); h = p.h
+	pick(w, i) = ccall(tf(:gmtvtk_xyplot_type_test), Cint, (Ptr{Cvoid}, Cstring, Cstring), h, w, string(i))
+	function cur(hh = h)
+		secs = IG._xy_manifest_sections(IG._xy_session_state(hh))
+		c = parse(Int, only([d for (s, d) in secs if s == "window"])["curpage"])
+		pg = [d for (s, d) in secs if s == "page"][c + 1]
+		ser = [IG._xy_unesc(d["name"]) for (s, d) in secs if s == "series" && parse(Int, d["page"]) == c]
+		return pg, ser, c
+	end
+	path = joinpath(tempdir(), "igmt_biplotpc_$(getpid()).igmtz"); r2 = Ref{Any}(nothing)
+	try
+		IG._pump_once()
+		pg, ser, c = cur()
+		names = sort([l.text for l in IG._xy_page_labels(h, c)])
+		@test length(names) == 4
+		v = parse.(Float64, split(pg["biplot.var"]))
+		@test length(v) == 4 && isapprox(sum(v), 100; atol=1e-6) && issorted(v; rev=true)
+		@test pg["biplot.pc"] == "1 2" && startswith(IG._xy_unesc(pg["xlabel"]), "PC1 (")
+		# X axis -> PC3: the page is redrawn on components 3 and 2, the same series and names
+		@test pick("xyBiplotPCX", 2) == 1; IG._pump_once()
+		pg, ser2, c = cur()
+		@test pg["biplot.pc"] == "3 2" && startswith(IG._xy_unesc(pg["xlabel"]), "PC3 (") &&
+		      startswith(IG._xy_unesc(pg["ylabel"]), "PC2 (")
+		@test sort(ser2) == sort(ser)
+		@test sort([l.text for l in IG._xy_page_labels(h, c)]) == names
+		# Y axis -> the component X shows: the two swap
+		@test pick("xyBiplotPCY", 2) == 1; IG._pump_once()
+		@test cur()[1]["biplot.pc"] == "2 3"
+		# the panel is no part of the figure: Plot with GMT.jl draws the chart only
+		steps, ctx = IG._xy_script_emit(h)
+		@test !occursin("Principal components", IG._xy_script_text(steps, ctx))
+		# a session keeps the panel, and its input: the restored page is redrawn on another pair too
+		IG._xy_save_session(h, path); p2 = r2[] = IG._on_load_session(C_NULL, path); IG._pump_once()
+		@test cur(p2.h)[1]["biplot.pc"] == "2 3"
+		@test ccall(tf(:gmtvtk_xyplot_type_test), Cint, (Ptr{Cvoid}, Cstring, Cstring), p2.h, "xyBiplotPCX", "0") == 1
+		IG._pump_once()
+		@test cur(p2.h)[1]["biplot.pc"] == "1 3"
+	finally
+		close(p)
+		r2[] === nothing || ccall(IG._fn(:gmtvtk_xyplot_close), Cvoid, (Ptr{Cvoid},), r2[].h)
+		rm(path; force=true)
+	end
+	# a page that is not a biplot has no panel
+	IG._XY_CURRENT[] = C_NULL
+	q = plot(collect(1.0:5.0), collect(1.0:5.0))
+	try
+		IG._pump_once()
+		@test ccall(tf(:gmtvtk_xyplot_type_test), Cint, (Ptr{Cvoid}, Cstring, Cstring), q.h, "xyBiplotPCX", "1") == 0
+	finally
+		close(q)
+	end
+end
+
+@testitem "X,Y data tip: a click on a point (biplot, scatter) leaves nothing plotted; a line still takes the marker" tags=[:gui, :xyplot] setup=[GmtvtkTest] begin
+	IG = InteractiveGMT; tf = GmtvtkTest._test_fn
+	click(h, x, y) = (o = zeros(3); s = ccall(tf(:gmtvtk_xyplot_mark_test), Cint, (Ptr{Cvoid}, Cdouble, Cdouble, Cint, Ptr{Cdouble}), h, x, y, 0, o); (s, o))
+	IG._XY_CURRENT[] = C_NULL
+	k = 1:60
+	M = [sin.(0.3 .* k)  cos.(0.7 .* k)  sin.(0.3 .* k) .+ 0.2 .* cos.(0.7 .* k)]
+	p = IG.biplot(M); h = p.h
+	try
+		IG._pump_once()
+		x, y = IG._xy_get_series(h, 1)                          # an observations series (0 is x = 0, y = 0)
+		s, o = click(h, x[1], y[1])
+		@test s == -1 && isnan(o[1]) && o[3] == 0               # no marker, no label drawn
+		x0, y0 = IG._xy_get_series(h, 0)                        # not on the axis lines either
+		s, o = click(h, 0.0, 0.5 * y0[end])
+		@test s == -1 && o[3] == 0
+	finally
+		close(p)
+	end
+	IG._XY_CURRENT[] = C_NULL
+	x = collect(0.0:0.5:10.0)
+	q = plot(x, sin.(x)); h = q.h
+	try
+		IG._pump_once()
+		@test ccall(tf(:gmtvtk_xyplot_menu_test), Cint, (Ptr{Cvoid}, Cstring), h, "xyPlotType_scatter") == 1; IG._pump_once()
+		s, o = click(h, x[5], sin(x[5]))
+		@test s == -1 && o[3] == 0                              # a scatter: no data tip
+		@test ccall(tf(:gmtvtk_xyplot_menu_test), Cint, (Ptr{Cvoid}, Cstring), h, "xyPlotType_plot") == 1; IG._pump_once()
+		s, o = click(h, x[5], sin(x[5]))
+		@test s == 0 && isapprox(o[1], x[5]; atol=1e-6)         # a line keeps its curve marker
+	finally
+		close(q)
+	end
+end
+
 # The X,Y window's annotation tools (MATLAB's ANNOTATIONS: Text Arrow, Arrow, Double Arrow, Line, Text
 # Box, Rectangle, Ellipse): armed from the tool bar, drawn with the mouse, typed in place, listed in the
 # Object Manager, kept by a session and drawn by Plot with GMT.jl.

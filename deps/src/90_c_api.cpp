@@ -13524,7 +13524,7 @@ GMTVTK_API void *gmtvtk_open_empty(const char *title) {
 	computeScales(0, x0, x1, y0, y1, zmin, zmax, xfac, zfac, ve0);
 	Scene *s = buildAndShow(pd, x0, x1, y0, y1, zmin, zmax, xfac, zfac, ve0, nullptr, nullptr, 0,
 	                        nullptr, 0, 0, 0, 0, false, 0,
-	                        title ? title : "i'GMT  —  drop a file",
+	                        title ? title : "i'GMT",
 	                        /*objname=*/nullptr, /*imageOnly=*/true,
 	                        /*gz=*/nullptr, /*gnx=*/0, /*gny=*/0, /*blankStart=*/true);
 	if (!s)
@@ -15067,6 +15067,32 @@ GMTVTK_API int gmtvtk_xyplot_set_series_columns(void *handle, int idx, int ncols
 	se.xName = ncols + 1 < nm.size() ? nm[ncols].toStdString() : std::string();
 	se.yName = ncols + 1 < nm.size() ? nm[ncols + 1].toStdString() : std::string();
 	return 1;
+}
+
+// Make the CURRENT page a biplot page (_xy_biplot_page, xyanalysis.jl): `explained` = the percentage of
+// the variance each of the `n` principal components explains, `pcx`/`pcy` the two drawn (1-based), and
+// `spec` the input it was drawn from, handed back in the "biplotpc:" request of the side panel
+// (xyBiplotSyncUi) when it picks another pair. 1 = done, 0 = bad handle / arguments.
+GMTVTK_API int gmtvtk_xyplot_set_biplot(void *handle, int n, const double *explained, int pcx, int pcy,
+                                        const char *spec) {
+	XYPlot *p = static_cast<XYPlot*>(handle);
+	if (!xyAlive(p) || n < 2 || !explained || pcx < 1 || pcx > n || pcy < 1 || pcy > n || pcx == pcy)
+		return 0;
+	XYPage &pg = xyCur(p);
+	pg.bpVar.assign(explained, explained + n);
+	pg.bpPC[0] = pcx;
+	pg.bpPC[1] = pcy;
+	pg.bpSpec = spec ? spec : "";
+	xyBiplotSyncUi(p);
+	return 1;
+}
+
+// Drop every label of the CURRENT page (a biplot redrawn on another pair puts its names back).
+GMTVTK_API void gmtvtk_xyplot_clear_labels(void *handle) {
+	XYPlot *p = static_cast<XYPlot*>(handle);
+	if (!xyAlive(p))
+		return;
+	xyCur(p).labels.clear();
 }
 
 // Give series `idx` of the CURRENT page an entry in the legend (on != 0) or none (on = 0): it is still drawn.

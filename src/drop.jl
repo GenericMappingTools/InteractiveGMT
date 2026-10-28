@@ -2211,7 +2211,7 @@ added to that window and listed in its "Scene Objects" panel. Returns a `QtEmpty
 """
 function viz()
 	_dbg("startup", "iview() enter")
-	h = ccall(_fn(:gmtvtk_open_empty), Ptr{Cvoid}, (Cstring,), "i'GMT  —  drop a file")
+	h = ccall(_fn(:gmtvtk_open_empty), Ptr{Cvoid}, (Cstring,), "i'GMT")
 	h == C_NULL && error("viz: could not open the empty window")
 	_dbg("startup", "gmtvtk_open_empty returned")
 	fig = _register_fig!(QtEmpty(h))
