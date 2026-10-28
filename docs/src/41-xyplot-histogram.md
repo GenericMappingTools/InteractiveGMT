@@ -36,8 +36,7 @@ p = plot(x, y)       # only y is counted
 
 Clicking **histogram** computes the histogram of the series selected in the **Object Manager**. With
 no series selected it takes the page's last series — the one the last `plot` or `plot!` call drew.
-The bins are chosen automatically. To give the number of bins yourself, use
-**Analysis > Histogram…** instead: it asks for it (`0` = automatic) and makes the same page.
+The bins are chosen automatically.
 
 ## Running the Examples
 

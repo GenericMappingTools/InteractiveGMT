@@ -11,7 +11,7 @@
 		elseif Sys.isapple()
 			@test a in ("$(p.name)-macos-arm64.tar.gz", "$(p.name)-macos-x86_64.tar.gz")
 		elseif IG.GMT.isJLL
-			@test a == "$(p.name)-windows-x86_64.tar.gz"      # Windows with GMT_jll's GMT
+			@test a == "$(p.name)-windows-x86_64$(p.winext)"  # Windows with GMT_jll's GMT: .zip (MB-System) or .tar.gz
 			@test IG._plugin_applies()
 		else
 			@test a == ""                                     # Windows GMT: not built for it
@@ -35,10 +35,10 @@ end
 	# the shape of GitHub's release JSON: an uploader object (with no updated_at) inside each asset
 	json = """{"assets":[{"name":"mbsystem-linux-x86_64.tar.gz","uploader":{"login":"x"},
 	           "updated_at":"2026-10-05T11:23:41Z"},
-	          {"name": "mbsystem-windows-x86_64.tar.gz", "uploader": {"login": "x"},
+	          {"name": "mbsystem-windows-x86_64.zip", "uploader": {"login": "x"},
 	           "updated_at": "2026-10-07T08:00:00Z"}]}"""
 	@test IG._plugin_asset_time(json, "mbsystem-linux-x86_64.tar.gz") == D.DateTime(2026, 10, 5, 11, 23, 41)
-	@test IG._plugin_asset_time(json, "mbsystem-windows-x86_64.tar.gz") == D.DateTime(2026, 10, 7, 8)
+	@test IG._plugin_asset_time(json, "mbsystem-windows-x86_64.zip") == D.DateTime(2026, 10, 7, 8)
 	@test IG._plugin_asset_time(json, "mbsystem-macos-arm64.tar.gz") === nothing
 	d = mktempdir()
 	@test IG._plugin_local_time(d) === nothing              # no stamp: an older install

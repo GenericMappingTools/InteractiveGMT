@@ -8,11 +8,12 @@ supplement brings into the process.
 On Windows the supplement comes with GMT. On Linux and macOS, **Geophysics ▸ MB-System ▸ Install
 as plugin** installs it:
 
-1. downloads the archive for the system — `mbsystem-linux-x86_64.tar.gz`,
+1. downloads the archive for the system — `mbsystem-linux-x86_64.tar.gz`, `mbsystem-windows-x86_64.zip`,
    `mbsystem-macos-arm64.tar.gz` or `mbsystem-macos-x86_64.tar.gz` — from the `mbsystem-latest`
    release of [joa-quim/MB-System](https://github.com/joa-quim/MB-System/releases/tag/mbsystem-latest);
 2. unpacks it to `<InteractiveGMT>/mbsystem` (`lib/` holds `mbsystem.so` / `mbsystem.dylib` and the
-   MB libraries, `share/mbsystem/` the Levitus database), replacing any earlier copy;
+   MB libraries, `share/mbsystem/` the Levitus database, `macros/` the Julia plotting macros
+   `mbjl_grdplot`, `mbjl_grd3dplot`, `mbjl_histplot` and `mbjl_xyplot`), replacing any earlier copy;
 3. loads it into GMT and reports whether GMT now has the MB-System modules and where MBIO is.
 
 From then on every start of InteractiveGMT loads it again. Running the menu item again updates it.

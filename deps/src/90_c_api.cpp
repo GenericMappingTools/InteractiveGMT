@@ -15008,6 +15008,50 @@ GMTVTK_API int gmtvtk_xyplot_set_series_kind(void *handle, int idx, int kind) {
 	return 1;
 }
 
+// Attach to series `idx` of the CURRENT page the columns its points came from: `ncols` columns of
+// `nrows` values (column-major, nrows must equal the series' own row count), `names` their headers
+// separated by '\t', optionally followed by two more: the headers of the series' X and Y. "Show in
+// Data Table" shows them before X and Y. 1 = done, 0 = bad handle/index/size.
+GMTVTK_API int gmtvtk_xyplot_set_series_columns(void *handle, int idx, int ncols, int nrows, const double *data,
+                                                const char *names) {
+	XYPlot *p = static_cast<XYPlot*>(handle);
+	if (!xyAlive(p) || ncols < 0 || nrows < 0 || (ncols > 0 && !data))
+		return 0;
+	XYPage &pg = xyCur(p);
+	if (idx < 0 || idx >= (int)pg.series.size())
+		return 0;
+	XYSeries &se = pg.series[idx];
+	if (!se.table || (int)se.table->GetNumberOfRows() != nrows)
+		return 0;
+	const QStringList nm = QString::fromUtf8(names ? names : "").split('\t');
+	se.srcCols.assign((size_t)ncols, std::vector<double>());
+	se.srcNames.assign((size_t)ncols, std::string());
+	for (int c = 0; c < ncols; ++c) {
+		se.srcCols[c].assign(data + (size_t)c * nrows, data + (size_t)(c + 1) * nrows);
+		se.srcNames[c] = c < nm.size() ? nm[c].toStdString() : QString("col %1").arg(c + 1).toStdString();
+	}
+	se.xName = ncols + 1 < nm.size() ? nm[ncols].toStdString() : std::string();
+	se.yName = ncols + 1 < nm.size() ? nm[ncols + 1].toStdString() : std::string();
+	return 1;
+}
+
+// Give series `idx` of the CURRENT page an entry in the legend (on != 0) or none (on = 0): it is still drawn.
+// 1 = done, 0 = bad handle/index.
+GMTVTK_API int gmtvtk_xyplot_set_series_legend(void *handle, int idx, int on) {
+	XYPlot *p = static_cast<XYPlot*>(handle);
+	if (!xyAlive(p))
+		return 0;
+	XYPage &pg = xyCur(p);
+	if (idx < 0 || idx >= (int)pg.series.size())
+		return 0;
+	XYSeries &se = pg.series[idx];
+	se.inLegend = on != 0;
+	xyApplyStyle(p, se);
+	if (p->widget && p->widget->renderWindow())
+		p->widget->renderWindow()->Render();
+	return 1;
+}
+
 // The CURRENT page's chart, as it is on screen, written to the PNG `path` (the chart only: no menus,
 // gallery or Object Manager). 1 = written.
 GMTVTK_API int gmtvtk_xyplot_save_png(void *handle, const char *path) {

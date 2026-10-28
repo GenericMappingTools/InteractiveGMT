@@ -923,13 +923,33 @@ function _xy_biplot_page(plot, p, M::AbstractMatrix{<:Real}, nms::Vector{String}
 	xl = (isempty(xlabel) ? "PC$(PC[1])" : xlabel) * " ($(round(explained[1], digits=1))%)"
 	yl = (isempty(ylabel) ? "PC$(PC[2])" : ylabel) * " ($(round(explained[2], digits=1))%)"
 	page("biplot", xl, yl)
+	# biplot()'s symmetric limits, widened 15%: its y limits come from the coefficients alone, which
+	# leaves an arrow tip on the frame and its name outside it (GMT text is not clipped; ours is).
+	X = xlim === nothing ? (1.15r[1], 1.15r[2]) : (Float64(xlim[1]), Float64(xlim[2]))
+	Y = ylim === nothing ? (1.15r[3], 1.15r[4]) : (Float64(ylim[1]), Float64(ylim[2]))
+	# MATLAB's biplot: the x = 0 and y = 0 lines across the whole frame, under the points and arrows
+	_xyadd!(p, [X[1], X[2], NaN, 0.0, 0.0], [0.0, 0.0, NaN, Y[1], Y[2]]; name="x = 0, y = 0",
+	     color=(0.0, 0.0, 0.0), linewidth=1.5)
+	ccall(_fn(:gmtvtk_xyplot_set_series_legend), Cint, (Ptr{Cvoid}, Cint, Cint), plot,
+	      ccall(_fn(:gmtvtk_xyplot_series_count), Cint, (Ptr{Cvoid},), plot) - 1, 0)
+	# Each observations series carries the input rows its scores were projected from, so its data table
+	# shows both: the original variables, then the two components.
+	srcnames = join(vcat(nms, xl, yl), '\t')
+	function addsrc(rows)
+		A = Matrix{Float64}(M[rows, :])
+		ccall(_fn(:gmtvtk_xyplot_set_series_columns), Cint, (Ptr{Cvoid}, Cint, Cint, Cint, Ptr{Float64}, Cstring),
+		      plot, ccall(_fn(:gmtvtk_xyplot_series_count), Cint, (Ptr{Cvoid},), plot) - 1, size(A, 2), size(A, 1), A,
+		      srcnames) == 1 || error("biplot: the input rows do not match the observations series")
+	end
 	if isempty(groups) || color !== nothing
 		_xyadd!(p, scores[:, 1], scores[:, 2]; name="observations", marker, linestyle=:none, markersize=ms,
 		     color=color === nothing ? (0.35, 0.35, 0.35) : color)
+		addsrc(1:size(M, 1))
 	else
 		for g in unique(groups)                   # one series per category, in the chart's own colours
 			i = groups .== g
 			_xyadd!(p, scores[i, 1], scores[i, 2]; name=g, marker, linestyle=:none, markersize=ms)
+			addsrc(findall(i))
 		end
 	end
 	ax, ay = Float64[], Float64[]
@@ -944,10 +964,6 @@ function _xy_biplot_page(plot, p, M::AbstractMatrix{<:Real}, nms::Vector{String}
 	end
 	_xyadd!(p, ax, ay; name="loadings", color=arrowcolor, linewidth=arrowwidth)
 	_stick_arrows!(plot)
-	# biplot()'s symmetric limits, widened 15%: its y limits come from the coefficients alone, which
-	# leaves an arrow tip on the frame and its name outside it (GMT text is not clipped; ours is).
-	X = xlim === nothing ? (1.15r[1], 1.15r[2]) : (Float64(xlim[1]), Float64(xlim[2]))
-	Y = ylim === nothing ? (1.15r[3], 1.15r[4]) : (Float64(ylim[1]), Float64(ylim[2]))
 	_xy_look(plot, true, false, (X[1], X[2], Y[1], Y[2]))
 end
 
@@ -1398,8 +1414,7 @@ const _XY_ANA_OPS = Pair{String,Function}[
 			_dbg("xy-sg", op, "ERR", sprint(showerror, e))
 			_xy_request_failed(plot, "Bandpass: " * (e isa ErrorException ? e.msg : sprint(showerror, e)))
 		end,
-	"hist:" => (plot, p, op, s) -> _xy_series_hist(plot, p, op, s),
-	"bargraph" => (plot, p, op, s) -> _xy_series_bars(plot, p, op, s),
+	"hist:" => (plot, p, op, s) -> _xy_series_hist(plot, p, op, s),   # the gallery's histogram icon
 	"" => (plot, p, op, s) -> _xy_series_op(plot, p, op, s),
 ]
 
@@ -1438,8 +1453,8 @@ function _xy_series_get(plot::Ptr{Cvoid}, op::String, s::Int)
 	return xy[1], xy[2], nm
 end
 
-# Bar-drawn ops (ecran's "Show histogram" / "Show Bar graph"): their result is not a curve on
-# the parent's axes, so — like every other different-domain op here — it lands on its OWN page.
+# The gallery's histogram (ecran's "Show histogram"): its result is not a curve on the parent's axes,
+# so — like every other different-domain op here — it lands on its OWN page.
 function _xy_series_hist(plot::Ptr{Cvoid}, p::QtXYPlot, op::String, s::Int)
 	xyn = _xy_series_get(plot, op, s)
 	xyn === nothing && return
@@ -1448,19 +1463,6 @@ function _xy_series_hist(plot::Ptr{Cvoid}, p::QtXYPlot, op::String, s::Int)
 	_xy_addpage!(plot, p, "$nm histogram", c, k, "$nm histogram";
 	             xlabel=nm, ylabel="count", kind=:bar, barwidth=0.9w)
 	_xy_log(plot, "Analysis: histogram of '$nm' → new page ($(length(c)) bins, width $(round(w; sigdigits=4)))")
-	return
-end
-function _xy_series_bars(plot::Ptr{Cvoid}, p::QtXYPlot, op::String, s::Int)
-	xyn = _xy_series_get(plot, op, s)
-	xyn === nothing && return
-	x, y, nm = xyn
-	# Same x as the parent — so if that was a time axis, the bars' page must read x as dates too
-	# (same reasoning as the derivative pages below).
-	pfmt = ccall(_fn(:gmtvtk_xyplot_get_xtime), Cint, (Ptr{Cvoid},), plot)
-	_xy_addpage!(plot, p, "$nm bars", x, y, "$nm bars";
-	             xlabel=(pfmt != 0 ? "time" : "x"), ylabel=nm, kind=:bar)
-	pfmt != 0 && ccall(_fn(:gmtvtk_xyplot_set_xtime), Cvoid, (Ptr{Cvoid}, Cint), plot, pfmt)
-	_xy_log(plot, "Analysis: bar graph of '$nm' → new page ($(length(x)) bars)")
 	return
 end
 

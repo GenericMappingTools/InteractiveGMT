@@ -29550,7 +29550,8 @@ static ScriptHost scriptHostScene(Scene *s) {
 static void scriptEditorUnpark(const ScriptHost &h) {
 	QDialog *d = scriptEditorRegistry().value(h.key, nullptr);
 	if (!d) return;
-	if (h.parkIn && sceneAlive(h.parkIn)) unparkTool(h.parkIn, d);
+	if (h.unpark) h.unpark(d);
+	else if (h.parkIn && sceneAlive(h.parkIn)) unparkTool(h.parkIn, d);
 	d->setWindowState(d->windowState() & ~Qt::WindowMinimized);
 	d->showNormal();
 	d->raise();
@@ -29567,7 +29568,8 @@ static std::function<void(const QPoint &)> scriptEditorParkedMenu(const ScriptHo
 		m.addAction("Show", [h]() { scriptEditorUnpark(h); });
 		m.addSeparator();
 		m.addAction("Delete", [h, d]() {
-			if (h.parkIn && sceneAlive(h.parkIn)) unparkTool(h.parkIn, d);
+			if (h.unpark) h.unpark(d);
+			else if (h.parkIn && sceneAlive(h.parkIn)) unparkTool(h.parkIn, d);
 			scriptEditorRegistry().remove(h.key);
 			d->setProperty("igmtReallyClose", true);
 			d->close();
@@ -29582,6 +29584,11 @@ static std::function<void(const QPoint &)> scriptEditorParkedMenu(const ScriptHo
 // same rule the X,Y window itself follows.
 static void scriptEditorPark(const ScriptHost &h, QWidget *w) {
 	if (!w) return;
+	if (h.park) {                                               // the owner's own park place
+		w->hide();
+		h.park(w);
+		return;
+	}
 	if (!h.parkIn || !sceneAlive(h.parkIn)) {
 		w->setProperty("igmtReallyClose", true);
 		w->close();

@@ -162,8 +162,6 @@ Pick a series in the Object Manager first.
 | Smoothing (Savitzky-Golay)… | smoothed curve, window asked |
 | Filter (Butterworth)… | low- or high-pass, cutoff asked |
 | Filter outliers (despike)… | despiked curve, threshold in robust σ |
-| Histogram… | new page, bars (0 bins = automatic) |
-| Bar graph | the series as bars on a new page |
 | Sound Velocity Profile… | new page "SVP diagram" |
 | Reference a curve to another… | new page "Referenced" |
 | Depth to sources (Spector-Grant) | interactive fit on a spectrum |

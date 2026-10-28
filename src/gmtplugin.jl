@@ -29,6 +29,7 @@ struct GmtPlugin
 	title::String                # "MB-System": what the menu and the messages call it
 	name::String                 # "mbsystem": the release asset prefix, <iGMT>/<name>, lib/<name>.so
 	repo::String                 # GitHub repository of the `<name>-latest` release
+	winext::String               # ".zip" or ".tar.gz": the extension of the Windows archive
 	probe::String                # a module GMT has once the plugin is loaded
 	companions::Vector{String}   # other libraries of the archive that must be loaded from it
 	run::Function                # (api) -> "" or why it failed: an actual module run through GMT
@@ -75,9 +76,9 @@ function _mbsystem_installed()
 	return nothing
 end
 
-const MBSYSTEM_PLUGIN = GmtPlugin(0, "MB-System", "mbsystem", "joa-quim/MB-System", "mbdefaults", ["libmbio"],
+const MBSYSTEM_PLUGIN = GmtPlugin(0, "MB-System", "mbsystem", "joa-quim/MB-System", ".zip", "mbdefaults", ["libmbio"],
                                   _mbsystem_run, "ran mbdefaults through MBIO", _mbsystem_installed, Ref(false), Ref(false))
-const GMTSAR_PLUGIN   = GmtPlugin(1, "GMTSAR", "gmtsar", "joa-quim/gmtsar", "nearest_grid", String[],
+const GMTSAR_PLUGIN   = GmtPlugin(1, "GMTSAR", "gmtsar", "joa-quim/gmtsar", ".tar.gz", "nearest_grid", String[],
                                   _gmtsar_run, "ran nearest_grid on a grid", () -> nothing, Ref(false), Ref(false))
 const _PLUGINS = (MBSYSTEM_PLUGIN, GMTSAR_PLUGIN)
 
@@ -89,7 +90,7 @@ _plugin_applies()::Bool = !Sys.iswindows() || GMT.isJLL
 function _plugin_asset(p::GmtPlugin)::String
 	Sys.islinux() && Sys.ARCH === :x86_64 && return "$(p.name)-linux-x86_64.tar.gz"
 	Sys.isapple() && return Sys.ARCH === :aarch64 ? "$(p.name)-macos-arm64.tar.gz" : "$(p.name)-macos-x86_64.tar.gz"
-	Sys.iswindows() && GMT.isJLL && Sys.ARCH === :x86_64 && return "$(p.name)-windows-x86_64.tar.gz"
+	Sys.iswindows() && GMT.isJLL && Sys.ARCH === :x86_64 && return "$(p.name)-windows-x86_64$(p.winext)"
 	return ""
 end
 
@@ -270,7 +271,8 @@ function _plugin_fetch(p::GmtPlugin, asset::String, dest::String)::String
 		when = GMT.Dates.now(GMT.Dates.UTC)
 		GMT.Downloads.download(url, archive)
 		# Relative name, run in the directory: a GNU tar on Windows reads "C:..." as a remote host.
-		cd(() -> run(`tar -xzf $asset`), tmp)
+		# On Windows _craft_tar() is Windows' own tar.exe (bsdtar), which reads .zip and .tar.gz alike.
+		cd(() -> run(`$(_craft_tar()) -xf $asset`), tmp)
 		src = joinpath(tmp, p.name)
 		libname = _plugin_libname(p, asset)
 		isfile(joinpath(src, "lib", libname)) || error("the archive has no $(p.name)/lib/$libname")

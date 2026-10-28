@@ -172,7 +172,7 @@ Add another `(x, y)` series to an open X,Y plot window. Same keyword semantics a
 sample (`trackgeog=false` for cartesian x, y): the magnetic tools read the profile azimuth and a
 bathymetry grid along it from there.
 
-`kind=:bar` draws it as a BAR graph (what the Analysis menu's Histogram / Bar graph items use)
+`kind=:bar` draws it as a BAR graph (what the plot-type gallery's histogram uses)
 instead of a polyline; `barwidth` is then the bar width in **x data units** (0 = derive it from the
 data: 90% of the median x spacing), and `linewidth` becomes the bars' outline thickness in px.
 """

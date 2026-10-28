@@ -339,8 +339,6 @@ Transform your data:
 | Smoothing (Savitzky-Golay)… | Smooth (window size dialog) |
 | Filter (Butterworth)… | Low/high-pass filter (cutoff dialog) |
 | Filter outliers (despike)… | Despike (σ threshold dialog) |
-| Histogram… | Histogram of Y (new page) |
-| Bar graph | The series as bars (new page) |
 | Sound Velocity Profile… | Chen & Millero sound velocity (new page) |
 | Reference a curve to another… | Pick pairs of points, then stretch one curve onto the other |
 | Depth to sources (Spector-Grant) | Depth-to-sources (drag a band on a spectrum) |

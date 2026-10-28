@@ -22,6 +22,9 @@ struct ScriptHost {
 	void *key = nullptr;                    // the owner's handle: registry key, and what Julia is handed
 	QWidget *parent = nullptr;              // the editor's parent window
 	Scene *parkIn = nullptr;                // whose Scene Objects dock the editor parks in (null: X closes it)
+	// An owner with a park place of its OWN (the X,Y window's Object Manager): set, these are used
+	// instead of parkIn. `park` gets the editor already hidden.
+	std::function<void(QWidget *)> park, unpark;
 	QString parkLabel = "GMT.jl script";
 	QString openCall;                       // the Julia function that builds the script for this owner
 	std::function<bool()> alive;
@@ -30,6 +33,8 @@ struct ScriptHost {
 };
 static void showScriptEditor(const ScriptHost &h);                          // 70_window.cpp
 static void buildScriptEditor(const ScriptHost &host, const QString &text); // 70_window.cpp
+static void scriptEditorUnpark(const ScriptHost &h);                        // 70_window.cpp
+static std::function<void(const QPoint &)> scriptEditorParkedMenu(const ScriptHost &h); // 70_window.cpp
 
 // One plotted curve: its data table (column 0 = X, column 1 = Y) + the chart
 // plot item (owned by the chart) + presentation state.
@@ -43,6 +48,12 @@ struct XYSeries {
 	int                       marker = 0;       // vtkPlotPoints: NONE=0 CROSS=1 PLUS=2 SQUARE=3 CIRCLE=4 DIAMOND=5
 	double                    markerSize = 7.0;
 	bool                      visible = true;
+	bool                      inLegend = true;  // false: drawn, but no entry in the legend (a biplot's x = 0, y = 0)
+	// Columns the series' points came FROM, one value per row (a biplot's observations carry the input
+	// variables their scores were computed from). Shown before X and Y by "Show in Data Table".
+	std::vector<std::string>          srcNames;
+	std::vector<std::vector<double>>  srcCols;
+	std::string                       xName, yName;   // the table's X / Y headers ("" = "X" / the series name)
 	// Chart plot type: 0 = line (vtkChart::LINE, the default), 1 = BAR (histogram / bar graph),
 	// 2 = AREA, 3 = STEM, 4 = STAIRS, 5 = SCATTER (vtkChart::POINTS), 6 = BARS ON A BASE, 7 = HORIZONTAL
 	// BARS ON A BASE, 8 = FILLED POLYGONS (vtkXYShapePlot, the plot-type gallery's own kinds).
@@ -215,6 +226,15 @@ struct XYPlot {
 	// owner (a bare `xyplot()` from the REPL) has no dock to park in, so its X really closes it.
 	Scene                              *owner = nullptr;
 	bool                                parked = false;   // closed with the X: hidden, row in the dock
+	// Tool windows of THIS plot (its GMT.jl script editor) parked as rows of the strip at the bottom of
+	// its own Object Manager panel (parkStrip): hidden, not destroyed.
+	struct ParkedTool {
+		QWidget *w = nullptr;
+		QString label;
+		std::function<void()> unpark;
+		std::function<void(const QPoint &)> menu;
+	};
+	std::vector<ParkedTool>             parkedTools;
 	bool                                reallyClose = false;  // set by the row's "Delete" — let the X through
 	bool                                tearingDown = false;  // programmatic close requested: dead to
 	                                                          // xyAlive from that instant, not only once
@@ -225,6 +245,8 @@ struct XYPlot {
 	QVTKOpenGLNativeWidget             *widget = nullptr;
 	vtkSmartPointer<vtkContextView>     view;
 	QTreeWidget                        *objMgr = nullptr;      // Object Manager (series list)
+	QTreeWidget                        *parkStrip = nullptr;   // its bottom strip of parked tools (xyRebuildParkStrip)
+	std::function<void()>               omUnfold;              // open the Object Manager panel if folded
 	QPlainTextEdit                     *console = nullptr;       // ERRORS tab: read-only execution-error log (xyLog)
 	QPlainTextEdit                     *cmdConsole = nullptr;    // JULIA tab: the ReplConsole (shares Main with the 3-D
 	                                                             // viewer; the same widget the viewer's console uses)
@@ -661,10 +683,19 @@ public:
 		if (lo > hi) lo = hi = 0.0;
 	}
 	bool PaintLegend(vtkContext2D *painter, const vtkRectf &rect, int idx) override {
-		if (Shape != 2 && Shape != 6 && Shape != 7 && Shape != 8 && Shape != 10)
+		if (Shape != 2 && Shape != 6 && Shape != 7 && Shape != 8 && Shape != 10 && Shape != 11)
 			return this->Superclass::PaintLegend(painter, rect, idx);
 		painter->ApplyPen(this->Pen);
 		painter->ApplyBrush(this->Brush);
+		if (Shape == 11) {                             // an arrow's legend is an arrow: the head Paint draws
+			const float y = rect[1] + rect[3] / 2, xa = rect[0], xb = rect[0] + rect[2];
+			const float hl = 3.0f * std::max(2.5f, this->Pen->GetWidth()) + 4.0f;
+			const float h = std::min(hl, 0.6f * (xb - xa)), w = 0.35f * h;
+			painter->DrawLine(xa, y, xb - h, y);
+			float tri[6] = { xb, y, xb - h, y + w, xb - h, y - w };
+			painter->DrawPolygon(tri, 3);
+			return true;
+		}
 		if (Shape == 10) {                             // a bubble's legend is a bubble
 			const float r = 0.5f * std::min(rect[2], rect[3]);
 			painter->DrawEllipse(rect[0] + rect[2] / 2, rect[1] + rect[3] / 2, r, r);
@@ -782,6 +813,7 @@ static void xyApplyStyle(XYPlot *s, XYSeries &se) {
 		return;
 	se.plot->SetColor((unsigned char)(se.r * 255), (unsigned char)(se.g * 255),
 	                  (unsigned char)(se.b * 255), 255);
+	se.plot->SetLegendVisibility(se.inLegend);
 	// vtkPlotBar::SetWidth is the BAR WIDTH in x data units, not a pen thickness -- feeding it
 	// `se.width` (px) would blow a histogram's bars up to the whole axis. The outline pen keeps
 	// `se.width`, so both stay independently controllable.
@@ -905,6 +937,35 @@ static void xyRebuildPlots(XYPlot *s) {
 		s->widget->renderWindow()->Render();
 }
 
+// The parked tool windows' strip at the BOTTOM EDGE of the Object Manager panel — its own list UNDER the
+// series tree (as the 3-D viewer's Scene Objects keeps its parked tools), so it stays at the bottom however
+// long the series list grows. Row UserRole = XYPlot::parkedTools index. Hidden when nothing is parked.
+static void xyRebuildParkStrip(XYPlot *s) {
+	if (!s->parkStrip) return;
+	s->parkStrip->clear();
+	for (int k = 0; k < (int)s->parkedTools.size(); ++k) {
+		QTreeWidgetItem *it = new QTreeWidgetItem(s->parkStrip);
+		it->setText(0, s->parkedTools[k].label);
+		QFont f = it->font(0); f.setItalic(true); it->setFont(0, f);
+		it->setFlags(it->flags() | Qt::ItemIsUserCheckable);
+		it->setCheckState(0, Qt::Unchecked);
+		it->setData(0, Qt::UserRole, k);
+		it->setToolTip(0, "Parked — double-click or check it to bring it back, right-click for its menu");
+	}
+	const int n = s->parkStrip->topLevelItemCount();
+	int h = 4;                                        // exactly as tall as its rows: no dead space
+	for (int i = 0; i < n; ++i) h += s->parkStrip->visualItemRect(s->parkStrip->topLevelItem(i)).height();
+	if (n > 0 && h <= 4) h += n * s->parkStrip->fontMetrics().height() + 6;   // not laid out yet
+	s->parkStrip->setFixedHeight(h);
+	s->parkStrip->setVisible(n > 0);
+	if (n > 0 && s->omUnfold) s->omUnfold();          // a handle nobody can see is no handle
+}
+
+static XYPlot::ParkedTool *xyParkedOfRow(XYPlot *s, QTreeWidgetItem *it) {
+	const int k = it ? it->data(0, Qt::UserRole).toInt() : -1;
+	return (k >= 0 && k < (int)s->parkedTools.size()) ? &s->parkedTools[k] : nullptr;
+}
+
 // Rebuild the Object Manager tree from the CURRENT page's series list (one checkable row each,
 // foreground tinted to the series colour, UserRole = series index).
 static void xyRebuildObjMgr(XYPlot *s) {
@@ -1012,9 +1073,19 @@ static void xyShowDataTable(XYPlot *s, int idx) {
 	vtkTable *t = se.table;
 	const int nrows = t ? (int)t->GetNumberOfRows() : 0;
 
-	QStringList hdr;  hdr << "#" << "X" << QString::fromStdString(se.name);
+	// The columns the points came from (XYSeries::srcCols) first, then the series' own X and Y.
+	const std::vector<std::vector<double>> src = se.srcCols;
+	const int ns = (int)src.size();
+	QStringList hdr;  hdr << "#";
+	for (const std::string &n : se.srcNames) hdr << QString::fromStdString(n);
+	hdr << QString::fromStdString(se.xName.empty() ? "X" : se.xName)
+	    << QString::fromStdString(se.yName.empty() ? se.name : se.yName);
 	buildDataTableDialog(QString::fromStdString(se.name) + " — data", nrows, hdr,
-		[t](int row, int col) { return QString::number(t->GetValue(row, col).ToDouble(), 'g', 10); },
+		[t, src, ns](int row, int col) {
+			const double v = col < ns ? (row < (int)src[col].size() ? src[col][row] : NAN)
+			                          : t->GetValue(row, col - ns).ToDouble();
+			return QString::number(v, 'g', 10);
+		},
 		/*editable=*/false, [s, idx]() { xySaveSeries(s, idx); });
 }
 
@@ -2514,6 +2585,7 @@ static bool xyAxpHonoured(const QString &key) {
 		"-R.xauto", "-R.xmin", "-R.xmax", "-R.yauto", "-R.ymin", "-R.ymax",
 		"-Bx.label", "-By.label", "-Bpx.a", "-Bpy.a", "-Bpx.g", "-Bpy.g", "-B.+t", "-B.+g",
 		"MAP_FRAME_AXES.W", "MAP_FRAME_AXES.E", "MAP_FRAME_AXES.S", "MAP_FRAME_AXES.N",
+		"MAP_FRAME_AXES.Wg", "MAP_FRAME_AXES.Sg",
 		"MAP_FRAME_PEN", "MAP_GRID_PEN_PRIMARY", "MAP_TICK_LENGTH_PRIMARY.major",
 		"FONT", "FONT_ANNOT_PRIMARY", "FONT_LABEL", "FONT_TITLE", "FORMAT_FLOAT_MAP" };
 	for (const char *k : keys)
@@ -2594,6 +2666,9 @@ static void xyApplyAxes(XYPlot *s, XYPage &pg) {
 			t.a->SetLabelFormat(fmt.toStdString());
 		}
 	}
+	// The sides' Grid boxes: West = the horizontal lines (the y axis' grid), South = the vertical ones.
+	if (v.contains("MAP_FRAME_AXES.Wg")) ax[0]->SetGridVisible(v.value("MAP_FRAME_AXES.Wg") == "1");
+	if (v.contains("MAP_FRAME_AXES.Sg")) ax[2]->SetGridVisible(v.value("MAP_FRAME_AXES.Sg") == "1");
 	// Pens, tick length, fonts: only what was changed.
 	double px = 0.0;
 	for (vtkAxis *a : ax) {
@@ -4487,6 +4562,7 @@ static std::string xySessionState(XYPlot *s) {
 			kv("marker", QString::number(se.marker));
 			kv("msize", xyNum(se.markerSize));
 			kv("visible", QString::number(se.visible ? 1 : 0));
+			kv("inlegend", QString::number(se.inLegend ? 1 : 0));
 			kv("barwidth", xyNum(se.barWidth));
 			kv("cross", xyNum(se.crossCenterX) + " " + xyNum(se.crossCenterY) + " " + xyNum(se.crossSizePx));
 			kv("magrole", QString::number(se.magRole));
@@ -4640,6 +4716,7 @@ static void xySessionApply(XYPlot *s, const char *text) {
 			else if (k == "marker") se.marker = v.toInt();
 			else if (k == "msize") se.markerSize = xyToNum(v);
 			else if (k == "visible") { se.visible = v.toInt() != 0; if (se.plot) se.plot->SetVisible(se.visible); }
+			else if (k == "inlegend") se.inLegend = v.toInt() != 0;
 			else if (k == "barwidth") se.barWidth = xyToNum(v);
 			else if (k == "stack") se.stack = v.toInt();      // its base is re-derived below (xyRestack)
 			else if (k == "kind" || k == "barh" || k == "right") {
@@ -4690,12 +4767,41 @@ static void xySessionApply(XYPlot *s, const char *text) {
 // The X,Y window as the owner of a "Plot with GMT.jl" editor — the SAME editor the 3-D viewer opens.
 // It parks in the viewer this plot belongs to (where the plot itself parks); the script is built from
 // the current page by xyscript.jl.
+// Park a tool window of the plot (already hidden) as a row of the plot's OWN Object Manager. Idempotent:
+// a tool parked again keeps its one row.
+static void xyParkTool(XYPlot *p, QWidget *w, const QString &label, std::function<void()> unpark,
+                       std::function<void(const QPoint &)> menu) {
+	if (!xyAlive(p) || !w) return;
+	for (auto &t : p->parkedTools)
+		if (t.w == w) { t.label = label; t.unpark = unpark; t.menu = menu; xyRebuildParkStrip(p); return; }
+	p->parkedTools.push_back({ w, label, unpark, menu });
+	QObject::connect(w, &QObject::destroyed, p->win, [p, w]() {   // a deleted tool loses its row too
+		if (!xyAlive(p)) return;
+		auto &v = p->parkedTools;
+		v.erase(std::remove_if(v.begin(), v.end(), [w](const XYPlot::ParkedTool &t) { return t.w == w; }), v.end());
+		xyRebuildParkStrip(p);
+	});
+	xyRebuildParkStrip(p);
+}
+
+static void xyUnparkTool(XYPlot *p, QWidget *w) {
+	if (!xyAlive(p)) return;
+	auto &v = p->parkedTools;
+	v.erase(std::remove_if(v.begin(), v.end(), [w](const XYPlot::ParkedTool &t) { return t.w == w; }), v.end());
+	xyRebuildParkStrip(p);
+}
+
 static ScriptHost scriptHostXY(XYPlot *p) {
 	ScriptHost h;
 	h.key = p;
 	h.parent = p ? p->win : nullptr;
-	h.parkIn = (p && p->owner && sceneAlive(p->owner)) ? p->owner : nullptr;
-	h.parkLabel = "GMT.jl script (X,Y)";
+	// It parks in THIS window's Object Manager, never in the viewer's Scene Objects.
+	h.park = [p](QWidget *w) {
+		ScriptHost me = scriptHostXY(p);
+		xyParkTool(p, w, me.parkLabel, [me]() { scriptEditorUnpark(me); }, scriptEditorParkedMenu(me));
+	};
+	h.unpark = [p](QWidget *w) { xyUnparkTool(p, w); };
+	h.parkLabel = "GMT.jl script";
 	h.openCall = "InteractiveGMT._xy_script_open_editor";
 	h.alive = [p]() { return xyAlive(p); };
 	h.logError = [p](const QString &m) { if (xyAlive(p)) xyLog(p, m, true); };
@@ -5948,7 +6054,45 @@ static XYPlot *buildXYPlot(const char *title) {
 	s->objMgr->setHeaderLabels(QStringList() << "Series");
 	s->objMgr->setRootIsDecorated(false);
 	s->objMgr->setContextMenuPolicy(Qt::CustomContextMenu);
-	omDock->setWidget(s->objMgr);
+	// The panel: the series tree, and UNDER it the strip of parked tools (xyRebuildParkStrip).
+	QWidget *omBody = new QWidget(omDock);
+	{
+		QVBoxLayout *col = new QVBoxLayout(omBody);
+		col->setContentsMargins(0, 0, 0, 0);
+		col->setSpacing(0);
+		s->objMgr->setParent(omBody);
+		col->addWidget(s->objMgr, 1);
+		s->parkStrip = new QTreeWidget(omBody);
+		s->parkStrip->setHeaderHidden(true);
+		s->parkStrip->setRootIsDecorated(false);
+		s->parkStrip->setIndentation(0);
+		s->parkStrip->setSelectionMode(QAbstractItemView::NoSelection);
+		s->parkStrip->setFocusPolicy(Qt::NoFocus);
+		s->parkStrip->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+		s->parkStrip->setContextMenuPolicy(Qt::CustomContextMenu);
+		s->parkStrip->setVisible(false);
+		col->addWidget(s->parkStrip, 0);              // stretch 0: the tree keeps all the spare height
+		// Every route out of a parked row is DEFERRED: un-parking rebuilds this very strip.
+		auto later = [s](QTreeWidgetItem *it, bool wantMenu, QPoint g) {
+			XYPlot::ParkedTool *t = xyParkedOfRow(s, it);
+			if (!t) return;
+			std::function<void()> un = t->unpark;
+			std::function<void(const QPoint &)> menu = t->menu;
+			QTimer::singleShot(0, s->win, [un, menu, wantMenu, g]() {
+				if (wantMenu) { if (menu) menu(g); }
+				else if (un) un();
+			});
+		};
+		QObject::connect(s->parkStrip, &QTreeWidget::itemChanged, s->win, [later](QTreeWidgetItem *it, int) {
+			if (it->checkState(0) == Qt::Checked) later(it, false, QPoint());   // ticking = bring it back
+		});
+		QObject::connect(s->parkStrip, &QTreeWidget::itemDoubleClicked, s->win,
+		                 [later](QTreeWidgetItem *it, int) { later(it, false, QPoint()); });
+		QObject::connect(s->parkStrip, &QWidget::customContextMenuRequested, s->win, [s, later](const QPoint &p) {
+			later(s->parkStrip->itemAt(p), true, s->parkStrip->viewport()->mapToGlobal(p));
+		});
+	}
+	omDock->setWidget(omBody);
 	s->win->addDockWidget(Qt::LeftDockWidgetArea, omDock);
 	// Never floats, but it can be dragged to the other edge: the shared memory (10_geometry.cpp)
 	// carries its width across that move, same as every dock in the 3-D viewer.
@@ -6098,21 +6242,8 @@ static XYPlot *buildXYPlot(const char *title) {
 			g_juliaXYAna(s, QString("despike:%1").arg(k, 0, 'g', 6).toUtf8().constData(), sel);
 		});
 	}
+	// (Histogram and Bar graph are the plot-type gallery's icons, not Analysis entries.)
 	mAna->addSeparator();
-	{
-		// Histogram of the series' Y VALUES (x = bin centre, y = count) -- ecran's "Show histogram".
-		// Own page, drawn with bars. 0 bins => let Julia pick (Freedman-Diaconis).
-		QAction *a = mAna->addAction("Histogram…");
-		QObject::connect(a, &QAction::triggered, s->win, [s, gate] {
-			const int sel = gate(); if (sel < 0) return;
-			bool ok = false;
-			const int nb = QInputDialog::getInt(s->win, "Histogram",
-				"Number of bins (0 = automatic):", 0, 0, 10000, 1, &ok);
-			if (!ok) return;
-			g_juliaXYAna(s, QString("hist:%1").arg(nb).toUtf8().constData(), sel);
-		});
-	}
-	addAna("Bar graph", "bargraph");
 	{
 		// ecran's "Sound Velocity Profile" (Chen & Millero / UNESCO 1983) -> page "SVP diagram".
 		QAction *a = mAna->addAction("Sound Velocity Profile…");
@@ -6237,7 +6368,7 @@ static XYPlot *buildXYPlot(const char *title) {
 	s->win->addToolBarBreak(Qt::TopToolBarArea);
 	QToolBar *gal = s->win->addToolBar("Plot types");
 	gal->setObjectName("xyPlotTypes");
-	gal->setIconSize(QSize(56, 36));
+	gal->setIconSize(QSize(50, 32));   // 90% of the drawn 56x36 (xyPlotTypeIcon) — the user's size, keep it
 	gal->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
 	// Display order (the enum's order is only an id): the bar plots side by side.
 	static const int order[XY_PT_COUNT] = {
@@ -6273,6 +6404,16 @@ static XYPlot *buildXYPlot(const char *title) {
 		                                     QString("Re-plot this page's series as %1").arg(xyPlotTypeNames[t]));
 		QObject::connect(a, &QAction::triggered, s->win, [s, t] { xySetPlotType(s, t); });
 		a->setData(t);
+	}
+	// The labels slightly smaller, as a STYLE SHEET: the app-wide sheet (30_app.cpp, the pressed-button
+	// look) styles every QToolButton, and a widget a sheet styles ignores setFont — only a sheet's
+	// font-size reaches it. 0.9 of the button's font: slightly smaller than the Object Manager's text,
+	// never tiny (the default 0.8 was barely readable; 0.7 and 0.5 were rejected).
+	if (QWidget *b0 = gal->widgetForAction(gal->actions().value(0))) {
+		const QFont f0 = b0->font();
+		const QString sz = f0.pointSizeF() > 0 ? QString("%1pt").arg(f0.pointSizeF() * 0.9, 0, 'f', 2)
+		                                       : QString("%1px").arg(std::max(6, qRound(f0.pixelSize() * 0.9)));
+		gal->setStyleSheet(QString("QToolButton { font-size: %1; }").arg(sz));
 	}
 	// Right-click on a type: "Help" opens that type's page of the manual (docs/src/41-xyplot-<name>.md),
 	// the same plain openUrl the dialogs' green ? disk uses. "Synthetic example" asks Julia for a new page
@@ -6463,7 +6604,7 @@ static XYPlot *buildXYPlot(const char *title) {
 	QMainWindow *xywin = s->win;
 	FoldTitleBar *omBar = new FoldTitleBar("Object Manager", omDock);
 	omDock->setTitleBarWidget(omBar);
-	omBar->onClick = [xywin, omDock, body = static_cast<QWidget*>(s->objMgr), omBar, omPx]() {
+	omBar->onClick = [xywin, omDock, body = omDock->widget(), omBar, omPx]() {
 		const bool fold = body->isVisible();          // visible now -> fold it away
 		if (fold) omBar->openWidth = omDock->width(); // remember the open width to restore later
 		body->setVisible(!fold);
@@ -6474,6 +6615,7 @@ static XYPlot *buildXYPlot(const char *title) {
 						   : (omBar->openWidth > 0 ? omBar->openWidth : omPx);
 		xywin->resizeDocks({ omDock }, { w }, Qt::Horizontal);
 	};
+	s->omUnfold = [omBar, body = omDock->widget()]() { if (!body->isVisible() && omBar->onClick) omBar->onClick(); };
 
 	s->win->statusBar()->showMessage("X,Y plot — add series from Julia (xyplot / add!)");
 	s->win->show();
