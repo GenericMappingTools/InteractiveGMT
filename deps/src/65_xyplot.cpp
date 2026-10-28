@@ -1079,8 +1079,10 @@ static int xyAddSeries(XYPlot *s, const double *x, const double *y, int n,
 	se.table = vtkSmartPointer<vtkTable>::New();
 	// X is DOUBLE: epoch-seconds time values (~1.6e9) lose ~128 s of resolution in float32, which
 	// collapses finely-sampled series (e.g. minute-spaced tides) onto duplicate X. Y stays float.
+	// The columns are named "X" and "Y", never after the series: a series named "X" made two columns
+	// called "X", and vtkPlot::SetInputData crashed on it. The series' name lives in se.name / SetLabel.
 	vtkNew<vtkDoubleArray> ax; ax->SetName("X");                      se.table->AddColumn(ax);
-	vtkNew<vtkFloatArray> ay; ay->SetName(se.name.c_str());          se.table->AddColumn(ay);
+	vtkNew<vtkFloatArray> ay; ay->SetName("Y");                       se.table->AddColumn(ay);
 	se.table->SetNumberOfRows(n);
 	for (int i = 0; i < n; ++i) {
 		se.table->SetValue(i, 0, x[i]);
@@ -1147,7 +1149,7 @@ static int xyAddNowCross(XYPlot *s, double cx, double cy, double r, double g, do
 
 	se.table = vtkSmartPointer<vtkTable>::New();
 	vtkNew<vtkDoubleArray> ax; ax->SetName("X");             se.table->AddColumn(ax);
-	vtkNew<vtkFloatArray> ay; ay->SetName(se.name.c_str());  se.table->AddColumn(ay);
+	vtkNew<vtkFloatArray> ay; ay->SetName("Y");              se.table->AddColumn(ay);   // see xyAddSeries
 	se.table->SetNumberOfRows(5);
 	// Rough placeholder path -- a real cross only exists once xyRecomputeCross has real axis pixel
 	// spans to work from, which needs the chart to have actually laid out at least once.
