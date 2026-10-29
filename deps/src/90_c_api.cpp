@@ -15424,6 +15424,39 @@ GMTVTK_API int gmtvtk_xyplot_page_count(void *handle) {
 	return xyAlive(p) ? (int)p->pages.size() : -1;
 }
 
+// Width and height of the current page's plot area in chart (device) pixels, the units of a series' pen
+// width; the device pixel ratio a marker size is multiplied by on its way to VTK; and the render window's
+// DPI, a text of size N being drawn N * DPI / 72 pixels tall -- so File > Plot with GMT.jl can give the
+// figure the plot's shape and size pens, symbols and text to it as the chart does. Returns 0 when unknown.
+GMTVTK_API int gmtvtk_xyplot_plot_width(void *handle, double *w, double *h, double *dpr, double *dpi) {
+	XYPlot *p = static_cast<XYPlot*>(handle);
+	*w = 0.0; *h = 0.0; *dpr = 1.0; *dpi = 72.0;
+	if (xyAlive(p) && p->widget && p->widget->renderWindow() && p->widget->renderWindow()->GetDPI() > 0)
+		*dpi = p->widget->renderWindow()->GetDPI();
+	if (!xyAlive(p) || p->curPageIdx < 0 || p->curPageIdx >= (int)p->pages.size()) return 0;
+	vtkChartXY *c = p->pages[p->curPageIdx].chart;
+	if (!c) return 0;
+	*w = (double)(c->GetPoint2()[0] - c->GetPoint1()[0]);
+	*h = (double)(c->GetPoint2()[1] - c->GetPoint1()[1]);
+	*dpr = p->widget ? p->widget->devicePixelRatioF() : 1.0;
+	return *w > 0 ? 1 : 0;
+}
+
+// The tick positions the current page's axis `which` (0 bottom, 1 left, 2 right) is annotated at, in
+// data units, into `buf` (capacity `cap`; null for the count only) -- so File > Plot with GMT.jl can
+// annotate where the chart does. Returns the number of ticks, -1 on a dead handle.
+GMTVTK_API int gmtvtk_xyplot_axis_ticks(void *handle, int which, double *buf, int cap) {
+	XYPlot *p = static_cast<XYPlot*>(handle);
+	if (!xyAlive(p) || p->curPageIdx < 0 || p->curPageIdx >= (int)p->pages.size()) return -1;
+	vtkChartXY *c = p->pages[p->curPageIdx].chart;
+	vtkAxis *ax = c ? c->GetAxis(which == 0 ? vtkAxis::BOTTOM : which == 1 ? vtkAxis::LEFT : vtkAxis::RIGHT) : nullptr;
+	vtkDoubleArray *t = ax ? ax->GetTickPositions() : nullptr;
+	if (!t) return 0;
+	const int n = (int)t->GetNumberOfTuples();
+	for (int i = 0; buf && i < n && i < cap; ++i) buf[i] = t->GetValue(i);
+	return n;
+}
+
 // Points of series `sel` on page `page` (any page, not only the current one); -1 on a bad handle/index.
 GMTVTK_API int gmtvtk_xyplot_page_series_npoints(void *handle, int page, int sel) {
 	XYPlot *p = static_cast<XYPlot*>(handle);

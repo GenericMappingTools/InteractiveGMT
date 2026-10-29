@@ -1286,7 +1286,7 @@ end
 		IG._pump_once()
 		txt = IG._script_editor_text(p.h)                     # the SAME editor the 3-D viewer opens
 		@test occursin("plot(D1", txt) && occursin("plot!(D2", txt)
-		@test occursin("const PROJ    = \"X15.0/10.0l\"", txt)   # the log Y axis
+		@test occursin(r"const PROJ    = \"X15\.0/[0-9.]+l\"", txt)   # the log Y axis (height: the plot's shape)
 		@test occursin("xlabel=\"distance\"", txt)
 		# the legend is GMT's legend module, one entry per curve, never a per-call legend=
 		@test occursin("legend!(", txt) && occursin(" pow 1.5\"", txt) && occursin(" squares\"", txt) &&

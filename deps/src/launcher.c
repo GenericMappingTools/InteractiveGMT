@@ -330,6 +330,55 @@ static void ini_write(const char *root, const char *julia)
 	fclose(f);
 }
 
+/* ------------------------------------------------------------- the installer's bundle file */
+
+/* igmt_bundle.ini, written by the Windows installer (deps/installer/setup.jl) BESIDE this binary:
+ * the bundle's own julia, its package root, and the environment its private depot and GMT need.
+ * Absent on a dev or `] add` install, which then behaves exactly as before. Lines:
+ *   julia=PATH   root=PATH   path=DIR (prepended to PATH)   env.NAME=VALUE
+ * Set in THIS process, so the julia spawned below inherits it. */
+static void set_env(const char *name, const char *val)
+{
+#ifdef _WIN32
+	wchar_t *wn = wide(name), *wv = wide(val);
+	_wputenv_s(wn, wv);                 /* the CRT copy getenv() reads (depot_root, path_julia) */
+	SetEnvironmentVariableW(wn, wv);    /* the block CreateProcessW hands the child */
+	free(wn); free(wv);
+#else
+	setenv(name, val, 1);
+#endif
+}
+
+static void bundle_load(char *julia, char *root, size_t n) {
+	char dir[MAXP], path[MAXP], line[MAXP * 4];
+	FILE *f;
+	julia[0] = root[0] = 0;
+	self_path(dir, sizeof(dir));
+	parent_of(dir);
+	joinp(path, sizeof(path), dir, "igmt_bundle.ini");
+	if (!(f = fopen(path, "r"))) return;
+	while (fgets(line, sizeof(line), f)) {
+		size_t l = strlen(line);
+		char *eq, *val;
+		while (l && (line[l - 1] == '\n' || line[l - 1] == '\r')) line[--l] = 0;
+		if (!line[0] || line[0] == '#' || (eq = strchr(line, '=')) == NULL) continue;
+		*eq = 0;
+		val = eq + 1;
+		if (strcmp(line, "julia") == 0)      snprintf(julia, n, "%s", val);
+		else if (strcmp(line, "root") == 0)  snprintf(root, n, "%s", val);
+		else if (strcmp(line, "path") == 0) {
+			const char *old = getenv("PATH");
+			size_t k = strlen(val) + (old ? strlen(old) : 0) + 2;
+			char *p = (char *)malloc(k);
+			snprintf(p, k, "%s%c%s", val, ENVSEP, old ? old : "");
+			set_env("PATH", p);
+			free(p);
+		}
+		else if (strncmp(line, "env.", 4) == 0 && line[4]) set_env(line + 4, val);
+	}
+	fclose(f);
+}
+
 /* ------------------------------------------------------------- locating the package + julia */
 
 static int is_pkg_root(const char *d)
@@ -2041,7 +2090,7 @@ static int shortcut_mode(int argc, char **argv)
 
 static int run(int argc, char **argv)
 {
-	char root[MAXP], julia[MAXP];
+	char root[MAXP], julia[MAXP], bundle_root[MAXP], bundle_julia[MAXP];
 	const char *hint_root = NULL, *hint_julia = NULL;
 	char **files;
 	int nfiles = 0, install = 0, i;
@@ -2055,6 +2104,12 @@ static int run(int argc, char **argv)
 		else if (strncmp(argv[i], "--julia=", 8) == 0)         hint_julia = argv[i] + 8;
 		else                                                   files[nfiles++] = argv[i];
 	}
+
+	/* An installer bundle names its own julia and root: they come before ~/.gmt's ini and PATH,
+	 * which belong to whatever other Julia setup the machine has. */
+	bundle_load(bundle_julia, bundle_root, sizeof(bundle_julia));
+	if (!hint_root && bundle_root[0])   hint_root = bundle_root;
+	if (!hint_julia && bundle_julia[0]) hint_julia = bundle_julia;
 
 	if (!find_root(root, sizeof(root), hint_root)) {
 		message_box("iGMT",

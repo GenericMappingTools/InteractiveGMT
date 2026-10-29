@@ -23,7 +23,7 @@
 		@test axp("MAP_FRAME_AXES.Sg") == "1" && axp("MAP_FRAME_AXES.Wg") == "0"
 		steps, _ = IG._xy_script_emit(h)
 		kw = Dict(steps[1].kw)
-		@test haskey(kw, :xaxis) && !haskey(kw, :yaxis)
+		@test haskey(kw, :xaxis) && haskey(kw[:xaxis], :grid) && !haskey(get(kw, :yaxis, (;)), :grid)
 		# Y-Grid: the horizontal ones only; clicked again (it is the active one): no grid at all
 		@test click("xyGridY") == 1
 		@test page()["gridx"] == "0" && page()["gridy"] == "1"
