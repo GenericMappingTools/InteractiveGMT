@@ -27,6 +27,21 @@
 	@test M._lit(split("a,b", ',')[1]) == "\"a\""
 end
 
+# Every exported script opens with `const REG = …`. Two runs in one session — two windows with other
+# limits — used to share `Main`, and the second died on "invalid redefinition of constant REG"
+# (found 2026-10-30: the craftapps and X,Y annotation items in one test process). Each run gets its own
+# module: the same header with two regions must run twice, in either order.
+@testitem "gmtscript: two runs with different regions do not collide" tags=[:unit, :fast, :gmtscript] begin
+	M = InteractiveGMT
+	run_src(src) = (m = M._script_module(); for e in Meta.parseall(src).args
+	                    e isa LineNumberNode || Core.eval(m, Expr(:toplevel, e)) end; m)
+	a = run_src("const REG = (0, 1, 0, 1)\nconst PROJ = :merc\nr = REG")
+	b = run_src("const REG = (-10, 10, 30, 50)\nconst PROJ = :linear\nr = REG")
+	@test a.r == (0, 1, 0, 1) && b.r == (-10, 10, 30, 50)
+	@test M._script_module() !== M._script_module()          # a fresh one every run
+	@test !isdefined(Main, :REG) || Main.REG !== b.r          # nothing leaks into the session's Main
+end
+
 @testitem "gmtscript: colour and pen spellings" tags=[:unit, :fast, :gmtscript] begin
 	M = InteractiveGMT
 	@test M._script_rgb(1.0, 0.0, 0.0) == "255/0/0"

@@ -8308,12 +8308,222 @@ static QString displayedImageName(Scene *s) {
 	return QString();
 }
 
-class HistoUiLoader : public QUiLoader {
+// THE image-histogram axes — Show Histogram AND Image Enhance (SACRED_LAW: the same histogram is
+// drawn by one widget, never re-drawn per tool). A HistoAxesWidget (its look, its patch, its
+// contrast-window members and callbacks) whose bins and axis are in DATA values:
+//   8-bit image  -> 256 bins over grey levels 0..255
+//   16-bit image -> DN bins (`_image_hist`: 2 DN wide) over [xLo, xHi], labelled in DNs (setXRange)
+// ZOOMABLE and DRAGGABLE: the wheel zooms X about the cursor, a left- (or right-) drag moves the
+// histogram, double-click shows it all again; Y follows the tallest bin in view. In Image Enhance
+// (`interactive`) a left-drag that STARTS ON one of the contrast window's three red lines moves that
+// line instead, in data values, exactly as before.
+class HistoDataAxesWidget : public HistoAxesWidget {
+public:
+	double xLo = 0.0, xHi = 255.0;          // what the bins span
+	double vLo = 0.0, vHi = 255.0;          // what is in view (the zoom)
+	bool   dataRange = false;               // X axis in data values (a 16-bit band)
+	std::vector<double> bins;               // one count per bin, xLo first
+	explicit HistoDataAxesWidget(QWidget *p) : HistoAxesWidget(p) {
+		bins.assign(256, 0.0);
+		setMouseTracking(false);
+		setCursor(Qt::SizeAllCursor);     // the histogram itself drags: every drag in iGMT uses SizeAll
+	}
+	// 8-bit: the 256 grey-level counts (the base's own entry point, kept for the 8-bit path).
+	void setCounts(const double *c) {
+		HistoAxesWidget::setCounts(c);
+		bins.assign(counts, counts + 256);
+		update();
+	}
+	void setXRange(double lo, double hi) {
+		xLo = lo;  xHi = hi;  vLo = lo;  vHi = hi;  dataRange = true;
+		winLo = lo;  winHi = hi;
+		update();
+	}
+	void setBins(const double *c, int n) {
+		bins.assign(c, c + n);
+		update();
+	}
+	void setWindow(double lo, double hi) {
+		winLo = std::clamp(lo, xLo, xHi);
+		winHi = std::clamp(hi, winLo, xHi);
+		update();
+	}
+	// Pixels inside the window, and their share of the whole band — image_enhance's text_stat.
+	void windowStat(double &nIn, double &nTot) const {
+		nIn = 0.0; nTot = 0.0;
+		for (size_t k = 0; k < bins.size(); ++k) {
+			const double v = binValue(k);
+			nTot += bins[k];
+			if (v >= winLo && v <= winHi) nIn += bins[k];
+		}
+	}
+	double binValue(size_t k) const {
+		const size_t n = bins.size();
+		return n > 1 ? xLo + (xHi - xLo) * (double)k / (double)(n - 1) : xLo;
+	}
+	double v2x(double v) const {
+		const QRectF b = plotRect();
+		return b.left() + (v - vLo) / std::max(1e-12, vHi - vLo) * b.width();
+	}
+	double x2v(double x) const {
+		const QRectF b = plotRect();
+		return vLo + (x - b.left()) / std::max(1.0, b.width()) * (vHi - vLo);
+	}
+
+protected:
+	int    panning = 0;
+	double panX = 0.0, panLo = 0.0, panHi = 0.0;
+
+	double binStep() const { return bins.size() > 1 ? (xHi - xLo) / (double)(bins.size() - 1) : 1.0; }
+
+	void paintEvent(QPaintEvent *) override {
+		QPainter g(this);
+		g.fillRect(rect(), palette().window());
+		const QRectF box = plotRect();
+		g.fillRect(box, QColor(230, 255, 255));            // axes 'Color',[0.9 1 1], as paintMironeHisto
+		const double pl = interactive ? winLo : vLo, ph = interactive ? winHi : vHi;
+		const double xl = std::clamp(v2x(pl), box.left(), box.right());
+		const double xr = std::clamp(v2x(ph), box.left(), box.right());
+		if (xr > xl || !interactive) g.fillRect(QRectF(xl, box.top(), std::max(1.0, xr - xl), box.height()), patch);
+		// The bins in view. Fewer than pixel columns: one antialiased stem per bin at its true x (as
+		// the base draws its 256). More: each column draws the TALLEST bin falling in it, so no peak is
+		// lost to overdraw and every column is one crisp stem.
+		const size_t n = bins.size();
+		const double step = binStep();
+		const size_t k0 = (size_t)std::clamp(std::floor((vLo - xLo) / step), 0.0, (double)(n ? n - 1 : 0));
+		const size_t k1 = (size_t)std::clamp(std::ceil((vHi - xLo) / step), 0.0, (double)(n ? n - 1 : 0));
+		double ymax = 0.0;
+		for (size_t k = k0; k <= k1 && k < n; ++k) ymax = std::max(ymax, bins[k]);
+		const int ncol = std::max(1, (int)box.width());
+		g.setPen(QPen(Qt::black, 1));
+		if (ymax > 0.0) {
+			if ((double)(k1 - k0 + 1) <= ncol) {
+				const bool wasAA = g.testRenderHint(QPainter::Antialiasing);
+				g.setRenderHint(QPainter::Antialiasing, true);
+				for (size_t k = k0; k <= k1 && k < n; ++k) {
+					if (bins[k] <= 0.0) continue;
+					const double x = v2x(binValue(k));
+					if (x < box.left() || x > box.right()) continue;
+					g.drawLine(QPointF(x, box.bottom()), QPointF(x, box.bottom() - bins[k] / ymax * box.height()));
+				}
+				g.setRenderHint(QPainter::Antialiasing, wasAA);
+			}
+			else {
+				std::vector<double> col(ncol, 0.0);
+				for (size_t k = k0; k <= k1 && k < n; ++k) {
+					const int c = (int)std::floor(v2x(binValue(k)) - box.left());
+					if (c >= 0 && c < ncol) col[c] = std::max(col[c], bins[k]);
+				}
+				for (int c = 0; c < ncol; ++c) {
+					if (col[c] <= 0.0) continue;
+					const double x = box.left() + c + 0.5;
+					g.drawLine(QPointF(x, box.bottom()), QPointF(x, box.bottom() - col[c] / ymax * box.height()));
+				}
+			}
+		}
+		if (interactive) {                  // the three red lines of plot_result
+			const double wl = v2x(winLo), wr = v2x(winHi), wc = v2x(0.5 * (winLo + winHi));
+			g.setPen(QPen(QColor(255, 0, 0), 1));
+			if (wl >= box.left() && wl <= box.right()) g.drawLine(QPointF(wl, box.top()), QPointF(wl, box.bottom()));
+			if (wr >= box.left() && wr <= box.right()) g.drawLine(QPointF(wr, box.top()), QPointF(wr, box.bottom()));
+			g.setPen(QPen(QColor(255, 0, 0), 2, Qt::DashLine));
+			if (wc >= box.left() && wc <= box.right()) g.drawLine(QPointF(wc, box.top()), QPointF(wc, box.bottom()));
+		}
+		g.setPen(QPen(Qt::black, 1));
+		g.drawRect(box);
+		QFont f = g.font(); f.setPointSizeF(7.5); g.setFont(f);
+		for (int t = 0; t <= 2; ++t) {                // Y ticks: 0 .. the tallest bin in view
+			const double frac = t / 2.0, y = box.bottom() - frac * box.height();
+			g.drawLine(QPointF(box.left() - 4.0, y), QPointF(box.left(), y));
+			g.drawText(QRectF(0.0, y - 7.0, 46.0, 14.0), Qt::AlignRight | Qt::AlignVCenter,
+			           QString::number(qRound64(frac * ymax)));
+		}
+		if (!showXAxis) return;
+		// Grey levels / DN bins (a whole number of DNs wide): integer labels.
+		const bool whole = !dataRange || (vHi - vLo) >= 100.0 || std::fmod(step, 1.0) == 0.0;
+		for (int t = 0; t <= 4; ++t) {
+			const double v = vLo + t * (vHi - vLo) / 4.0;
+			const double x = box.left() + (t / 4.0) * box.width();
+			g.drawLine(QPointF(x, box.bottom()), QPointF(x, box.bottom() + 4.0));
+			const QString s = whole ? QString::number(qRound64(v)) : QString::number(v, 'g', 6);
+			// The last label ends AT its tick, so it is not cut by the widget's right edge.
+			const QRectF r = (t == 4) ? QRectF(x - 60.0, box.bottom() + 5.0, 60.0, 14.0)
+			                          : QRectF(x - 30.0, box.bottom() + 5.0, 60.0, 14.0);
+			g.drawText(r, (t == 4 ? Qt::AlignRight : Qt::AlignHCenter) | Qt::AlignVCenter, s);
+		}
+	}
+
+	// Zoom X about the value under the cursor; never past what the bins span, never narrower than
+	// ten bins.
+	void wheelEvent(QWheelEvent *e) override {
+		const double f  = e->angleDelta().y() > 0 ? 1.0 / 1.25 : 1.25;
+		const double c  = std::clamp(x2v(e->position().x()), vLo, vHi);
+		const double minSpan = std::min(xHi - xLo, 10.0 * binStep());
+		double span = std::clamp((vHi - vLo) * f, minSpan, xHi - xLo);
+		double lo = c - (c - vLo) / (vHi - vLo) * span;
+		lo = std::clamp(lo, xLo, xHi - span);
+		vLo = lo;  vHi = lo + span;
+		update();
+		e->accept();
+	}
+	void mouseDoubleClickEvent(QMouseEvent *) override {
+		vLo = xLo;  vHi = xHi;
+		update();
+	}
+	// Left on one of image_enhance's three red lines: wbd_vertLine, drag that line. Left anywhere else,
+	// or right anywhere: DRAG THE HISTOGRAM (pan the view).
+	void mousePressEvent(QMouseEvent *e) override {
+		if (onPressed) onPressed();
+		const double x = e->position().x();
+		if (interactive && e->button() == Qt::LeftButton) {
+			const double dl = std::abs(x - v2x(winLo)), dr = std::abs(x - v2x(winHi));
+			const double dc = std::abs(x - v2x(0.5 * (winLo + winHi)));
+			const double d  = std::min(dc, std::min(dl, dr));
+			if (d <= 8.0) { drag = (d == dl) ? 1 : (d == dc) ? 2 : 3;  return; }
+		}
+		if (e->button() == Qt::LeftButton || e->button() == Qt::RightButton) {
+			panning = 1;  panX = x;  panLo = vLo;  panHi = vHi;
+		}
+	}
+	void mouseMoveEvent(QMouseEvent *e) override {
+		const double x = e->position().x();
+		if (panning) {
+			const QRectF b = plotRect();
+			const double dv = (panX - x) / std::max(1.0, b.width()) * (panHi - panLo);
+			const double span = panHi - panLo;
+			vLo = std::clamp(panLo + dv, xLo, xHi - span);
+			vHi = vLo + span;
+			update();
+			return;
+		}
+		if (!drag) return;
+		const double v = std::clamp(x2v(x), xLo, xHi), one = binStep();
+		if (drag == 1) winLo = std::min(v, winHi - one);
+		else if (drag == 3) winHi = std::max(v, winLo + one);
+		else {                                        // the centre line slides the whole window
+			const double half = 0.5 * (winHi - winLo);
+			winLo = std::clamp(v - half, xLo, xHi - 2.0 * half);
+			winHi = winLo + 2.0 * half;
+		}
+		update();
+		if (onMoved) onMoved();
+	}
+	void mouseReleaseEvent(QMouseEvent *) override {
+		if (panning) { panning = 0;  return; }
+		if (!drag) return;
+		drag = 0;
+		if (onReleased) onReleased();
+	}
+};
+
+// The image-histogram dialogs' loader (Show Histogram, Image Enhance): their axes are
+// HistoDataAxesWidget.
+class HistoDataUiLoader : public QUiLoader {
 public:
 	QWidget *createWidget(const QString &className, QWidget *parent = nullptr,
 	                       const QString &name = QString()) override {
 		if (className == "HistoAxesWidget") {
-			auto *w = new HistoAxesWidget(parent);
+			auto *w = new HistoDataAxesWidget(parent);
 			w->setObjectName(name);
 			return w;
 		}
@@ -8326,11 +8536,35 @@ public:
 class ImageHistoDialog {
 public:
 	QDialog *dlg = nullptr;
-	HistoAxesWidget *ax[3] = { nullptr, nullptr, nullptr };
+	HistoDataAxesWidget *ax[3] = { nullptr, nullptr, nullptr };
+	int rgbHeight = 0;                      // the .ui's height, which the three-axes layout uses
 
+	// 256 grey levels for an 8-bit image; DN bins (any count) once Julia set a data range.
 	void setCounts(int band, const double *c, int n) {
-		if (band < 0 || band > 2 || n < 256) return;
-		if (ax[band]) ax[band]->setCounts(c);
+		if (band < 0 || band > 2 || !ax[band]) return;
+		if (ax[band]->dataRange) { ax[band]->setBins(c, n); return; }
+		if (n >= 256) ax[band]->setCounts(c);
+	}
+	// RGB -> three stacked axes (R, G, B, top to bottom, tinted like image_histo's plot_result).
+	// One band -> image_histo's reshaped figure: axes2/axes3 gone and the dialog shrunk to the one
+	// remaining plot (new_height = 400 - 275 + 40 = 165). Called once from the displayed bytes, and
+	// again by Julia with the IMAGE's own band count: a one-band picture is drawn as an RGBA texture,
+	// so its bytes alone say "RGB" for what is a single band.
+	void setBands(int nbands) {
+		const bool rgb = nbands >= 3;
+		const QColor tint[3] = { QColor(255, 124, 117), QColor(120, 255, 114), QColor(119, 119, 255) };
+		for (int k = 0; k < 3; ++k) {
+			ax[k]->patch = rgb ? tint[k] : QColor(120, 255, 114);
+			ax[k]->showXAxis = rgb ? (k == 2) : (k == 0);   // only the bottom axes keeps its XTicks
+			// The three axes sit in the dialog's QVBoxLayout, so hiding two makes the third take the
+			// whole height on its own — no setGeometry (which the layout would overrule).
+			ax[k]->setVisible(rgb || k == 0);
+			ax[k]->update();
+		}
+		dlg->resize(dlg->width(), rgb ? rgbHeight : 165);
+	}
+	void setXRange(double lo, double hi) {
+		for (auto *a : ax) if (a) a->setXRange(lo, hi);
 	}
 };
 
@@ -8351,9 +8585,9 @@ static void showImageHistogram(QWidget *parent, Scene *s, const char *name) {
 		return;
 	}
 	const size_t npix = px.size() / static_cast<size_t>(nb);
-	const bool isRGB = (nb >= 3);
+	const bool isRGB = (nb >= 3);   // the bytes' answer; Julia corrects it from the image's own bands
 
-	HistoUiLoader loader;
+	HistoDataUiLoader loader;
 	QFile f(gmtvtkUiDir() + "/image_histo.ui");
 	if (!f.open(QFile::ReadOnly)) {
 		qWarning("showImageHistogram: cannot open %s", qUtf8Printable(f.fileName()));
@@ -8370,28 +8604,18 @@ static void showImageHistogram(QWidget *parent, Scene *s, const char *name) {
 	ih->dlg = d;
 	// findChild<HistoAxesWidget*> is not possible (no Q_OBJECT — see BinHistoWidget): look the widget
 	// up as a QWidget and cast, exactly like the Binarize dialog does for its histogram widget.
-	ih->ax[0] = static_cast<HistoAxesWidget *>(d->findChild<QWidget *>("axes1"));
-	ih->ax[1] = static_cast<HistoAxesWidget *>(d->findChild<QWidget *>("axes2"));
-	ih->ax[2] = static_cast<HistoAxesWidget *>(d->findChild<QWidget *>("axes3"));
+	ih->ax[0] = static_cast<HistoDataAxesWidget *>(d->findChild<QWidget *>("axes1"));
+	ih->ax[1] = static_cast<HistoDataAxesWidget *>(d->findChild<QWidget *>("axes2"));
+	ih->ax[2] = static_cast<HistoDataAxesWidget *>(d->findChild<QWidget *>("axes3"));
 	if (!ih->ax[0] || !ih->ax[1] || !ih->ax[2]) { delete ih; delete d; return; }
 	QObject::connect(d, &QObject::destroyed, d, [ih]() { delete ih; });
 
-	if (isRGB) {
-		const QColor tint[3] = { QColor(255, 124, 117), QColor(120, 255, 114), QColor(119, 119, 255) };
-		for (int k = 0; k < 3; ++k) {
-			ih->ax[k]->patch = tint[k];
-			ih->ax[k]->showXAxis = (k == 2);  // only the bottom (blue) axes keeps its XTicks
-		}
-	}
-	else {
-		// The three axes sit in the dialog's QVBoxLayout, so hiding two makes the third take the whole
-		// height on its own — no setGeometry (which the layout would overrule on the next resize).
-		ih->ax[1]->hide(); ih->ax[2]->hide();
-		ih->ax[0]->showXAxis = true;
-		d->resize(d->width(), 165);
-	}
-	// Julia counts the bands (GMT.histogray) and pushes them straight back into ih->ax[].
-	g_juliaImageHisto(s, ih, px.data(), static_cast<int>(npix), nb);
+	ih->rgbHeight = d->height();
+	ih->setBands(isRGB ? 3 : 1);
+	// Julia counts the bands and pushes them straight back into ih->ax[] — from the image's own data
+	// when the window holds it (gmtvtk_histo_set_bands), else from these displayed bytes.
+	const QByteArray nm = label.toUtf8();
+	g_juliaImageHisto(s, ih, px.data(), static_cast<int>(npix), nb, nm.constData());
 	d->show();
 }
 
@@ -8413,7 +8637,7 @@ class ImageEnhanceDialog {
 public:
 	QDialog *dlg = nullptr;
 	Scene *scn = nullptr;
-	HistoAxesWidget *ax[3] = { nullptr, nullptr, nullptr };
+	HistoDataAxesWidget *ax[3] = { nullptr, nullptr, nullptr };
 	QLineEdit *eMinRange = nullptr, *eMaxRange = nullptr;
 	QLineEdit *eMin = nullptr, *eMax = nullptr, *eWidth = nullptr, *eCenter = nullptr;
 	QLineEdit *ePct[3] = { nullptr, nullptr, nullptr };
@@ -8467,13 +8691,21 @@ public:
 		}
 		return g_juliaImageEnhance(scn, this, params.toUtf8().constData()) != 0;
 	}
-	// Julia hands one band back at "init": its 256 counts and its own data range.
+	// Julia hands one band back at "init": its histogram (`_image_hist` — 256 grey levels, or one bin
+	// of DNs for a 16-bit band, after setDataRange) and its own data range.
 	void setBand(int band, const double *counts, int n, double lo, double hi, int nb) {
-		if (band < 0 || band > 2 || n < 256) return;
+		if (band < 0 || band > 2 || !ax[band]) return;
 		nbands = nb;
 		dmin[band] = lo;  dmax[band] = hi;
-		if (ax[band]) { ax[band]->setCounts(counts); ax[band]->setWindow(lo, hi); }
+		if (ax[band]->dataRange) ax[band]->setBins(counts, n);
+		else if (n >= 256)       ax[band]->setCounts(counts);
+		else return;
+		ax[band]->setWindow(lo, hi);
 		if (band == cur) syncBoxes();
+	}
+	// A 16-bit image: the bins span [lo, hi] in DNs, and so do the windows and the boxes.
+	void setDataRange(double lo, double hi) {
+		for (auto *a : ax) if (a) a->setXRange(lo, hi);
 	}
 	// Julia answers a "stretchlim" with the limits it found for that band.
 	void setWindow(int band, double lo, double hi) {
@@ -8484,7 +8716,7 @@ public:
 	// The four Window boxes + the N statistic, from whatever the current axes' window now is
 	// (plot_result's edit-box fill and updateAll's text_stat, one place for both).
 	void syncBoxes() {
-		HistoAxesWidget *a = ax[cur];
+		HistoDataAxesWidget *a = ax[cur];
 		if (!a) return;
 		filling = true;
 		if (eMinRange) eMinRange->setText(QString::number(dmin[cur], 'g', 6));
@@ -8504,7 +8736,7 @@ public:
 	// (edit_widthWindow_CB / edit_centerWindow_CB grow the window about its centre, or move it).
 	void windowFromBoxes(int what) {
 		if (filling || !ax[cur]) return;
-		HistoAxesWidget *a = ax[cur];
+		HistoDataAxesWidget *a = ax[cur];
 		double lo = a->winLo, hi = a->winHi;
 		if (what == 0)      lo = eMin->text().toDouble();
 		else if (what == 1) hi = eMax->text().toDouble();
@@ -8527,7 +8759,7 @@ public:
 
 	explicit ImageEnhanceDialog(QWidget *parent, Scene *scene, const QString &imgName = QString())
 	    : scn(scene), srcName(imgName) {
-		HistoUiLoader loader;
+		HistoDataUiLoader loader;
 		QFile f(gmtvtkUiDir() + "/image_enhance.ui");
 		if (!f.open(QFile::ReadOnly)) {
 			qWarning("ImageEnhanceDialog: cannot open %s", qUtf8Printable(f.fileName()));
@@ -8538,9 +8770,9 @@ public:
 		if (!dlg) return;
 		QDialog *d = dlg;
 
-		ax[0] = static_cast<HistoAxesWidget *>(d->findChild<QWidget *>("axes1"));
-		ax[1] = static_cast<HistoAxesWidget *>(d->findChild<QWidget *>("axes2"));
-		ax[2] = static_cast<HistoAxesWidget *>(d->findChild<QWidget *>("axes3"));
+		ax[0] = static_cast<HistoDataAxesWidget *>(d->findChild<QWidget *>("axes1"));
+		ax[1] = static_cast<HistoDataAxesWidget *>(d->findChild<QWidget *>("axes2"));
+		ax[2] = static_cast<HistoDataAxesWidget *>(d->findChild<QWidget *>("axes3"));
 		if (!ax[0] || !ax[1] || !ax[2]) { delete d; dlg = nullptr; return; }
 
 		// The X button PARKS instead of closing. WA_DeleteOnClose is deliberately NOT set, and the
@@ -8679,10 +8911,13 @@ public:
 			                       "push_scaterPlot", "push_decorrStrectch" })
 				if (auto *w = d->findChild<QWidget *>(n)) w->hide();
 			ax[0]->showXAxis = true;
-			ax[0]->setGeometry(0, 129, 486, 160);
-			if (auto *w = d->findChild<QWidget *>("frame_axes")) w->setGeometry(5, 115, 526, 157);
-			if (auto *w = d->findChild<QWidget *>("text_tip"))   w->setGeometry(6, 267, 250, 15);
-			if (auto *w = d->findChild<QWidget *>("text_stat"))  w->setGeometry(380, 267, 150, 15);
+			// The axes (tick labels included) END where the frame ends, and the tip/statistic line sits
+			// BELOW both — as axes3/text_tip do in the three-band layout. A 160-px axes reaching y=289
+			// put its X labels under the text at y=267.
+			ax[0]->setGeometry(0, 129, 486, 140);
+			if (auto *w = d->findChild<QWidget *>("frame_axes")) w->setGeometry(5, 115, 526, 154);
+			if (auto *w = d->findChild<QWidget *>("text_tip"))   w->setGeometry(6, 271, 250, 15);
+			if (auto *w = d->findChild<QWidget *>("text_stat"))  w->setGeometry(380, 271, 150, 15);
 			d->resize(d->width(), 289);
 		}
 		syncBoxes();
@@ -8732,104 +8967,99 @@ public:
 class BinarizeDialog;
 static std::map<Scene *, BinarizeDialog *> g_binarizeDlgs;
 
-class BinHistoWidget : public QWidget {   // no Q_OBJECT (only paint/mouse overrides, like BaseMapArea)
+// Binarize's histogram: THE image-histogram axes (HistoDataAxesWidget — same bins, same look, same
+// zoom/pan as Show Histogram and Image Enhance; DN bins for a 16-bit image), with thresholdit's
+// own handles on top: ONE grey line (the level) or a red [lo,hi] box with three handles. Handles
+// are in DATA values; a left-drag that STARTS ON a handle moves it, any other drag moves the
+// histogram and the wheel zooms, as in every histogram window.
+class BinHistoWidget : public HistoDataAxesWidget {   // no Q_OBJECT (only paint/mouse overrides)
 public:
-	double counts[256];                   // grey-level histogram, as Julia's histogray gives it
 	bool   haveHisto = false;
 	bool   windowMode = false;            // false: single line (level);  true: [lo,hi] band
-	double level = 128.0;                 // single-line threshold, grey level [0 255]
-	double lo = 64.0, hi = 192.0;         // window-mode band, grey levels [0 255]
-	std::function<void()> onReleased;     // a drag finished -> the dialog asks Julia to re-binarize
+	double level = 128.0;                 // single-line threshold, data value
+	double lo = 64.0, hi = 192.0;         // window-mode band, data values
+	std::function<void()> onDragged;      // a drag finished -> the dialog asks Julia to re-binarize
 
-	explicit BinHistoWidget(QWidget *p) : QWidget(p) {
-		for (double &c : counts) c = 0.0;
+	explicit BinHistoWidget(QWidget *p) : HistoDataAxesWidget(p) {
 		setMinimumSize(200, 50);
+		patch = QColor(120, 255, 114);    // image_histo's green, as before
+		showXAxis = true;
 		setCursor(Qt::SizeAllCursor);     // every drag in iGMT uses SizeAll, never a cross
 	}
+	// A 16-bit image: the bins span [lo, hi] in DNs; the box starts on the middle half of that.
+	void setDataRange(double dlo, double dhi) {
+		setXRange(dlo, dhi);
+		lo = dlo + 0.25 * (dhi - dlo);  hi = dlo + 0.75 * (dhi - dlo);
+	}
 	void setHistogram(const double *c, int n) {
-		for (int k = 0; k < 256; ++k) counts[k] = (c && k < n) ? c[k] : 0.0;
+		if (dataRange) setBins(c, n);
+		else if (n >= 256) setCounts(c);
 		haveHisto = true;
 		update();
 	}
-	// Grey level <-> widget x. The plot area is the widget minus a 4 px side margin and the bottom
-	// strip that carries the level text (Mirone's `hText` under the axes).
-	double plotLeft()  const { return 4.0; }
-	double plotRight() const { return width() - 4.0; }
-	double plotBottom() const { return height() - 14.0; }
-	double v2x(double v) const { return plotLeft() + (v / 255.0) * (plotRight() - plotLeft()); }
-	double x2v(double x) const {
-		const double t = (x - plotLeft()) / std::max(1.0, plotRight() - plotLeft());
-		return std::clamp(t * 255.0, 0.0, 255.0);
-	}
 
 protected:
-	int drag = 0;                         // 0 none, 1 the single line, 2 lo, 3 the whole box, 4 hi
+	int hdrag = 0;                        // 0 none, 1 the single line, 2 lo, 3 the whole box, 4 hi
 
-	void paintEvent(QPaintEvent *) override {
-		QPainter g(this);
-		g.fillRect(rect(), palette().window());
-		const double y0 = plotBottom();
-		// The SAME histogram painter "Image -> Show Histogram" uses (image_histo's plot_result +
-		// localStem: green patch, black stems, YLim [0 max]) — one look, one function.
-		if (haveHisto)
-			paintMironeHisto(g, QRectF(plotLeft(), 2.0, plotRight() - plotLeft(), y0 - 2.0),
-			                 counts, QColor(120, 255, 114));
-		g.setPen(QPen(Qt::black, 1));
-		g.drawLine(QPointF(plotLeft(), y0), QPointF(plotRight(), y0));
+	void paintEvent(QPaintEvent *e) override {
+		HistoDataAxesWidget::paintEvent(e);
 		if (!haveHisto) return;
+		QPainter g(this);
+		const QRectF box = plotRect();
+		g.setClipRect(box);
+		auto label = [&](double v, double x) {
+			g.drawText(QRectF(x - 40.0, box.top() + 1.0, 80.0, 14.0), Qt::AlignCenter, QString::number(qRound64(v)));
+		};
 		if (windowMode) {                                  // the box + its three red handles
 			const double xl = v2x(lo), xr = v2x(hi), xc = v2x(0.5 * (lo + hi));
-			g.fillRect(QRectF(xl, 0.0, xr - xl, y0), QColor(255, 80, 80, 40));
+			g.fillRect(QRectF(xl, box.top(), xr - xl, box.height()), QColor(255, 80, 80, 40));
 			g.setPen(QPen(QColor(220, 40, 40), 2));
-			g.drawLine(QPointF(xl, 0.0), QPointF(xl, y0));
-			g.drawLine(QPointF(xr, 0.0), QPointF(xr, y0));
+			g.drawLine(QPointF(xl, box.top()), QPointF(xl, box.bottom()));
+			g.drawLine(QPointF(xr, box.top()), QPointF(xr, box.bottom()));
 			g.setPen(QPen(QColor(220, 40, 40), 2, Qt::DashLine));
-			g.drawLine(QPointF(xc, 0.0), QPointF(xc, y0));
+			g.drawLine(QPointF(xc, box.top()), QPointF(xc, box.bottom()));
 			g.setPen(palette().windowText().color());
-			g.drawText(QRectF(xl - 40.0, y0, 80.0, 14.0), Qt::AlignCenter, QString::number(qRound(lo)));
-			g.drawText(QRectF(xr - 40.0, y0, 80.0, 14.0), Qt::AlignCenter, QString::number(qRound(hi)));
+			label(lo, xl);  label(hi, xr);
 		}
 		else {                                             // the single grey line + its level text
 			const double x = v2x(level);
 			g.setPen(QPen(QColor(128, 128, 128), 2));
-			g.drawLine(QPointF(x, 0.0), QPointF(x, y0));
+			g.drawLine(QPointF(x, box.top()), QPointF(x, box.bottom()));
 			QFont f = g.font(); f.setBold(true); g.setFont(f);
 			g.setPen(QColor(102, 102, 102));
-			g.drawText(QRectF(x - 40.0, y0, 80.0, 14.0), Qt::AlignCenter, QString::number(qRound(level)));
+			label(level, x);
 		}
 	}
 	void mousePressEvent(QMouseEvent *e) override {
-		if (!haveHisto) return;
-		const double x = e->position().x();
-		if (windowMode) {
-			const double dl = std::abs(x - v2x(lo)), dr = std::abs(x - v2x(hi));
-			const double dc = std::abs(x - v2x(0.5 * (lo + hi)));
-			const double d  = std::min(dc, std::min(dl, dr));
-			if (d > 8.0) return;                          // clicked away from every handle
-			drag = (d == dl) ? 2 : (d == dc) ? 3 : 4;
+		if (haveHisto && e->button() == Qt::LeftButton) {
+			const double x = e->position().x();
+			if (windowMode) {
+				const double dl = std::abs(x - v2x(lo)), dr = std::abs(x - v2x(hi));
+				const double dc = std::abs(x - v2x(0.5 * (lo + hi)));
+				const double d  = std::min(dc, std::min(dl, dr));
+				if (d <= 8.0) { hdrag = (d == dl) ? 2 : (d == dc) ? 3 : 4;  return; }
+			}
+			else if (std::abs(x - v2x(level)) <= 8.0) { hdrag = 1;  return; }
 		}
-		else {
-			if (std::abs(x - v2x(level)) > 8.0) return;
-			drag = 1;
-		}
+		HistoDataAxesWidget::mousePressEvent(e);          // right button: pan
 	}
 	void mouseMoveEvent(QMouseEvent *e) override {
-		if (!drag) return;
-		const double v = x2v(e->position().x());
-		if (drag == 1) level = v;
-		else if (drag == 2) lo = std::min(v, hi - 1.0);
-		else if (drag == 4) hi = std::max(v, lo + 1.0);
+		if (!hdrag) { HistoDataAxesWidget::mouseMoveEvent(e);  return; }
+		const double v = std::clamp(x2v(e->position().x()), xLo, xHi), one = binStep();
+		if (hdrag == 1) level = v;
+		else if (hdrag == 2) lo = std::min(v, hi - one);
+		else if (hdrag == 4) hi = std::max(v, lo + one);
 		else {                                            // the centre handle slides the whole box
 			const double half = 0.5 * (hi - lo);
-			lo = std::clamp(v - half, 0.0, 255.0 - 2.0 * half);
+			lo = std::clamp(v - half, xLo, xHi - 2.0 * half);
 			hi = lo + 2.0 * half;
 		}
 		update();
 	}
-	void mouseReleaseEvent(QMouseEvent *) override {
-		if (!drag) return;
-		drag = 0;
-		if (onReleased) onReleased();                     // NOW re-binarize (Mirone's VLUpFcn/BoxUpFcn)
+	void mouseReleaseEvent(QMouseEvent *e) override {
+		if (!hdrag) { HistoDataAxesWidget::mouseReleaseEvent(e);  return; }
+		hdrag = 0;
+		if (onDragged) onDragged();                       // NOW re-binarize (Mirone's VLUpFcn/BoxUpFcn)
 	}
 };
 
@@ -8888,9 +9118,13 @@ public:
 		};
 	}
 
-	// Julia pushes the grey-level histogram here once, when the dialog opens (op "init").
+	// Julia pushes the histogram here once, when the dialog opens (op "init") — `_image_hist`'s: 256
+	// grey levels, or DN bins for a 16-bit image (after setDataRange).
 	void setHistogram(const double *c, int n) {
 		if (histo) histo->setHistogram(c, n);
+	}
+	void setDataRange(double lo, double hi) {
+		if (histo) histo->setDataRange(lo, hi);
 	}
 	// Julia pushes the current mask here after EVERY op. `data` is w*h bytes, row-major, top row
 	// first, 0 = black / 255 = white. `level` (or lo/hi) < 0 means "leave the handles where they
@@ -9016,7 +9250,7 @@ public:
 		});
 
 		// Drag release -> re-binarize with the handle(s) the user just moved.
-		if (histo) histo->onReleased = [this]() {
+		if (histo) histo->onDragged = [this]() {
 			if (!histo) return;
 			if (histo->windowMode)
 				send(QString("window;%1;%2;%3").arg(histo->lo, 0, 'f', 2).arg(histo->hi, 0, 'f', 2).arg(revertArg()));
@@ -28449,12 +28683,68 @@ public:
 		const int r = call(s, "probe", &t);
 		return r > 0 ? r : 0;
 	}
+	// Pick separate single-band files (Landsat ships one GeoTIFF per band) and have Julia stack them
+	// into ONE band source for this window. Paths travel newline-separated: ';' is legal in a Windows
+	// file name, '\n' is not. Returns true when the window now has bands.
+	// Where the bands come from when the window has no band stack: single-band images it ALREADY
+	// shows (at least 3 of one size — Julia counts them) or separate files. With no such images
+	// the file picker opens straight away.
+	static bool askBandSource(Scene *s) {
+		const int nLoaded = call(s, "loaded");
+		if (nLoaded >= 3) {
+			// Two choices and NO Cancel button: the window's own X is the way out.
+			QDialog ask(s ? (QWidget *)s->win : nullptr);
+			ask.setWindowTitle("Load Bands");
+			ask.setWindowFlags(Qt::Dialog | Qt::WindowTitleHint | Qt::WindowCloseButtonHint);
+			auto *lay = new QVBoxLayout(&ask);
+			lay->setContentsMargins(8, 8, 8, 8);  lay->setSpacing(6);
+			lay->addWidget(new QLabel(QString("This window holds %1 single-band images of the same size.\n"
+			                                  "Use them as the bands, or pick band files?").arg(nLoaded), &ask));
+			auto *row = new QHBoxLayout;
+			QPushButton *bUse  = new QPushButton(QString("Use the %1 loaded images").arg(nLoaded), &ask);
+			QPushButton *bPick = new QPushButton("Pick band files…", &ask);
+			row->addWidget(bUse);  row->addWidget(bPick);
+			lay->addLayout(row);
+			bUse->setDefault(true);
+			QPushButton *clicked = nullptr;
+			QObject::connect(bUse,  &QPushButton::clicked, &ask, [&]() { clicked = bUse;  ask.accept(); });
+			QObject::connect(bPick, &QPushButton::clicked, &ask, [&]() { clicked = bPick; ask.accept(); });
+			ask.exec();
+			if (clicked == bUse) {
+				QString msg;
+				if (call(s, "useloaded", &msg) < 1) {
+					QMessageBox::warning(s ? (QWidget *)s->win : nullptr, "Load Bands", msg);
+					return false;
+				}
+				return true;
+			}
+			if (clicked != bPick) return false;
+		}
+		return askBandFiles(s);
+	}
+	static bool askBandFiles(Scene *s) {
+		const QStringList fns = QFileDialog::getOpenFileNames(s ? (QWidget *)s->win : nullptr,
+			"Band files (one band per file, R/G/B in any order)", prefStartDir(),
+			"Rasters (*.tif *.tiff *.TIF *.TIFF *.jp2 *.img *.vrt);;All files (*)");
+		if (fns.isEmpty()) return false;
+		rememberStartDir(fns.first());
+		QString msg;
+		if (call(s, "files\n" + fns.join('\n'), &msg) < 1) {
+			QMessageBox::warning(s ? (QWidget *)s->win : nullptr, "Load Bands", msg);
+			return false;
+		}
+		return true;
+	}
 	static void openFor(Scene *s) {
 		auto it = registry().find(s);
 		if (it != registry().end() && it.value()->dlg) {
 			it.value()->unpark();
 			return;
 		}
+		// No band stack behind this window (nothing opened, or a single-band file such as one Landsat
+		// _B4.TIF): ASK where the bands come from — images already loaded, or band files stacked one
+		// file = one band, in file-pick order. Cancel = nothing happens.
+		if (bandCount(s) < 1 && !askBandSource(s)) return;
 		auto *w = new BandsListDialog(s);
 		if (!w->dlg) { delete w; return; }
 		registry().insert(s, w);
@@ -29602,11 +29892,10 @@ static void scriptEditorPark(const ScriptHost &h, QWidget *w) {
 	unfoldSceneObjects(h.parkIn);                               // a handle nobody can see is no handle
 }
 
-// The X does not destroy the editor: it hides and parks as a handle in Scene Objects, so an edited
-// script survives. Only the parked row's "Delete" lets a close through. MINIMISE parks too, so the
-// title-bar button lands in the same place instead of the editor vanishing to the taskbar; Qt reports
-// the state change AFTER the window manager has minimised, so the restore + park is deferred one
-// event-loop turn (same as the Satellite dialog).
+// The X DESTROYS the editor (user order, 2026-10-29): the close goes through, WA_DeleteOnClose deletes
+// it and its registry entry goes with it, so the next Plot with GMT.jl builds a fresh script. MINIMISE
+// and Esc park it as a handle in Scene Objects; Qt reports the minimise AFTER the window manager has
+// done it, so the restore + park is deferred one event-loop turn (same as the Satellite dialog).
 class ScriptEditorParkOnClose : public QObject {
 public:
 	ScriptHost host_;
@@ -29614,10 +29903,13 @@ public:
 	bool eventFilter(QObject *obj, QEvent *ev) override {
 		QWidget *w = qobject_cast<QWidget *>(obj);
 		if (ev->type() == QEvent::Close) {
-			if (w && w->property("igmtReallyClose").toBool()) return QObject::eventFilter(obj, ev);
-			ev->ignore();
-			scriptEditorPark(host_, w);
-			return true;
+			// a row it may still have (parked once, then shown again) goes with it
+			if (w && !w->property("igmtReallyClose").toBool()) {
+				if (host_.unpark) host_.unpark(w);
+				else if (host_.parkIn && sceneAlive(host_.parkIn)) unparkTool(host_.parkIn, w);
+				scriptEditorRegistry().remove(host_.key);
+			}
+			return QObject::eventFilter(obj, ev);
 		}
 		// Esc parks as well, and is CONSUMED here. Left to QDialog it runs reject(), which in Qt 6 closes
 		// with NO Close event and, the editor being WA_DeleteOnClose, deletes it — the handle parked from
@@ -29816,7 +30108,7 @@ static void buildScriptEditor(const ScriptHost &host, const QString &text) {
 	// WindowMinimizeButtonHint is what puts the MINIMISE button in the title bar (a QDialog has none).
 	dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint | Qt::WindowMinimizeButtonHint);
 	scriptEditorRegistry().insert(key, dlg);
-	dlg->installEventFilter(new ScriptEditorParkOnClose(dlg, host));   // X / minimise / Esc -> park, never destroy
+	dlg->installEventFilter(new ScriptEditorParkOnClose(dlg, host));   // X destroys; minimise / Esc park
 	QObject::connect(dlg, &QObject::destroyed, [key]() { scriptEditorRegistry().remove(key); });
 	QVBoxLayout *lay = new QVBoxLayout(dlg);
 	QPlainTextEdit *ed = new QPlainTextEdit(text, dlg);
@@ -29898,7 +30190,7 @@ static void buildScriptEditor(const ScriptHost &host, const QString &text) {
 			QString dest = QFileDialog::getSaveFileName(dlg, "Save standalone GMT.jl script",
 			                                            prefStartDir("igmt_script.zip"), "Zip archive (*.zip)");
 			if (dest.isEmpty() || !g_juliaEval) return;
-			if (!dest.endsWith(".zip", Qt::CaseInsensitive)) dest += ".zip";
+			dest = withExtIfNone(dest, ".zip");
 			rememberStartDir(dest);
 			const QString cmd = QString("InteractiveGMT._script_save_standalone(Ptr{Nothing}(UInt(%1)), raw\"%2\")")
 			                    .arg((qulonglong)(quintptr)host.key).arg(QDir::toNativeSeparators(dest));
@@ -29916,7 +30208,7 @@ static void buildScriptEditor(const ScriptHost &host, const QString &text) {
 		QString dest = QFileDialog::getSaveFileName(dlg, "Save GMT.jl script", prefStartDir("igmt_script.jl"),
 		                                            "Julia script (*.jl)");
 		if (dest.isEmpty()) return;
-		if (!dest.endsWith(".jl", Qt::CaseInsensitive)) dest += ".jl";
+		dest = withExtIfNone(dest, ".jl");
 		rememberStartDir(dest);
 		QFile w(dest);
 		if (!w.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text)) {
@@ -30382,11 +30674,15 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// Save Screenshot GeoTIFF: greyed out unless the window has a grid/image with a known reference
 	// system (s->hasCRS()) — refreshed on every menu open, same gating rule as aSaveGrid/aSaveImage below.
 	QAction *aShotGeoTiff = mFile->addAction("Save Screenshot &GeoTIFF…", actShotGeoTiff);
-	// Save Grid / Save Image: each opens the format-picker dialog (saveObjectDialog) for the window's
-	// primary object (empty name). Greyed out when the window holds no grid / no image — refreshed on
-	// every menu open so it tracks drops, basemap tiles, etc.
-	QAction *aSaveGrid  = mFile->addAction("Save &Grid…",  [s]() { saveObjectDialog(s, "grid",  QString()); });
-	QAction *aSaveImage = mFile->addAction("Save &Image…", [s]() { saveObjectDialog(s, "image", QString()); });
+	// Save Grid / Save Image: each opens the format-picker dialog (saveObjectDialog) for the grid / image
+	// ON DISPLAY — the same resolvers every Grid and Image tool opens on (activeGridName,
+	// displayedImageName). An empty name meant "the first registered", so with three bands loaded File >
+	// Save Image wrote the first band whatever was on screen. Greyed out when the window holds no grid
+	// / no image — refreshed on every menu open so it tracks drops, basemap tiles, etc.
+	QAction *aSaveGrid  = mFile->addAction("Save &Grid…",  [s]() {
+		saveObjectDialog(s, "grid", QString::fromStdString(activeGridName(s)));
+	});
+	QAction *aSaveImage = mFile->addAction("Save &Image…", [s]() { saveObjectDialog(s, "image", displayedImageName(s)); });
 	// …and the clipboard twin of Save Screenshot img, in the same menu the user goes to for a picture:
 	// the displayed view (globe wrap, tilt, VE) with a transparent background. Same one function the
 	// image handle's own "Copy to Clipboard" runs — copyViewToClipboardUI (50_scene.cpp).
@@ -30476,7 +30772,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 			}
 			QString f = QFileDialog::getSaveFileName(win, "Save Session", prefStartDir(), "iGMT Session (*.igmtz)");
 			if (f.isEmpty()) return;
-			if (!f.endsWith(".igmtz", Qt::CaseInsensitive)) f += ".igmtz";
+			f = withExtIfNone(f, ".igmtz");
 			rememberStartDir(f);
 			const QByteArray utf8 = f.toUtf8();
 			g_juliaSaveSession(s, utf8.constData());
@@ -30582,9 +30878,9 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// holds none. Show Histogram works off the DISPLAY, so a grid window qualifies too.
 	QObject::connect(mImage, &QMenu::aboutToShow, [s, aBinarize, aHisto, aResize, aShape, aClassify,
 	                                              aEnh1, aFlipUD, aFlipLR, aRgbExp, aBands]() {
-		// Load Bands only means something for a window opened from a multiband raster — the same
-		// probe the dialog itself opens with answers that (0 = no such file).
-		aBands->setEnabled(BandsListDialog::bandCount(s) > 1);
+		// Load Bands is always available: without a multiband raster behind the window it asks for
+		// separate band files (BandsListDialog::askBandFiles).
+		aBands->setEnabled(true);
 		// Explore RGB splits an image into colour components, so it needs a genuine RGB one — Mirone
 		// hides the entry otherwise (`if (ndims(img) < 3), return, end`). Julia flags which images
 		// qualify (s->imgRGB), because the viewer sees every image as an RGBA texture.

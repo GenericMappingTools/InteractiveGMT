@@ -33,6 +33,10 @@ const _BANDS_INFO = Dict{Ptr{Cvoid},NamedTuple{(:path, :n, :names, :bytes, :isda
 # Slicing on demand keeps ONE. The kind is whatever `pca` answered: an image cube for a picture
 # stack, a grid cube for a data stack (see `_bands_pca`).
 const _BANDS_PCA  = Dict{Ptr{Cvoid},Union{GMTgrid,GMTimage}}()
+# Bands taken from single-band IMAGES ALREADY IN THE WINDOW (`_bands_from_loaded!`): references to
+# the images the window already holds (the full-precision originals where one was stashed), never
+# copies. Such a source has no file, so its `_BANDS_INFO` path is "".
+const _BANDS_MEM  = Dict{Ptr{Cvoid},Vector{GMTimage}}()
 
 # The extensions Mirone sends down the multiband path by name alone (aux_funs findFileType). This
 # list only widens the door: a raster of any other extension still qualifies by its band count.
@@ -113,8 +117,81 @@ function _bands_register!(scene::Ptr{Cvoid}, path::String)::Int
 	n < 1 && return 0
 	_BANDS_INFO[scene] = (path = path, n = n, names = names, bytes = bytes, isdata = isdata)
 	delete!(_BANDS_PCA, scene)          # a freshly opened file replaces any previous components
+	delete!(_BANDS_MEM, scene)          # ... and any bands taken from loaded images
 	return n
 end
+
+# Separate single-band files (Landsat: one GeoTIFF per band) as ONE band stack: a `-separate` VRT
+# (one file = one band, in pick order), written to GDAL's in-memory filesystem — nothing on disk —
+# and then registered exactly like a multiband file opened from disk, so everything downstream
+# (names from the VRT's sources, Load gray/RGB, PCA, the shared stretch) is the same code.
+const _BANDS_VRT_SEQ = Ref(0)
+function _bands_from_files!(scene::Ptr{Cvoid}, files::Vector{String})::Int
+	isempty(files) && return 0
+	bad = filter(f -> !isfile(first(split(f, '?'))), files)
+	isempty(bad) || error("file not found: " * join(bad, ", "))
+	vrt = string("/vsimem/igmt_bands_", UInt(scene), "_", (_BANDS_VRT_SEQ[] += 1), ".vrt")
+	GMT.gdalbuildvrt(_emp_vsi.(files), ["-separate"]; save = vrt)
+	return _bands_register!(scene, vrt)
+end
+
+# The single-band images this window already shows that can serve as bands: the LARGEST set of at
+# least 3 sharing one size (and one memory layout, so they stack as they lie). Each is the stashed
+# full-precision original when there is one (a 16-bit band is displayed as an 8-bit copy), else the
+# displayed image. A band this dialog itself put up is not offered back to it.
+function _bands_loaded_candidates(scene::Ptr{Cvoid})
+	objs  = get(_SCENE_OBJS, scene, Tuple{Symbol,String,Any}[])
+	origs = get(_IMG_ORIG, scene, Dict{String,GMTimage}())
+	shown = get(_BANDS_SHOWN, scene, (:none, ""))[2]
+	groups = Dict{Tuple{Tuple{Int,Int},String},Vector{Tuple{String,GMTimage}}}()
+	seen = Set{String}()
+	for (kind, name, data) in objs
+		(kind === :image && data isa GMTimage && !isempty(name) && name != shown && !(name in seen)) || continue
+		I = get(origs, name, data)
+		(ndims(I.image) == 2 || size(I.image, 3) == 1) || continue
+		push!(seen, name)
+		key = ((size(I.image, 1), size(I.image, 2)), first(I.layout, 2))
+		push!(get!(() -> Tuple{String,GMTimage}[], groups, key), (name, I))
+	end
+	best = Tuple{String,GMTimage}[]
+	for v in values(groups)
+		length(v) > length(best) && (best = v)
+	end
+	return length(best) >= 3 ? best : Tuple{String,GMTimage}[]
+end
+
+# Register those images as this window's band source, in the order Scene Objects holds them.
+function _bands_from_loaded!(scene::Ptr{Cvoid})::Int
+	c = _bands_loaded_candidates(scene)
+	isempty(c) && return 0
+	imgs = GMTimage[I for (_, I) in c]
+	_BANDS_INFO[scene] = (path = "", n = length(imgs), names = String[nm for (nm, _) in c],
+	                      bytes = all(I -> eltype(I.image) == UInt8, imgs), isdata = false)
+	delete!(_BANDS_PCA, scene)
+	_BANDS_MEM[scene] = imgs
+	return length(imgs)
+end
+
+# Three in-memory bands as ONE picture, handed over RAW like `_bands_read_rgb_file` (the shared
+# `_add_image_to_scene` stretches a non-8-bit composite and keeps its original). Band-planar.
+function _bands_mem_rgb(imgs::Vector{GMTimage}, sel::Vector{Int})
+	T = promote_type((eltype(imgs[k].image) for k in sel)...)
+	I1 = imgs[sel[1]]
+	out = Array{T}(undef, size(I1.image, 1), size(I1.image, 2), length(sel))
+	for (ch, k) in enumerate(sel)
+		out[:, :, ch] .= view(imgs[k].image, :, :, 1)
+	end
+	C = GMT.mat2img(out, I1)
+	C.layout = string(first(I1.layout, 2), "Ba")
+	# `mat2img` copied the FIRST band's z range; the composite spans all three (the shared stretch,
+	# `_stretch_to_u8`, scales by it — B2 first under a brighter B4 overflowed UInt8).
+	C.range[5] = minimum(imgs[k].range[5] for k in sel)
+	C.range[6] = maximum(imgs[k].range[6] for k in sel)
+	return _img_drop_palette!(C)
+end
+
+# The WHOLE in-memory stack as one cube, for the PCA (same shape `gdaltranslate` returns for a file).
+_bands_mem_cube(imgs::Vector{GMTimage}) = _bands_mem_rgb(imgs, collect(1:length(imgs)))
 
 # ONE band, exactly as GDAL hands it over — see the pixels/data split at the top of this file.
 # Byte and UInt16 come back as a GMTimage (a picture; `_add_image_to_scene` stashes the original in
@@ -123,6 +200,8 @@ end
 function _bands_get(scene::Ptr{Cvoid}, k::Int)
 	P = get(_BANDS_PCA, scene, nothing)
 	P !== nothing && return _bands_pca_layer(P, k)
+	M = get(_BANDS_MEM, scene, nothing)
+	M !== nothing && return M[clamp(k, 1, length(M))]
 	return _bands_read(_BANDS_INFO[scene].path, k)
 end
 
@@ -148,6 +227,8 @@ function _bands_get_rgb(scene::Ptr{Cvoid}, r::Int, g::Int, b::Int)
 	info = _BANDS_INFO[scene]
 	P = get(_BANDS_PCA, scene, nothing)
 	P !== nothing && return _bands_pca_rgb(P, r, g, b)   # components compose whatever the source was
+	M = get(_BANDS_MEM, scene, nothing)
+	M !== nothing && return _bands_mem_rgb(M, [r, g, b])
 	return _bands_read_rgb_file(info.path, r, g, b)
 end
 
@@ -189,8 +270,10 @@ end
 # back to be put in their places. Public API only — no `princomp!`, no `GI2vectors`.
 function _bands_pca(scene::Ptr{Cvoid}, q::Int = 3)
 	info = _BANDS_INFO[scene]
-	cube = GMT.gdaltranslate(_emp_vsi(info.path))      # the whole stack, one read, in its own type
-	nd   = _bands_nodata(info.path)
+	M    = get(_BANDS_MEM, scene, nothing)
+	cube = M !== nothing ? _bands_mem_cube(M) :         # bands taken from loaded images, or
+	       GMT.gdaltranslate(_emp_vsi(info.path))      # the whole stack, one read, in its own type
+	nd   = M !== nothing ? Float64(M[1].nodata) : _bands_nodata(info.path)
 	X    = _bands_cube_matrix(cube)                    # nothing to mask -> plain `pca(cube)` below
 	(X === nothing || isnan(nd)) && (P0 = GMT.pca(cube; npc = info.n); return (P0, String.(P0.names)))
 	keep = _bands_valid_rows(X, Float32(nd), _bands_nan_possible(cube))
@@ -338,10 +421,24 @@ end
 #   gray;<k>         -> load band k into the window (picture or grid, per its type)
 #   rgb;<r>;<g>;<b>  -> load the three bands as one RGB picture
 #   pca              -> compute the components, register THEM as the band source, return their names
+#   files\n<p1>\n…   -> stack separate single-band files as this window's band source
+#   loaded           -> ret = how many images already in the window can serve as bands (0 = < 3)
+#   useloaded        -> make those images this window's band source
 # A negative return is an error whose |ret| bytes are in txt.
 function _on_bands(scene::Ptr{Cvoid}, creq::Cstring, txt::Ptr{UInt8}, txtcap::Cint)::Cint
 	try
-		req = split(unsafe_string(creq), ';')
+		sreq = unsafe_string(creq)
+		if startswith(sreq, "files\n")
+			n = _bands_from_files!(scene, String[String(p) for p in split(sreq, '\n')[2:end] if !isempty(p)])
+			return n > 0 ? Cint(n) : _bands_err(txt, txtcap, "could not stack those files as bands")
+		end
+		# How many images already in the window could serve as bands (0 = fewer than 3 of one size).
+		sreq == "loaded" && return Cint(length(_bands_loaded_candidates(scene)))
+		if sreq == "useloaded"
+			n = _bands_from_loaded!(scene)
+			return n > 0 ? Cint(n) : _bands_err(txt, txtcap, "this window has no 3 single-band images of the same size")
+		end
+		req = split(sreq, ';')
 		op  = String(req[1])
 		info = get(_BANDS_INFO, scene, nothing)
 		if info === nothing
@@ -367,7 +464,7 @@ function _on_bands(scene::Ptr{Cvoid}, creq::Cstring, txt::Ptr{UInt8}, txtcap::Ci
 			g = clamp(parse(Int, req[3]), 1, info.n)
 			b = clamp(parse(Int, req[4]), 1, info.n)
 			img = Base.invokelatest(_bands_get_rgb, scene, r, g, b)
-			_bands_show!(scene, img, string(info.names[r], " | ", info.names[g], " | ", info.names[b]))
+			_bands_show!(scene, img, "RGB composition")
 			return Cint(1)
 		elseif op == "pca"
 			delete!(_BANDS_PCA, scene)          # let the PREVIOUS run's cube go before allocating a new one
@@ -402,7 +499,9 @@ const _BANDS_SHOWN = Dict{Ptr{Cvoid},Tuple{Symbol,String}}()
 # only bands this dialog loaded are replaced.
 function _bands_show!(scene::Ptr{Cvoid}, data, name::AbstractString)
 	prev = get(_BANDS_SHOWN, scene, nothing)
-	if prev !== nothing && prev[2] != String(name)
+	# Removed even when the name is the same: every composite is "RGB composition", and a second one
+	# must take the first one's place, not stand beside it under the same name.
+	if prev !== nothing
 		kind, pname = prev
 		try
 			ccall(_fn(kind === :grid ? :gmtvtk_remove_grid_h : :gmtvtk_remove_image_h),
@@ -412,7 +511,10 @@ function _bands_show!(scene::Ptr{Cvoid}, data, name::AbstractString)
 			@debug "Load Bands: could not remove the previous band" exception = (e,)
 		end
 	end
-	_drop_into(scene, data, String(name))
+	# Bands stacked from separate files (`_bands_from_files!`) can land in an EMPTY window: the first
+	# Load then promotes it, the same `empty` test every other open door makes (paste.jl, drop.jl).
+	empty = ccall(_fn(:gmtvtk_has_surface), Cint, (Ptr{Cvoid},), scene) == 0
+	_drop_into(scene, data, String(name); promote = empty)
 	_adopt_new_element(scene, String(name), data)      # this is what the window shows now
 	_BANDS_SHOWN[scene] = (data isa GMTgrid ? :grid : :image, String(name))
 	return

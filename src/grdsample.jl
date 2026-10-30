@@ -68,7 +68,7 @@ function _on_grdsample(scene::Ptr{Cvoid}, cparams::Cstring)::Cvoid
 				_add_image_to_scene(scene, I_out, newname)
 				_adopt_derived!(scene, newname, I_out)     # same one transition as the grid branch above
 			else
-				GMT.gdalwrite(output, I_out); iview_image_obj(I_out, base * " resampled")
+				_save_image(I_out, "", output); iview_image_obj(I_out, base * " resampled")   # THE image writer (savefile.jl)
 			end
 		else
 			error("grdsample: unsupported input type $(typeof(src))")

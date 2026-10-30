@@ -145,4 +145,55 @@
 	           hits(cpp, r"(\.|->)fillRGB\s*\[\s*\d\s*\]\s*="))   # a WRITE through an object, not the struct default
 	report("Symbol repainted outside the symbol code (fillRGB written outside 50_scene.cpp)", h)
 	@test isempty(h)
+
+	# --- One quantity, one function: an IMAGE's histogram is `_image_hist` (imagehisto.jl) — 256 grey
+	#     levels for 8-bit, DN bins for 16-bit, from the full-precision original. 2026-10-29:
+	#     Show Histogram was given DN bins while Image Enhance kept counting the 8-bit display copy
+	#     itself (GMT.histogray on `_stretch_to_u8`), so the same 16-bit band had two histograms.
+	#     Exempt: `_image_hist` itself; Show Histogram's RENDERED-colour branch (a grid surface's
+	#     colours, no image object behind them); XY analysis (a data series, not an image).
+	ok_hist = r"^function (_image_hist|_hist_dn_count|_on_image_histo)\("
+	h = filter(x -> !occursin(ok_hist, x[3]) && !startswith(x[1], joinpath("src", "xyanalysis.jl")),
+	           hits(jl, r"\b(GMT\.)?(histogray|hst_floats)\("; strip = code_jl))
+	report("Image histogram counted outside _image_hist", h)
+	@test isempty(h)
+	# --- Group-uncheck law: a layer hidden programmatically takes EVERY intent its group row reads with
+	#     it — axes AND the colour bar / legend. Both layer setters (the base and the extras) must clear
+	#     the legend intent. 2026-10-30: baseLayerSetVisible cleared the axes only, so opening three bands
+	#     left the first one a CHECKED group with "Color Bar" checked under an unchecked "Image".
+	geo = read(joinpath(root, "deps", "src", "10_geometry.cpp"), String)
+	h = String[]
+	for fn in ("rasterLayerSetVisible", "baseLayerSetVisible")
+		m = match(Regex("static inline void $fn\\(.*?\\n}\\n", "s"), geo)
+		(m === nothing || !occursin("palette.show = false", m.match)) && push!(h, fn)
+	end
+	isempty(h) || @error "SACRED LAW VIOLATED: Group-uncheck law (a layer setter that leaves the legend on)" setters = h
+	@test isempty(h)
+
+	# --- Same element, same row: every IMAGE and GRID group in Scene Objects starts FOLDED, whether it is
+	#     the window's base layer or an extra. 2026-10-30: three bands opened the same way showed the
+	#     first (the base image) expanded and the other two folded.
+	sc = read(joinpath(root, "deps", "src", "50_scene.cpp"), String)
+	h = String[]
+	for m in eachmatch(r"beginGroupHandle\(", sc)
+		i = m.offset + length("beginGroupHandle(");  depth = 1;  j = i
+		while depth > 0 && j <= lastindex(sc)
+			c = sc[j];  c == '(' && (depth += 1);  c == ')' && (depth -= 1);  j = nextind(sc, j)
+		end
+		call = sc[m.offset:prevind(sc, j)]
+		parts = split(call, ',')
+		length(parts) >= 2 && occursin(r"IC_(Image|Surface)\b", parts[2]) || continue
+		occursin(r"startFolded=\*/\s*true", call) ||
+			push!(h, "deps/src/50_scene.cpp:$(count(==('\n'), sc[1:m.offset]) + 1)")
+	end
+	#     The Aquamoto FILE wrapper is a container of a file's variables, not a layer: it opens.
+	ok_open = [l for l in h if occursin("fileNm", split(sc, '\n')[parse(Int, split(l, ':')[end])])]
+	h = setdiff(h, ok_open)
+	isempty(h) || @error "SACRED LAW VIOLATED: an image/grid group that starts expanded" hits = join(h, "\n")
+	@test isempty(h)
+
+	#     ...and drawn by ONE widget: HistoDataAxesWidget. The bare HistoAxesWidget is its base only.
+	h = hits(cpp, r"new\s+HistoAxesWidget\s*\(")
+	report("Image histogram drawn by a bare HistoAxesWidget (use HistoDataAxesWidget)", h)
+	@test isempty(h)
 end

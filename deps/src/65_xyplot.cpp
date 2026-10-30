@@ -62,6 +62,9 @@ struct XYSeries {
 	// is expressed in X DATA units (not pixels) -- hence its own field: `width` stays the pen width
 	// in px for every kind, so the two never overwrite each other (see xyApplyStyle).
 	int                       kind = 0;
+	// The opacity of a filled kind's fill, 0..1; < 0 = the kind's own (xyApplyStyle). A corner plot's
+	// hexagons and density bands are opaque: their colour IS the value.
+	double                    fillAlpha = -1.0;
 	double                    barWidth = 1.0;
 	bool                      barH = false;     // a BAR series drawn horizontally (the gallery's "barh")
 	// What an area / based-bar series stands on (xyRestack): 0 y = 0, 1 the series before it (stacked
@@ -257,6 +260,12 @@ struct XYPage {
 	std::vector<double>         bpVar;
 	int                         bpPC[2] = { 0, 0 };
 	std::string                 bpSpec;
+	// A page that IS one GMT.jl function (cornerplot, radar, parallelplot — xyanalysis.jl): the input it
+	// was drawn from (Julia's own text, first line "fn=<function>"), which File > Plot with GMT.jl hands to
+	// that function and a corner plot's side panel (xyCornerSyncUi) hands back to redraw another style
+	// (cpStyle: auto, scatter, hexbin, density, contour). Empty gjSpec = not such a page.
+	int                         cpStyle = 0;
+	std::string                 gjSpec;
 };
 
 // Reveal + unfold a viewer's Scene Objects dock (defined in 70_window.cpp, later in this same
@@ -346,6 +355,10 @@ struct XYPlot {
 	QTreeWidget                        *bpTable = nullptr;
 	QComboBox                          *bpX = nullptr, *bpY = nullptr;
 	bool                                bpSyncing = false;     // filling the widgets: their signals do nothing
+	// The corner plot side panel, same place (shown on a corner plot page only): how the pairs are drawn.
+	QWidget                            *cpPanel = nullptr;
+	QComboBox                          *cpStyleBox = nullptr;
+	bool                                cpSyncing = false;
 	QString                             reqErr;                // a failed Julia request's message (xyRequest shows it)
 	bool                                cometBusy = false;     // the gallery's "comet" is animating
 	QTimer                             *profTimer = nullptr;   // a redrawn 3-D track re-runs the mag tools once it settles
@@ -930,7 +943,8 @@ static void xyApplyStyle(XYPlot *s, XYSeries &se) {
 	// An area is filled in its own colour, see-through so areas over areas show; a bar solid.
 	if ((se.kind == 2 || (se.kind >= 6 && se.kind <= 8) || se.kind == 10 || se.kind == 11) && se.plot->GetBrush())
 		se.plot->GetBrush()->SetColor((unsigned char)(se.r * 255), (unsigned char)(se.g * 255),
-		                              (unsigned char)(se.b * 255), se.kind == 2 || se.kind == 10 ? 150 : se.kind == 8 ? 110 : 255);
+		                              (unsigned char)(se.b * 255), se.fillAlpha >= 0 ? (int)std::lround(255 * std::min(1.0, se.fillAlpha)) :
+		                              se.kind == 2 || se.kind == 10 ? 150 : se.kind == 8 ? 110 : 255);
 	if (vtkXYShapePlot *sp = vtkXYShapePlot::SafeDownCast(se.plot)) {
 		sp->Base = se.base;
 		sp->BarW = se.barWidth;
@@ -1388,6 +1402,7 @@ static int xyAddNowCross(XYPlot *s, double cx, double cy, double r, double g, do
 }
 
 static void xyBiplotSyncUi(XYPlot *s);
+static void xyCornerSyncUi(XYPlot *s);
 
 // Drop every series on the current page.
 static void xyClear(XYPlot *s) {
@@ -1400,7 +1415,10 @@ static void xyClear(XYPlot *s) {
 	pg.bpPC[0] = pg.bpPC[1] = 0;
 	pg.bpSpec.clear();
 	xyBiplotSyncUi(s);
-	pg.sgLines.clear();                    // ClearPlots took their plots
+	pg.cpStyle = 0;                        // no longer a GMT.jl function's page: a corner plot's panel goes
+	pg.gjSpec.clear();
+	xyCornerSyncUi(s);
+	pg.sgLines.clear();                   // ClearPlots took their plots
 	pg.refLine[0] = pg.refLine[1] = -1;    // the reference picks went with their curves
 	pg.refRows[0].clear(); pg.refRows[1].clear(); pg.refPicking = false;
 	pg.sgFit = nullptr;
@@ -4024,6 +4042,7 @@ static void xySwitchPage(XYPlot *s, int idx) {
 	xyGridSyncUi(s);                                         // ...and the grid toggles
 	xyMagSyncUi(s);                                       // the bar strip + controls show THIS page's
 	xyBiplotSyncUi(s);                                    // ...and the biplot panel, on a biplot page only
+	xyCornerSyncUi(s);                                    // ...and the corner plot panel, on a corner plot only
 	if (s->widget && s->widget->renderWindow())
 		s->widget->renderWindow()->Render();
 }
@@ -4051,6 +4070,8 @@ static void xyDuplicatePage(XYPlot *s, int idx) {
 	dst.bpVar = src.bpVar;                               // a biplot's copy keeps its panel
 	dst.bpPC[0] = src.bpPC[0];  dst.bpPC[1] = src.bpPC[1];
 	dst.bpSpec = src.bpSpec;
+	dst.cpStyle = src.cpStyle;                           // a corner plot's copy keeps its panel
+	dst.gjSpec = src.gjSpec;
 	xyApplyPageLook(s, dst);
 	xyApplyAxes(s, dst);
 	for (const XYSeries &so : src.series) {
@@ -4392,6 +4413,61 @@ static QWidget *xyBiplotBuildPanel(XYPlot *s) {
 	col->addLayout(g);
 	QObject::connect(s->bpX, QOverload<int>::of(&QComboBox::currentIndexChanged), w, [s](int) { xyBiplotPick(s, 0); });
 	QObject::connect(s->bpY, QOverload<int>::of(&QComboBox::currentIndexChanged), w, [s](int) { xyBiplotPick(s, 1); });
+	w->setMaximumWidth(260);
+	w->setVisible(false);
+	return w;
+}
+
+// ---- the corner plot side panel ----------------------------------------------------------------------
+// How a corner plot draws every pair of variables below its diagonal, as GMT.jl's cornerplot() names the
+// choices (scatter=true, hexbin=true, density=true, contour=true; "Auto" is its own rule: scatter up to
+// 1000 points, hexagons above). A new style is redrawn by Julia from the page's own input
+// (XYPage::gjSpec, a "cornerstyle:" request), by the same _xy_corner_page that drew it. The index is
+// what _XY_CORNER_STYLES (xyanalysis.jl) lists.
+static const char *const xyCornerStyleNames[] = { "Auto (scatter up to 1000 points, hexbin above)", "Scatter",
+	"Hexbin", "Density (filled contours)", "Contour" };
+
+static void xyCornerSyncUi(XYPlot *s) {
+	if (!xyAlive(s) || !s->cpPanel || s->pages.empty()) return;
+	const XYPage &pg = xyCur(s);
+	s->cpSyncing = true;
+	s->cpStyleBox->setCurrentIndex(std::max(0, std::min(pg.cpStyle, s->cpStyleBox->count() - 1)));
+	s->cpPanel->setVisible(pg.gjSpec.rfind("fn=cornerplot\n", 0) == 0);
+	s->cpSyncing = false;
+}
+
+// Another style picked. Deferred: the redraw clears the page, which syncs this very combo box.
+static void xyCornerPick(XYPlot *s) {
+	if (s->cpSyncing || !xyAlive(s)) return;
+	const int st = s->cpStyleBox->currentIndex();
+	QTimer::singleShot(0, s->win, [s, st] {
+		if (!xyAlive(s)) return;
+		const XYPage &cp = xyCur(s);
+		if (cp.gjSpec.rfind("fn=cornerplot\n", 0) != 0) return;
+		if (st != cp.cpStyle)
+			xyRequest(s, QString("cornerstyle:%1\n").arg(st) + QString::fromStdString(cp.gjSpec), -1,
+			          "Redrawing the corner plot...");
+		xyCornerSyncUi(s);                        // the style drawn now (the old one if the redraw failed)
+	});
+}
+
+static QWidget *xyCornerBuildPanel(XYPlot *s) {
+	QWidget *w = new QWidget();
+	w->setObjectName("xyCornerPanel");
+	QVBoxLayout *col = new QVBoxLayout(w);
+	col->setContentsMargins(6, 6, 6, 6);
+	col->setSpacing(4);
+	col->addWidget(new QLabel("<b>Corner plot</b>", w));
+	col->addWidget(new QLabel("Pairs drawn as:", w));
+	s->cpStyleBox = new QComboBox(w);
+	s->cpStyleBox->setObjectName("xyCornerStyle");
+	for (const char *n : xyCornerStyleNames) s->cpStyleBox->addItem(n);
+	s->cpStyleBox->setToolTip("How every pair of variables below the diagonal is drawn: its points, hexagons "
+	                          "coloured by the number of points in each, or the 2-D kernel density as filled "
+	                          "contours or as contour lines (0.5, 1, 1.5 and 2 sigma)");
+	col->addWidget(s->cpStyleBox);
+	col->addStretch(1);
+	QObject::connect(s->cpStyleBox, QOverload<int>::of(&QComboBox::currentIndexChanged), w, [s](int) { xyCornerPick(s); });
 	w->setMaximumWidth(260);
 	w->setVisible(false);
 	return w;
@@ -5491,6 +5567,10 @@ static std::string xySessionState(XYPlot *s) {
 			kv("biplot.pc", QString::number(pg.bpPC[0]) + " " + QString::number(pg.bpPC[1]));
 			kv("biplot.spec", xyEsc(QString::fromStdString(pg.bpSpec)));
 		}
+		if (!pg.gjSpec.empty()) {                        // a GMT.jl function's page: what it is drawn from
+			kv("gmtjl.style", QString::number(pg.cpStyle));
+			kv("gmtjl.spec", xyEsc(QString::fromStdString(pg.gjSpec)));
+		}
 		// whether VTK really DRAWS the axis log (only when it can place every value it shows); read-only
 		kv("logxactive", QString::number(ax->GetLogScaleActive() ? 1 : 0));
 		kv("logyactive", QString::number(ay->GetLogScaleActive() ? 1 : 0));
@@ -5546,7 +5626,8 @@ static std::string xySessionState(XYPlot *s) {
 			kv("stack", QString::number(se.stack));
 			kv("right", QString::number(se.rightAxis ? 1 : 0));
 			kv("nowcross", QString::number(se.nowCross ? 1 : 0));
-			kv("rgb", xyNum(se.r) + " " + xyNum(se.g) + " " + xyNum(se.b));
+			if (se.fillAlpha >= 0) kv("fillalpha", xyNum(se.fillAlpha));
+			kv("rgb",xyNum(se.r) + " " + xyNum(se.g) + " " + xyNum(se.b));
 			kv("width", xyNum(se.width));
 			kv("ltype", QString::number(se.lineType));
 			kv("marker", QString::number(se.marker));
@@ -5591,7 +5672,7 @@ static void xySessionApply(XYPlot *s, const char *text) {
 		if (eq < 0) continue;
 		const QString k = line.left(eq), v = line.mid(eq + 1);
 		if (sec == "window") {
-			if (k == "title") s->win->setWindowTitle(xyUnesc(v));
+			if (k == "title") {}                     // an older session's window title: the title bar stays "X,Y Plot"
 			else if (k == "winsize") {
 				const QStringList f = v.split(' ');
 				if (f.size() == 2 && f[0].toInt() > 0 && f[1].toInt() > 0) s->win->resize(f[0].toInt(), f[1].toInt());
@@ -5671,6 +5752,8 @@ static void xySessionApply(XYPlot *s, const char *text) {
 				if (f.size() == 2) { pg.bpPC[0] = f[0].toInt(); pg.bpPC[1] = f[1].toInt(); }
 			}
 			else if (k == "biplot.spec") pg.bpSpec = xyUnesc(v).toStdString();
+			else if (k == "gmtjl.style") pg.cpStyle = v.toInt();
+			else if (k == "gmtjl.spec") pg.gjSpec = xyUnesc(v).toStdString();
 			else if (k == "logx") ax->SetLogScale(v.toInt() != 0);
 			else if (k == "logy") ay->SetLogScale(v.toInt() != 0);
 			else if (k == "xfixed" || k == "yfixed") (k == "xfixed" ? ax : ay)->SetBehavior(v.toInt() ? vtkAxis::FIXED : vtkAxis::AUTO);
@@ -5736,6 +5819,7 @@ static void xySessionApply(XYPlot *s, const char *text) {
 			else if (k == "inlegend") se.inLegend = v.toInt() != 0;
 			else if (k == "barwidth") se.barWidth = xyToNum(v);
 			else if (k == "stack") se.stack = v.toInt();      // its base is re-derived below (xyRestack)
+			else if (k == "fillalpha") se.fillAlpha = xyToNum(v);
 			else if (k == "kind" || k == "barh" || k == "right") {
 				// The loader made a line or vertical bars; any other gallery type gets its own item.
 				const int kd = (k == "kind") ? v.toInt() : se.kind;
@@ -6941,7 +7025,8 @@ static XYPlot *buildXYPlot(const char *title) {
 	s->owner = xyDefaultOwner();
 	s->win = new QMainWindow();
 	s->win->setAttribute(Qt::WA_DeleteOnClose, true);
-	s->win->setWindowTitle(title && title[0] ? QString::fromUtf8(title) : QString("i'GMT  —  X,Y plot"));
+	(void)title;                                       // the title bar is the tool's name, whatever opened it
+	s->win->setWindowTitle(QString("X,Y Plot"));
 	s->win->setWindowIcon(appIcon());
 	s->win->resize(1060, 560);                         // landscape — better for time-series plots
 
@@ -7060,6 +7145,8 @@ static XYPlot *buildXYPlot(const char *title) {
 	chartLayout->addWidget(s->widget, 1);
 	s->bpPanel = xyBiplotBuildPanel(s);
 	chartLayout->addWidget(s->bpPanel, 0);
+	s->cpPanel = xyCornerBuildPanel(s);
+	chartLayout->addWidget(s->cpPanel, 0);
 	centralLayout->addWidget(chartRow, 1);             // chart takes all the stretch
 	s->magCtl = xyMagBuildCtl(s);                      // its controls, under the chart (toolbar toggle)
 	centralLayout->addWidget(s->magCtl, 0);
@@ -7162,7 +7249,7 @@ static XYPlot *buildXYPlot(const char *title) {
 		QString fn = QFileDialog::getSaveFileName(s->win, "Save X,Y session", prefStartDir("xyplot.igmtz"),
 			"i'GMT session (*.igmtz)");
 		if (fn.isEmpty()) return;
-		if (!fn.endsWith(".igmtz", Qt::CaseInsensitive)) fn += ".igmtz";
+		fn = withExtIfNone(fn, ".igmtz");
 		rememberStartDir(fn);
 		if (xyRequest(s, "session_save", -1, "Saving the X,Y session…", true, fn))
 			s->win->statusBar()->showMessage("Session saved to " + fn, 5000); });

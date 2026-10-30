@@ -3302,7 +3302,11 @@ static void rebuildSceneObjects(Scene *s) {
 		const bool imgGrpOn = imgVis || s->baseAxes.shown || (s->palette.n > 0 && s->palette.show);
 		beginGroupHandle(nm, IC_Image, imgGrpOn,
 		        imgMenu, imgMenu,
-		        "Left- or right-click for properties (save / remove)");
+		        "Left- or right-click for properties (save / remove)",
+		        // FOLDED, like every other image and grid group. Three bands opened the same way came up
+		        // as one EXPANDED group (the first, the window's base image) and two folded ones — one
+		        // operation behaving differently for one element (SACRED_LAW.md).
+		        /*startFolded=*/true);
 		// The picture is the drape AND the base surface it lies on: one element, one switch. Hiding the
 		// drape alone left the base mesh on screen in its placeholder CPT colour (a red plate).
 		makeRow("Image", IC_Image, imgVis,                          // Image leaf handle kept as a child

@@ -5452,7 +5452,12 @@ static inline void baseLayerSetVisible(Scene *s, bool on) {
 	surfSetVisibility(s, on ? 1 : 0);
 	if (s->drape) s->drape->SetVisibility(on ? 1 : 0);
 	s->baseAxes.shown = on;
-	if (!on) { axesHideAll(s->baseAxes); s->surfShowBar = false; s->aquaLandShowBar = false; }
+	// s->palette.show is the base IMAGE's legend intent, exactly as ex.palette.show is an extra's (the
+	// base image group ORs it in, 50_scene.cpp). Left on, a base image hidden by a newly adopted one
+	// stayed a CHECKED group with its "Color Bar" row checked under an unchecked "Image" — the
+	// group-uncheck law, broken here for the base layer after it had been fixed for the extras.
+	if (!on) { axesHideAll(s->baseAxes); s->surfShowBar = false; s->aquaLandShowBar = false; s->palette.show = false; }
+	else if (s->palette.n > 0) s->palette.show = true;   // ...and back, as rasterLayerSetVisible does
 	gizmoSyncVE(s);                       // same rule as rasterLayerSetVisible above
 }
 // The BY-PROP door onto the same two setters — Swipe/Link switch layers by actor pointer, and a

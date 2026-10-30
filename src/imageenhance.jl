@@ -3,7 +3,8 @@
 # owns the contrast window; every pixel operation is here.
 #
 # Nothing is re-implemented that already exists:
-#   * the histograms are `GMT.histogray` — the same single function Binarize and Show Histogram use;
+#   * the histograms are `_image_hist` (imagehisto.jl) — the same single function Binarize and Show
+#     Histogram use: 256 grey levels for 8-bit, DN bins for a 16-bit image's original;
 #   * imadjust_j (clamp to [lo,hi], then map linearly onto 0..255) is `GMT.rescale`;
 #   * the eigendecomposition decorrstretch needs is LinearAlgebra's, reached through GMT.
 # What IS ported, because Mirone/MATLAB ships it and nothing here does it: localStretchlim (the
@@ -12,9 +13,11 @@
 mutable struct _EnhState
 	scene::Ptr{Cvoid}
 	srcname::String
-	I::GMTimage                       # the source image, UInt8, band-planar
-	counts::Vector{Vector{Float32}}   # one 256-bin histogram per band
+	I::GMTimage                       # the source image at FULL precision (a 16-bit band's original), band-planar
+	counts::Vector{Vector{Float32}}   # one histogram per band — `_image_hist`'s (256 grey levels, or DN bins)
 	nbands::Int
+	lo::Float64                       # the value of bin 1 (0 for 8-bit)
+	binw::Float64                     # the bin width in data values (1 for 8-bit and for DN bins)
 end
 
 const _ENHSTATE = Dict{Ptr{Cvoid}, _EnhState}()
@@ -23,20 +26,23 @@ const _ENHSTATE = Dict{Ptr{Cvoid}, _EnhState}()
 # The two algorithms Mirone ships and Julia/GMT do not
 # ---------------------------------------------------------------------------------------------
 
-# image_enhance.m localStretchlim / img_fun.m stretchlim_j, for a uint8 band: walk the cdf of the
-# 256-bin histogram and take the first bins crossing tol_low and tol_high. `tol` is the HALF
-# fraction (Mirone passes outlierPct/2), so the window is [tol, 1-tol]. Returns grey levels.
-function _enh_stretchlim(counts::Vector{Float32}, tol::Float32)::Tuple{Float32,Float32}
+# image_enhance.m localStretchlim / img_fun.m stretchlim_j: walk the cdf of the band's histogram and
+# take the first bins crossing tol_low and tol_high. `tol` is the HALF fraction (Mirone passes
+# outlierPct/2), so the window is [tol, 1-tol]. Returns DATA values: bin i is `lo + (i-1)*binw` —
+# grey levels for an 8-bit band (lo 0, binw 1), DNs for a 16-bit one. A senseless tolerance or
+# degenerate limits give the band's whole bin range ([0 1] in Mirone's normalised terms).
+function _enh_stretchlim(counts::Vector{Float32}, tol::Float32, lo::Float64 = 0.0, binw::Float64 = 1.0)::Tuple{Float32,Float32}
+	full = (Float32(lo), Float32(lo + (length(counts) - 1) * binw))
 	tol_low, tol_high = tol, 1.0f0 - tol
-	(tol_low >= tol_high) && return (0f0, 255f0)        # "this tolerance does not make sense" -> [0 1]
+	(tol_low >= tol_high) && return full                # "this tolerance does not make sense" -> [0 1]
 	tot = sum(counts)
-	tot <= 0 && return (0f0, 255f0)
+	tot <= 0 && return full
 	cdf = cumsum(counts) ./ tot
 	ilow  = findfirst(>(tol_low), cdf)
 	ihigh = findfirst(>=(tol_high), cdf)
-	(ilow === nothing || ihigh === nothing) && return (0f0, 255f0)
-	ilow == ihigh && return (0f0, 255f0)                # limits are same, use default
-	return (Float32(ilow - 1), Float32(ihigh - 1))      # bin index -> grey level
+	(ilow === nothing || ihigh === nothing) && return full
+	ilow == ihigh && return full                        # limits are same, use default
+	return (Float32(lo + (ilow - 1) * binw), Float32(lo + (ihigh - 1) * binw))   # bin index -> value
 end
 
 # MATLAB's im2uint8: round HALF AWAY FROM ZERO. Julia's plain `round` is RoundNearest (ties to
@@ -48,25 +54,33 @@ _enh_u8(x::Float32)::UInt8 = round(UInt8, clamp(x, 0f0, 1f0) * 255, RoundNearest
 # build a 256-entry lookup table per band (clamp to [low_in,high_in], map onto [0,1], im2uint8) and
 # push the band through it. Kept as the LUT Mirone uses, not as a generic rescale: the two differ in
 # their rounding, and this is the one the numbers must match.
+#
+# A 16-bit band goes through the SAME LUT, one entry per DN (65536), in MATLAB's normalised domain
+# for uint16 (v/65535 against the window/65535), and comes out 8-bit: imadjust's [0 1] output put on
+# screen. The window it gets is in DNs, read off that band's own DN histogram.
 function _enh_imadjust(I::GMTimage, lo::Vector{Float32}, hi::Vector{Float32})::GMTimage
 	S  = I.image
+	T  = eltype(S)
+	(T == UInt8 || T == UInt16) || error("Contrast Stretch works on 8- or 16-bit images (this one is $T)")
 	nb = ndims(S) == 3 ? size(S, 3) : 1
-	out = similar(S)
-	lut = Vector{UInt8}(undef, 256)
+	out = Array{UInt8}(undef, size(S))
+	top = Float32(typemax(T))
+	lut = Vector{UInt8}(undef, Int(typemax(T)) + 1)
 	for k = 1:nb
 		src = nb == 1 ? view(S, :, :) : view(S, :, :, k)
 		dst = nb == 1 ? view(out, :, :) : view(out, :, :, k)
 		if hi[k] <= lo[k]                               # a degenerate window would divide by zero
-			dst .= src
+			for v = 0:Int(typemax(T))  lut[v + 1] = _enh_u8(Float32(v) / top)  end
+			@inbounds for j in eachindex(src)  dst[j] = lut[src[j] + 1]  end
 			continue
 		end
 		# The arithmetic is done in MATLAB's NORMALISED domain — lut = linspace(0,1,256) against
 		# low_in/high_in = the window / 255 — not in grey levels. The two differ in the last bits,
 		# and that is enough to flip a value sitting exactly on a .5 tie (65 -> 37 vs 38).
-		lo_in = lo[k] / 255f0
-		hi_in = hi[k] / 255f0
-		for v = 0:255
-			lut[v + 1] = _enh_u8((clamp(Float32(v) / 255f0, lo_in, hi_in) - lo_in) / (hi_in - lo_in))
+		lo_in = lo[k] / top
+		hi_in = hi[k] / top
+		for v = 0:Int(typemax(T))
+			lut[v + 1] = _enh_u8((clamp(Float32(v) / top, lo_in, hi_in) - lo_in) / (hi_in - lo_in))
 		end
 		@inbounds for j in eachindex(src)  dst[j] = lut[src[j] + 1]  end
 	end
@@ -89,10 +103,11 @@ function _enh_decorrstretch(I::GMTimage, tol::Float32)::GMTimage
 	(ndims(S) == 3 && size(S, 3) >= 3) || error("Decorrelation stretch needs an RGB image")
 	nb = size(S, 3)
 	npix = size(S, 1) * size(S, 2)
-	A = Matrix{Float32}(undef, npix, nb)                # im2double: uint8 -> [0 1]
+	A = Matrix{Float32}(undef, npix, nb)                # im2double: uint8 /255, uint16 /65535 -> [0 1]
+	top = Float32(typemax(eltype(S)))
 	@inbounds for k = 1:nb
 		v = view(S, :, :, k)
-		for j = 1:npix  A[j, k] = v[j] / 255f0  end
+		for j = 1:npix  A[j, k] = v[j] / top  end
 	end
 	meanA = vec(sum(A, dims=1) ./ npix)
 	Cov = (A' * A .- npix .* (meanA * meanA')) ./ (npix - 1)
@@ -133,8 +148,8 @@ end
 
 diag_of(M::AbstractMatrix{Float32}) = [M[k, k] for k = 1:size(M, 1)]
 
-# 256-bin histogram of [0,1] floats — stretchlim_j's imhist_j for the decorrelated bands. The uint8
-# path never comes here: it uses GMT.histogray.
+# 256-bin histogram of [0,1] floats — stretchlim_j's imhist_j for the decorrelated bands (an
+# intermediate, not an image). An image's own bands never come here: they use `_image_hist`.
 function _enh_hist01(v::AbstractVector{Float32})::Vector{Float32}
 	c = zeros(Float32, 256)
 	@inbounds for x in v  c[clamp(round(Int, x * 255), 0, 255) + 1] += 1f0  end
@@ -149,22 +164,25 @@ function _enh_init(scene::Ptr{Cvoid}, dlg::Ptr{Cvoid}, wanted::String="")
 	srcname, I = isempty(wanted) ? _find_object_named(scene, :image) :
 	                               (String(wanted), _find_object(scene, :image, wanted))
 	(I isa GMTimage) || error("No image in this window to enhance")
-	Iu = eltype(I.image) == UInt8 ? I : _stretch_to_u8(I)
-	Iu = _to_band_planar(Iu)                       # band indexing below must not meet a 'P' image
-	nb = ndims(Iu.image) == 3 ? min(size(Iu.image, 3), 3) : 1
+	# The displayed object of a 16-bit image is its 8-bit display copy; the image IS the original.
+	O = get(get(_IMG_ORIG, scene, Dict{String,GMTimage}()), String(srcname), nothing)
+	O === nothing || (I = O)
+	Iu = _to_band_planar(I)                        # band indexing below must not meet a 'P' image
+	H  = _image_hist(Iu)                           # THE image histogram (imagehisto.jl), as Show Histogram's
+	nb = length(H.counts)
+	# A data histogram (DN bins) — the dialog's axes then speak data values, not grey levels.
+	H.data && ccall(_fn(:gmtvtk_enhance_set_data_range), Cvoid, (Ptr{Cvoid}, Cdouble, Cdouble), dlg, H.lo, H.hi)
 	cnts = Vector{Vector{Float32}}(undef, nb)
 	for k = 1:nb
-		band = nb == 1 ? view(Iu.image, :, :) : view(Iu.image, :, :, k)
-		counts, _ = GMT.histogray(band)
-		cnts[k] = Float32.(counts)
-		lo, hi = Float64(minimum(band)), Float64(maximum(band))
-		# The C API speaks double (gmtvtk_enhance_set_band) — 256 bins widened at the boundary only;
+		cnts[k] = Float32.(H.counts[k])
+		lo, hi = Float64.(extrema(view(H.M, :, k)))
+		# The C API speaks double (gmtvtk_enhance_set_band) — the bins widened at the boundary only;
 		# every computation on this side stays Float32.
 		ccall(_fn(:gmtvtk_enhance_set_band), Cvoid,
 		      (Ptr{Cvoid}, Cint, Ptr{Cdouble}, Cint, Cdouble, Cdouble, Cint),
-		      dlg, Cint(k - 1), Float64.(cnts[k]), Cint(256), lo, hi, Cint(nb))
+		      dlg, Cint(k - 1), H.counts[k], Cint(length(H.counts[k])), lo, hi, Cint(nb))
 	end
-	_ENHSTATE[dlg] = _EnhState(scene, String(srcname), Iu, cnts, nb)
+	_ENHSTATE[dlg] = _EnhState(scene, String(srcname), Iu, cnts, nb, H.lo, H.binw)
 	return
 end
 
@@ -184,9 +202,9 @@ function _enh_auto_stretch(I::GMTimage, tol::Float32=0.01f0)::GMTimage
 	S  = I.image
 	nb = ndims(S) == 3 ? size(S, 3) : 1
 	lo, hi = zeros(Float32, nb), fill(255f0, nb)
-	for k = 1:min(nb, 3)
-		cnt, = GMT.histogray(nb == 1 ? view(S, :, :) : view(S, :, :, k))
-		lo[k], hi[k] = _enh_stretchlim(Float32.(cnt), tol)
+	H = _image_hist(I)                                  # THE image histogram (imagehisto.jl)
+	for k = 1:length(H.counts)
+		lo[k], hi[k] = _enh_stretchlim(Float32.(H.counts[k]), tol, H.lo, H.binw)
 	end
 	return _enh_imadjust(I, lo, hi)
 end
@@ -240,7 +258,7 @@ function _on_image_enhance(scene::Ptr{Cvoid}, dlg::Ptr{Cvoid}, cparams::Cstring)
 		if op == "stretchlim"
 			band = something(tryparse(Int, strip(p[2])), 0)
 			pct  = something(tryparse(Float32, strip(p[3])), 2f0)
-			lo, hi = _enh_stretchlim(st.counts[clamp(band, 0, st.nbands - 1) + 1], pct / 100 / 2)
+			lo, hi = _enh_stretchlim(st.counts[clamp(band, 0, st.nbands - 1) + 1], pct / 100 / 2, st.lo, st.binw)
 			ccall(_fn(:gmtvtk_enhance_set_window), Cvoid, (Ptr{Cvoid}, Cint, Cdouble, Cdouble),
 			      dlg, Cint(band), Float64(lo), Float64(hi))
 		elseif op == "contrast"

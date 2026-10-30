@@ -348,8 +348,9 @@ end
 			e isa LineNumberNode ? (loc = e) : push!(stmts, (loc, e))
 		end
 		IG._script_handoff!(stmts, png, 0)
+		mod = IG._script_module()                               # where the editor's Run runs a script
 		for (l, e) in stmts
-			Core.eval(Main, Expr(:toplevel, l, e))
+			Core.eval(mod, Expr(:toplevel, l, e))
 		end
 		@test isfile(png) && filesize(png) > 0
 		# a session keeps them

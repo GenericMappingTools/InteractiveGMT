@@ -143,12 +143,26 @@ const _GRID_EXT = Dict("nc"=>".nc", "surfer"=>".grd", "gtiff"=>".tif",
 const _IMG_EXT  = Dict("gtiff"=>".tif", "jp2"=>".jp2", "erdas"=>".img", "envi"=>".hdr",
 					   "jpg"=>".jpg", "png"=>".png", "tif"=>".tif", "bmp"=>".bmp")
 
-# Append the format's canonical extension if the chosen name carries no recognised one (QFileDialog
-# usually appends the filter's default suffix, but the user can type a bare name).
+# Append the format's canonical extension ONLY when the chosen name has NO extension at all (a bare
+# name typed in the box). A name that already has one — an existing file picked in the dialog above
+# all — is written exactly as given. Matching against a list of "known" extensions instead turned a
+# picked `x.tiff` (not in the list) into `x.tiff.tif`.
 function _ensure_ext(path::String, want::String, known)
-	lc = lowercase(path)
-	any(endswith(lc, e) for e in values(known)) ? String(path) : String(path) * want
+	isempty(splitext(basename(path))[2]) ? String(path) * want : String(path)
 end
+
+# THE GeoTIFF creation options — every GeoTIFF iGMT writes through GDAL takes these, never a bare
+# gdalwrite (which writes the raster UNCOMPRESSED: a three-band Landsat composite came out at its full
+# raw size). DEFLATE, tiled, with the predictor that suits the data: horizontal differencing (2) for
+# integer pixels, floating-point (3) for float grids. Any other format gets nothing (its driver has
+# its own defaults).
+function _gtiff_opts(path::AbstractString, T::Type)::Vector{String}
+	lowercase(splitext(path)[2]) in (".tif", ".tiff") || return String[]
+	return ["-co", "COMPRESS=DEFLATE", "-co", "PREDICTOR=$(T <: AbstractFloat ? 3 : 2)",
+	        "-co", "TILED=YES", "-co", "BIGTIFF=IF_SAFER"]
+end
+_gtiff_opts(path::AbstractString, X::GMTgrid)  = _gtiff_opts(path, eltype(X.z))
+_gtiff_opts(path::AbstractString, X::GMTimage) = _gtiff_opts(path, eltype(X.image))
 
 # Write a grid: netCDF/Surfer via gmtwrite, everything else via GDAL (driver inferred from the ext).
 function _save_grid(G, fmt::AbstractString, path::String)
@@ -157,12 +171,30 @@ function _save_grid(G, fmt::AbstractString, path::String)
 	elseif (fmt == "surfer")
 		GMT.gmtwrite(path * "=sf", G)         # Surfer 6 binary grid (GMT grid-format code =sf)
 	else
-		GMT.gdalwrite(path, G)                # GeoTIFF / JPEG2000 / Erdas(HFA) / ENVI — driver by ext
+		GMT.gdalwrite(path, G, _gtiff_opts(path, G))   # GeoTIFF / JPEG2000 / Erdas(HFA) / ENVI — driver by ext
 	end
 end
 
 # Images always go through GDAL (GeoTIFF/JP2/Erdas/ENVI + generic jpg/png/tif/bmp; driver by ext).
-_save_image(I, ::String, path::String) = GMT.gdalwrite(path, I)
+#
+# The buffer is written in the row order it REALLY has, decided by `_north_first` (drape.jl) — the
+# SAME rule the display reads it with. gmtread's disk reader returns a row-major image top row first
+# but labels it 'B' (bottom-first), and gdalwrite trusts the label: every dropped band, and every RGB
+# composed from them, was saved upside down while the window showed it the right way up. The label
+# is corrected for the write only (no copy of the pixels) and put back.
+function _save_image(I, ::String, path::String)
+	J   = _to_band_planar(I)                  # a pixel-interleaved image is de-interleaved first
+	lay = J.layout
+	rowmajor = length(lay) >= 2 && lay[2] == 'R'
+	wrong = !isempty(lay) && (lay[1] == 'B') == _north_first(lay, rowmajor)
+	wrong || return GMT.gdalwrite(path, J, _gtiff_opts(path, J))
+	J.layout = string(lay[1] == 'B' ? 'T' : 'B', lay[2:end])
+	try
+		return GMT.gdalwrite(path, J, _gtiff_opts(path, J))
+	finally
+		J.layout = lay
+	end
+end
 
 # C callback: req = "<kind>;<fmt>;<path>;<name>" (name optional/empty) for kind grid/image. Resolve
 # the named scene object (or the primary), write it in the chosen format. Errors are reported in the
@@ -220,7 +252,7 @@ function _on_save_geotiff(scene::Ptr{Cvoid}, rgb::Ptr{UInt8}, w::Cint, h::Cint, 
 		view = unsafe_wrap(Array, rgb, (3, Int(w), Int(h)))   # (band, col, row), C memory, borrowed
 		mat = permutedims(view, (3, 2, 1))                    # (row, col, band), owned copy
 		Iout = mat2img(mat; x=[x0, x1], y=[y0, y1], proj4=unsafe_string(proj4), wkt=unsafe_string(wkt))
-		GMT.gdalwrite(outpath, Iout)
+		GMT.gdalwrite(outpath, Iout, _gtiff_opts(outpath, Iout))
 		_viewer_log_info(scene, "Saved geotiff -> $outpath")
 	catch e
 		_tool_failed(scene, "Save geotiff", e)

@@ -23,9 +23,11 @@
 mutable struct _BinState
 	scene::Ptr{Cvoid}
 	srcname::String                 # Scene Objects name of the source image ("" = window primary)
-	I::GMTimage                     # the source image, as displayed
-	Ig::GMTimage                    # grey UInt8 2-D working image
-	counts::Vector{Float64}         # 256-bin grey-level histogram
+	I::GMTimage                     # the source image at FULL precision (a 16-bit band's original)
+	Ig::GMTimage                    # grey 2-D working image, in the source's own type (UInt8 or UInt16)
+	counts::Vector{Float64}         # `_image_hist`'s histogram of Ig: 256 grey levels, or DN bins
+	lo::Float64                     # the value of bin 1 (0 for 8-bit)
+	binw::Float64                   # the bin width in data values (1 for 8-bit and for DN bins)
 	mask::GMTimage                  # current mask, UInt8 0/255, georef of Ig
 	backup::GMTimage                # one-level undo
 	labels::Matrix{Int32}           # last "Label matrix" run (empty until it is run)
@@ -35,23 +37,27 @@ const _BINSTATE = Dict{Ptr{Cvoid}, _BinState}()
 
 # ---------------------------------------------------------------------------------------------
 # Threshold estimators ported from thresholdit.m (the ones Mirone implements there itself). All
-# take the 256-bin grey histogram and return a level in [0 255].
+# take the image's histogram — 256 grey levels for 8-bit, DN bins for 16-bit (`_image_hist`)
+# — and return a BIN POSITION, 0-based (= the grey level for 8-bit). `_bin_method_level` turns it
+# into a data value. The arithmetic is thresholdit's with its 256 replaced by the bin count, so on
+# an 8-bit image every level is what it always was.
 # ---------------------------------------------------------------------------------------------
 
 # graythresh (img_fun.m): Otsu's method — the threshold that maximizes the between-class variance.
 # MATLAB returns a normalized [0 1] level and im2bw multiplies it by 255 for a uint8 image, which
 # is exactly `idx - 1` here.
 function _bin_otsu(counts::Vector{Float64})::Float64
+	n   = length(counts)
 	tot = sum(counts)
-	tot <= 0 && return 128.0
+	tot <= 0 && return (n - 1) / 2
 	p     = counts ./ tot
 	omega = cumsum(p)
-	mu    = cumsum(p .* collect(1.0:256.0))
+	mu    = cumsum(p .* collect(1.0:Float64(n)))
 	mu_t  = mu[end]
 	best  = -Inf
 	nbest = 0
 	sbest = 0.0                                    # sum of the tied bin positions (MATLAB's mean())
-	for k in 1:256
+	for k in 1:n
 		den = omega[k] * (1.0 - omega[k])
 		den <= 0 && continue
 		s = (mu_t * omega[k] - mu[k])^2 / den
@@ -66,29 +72,27 @@ function _bin_otsu(counts::Vector{Float64})::Float64
 end
 
 # maxentropy (thresholdit.m): the threshold that maximizes the sum of the two classes' entropies.
+# thresholdit's two inner sums are run as running sums — the SAME quantities, since
+# -sum(h/c*log(h/c)) over a class = log(c) - sum(h*log h)/c — because its double loop is n^2 and a
+# 16-bit band has tens of thousands of bins.
 function _bin_maxentropy(counts::Vector{Float64})::Float64
+	n    = length(counts)
 	npix = sum(counts)
-	npix <= 0 && return 128.0
+	npix <= 0 && return (n - 1) / 2
 	hn = counts ./ npix
-	c  = cumsum(hn)
-	hl = zeros(256);  hh = zeros(256)
-	for t in 1:256
-		cl = c[t]
-		if cl > 0
-			for i in 1:t
-				hn[i] > 0 && (hl[t] -= (hn[i] / cl) * log(hn[i] / cl))
-			end
-		end
+	hlh = [h > 0 ? h * log(h) : 0.0 for h in hn]
+	tot = sum(hlh)
+	ent = zeros(n)
+	cl = 0.0;  sl = 0.0
+	for t in 1:n
+		cl += hn[t];  sl += hlh[t]
+		hl = cl > 0 ? log(cl) - sl / cl : 0.0
 		ch = 1.0 - cl                              # constraint cl + ch = 1
-		if ch > 0
-			for i in (t+1):256
-				hn[i] > 0 && (hh[t] -= (hn[i] / ch) * log(hn[i] / ch))
-			end
-		end
+		hh = ch > 0 ? log(ch) - (tot - sl) / ch : 0.0
+		ent[t] = hl + hh
 	end
-	ent = hl .+ hh
 	h_max = ent[1];  threshold = 0.0
-	for t in 2:256
+	for t in 2:n
 		if ent[t] > h_max
 			h_max = ent[t];  threshold = Float64(t - 1)
 		end
@@ -97,39 +101,28 @@ function _bin_maxentropy(counts::Vector{Float64})::Float64
 end
 
 # minCE (thresholdit.m): the threshold that minimizes the cross entropy between the image and its
-# two-level (class-mean) reconstruction.
+# two-level (class-mean) reconstruction. Its class sums run as running sums, as in maxentropy.
 function _bin_mince(counts::Vector{Float64})::Float64
+	n    = length(counts)
 	npix = sum(counts)
-	npix <= 0 && return 128.0
+	npix <= 0 && return (n - 1) / 2
 	hn = counts ./ npix
 	imEntropy = 0.0
-	for i in 1:256
+	for i in 1:n
 		imEntropy += i * hn[i] * log(i)
 	end
-	CE = zeros(256)
-	for t in 1:256
-		lowValue = 0.0;  lowSum = 0.0
-		for i in 1:t
-			lowValue += i * hn[i];  lowSum += hn[i]
-		end
-		lowValue = lowSum > 0 ? lowValue / lowSum : 1.0
-		highValue = 0.0;  highSum = 0.0
-		for i in (t+1):256
-			highValue += i * hn[i];  highSum += hn[i]
-		end
-		highValue = highSum > 0 ? highValue / highSum : 1.0
-		lowEntropy = 0.0;   logLowVal  = log(lowValue)
-		for i in 1:t
-			lowEntropy += i * hn[i] * logLowVal
-		end
-		highEntropy = 0.0;  logHighVal = log(highValue)
-		for i in (t+1):256
-			highEntropy += i * hn[i] * logHighVal
-		end
-		CE[t] = imEntropy - lowEntropy - highEntropy
+	ihTot = sum(i * hn[i] for i in 1:n);  hTot = sum(hn)
+	CE = zeros(n)
+	lowV = 0.0;  lowSum = 0.0
+	for t in 1:n
+		lowV += t * hn[t];  lowSum += hn[t]
+		highV = ihTot - lowV;  highSum = hTot - lowSum
+		lowValue  = lowSum  > 0 ? lowV  / lowSum  : 1.0
+		highValue = highSum > 0 ? highV / highSum : 1.0
+		CE[t] = imEntropy - lowV * log(lowValue) - highV * log(highValue)
 	end
 	D_min = CE[1];  threshold = 0.0
-	for t in 2:256
+	for t in 2:n
 		if CE[t] < D_min
 			D_min = CE[t];  threshold = Float64(t - 1)
 		end
@@ -137,16 +130,35 @@ function _bin_mince(counts::Vector{Float64})::Float64
 	return threshold
 end
 
+# Isodata — GMT.jl's `isodata` (img_funs.jl), which only takes an 8-bit image, run on the histogram
+# itself so a 16-bit band's DN bins go through the same iteration. Its edges are 0..n-1 and its
+# result is normalised the way GMT's is ((T-1)/(edges[end]-1) of the top), as a bin position.
+function _bin_isodata(counts::Vector{Float64})::Float64
+	n = length(counts)
+	edges = collect(0.0:Float64(n - 1))
+	tot = sum(counts)
+	tot <= 0 && return (n - 1) / 2
+	Tp = round(Int, sum(edges .* counts) / tot)
+	mean_of(r) = (s = sum(view(counts, r)); s > 0 ? sum(view(edges, r) .* view(counts, r)) / s : 0.0)
+	clampT(T) = clamp(T, 1, n)
+	T = round(Int, (mean_of(clampT(Tp):n) + mean_of(1:clampT(Tp))) / 2)
+	while abs(T - Tp) >= 1
+		Tp = T
+		T = round(Int, (mean_of(clampT(Tp):n) + mean_of(1:clampT(Tp))) / 2)
+	end
+	return Float64(round(Int, (T - 1) / (edges[end] - 1) * (n - 1)))
+end
+
 # triangle_th (thresholdit.m, Zack et al. 1977): the level whose histogram value lies farthest from
 # the line joining the histogram peak to the far end of its longer tail. The `a + mean(position)`
 # arithmetic below is Mirone's own (position is 1-based, so the level sits one bin above the
 # geometric answer) — ported as-is, on purpose: this is THE algorithm, not a lookalike of it.
 function _bin_triangle(counts::Vector{Float64})::Float64
-	num_bins = 256
+	num_bins = length(counts)
 	h, xmax = findmax(counts)
-	h <= 0 && return 128.0
+	h <= 0 && return (num_bins - 1) / 2
 	indi = findall(>(h / 10000), counts)
-	isempty(indi) && return 128.0
+	isempty(indi) && return (num_bins - 1) / 2
 	fnz = indi[1];  lnz = indi[end]
 	lspan = xmax - fnz;  rspan = lnz - xmax
 	local leh::Vector{Float64}, a::Int, b::Int, isflip::Bool
@@ -167,7 +179,7 @@ function _bin_triangle(counts::Vector{Float64})::Float64
 	pos  = findall(==(Lmax), L)
 	level = a + sum(pos) / length(pos)
 	isflip && (level = num_bins - level + 1)
-	return (level / num_bins) * 255.0
+	return (level / num_bins) * (num_bins - 1)
 end
 
 # ---------------------------------------------------------------------------------------------
@@ -231,14 +243,17 @@ _bin_mask_img(st::_BinState, t::AbstractMatrix{Bool}) = _bin_mask(st.Ig, t)
 # band touching 0 or 255): the Otsu button goes through img_fun('im2bw'), the other four method
 # buttons through binarize_it, and the two histogram drags have their own comparisons again.
 
-# img_fun.m im2bw for a uint8 image: `A = (A >= 255*level)`, level already in grey units here.
-_bin_im2bw(Ig::GMTimage, level::Float64) =
-	_bin_mask(Ig, Ig.image .>= round(UInt8, clamp(level, 0.0, 255.0)))
+# img_fun.m im2bw: `A = (A >= top*level)`, level already in data units here (grey levels for 8-bit,
+# DNs for 16-bit), rounded into the image's own type.
+function _bin_im2bw(Ig::GMTimage, level::Float64)
+	T = eltype(Ig.image)
+	return _bin_mask(Ig, Ig.image .>= round(T, clamp(level, 0.0, Float64(typemax(T)))))
+end
 
 # thresholdit.m binarize_it: `I(img < threshold) = 0; I(img > threshold) = 1` — a pixel EQUAL to the
 # threshold stays 0, in both polarities (`negative` only swaps which side gets the 1).
 function _bin_binarize_it(Ig::GMTimage, level::Float64, negative::Bool)
-	thr = clamp(level, 0.0, 255.0)
+	thr = clamp(level, 0.0, Float64(typemax(eltype(Ig.image))))
 	t = negative ? (Ig.image .< thr) : (Ig.image .> thr)
 	return _bin_mask(Ig, t)
 end
@@ -267,38 +282,64 @@ function _bin_init(scene::Ptr{Cvoid}, dlg::Ptr{Cvoid}, wanted::AbstractString=""
 	srcname, I = isempty(wanted) ? _find_object_named(scene, :image) :
 	                               (String(wanted), _find_object(scene, :image, wanted))
 	(I isa GMTimage) || error("No image in this window to binarize")
-	Iu = eltype(I.image) == UInt8 ? I : _stretch_to_u8(I)      # 16-bit band -> 8-bit grey levels
+	# The displayed object of a 16-bit image is its 8-bit display copy; the image IS the original,
+	# and it is thresholded in its own DNs.
+	O = get(get(_IMG_ORIG, scene, Dict{String,GMTimage}()), String(srcname), nothing)
+	O === nothing || (I = O)
+	(eltype(I.image) == UInt8 || eltype(I.image) == UInt16) ||
+		error("Binarize works on 8- or 16-bit images (this one is $(eltype(I.image)))")
 	# EXACTLY thresholdit.m's opening: `if (ndims(handles.img) == 3), handles.img = rgb2gray(...)`.
 	# Nothing else is done to the data — no palette expansion, no re-scaling.
-	Ig = ndims(Iu.image) == 3 ? GMT.rgb2gray(Iu) : Iu          # rgb2gray reads both band-planar and 'P'
-	counts, _ = GMT.histogray(Ig; band=1)
-	cnt = Float64.(counts)
-	level = _bin_otsu(cnt)
-	mask  = _bin_im2bw(Ig, level)                        # thresholdit.m opens with img_fun('im2bw')
-	st = _BinState(scene, String(srcname), I, Ig, cnt, mask, mask, Matrix{Int32}(undef, 0, 0))
+	Ig = ndims(I.image) == 3 && size(I.image, 3) >= 3 ? _bin_rgb2gray(I) : _bin_band1(I)
+	H  = _image_hist(Ig)                                 # THE image histogram (imagehisto.jl)
+	cnt = H.counts[1]
+	mask0 = _bin_im2bw(Ig, 0.0)
+	st = _BinState(scene, String(srcname), I, Ig, cnt, H.lo, H.binw, mask0, mask0, Matrix{Int32}(undef, 0, 0))
+	level = _bin_method_level(st, "otsu")
+	st.mask = st.backup = _bin_im2bw(Ig, level)          # thresholdit.m opens with img_fun('im2bw')
 	_BINSTATE[dlg] = st
 	# Which image, and all five levels on ITS histogram in one line — so the numbers can be compared
 	# against Mirone's thresholdit on the same image without clicking through the buttons one by one.
-	nlev = count(>(0), cnt)                              # distinct grey levels actually present
+	nlev = count(>(0), cnt)                              # distinct levels actually present
 	kind = ndims(I.image) == 3 ? "RGB->grey" : (I.n_colors > 0 ? "indexed($(I.n_colors))->grey" : "grey")
 	_viewer_log_info(scene, "Binarize: image \"$(isempty(srcname) ? "(primary)" : srcname)\", " *
-		"$(size(Ig.image, 1))x$(size(Ig.image, 2)) px, $kind, $nlev distinct levels")
-	_viewer_log_info(scene, "Binarize levels — Otsu=$(round(Int, level)) " *
-		"MaxEnt=$(round(Int, _bin_maxentropy(cnt))) MinCE=$(round(Int, _bin_mince(cnt))) " *
-		"Isodata=$(GMT.isodata(Ig; band=1)) Triangle=$(round(Int, _bin_triangle(cnt)))")
-	ccall(_fn(:gmtvtk_binarize_set_histogram), Cvoid, (Ptr{Cvoid}, Ptr{Cdouble}, Cint), dlg, cnt, Cint(256))
+		"$(size(Ig.image, 1))x$(size(Ig.image, 2)) px, $(eltype(Ig.image)) $kind, $nlev distinct levels")
+	lv(nm) = round(Int, _bin_method_level(st, nm))
+	_viewer_log_info(scene, "Binarize levels — Otsu=$(round(Int, level)) MaxEnt=$(lv("maxent")) " *
+		"MinCE=$(lv("mince")) Isodata=$(lv("isodata")) Triangle=$(lv("triangle"))")
+	H.data && ccall(_fn(:gmtvtk_binarize_set_data_range), Cvoid, (Ptr{Cvoid}, Cdouble, Cdouble), dlg, H.lo, H.hi)
+	ccall(_fn(:gmtvtk_binarize_set_histogram), Cvoid, (Ptr{Cvoid}, Ptr{Cdouble}, Cint), dlg, cnt, Cint(length(cnt)))
 	_bin_push!(st, dlg; level=level)
 	return
 end
 
-# The five automatic methods. Isodata is GMT.jl's own `isodata`; the other four are the ports above.
+# The grey working image. An 8-bit RGB goes through GMT.jl's `rgb2gray` (it reads band-planar and
+# 'P' alike); GMT's is 8-bit only, so a 16-bit RGB takes the same luminance (0.299, 0.587, 0.114)
+# here, in UInt16.
+function _bin_rgb2gray(I::GMTimage)::GMTimage
+	eltype(I.image) == UInt8 && return GMT.rgb2gray(I)
+	Ib = _to_band_planar(I)
+	S  = Ib.image
+	g  = Matrix{UInt16}(undef, size(S, 1), size(S, 2))
+	@inbounds for j in eachindex(g)
+		g[j] = round(UInt16, 0.299 * S[j] + 0.587 * S[j + length(g)] + 0.114 * S[j + 2length(g)])
+	end
+	return GMT.mat2img(g, Ib)
+end
+
+# A one-band image as the 2-D working image it already is (a 1-band 3-D array is its first band).
+_bin_band1(I::GMTimage)::GMTimage =
+	ndims(I.image) == 2 ? I : GMT.mat2img(I.image[:, :, 1], I)
+
+# The five automatic methods, as a DATA value: the estimators give a bin position on the image's
+# histogram, bin i being `lo + (i-1)*binw` (`_image_hist`). For 8-bit that is the grey level itself.
 function _bin_method_level(st::_BinState, name::AbstractString)::Float64
-	name == "otsu"     && return _bin_otsu(st.counts)
-	name == "maxent"   && return _bin_maxentropy(st.counts)
-	name == "mince"    && return _bin_mince(st.counts)
-	name == "isodata"  && return Float64(GMT.isodata(st.Ig; band=1))
-	name == "triangle" && return _bin_triangle(st.counts)
-	error("Binarize: unknown method '$name'")
+	pos = name == "otsu"     ? _bin_otsu(st.counts)       :
+	      name == "maxent"   ? _bin_maxentropy(st.counts) :
+	      name == "mince"    ? _bin_mince(st.counts)      :
+	      name == "isodata"  ? _bin_isodata(st.counts)    :
+	      name == "triangle" ? _bin_triangle(st.counts)   : error("Binarize: unknown method '$name'")
+	return st.lo + pos * st.binw
 end
 
 # A method button. Mirone routes them DIFFERENTLY and that difference is kept: push_Otsu_CB goes

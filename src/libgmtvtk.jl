@@ -197,12 +197,12 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_set_hillshade_callback, :gmtvtk_set_shade_intensity_h, :gmtvtk_set_warmup_callback,
 	:gmtvtk_set_daynight_h,             # day/night terminator, as a colour factor (src/solar.jl)
 	:gmtvtk_set_import_gmt_callback,
-	:gmtvtk_set_binarize_callback, :gmtvtk_binarize_set_histogram, :gmtvtk_binarize_set_preview,
+	:gmtvtk_set_binarize_callback, :gmtvtk_binarize_set_histogram, :gmtvtk_binarize_set_preview, :gmtvtk_binarize_set_data_range,
 	:gmtvtk_set_vectorwizard_callback, :gmtvtk_vectorwizard_set_preview, :gmtvtk_vectorwizard_set_text,
 	:gmtvtk_overlay_set_filled_h, :gmtvtk_overlay_set_vwkey_h, :gmtvtk_grid_share_zscale_h,
 	:gmtvtk_overlay_set_tool_pick_h,     # a tool's guide line its dialog can be pointed at (src/swot.jl)
-	:gmtvtk_set_image_histo_callback, :gmtvtk_histo_set_counts,
-	:gmtvtk_set_image_enhance_callback, :gmtvtk_enhance_set_band, :gmtvtk_enhance_set_window,
+	:gmtvtk_set_image_histo_callback, :gmtvtk_histo_set_counts, :gmtvtk_histo_set_bands,
+	:gmtvtk_set_image_enhance_callback, :gmtvtk_enhance_set_band, :gmtvtk_enhance_set_window, :gmtvtk_enhance_set_data_range,
 	:gmtvtk_set_rgb_scatter_callback, :gmtvtk_set_forget_callback,
 	:gmtvtk_set_image_resize_callback, :gmtvtk_resize_set_size, :gmtvtk_set_floodfill_callback,
 	:gmtvtk_set_classify_callback, :gmtvtk_classify_set_classes,
@@ -267,6 +267,7 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_xyplot_set_plot_type, :gmtvtk_xyplot_set_page_look, :gmtvtk_xyplot_add_label, :gmtvtk_xyplot_label_bold, :gmtvtk_xyplot_label_owner,
 	:gmtvtk_xyplot_set_series_kind, :gmtvtk_xyplot_set_series_legend, :gmtvtk_xyplot_set_series_columns, :gmtvtk_xyplot_set_point_values,   # per-point: error bars, bubble sizes
 	:gmtvtk_xyplot_set_biplot, :gmtvtk_xyplot_clear_labels,      # the biplot side panel (xyanalysis.jl)
+	:gmtvtk_xyplot_set_gmtjl, :gmtvtk_xyplot_set_series_fill_alpha,    # a GMT.jl function's page, opaque fills
 	:gmtvtk_xyplot_save_png,                                     # the current page's chart to a PNG
 	:gmtvtk_xyplot_export,                                       # ...as .pdf/.ps/.svg/.png/.jpg (File > Export figure)
 	:gmtvtk_xyplot_set_window_size,                              # the X,Y window's size (documentation figures)
@@ -281,6 +282,7 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_xyplot_page_count, :gmtvtk_xyplot_page_series_npoints, :gmtvtk_xyplot_page_get_series,
 	:gmtvtk_xyplot_series_track, :gmtvtk_xyplot_set_track,      # a series' lon/lat track (xymag.jl)
 	:gmtvtk_xyplot_plot_width, :gmtvtk_xyplot_axis_ticks,        # sizes and ticks (xyscript.jl)
+	:gmtvtk_xyplot_legend_box,                                   # the legend's place (xyscript.jl)
 	:gmtvtk_xyplot_owner,                                        # the viewer it belongs to (S&G band-pass)
 	:gmtvtk_xyplot_sg_set_fit,                                   # the S&G fit from GMT trend1d
 	:gmtvtk_gmtedit_open, :gmtvtk_gmtedit_is_alive, :gmtvtk_gmtedit_close, :gmtvtk_gmtedit_raise,

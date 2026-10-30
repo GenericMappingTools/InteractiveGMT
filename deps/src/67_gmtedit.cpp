@@ -877,7 +877,7 @@ static GmtEdit *buildGmtEdit(const char *title, double widthKm) {
 		QString fn = QFileDialog::getSaveFileName(s->win, "Save as old .gmt file", prefStartDir(),
 			"Legacy *.gmt binary (*.gmt *.GMT);;All Files (*.*)");
 		if (fn.isEmpty()) return;
-		if (!fn.endsWith(".gmt", Qt::CaseInsensitive)) fn += ".gmt";
+		fn = withExtIfNone(fn, ".gmt");
 		rememberStartDir(fn);
 		geCall(s, "saveas_gmt", fn);
 	});

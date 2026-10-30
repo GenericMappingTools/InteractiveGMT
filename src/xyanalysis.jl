@@ -562,6 +562,19 @@ const _XY_CAT = ((0.12, 0.47, 0.71), (1.00, 0.50, 0.05), (0.17, 0.63, 0.17), (0.
                  (0.58, 0.40, 0.74), (0.55, 0.34, 0.29), (0.89, 0.47, 0.76), (0.50, 0.50, 0.50),
                  (0.74, 0.74, 0.13), (0.09, 0.75, 0.81))
 _xy_catcolor(k::Integer) = _XY_CAT[mod1(k, length(_XY_CAT))]
+# The series just added drawn, but without a legend entry (a page's own frame: panels, grid, rulers).
+_xy_nolegend!(plot) = ccall(_fn(:gmtvtk_xyplot_set_series_legend), Cint, (Ptr{Cvoid}, Cint, Cint), plot,
+                            ccall(_fn(:gmtvtk_xyplot_series_count), Cint, (Ptr{Cvoid},), plot) - 1, 0)
+# Colour k of a page whose every element needs its own (cornerplot's histograms and pairs): the palette
+# first, then hues spread by the golden angle, so no two legend entries share a colour however many.
+function _xy_uniqcolor(k::Integer)
+	k <= length(_XY_CAT) && return _XY_CAT[k]
+	h = mod((k - length(_XY_CAT)) * 0.618034 + 0.05, 1.0) * 6
+	f = h - floor(h);  s, v = 0.75, 0.8
+	p, q, t = v * (1 - s), v * (1 - s * f), v * (1 - s * (1 - f))
+	return (( v, q, p, p, t, v)[Int(floor(h)) + 1], (t, v, v, q, p, p)[Int(floor(h)) + 1],
+	        ( p, p, t, v, v, q)[Int(floor(h)) + 1])
+end
 
 _xy_lbl(plot, x, y, t; ha=0, va=0, size=11, c=(0.0, 0.0, 0.0)) =
 	ccall(_fn(:gmtvtk_xyplot_add_label), Cvoid,
@@ -751,9 +764,14 @@ function _xy_framed_radar(plot, p, kind, sel, page)
 	end
 	for a in angs  append!(gx, [0.0, cosd(a), NaN]); append!(gy, [0.0, sind(a), NaN])  end
 	_xyadd!(p, gx, gy; name="radar grid", color=_XY_GRID_RGB)
+	_xy_nolegend!(plot)                           # the frame, as radar()'s: no legend entry
 	for (i, nm) in enumerate(nms)
 		r = data[i, :] ./ lims
-		_xy_addk!(plot, p, vcat(r .* cosd.(angs), r[1] * cosd(angs[1])), vcat(r .* sind.(angs), r[1] * sind(angs[1])), nm, 8)
+		# radar(fill=true)'s look: GMT.jl's cycle colours, 70% transparent
+		_xy_addk!(plot, p, vcat(r .* cosd.(angs), r[1] * cosd(angs[1])), vcat(r .* sind.(angs), r[1] * sind(angs[1])), nm, 8;
+		          color=_xy_gmtjl_color(i))
+		ccall(_fn(:gmtvtk_xyplot_set_series_fill_alpha), Cint, (Ptr{Cvoid}, Cint, Cdouble), plot,
+		      ccall(_fn(:gmtvtk_xyplot_series_count), Cint, (Ptr{Cvoid},), plot) - 1, 0.3)
 	end
 	for (k, a) in enumerate(angs)                 # radar()'s default axis names, and the ring values
 		_xy_lbl(plot, 1.12cosd(a), 1.12sind(a), "Label$k"; ha=abs(cosd(a)) < 0.2 ? 0 : (cosd(a) > 0 ? -1 : 1), size=12)
@@ -763,6 +781,7 @@ function _xy_framed_radar(plot, p, kind, sel, page)
 		end
 	end
 	_xy_look(plot, true, true, (-1.3, 1.3, -1.3, 1.3))
+	_xy_set_gmtjl(plot, "radar", data, nms)       # one row per polygon, as radar() takes it
 end
 
 function _xy_framed_rose(plot, p, kind, sel, page)
@@ -806,46 +825,70 @@ function _xy_framed_parallel(plot, p, kind, sel, page)
 	page("parallelplot", "", "")
 	lx, ly = Float64[], Float64[]
 	for i in axes(A, 1)  append!(lx, vcat(1.0:nv, NaN)); append!(ly, vcat(A[i, :], NaN))  end
-	_xyadd!(p, lx, ly; name="observations")
+	_xyadd!(p, lx, ly; name="observations", color=_xy_gmtjl_color(1))   # parallelplot()'s one-group colour
 	ax, ay = Float64[], Float64[]
 	for k in 1:nv  append!(ax, [k, k, NaN]); append!(ay, [0.0, 1.0, NaN])  end
 	_xyadd!(p, ax, ay; name="rulers", color=(0.0, 0.0, 0.0))
+	_xy_nolegend!(plot)                           # the frame, as parallelplot()'s: no legend entry
 	for k in 1:nv
 		_xy_lbl(plot, k, 1.02, _xy_fmt(bbox[2k]); va=-1, size=10)
 		_xy_lbl(plot, k, -0.02, _xy_fmt(bbox[2k-1]); va=1, size=10)
 		_xy_lbl(plot, k, -0.09, nms[k]; va=1, size=12)
 	end
 	_xy_look(plot, false, true, (0.6, nv + 0.4, -0.18, 1.1))
+	_xy_set_gmtjl(plot, "parallelplot", M, nms)
 end
 
 function _xy_framed_corner(plot, p, kind, sel, page)
-	# GMT.jl cornerplot(): an n x n lower-triangular matrix of panels, each variable's histogram on
-	# the diagonal (x range = round_wesn of its extrema, as cornerplot() sets it) and every pair's
-	# scatter below it. (cornerplot() switches to hexagon binning above 1000 points; here it is always
-	# the scatter its `scatter=true` gives.)
 	M, nms = _xy_page_matrix(plot)
+	size(M, 2) < 2 && error("cornerplot needs two or more series on this page (one per variable)")
+	page("cornerplot", "", "")
+	_xy_corner_page(plot, p, M, nms, "auto")
+end
+
+# How a corner plot draws its pairs: GMT.jl cornerplot()'s own keywords (scatter=true, hexbin=true,
+# density=true, contour=true), "auto" its own rule. The order is the side panel's (xyCornerStyleNames,
+# 65_xyplot.cpp), which hands the index back.
+const _XY_CORNER_STYLES = ("auto", "scatter", "hexbin", "density", "contour")
+
+# THE corner plot page — the gallery icon draws it here, and the side panel redraws it in another style.
+# GMT.jl cornerplot(): an n x n lower-triangular matrix of panels, each variable's histogram on the
+# diagonal (x range = round_wesn of its extrema, as cornerplot() sets it) and every pair below it, drawn
+# as `style` says. "auto" is cornerplot()'s rule: the scatter up to 1000 points, hexagons above.
+function _xy_corner_page(plot, p, M::AbstractMatrix{<:Real}, nms::Vector{String}, style::String)
+	style in _XY_CORNER_STYLES || error("cornerplot: unknown style '$style'")
 	nv = size(M, 2)
-	nv < 2 && error("cornerplot needs two or more series on this page (one per variable)")
 	g = 0.12
 	lohi = [_xy_lohi(M[:, k]) for k in 1:nv]
 	nx(k, v) = (v .- lohi[k][1]) ./ (lohi[k][2] - lohi[k][1])
 	X0(j) = (j - 1) * (1 + g);  Y0(i) = (nv - i) * (1 + g)
-	page("cornerplot", "", "")
 	fx, fy = Float64[], Float64[]
 	for i in 1:nv, j in 1:i
 		rx, ry = _xy_rect(X0(j), X0(j) + 1, Y0(i), Y0(i) + 1)
 		append!(fx, vcat(rx[1:4], rx[1], NaN)); append!(fy, vcat(ry[1:4], ry[1], NaN))
 	end
 	_xyadd!(p, fx, fy; name="panels", color=(0.3, 0.3, 0.3))
+	_xy_nolegend!(plot)                           # the frame, as cornerplot()'s: no legend entry
+	# every histogram and every pair in a colour of its own, so each legend entry names one thing
 	for k in 1:nv
 		hx, hy = _xy_panel_hist(M[:, k], lohi[k]..., X0(k), Y0(k), 0.95, false)
-		_xy_addk!(plot, p, hx, hy, "$(nms[k]) histogram", 8; color=_XY_BLUE)
+		_xy_addk!(plot, p, hx, hy, "$(nms[k]) histogram", 8; color=_xy_uniqcolor(k))
 	end
-	for i in 2:nv, j in 1:i-1
-		_xyadd!(p, X0(j) .+ nx(j, M[:, j]), Y0(i) .+ nx(i, M[:, i]); name="$(nms[i]) vs $(nms[j])",
-		     marker=:circle, linestyle=:none, markersize=3, color=_XY_BLUE)
+	pairs = [(i, j) for i in 2:nv for j in 1:i-1]
+	drawn = style == "auto" ? (size(M, 1) > 1000 ? "hexbin" : "scatter") : style
+	if drawn == "scatter"
+		c = nv
+		for (i, j) in pairs
+			c += 1
+			_xyadd!(p, X0(j) .+ nx(j, M[:, j]), Y0(i) .+ nx(i, M[:, i]); name="$(nms[i]) vs $(nms[j])",
+			     marker=:circle, linestyle=:none, markersize=3, color=_xy_uniqcolor(c))
+		end
+	else
+		# every pair in its panel's own unit square (x and y by their round_wesn ranges), placed at it
+		uv = [(i, j, nx(j, M[:, j]), nx(i, M[:, i])) for (i, j) in pairs]
+		drawn == "hexbin" ? _xy_corner_hexbin!(plot, p, uv, X0, Y0) : _xy_corner_kde!(plot, p, uv, X0, Y0, drawn == "density")
 	end
-	for j in 1:nv                                 # x scales + names under the bottom row
+	for j in 1:nv                               # x scales + names under the bottom row
 		_xy_lbl(plot, X0(j), Y0(nv) - 0.02, _xy_fmt(lohi[j][1]); ha=-1, va=1, size=9)
 		_xy_lbl(plot, X0(j) + 1, Y0(nv) - 0.02, _xy_fmt(lohi[j][2]); ha=1, va=1, size=9)
 		_xy_lbl(plot, X0(j) + 0.5, Y0(nv) - 0.12, nms[j]; va=1, size=12)
@@ -857,6 +900,150 @@ function _xy_framed_corner(plot, p, kind, sel, page)
 	end
 	W = nv * (1 + g) - g
 	_xy_look(plot, true, true, (-0.55, W + 0.05, -0.3, W + 0.3))
+	_xy_set_gmtjl(plot, "cornerplot", M, nms; style=findfirst(==(style), _XY_CORNER_STYLES) - 1)
+end
+
+# A page that IS one GMT.jl function keeps the input it was drawn from (XYPage::gjSpec, saved with a
+# session): the function, the names tab-separated, the data column by column. File > Plot with GMT.jl hands
+# the very same data to that function (_xy_gmtjl_data, xyscript.jl); a corner plot's side panel hands it
+# back to redraw another style (_xy_corner_restyle).
+function _xy_set_gmtjl(plot, fn::String, M, nms; style::Integer=0)
+	spec = join(["fn=$fn", "nrows=$(size(M, 1))", "ncols=$(size(M, 2))", "names=" * join(replace.(nms, r"[\t\r\n]" => " "), '\t'),
+	             "data=" * join(string.(Float64.(vec(M))), ' ')], '\n')
+	ccall(_fn(:gmtvtk_xyplot_set_gmtjl), Cint, (Ptr{Cvoid}, Cint, Cstring), plot, style, spec)
+end
+
+# -> (function, data matrix, names)
+function _xy_gmtjl_parse(spec::AbstractString)
+	kv = Dict{String,String}()
+	for l in split(spec, '\n')
+		i = findfirst('=', l)
+		i === nothing || (kv[l[1:i-1]] = l[i+1:end])
+	end
+	nms = String.(split(kv["names"], '\t'))
+	# names: one per column, except radar's (one per row: its polygons)
+	return kv["fn"], reshape(parse.(Float64, split(kv["data"])), parse(Int, kv["nrows"]), parse(Int, kv["ncols"])), nms
+end
+
+# GMT.jl's own line / polygon colours (its `matlab_cycle_colors`): a page drawn by a GMT.jl function
+# wears what that function paints, so its script draws the same picture.
+const _XY_GMTJL_CYCLE = ((0.0, 0.447, 0.741), (0.851, 0.325, 0.098), (0.929, 0.694, 0.125), (0.494, 0.184, 0.557),
+                         (0.467, 0.675, 0.188), (0.302, 0.745, 0.933), (0.635, 0.078, 0.184), (0.0, 1.0, 0.0))
+_xy_gmtjl_color(k::Integer) = _XY_GMTJL_CYCLE[mod1(k, length(_XY_GMTJL_CYCLE))]
+
+# The side panel picked another style ("cornerstyle:k\n<spec>", k 0-based in _XY_CORNER_STYLES): the page
+# is redrawn in place by the same _xy_corner_page, from the input it was drawn from.
+function _xy_corner_restyle(plot, p, op)
+	head, spec = split(op[13:end], '\n'; limit=2)
+	_, M, nms = _xy_gmtjl_parse(spec)
+	ccall(_fn(:gmtvtk_xyplot_clear), Cvoid, (Ptr{Cvoid},), plot)
+	ccall(_fn(:gmtvtk_xyplot_clear_labels), Cvoid, (Ptr{Cvoid},), plot)
+	style = _XY_CORNER_STYLES[parse(Int, head) + 1]
+	_xy_corner_page(plot, p, M, nms, style)
+	_xy_log(plot, "cornerplot: pairs drawn as $style")
+	return
+end
+
+# Polygon (x, y) cut to the unit square (Sutherland-Hodgman): a hexagon or a density band on a panel's
+# edge stops at the panel's frame instead of spilling into its neighbour.
+function _xy_clip_unit(x::Vector{Float64}, y::Vector{Float64})
+	P = collect(zip(x, y))
+	for (ax, val, ge) in ((1, 0.0, true), (1, 1.0, false), (2, 0.0, true), (2, 1.0, false))
+		isempty(P) && break
+		Q = NTuple{2,Float64}[]
+		inside(q) = ge ? q[ax] >= val : q[ax] <= val
+		for k in eachindex(P)
+			a, b = P[k], P[mod1(k + 1, length(P))]
+			inside(a) && push!(Q, a)
+			if inside(a) != inside(b)
+				t = (val - a[ax]) / (b[ax] - a[ax])
+				push!(Q, (a[1] + t * (b[1] - a[1]), a[2] + t * (b[2] - a[2])))
+			end
+		end
+		P = Q
+	end
+	return first.(P), last.(P)
+end
+
+# n colours of a GMT palette, few to many: viridis, or turbo (what cornerplot(hexbin=true) paints with).
+_xy_corner_cmap(n::Int, cmap::Symbol=:viridis) = (C = GMT.makecpt(cmap=cmap, range=(0, 1, 1 / n));
+	[Tuple(C.colormap[k, 1:3]) for k in 1:n])
+
+# One filled series per class, opaque (its colour is its value), every panel's pieces in it.
+function _xy_corner_fill!(plot, p, xs, ys, name, col)
+	_xy_addk!(plot, p, xs, ys, name, 8; color=col, linestyle=:none)
+	n = ccall(_fn(:gmtvtk_xyplot_series_count), Cint, (Ptr{Cvoid},), plot)
+	ccall(_fn(:gmtvtk_xyplot_set_series_fill_alpha), Cint, (Ptr{Cvoid}, Cint, Cdouble), plot, n - 1, 1.0)
+	return
+end
+
+# cornerplot(hexbin=true): every pair binned on hexagons by GMT's own binstats (-Th, -Cn), in the panel's
+# unit square, 20 hexagons across. GMT's hexagons are flat-topped, their centres sqrt(3) * radius = the
+# increment apart up a column. Coloured by count, in up to 8 classes shared by every panel.
+function _xy_corner_hexbin!(plot, p, uv, X0, Y0)
+	inc = 0.05
+	r = inc / sqrt(3)
+	bins = [(i, j, GMT.gmtbinstats(GMT.mat2ds(hcat(u, v)); C="number", tiling="hex", R=(0, 1, 0, 1), I=inc).data)
+	        for (i, j, u, v) in uv]
+	cmax = maximum(maximum(b[:, 3]; init=0.0) for (_, _, b) in bins)
+	cmax > 0 || return
+	nc = clamp(round(Int, cmax), 1, 8)
+	cols = _xy_corner_cmap(nc, :turbo)
+	class(c) = clamp(ceil(Int, c / cmax * nc), 1, nc)
+	for k in 1:nc
+		xs, ys = Float64[], Float64[]
+		for (i, j, b) in bins, row in eachrow(b)
+			(row[3] > 0 && class(row[3]) == k) || continue
+			hx, hy = _xy_clip_unit([row[1] + r * cosd(a) for a in 0:60:300], [row[2] + r * sind(a) for a in 0:60:300])
+			append!(xs, X0(j) .+ hx, NaN);  append!(ys, Y0(i) .+ hy, NaN)
+		end
+		isempty(xs) && continue
+		lo, hi = floor(Int, cmax * (k - 1) / nc) + 1, floor(Int, cmax * k / nc)
+		_xy_corner_fill!(plot, p, xs, ys, lo >= hi ? "count $hi" : "count $(lo)–$(hi)", cols[k])
+	end
+end
+
+# cornerplot(density=true) / cornerplot(contour=true): every pair's 2-D kernel density (GMT.jl's own
+# density(data, x, y)), on a grid reaching a quarter of the panel beyond it so the contours close, cut at
+# the levels enclosing 0.5, 1, 1.5 and 2 sigma of the probability (1 - exp(-s^2/2)), traced by GMT's
+# grdcontour. `filled`: nested bands, the widest first, each opaque in its class colour; else the lines.
+function _xy_corner_kde!(plot, p, uv, X0, Y0, filled::Bool)
+	sig = (2.0, 1.5, 1.0, 0.5)                    # widest (lowest density) first: the drawing order
+	mass = [1 - exp(-s^2 / 2) for s in sig]
+	gx = collect(range(-0.25, 1.25; length=61))
+	xs = [Float64[] for _ in sig];  ys = [Float64[] for _ in sig]
+	for (i, j, u, v) in uv
+		G = GMT.density(hcat(u, v), gx, gx)
+		z = sort(filter(isfinite, vec(Float64.(G.z))); rev=true)
+		isempty(z) && continue
+		cz = cumsum(z) ./ sum(z)
+		lev = [z[clamp(searchsortedfirst(cz, m), 1, length(z))] for m in mass]
+		for (m, L) in enumerate(lev)
+			C = GMT.grdcontour(G, cont=[L], dump=true)
+			for D in (C isa Vector ? C : [C])
+				size(D.data, 1) < 2 && continue
+				cx, cy = Float64.(D.data[:, 1]), Float64.(D.data[:, 2])
+				if filled
+					cx, cy = _xy_clip_unit(cx, cy)
+				else                                  # a line leaves the panel: broken there
+					out = (cx .< 0) .| (cx .> 1) .| (cy .< 0) .| (cy .> 1)
+					cx[out] .= NaN;  cy[out] .= NaN
+				end
+				isempty(cx) && continue
+				append!(xs[m], X0(j) .+ cx, NaN);  append!(ys[m], Y0(i) .+ cy, NaN)
+			end
+		end
+	end
+	cols = _xy_corner_cmap(length(sig))
+	for (m, s) in enumerate(sig)
+		isempty(xs[m]) && continue
+		nm = "$(round(Int, 100 * mass[m]))% ($(s == round(s) ? Int(s) : s) sigma)"   # the chart's font has no σ
+		if filled
+			_xy_corner_fill!(plot, p, xs[m], ys[m], "density " * nm, cols[m])
+		else
+			_xyadd!(p, xs[m], ys[m]; name="contour " * nm, color=cols[m], linewidth=1.5)
+		end
+	end
 end
 
 function _xy_framed_marginal(plot, p, kind, sel, page)
@@ -878,11 +1065,11 @@ function _xy_framed_marginal(plot, p, kind, sel, page)
 	end
 	_xyadd!(p, fx, fy; name="panels", color=(0.3, 0.3, 0.3))
 	_xyadd!(p, (x .- xl) ./ (xh - xl), (y .- yl) ./ (yh - yl); name=isempty(nm) ? "x vs y" : nm,
-	     marker=:circle, linestyle=:none, markersize=4, color=_XY_BLUE)
+	     marker=:circle, linestyle=:none, markersize=4, color=_xy_uniqcolor(1))
 	hx, hy = _xy_panel_hist(x, xl, xh, 0.0, 1 + g, f * 0.95, false)
-	_xy_addk!(plot, p, hx, hy, "x histogram", 8; color=_XY_BLUE)
+	_xy_addk!(plot, p, hx, hy, "x histogram", 8; color=_xy_uniqcolor(2))
 	hx, hy = _xy_panel_hist(y, yl, yh, 1 + g, 0.0, f * 0.95, true)
-	_xy_addk!(plot, p, hx, hy, "y histogram", 8; color=_XY_BLUE)
+	_xy_addk!(plot, p, hx, hy, "y histogram", 8; color=_xy_uniqcolor(3))
 	_xy_lbl(plot, 0.0, -0.02, _xy_fmt(xl); ha=-1, va=1, size=10)
 	_xy_lbl(plot, 1.0, -0.02, _xy_fmt(xh); ha=1, va=1, size=10)
 	_xy_lbl(plot, -0.02, 0.0, _xy_fmt(yl); ha=1, va=-1, size=10)
@@ -1507,6 +1694,13 @@ const _XY_ANA_OPS = Pair{String,Function}[
 			_xy_biplot_repc(plot, p, op)
 		catch e
 			_dbg("xy-biplot", first(op, 40), "ERR", sprint(showerror, e))
+			_xy_ana_failed(plot, e)
+		end,
+	# The corner plot side panel's style: the page redrawn in it.
+	"cornerstyle:" => (plot, p, op, s) -> try
+			_xy_corner_restyle(plot, p, op)
+		catch e
+			_dbg("xy-corner", first(op, 40), "ERR", sprint(showerror, e))
 			_xy_ana_failed(plot, e)
 		end,
 	"" => (plot, p, op, s) -> _xy_series_op(plot, p, op, s),

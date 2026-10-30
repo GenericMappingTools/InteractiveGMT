@@ -4502,6 +4502,13 @@ GMTVTK_API void gmtvtk_binarize_set_histogram(void *dlg, const double *counts, i
 	reinterpret_cast<BinarizeDialog *>(dlg)->setHistogram(counts, n);
 }
 
+// A 16-bit image in Binarize: the histogram that follows has DN bins over [lo, hi], and the
+// level / window handles speak DNs. Called at "init", before gmtvtk_binarize_set_histogram.
+GMTVTK_API void gmtvtk_binarize_set_data_range(void *dlg, double lo, double hi) {
+	if (!dlg || !(hi > lo)) return;
+	reinterpret_cast<BinarizeDialog *>(dlg)->setDataRange(lo, hi);
+}
+
 // Push the CURRENT mask into the open Binarize dialog `dlg` for display. `mask` is w*h bytes,
 // row-major with the TOP row first, 0 = black / 255 = white (a display copy — Julia keeps the
 // full-resolution mask, this one may be decimated). `level` moves the single-line handle, `lo`/`hi`
@@ -4529,6 +4536,18 @@ GMTVTK_API void gmtvtk_histo_set_counts(void *dlg, int band, const double *count
 	reinterpret_cast<ImageHistoDialog *>(dlg)->setCounts(band, counts, n);
 }
 
+// Julia counted the IMAGE's own data rather than the displayed bytes: `nbands` is its band count
+// (1 = one axes, 3 = R/G/B — the RGBA texture of a one-band picture cannot tell) and [lo, hi] the
+// DATA values its bins span (a 16-bit band: DN bins, lo..hi), which label the X axis; the
+// counts that follow may then be any number of bins. lo == hi = keep the 8-bit 0..255 axes.
+// Same synchronous contract as gmtvtk_histo_set_counts.
+GMTVTK_API void gmtvtk_histo_set_bands(void *dlg, int nbands, double lo, double hi) {
+	if (!dlg) return;
+	auto *ih = reinterpret_cast<ImageHistoDialog *>(dlg);
+	ih->setBands(nbands);
+	if (hi > lo) ih->setXRange(lo, hi);
+}
+
 // Register the row-removed callback. fn(scene, kind, name) drops the live grid/image Julia keeps
 // behind a Scene Objects row that was just deleted (see JuliaForgetFn, 30_app.cpp). nullptr to detach.
 GMTVTK_API void gmtvtk_set_forget_callback(JuliaForgetFn fn) {
@@ -4549,6 +4568,13 @@ GMTVTK_API void gmtvtk_enhance_set_band(void *dlg, int band, const double *count
                                         double lo, double hi, int nbands) {
 	if (!dlg || !counts || n < 1) return;
 	reinterpret_cast<ImageEnhanceDialog *>(dlg)->setBand(band, counts, n, lo, hi, nbands);
+}
+
+// A 16-bit image in Image Enhance: the histograms that follow have DN bins over [lo, hi], and
+// the contrast windows and boxes speak DNs. Called at "init", before gmtvtk_enhance_set_band.
+GMTVTK_API void gmtvtk_enhance_set_data_range(void *dlg, double lo, double hi) {
+	if (!dlg || !(hi > lo)) return;
+	reinterpret_cast<ImageEnhanceDialog *>(dlg)->setDataRange(lo, hi);
 }
 
 // Register the "Image > Image resize" callback (port of Mirone src_figs/imageresize.m).
@@ -15087,6 +15113,29 @@ GMTVTK_API int gmtvtk_xyplot_set_biplot(void *handle, int n, const double *expla
 	return 1;
 }
 
+// The CURRENT page IS one GMT.jl function, drawn from `spec` (its input as Julia's own text, first line
+// "fn=<function>"); `style` is a corner plot's (xyCornerStyleNames), whose side panel then shows.
+GMTVTK_API int gmtvtk_xyplot_set_gmtjl(void *handle, int style, const char *spec) {
+	XYPlot *p = static_cast<XYPlot*>(handle);
+	if (!xyAlive(p) || !spec || !spec[0]) return 0;
+	XYPage &pg = xyCur(p);
+	pg.cpStyle = style;
+	pg.gjSpec = spec;
+	xyCornerSyncUi(p);
+	return 1;
+}
+
+// The opacity (0..1) of series `idx`'s fill on the CURRENT page; < 0 gives it back its kind's own.
+GMTVTK_API int gmtvtk_xyplot_set_series_fill_alpha(void *handle, int idx, double alpha) {
+	XYPlot *p = static_cast<XYPlot*>(handle);
+	if (!xyAlive(p)) return 0;
+	XYPage &pg = xyCur(p);
+	if (idx < 0 || idx >= (int)pg.series.size()) return 0;
+	pg.series[idx].fillAlpha = alpha;
+	xyApplyStyle(p, pg.series[idx]);
+	return 1;
+}
+
 // Drop every label of the CURRENT page (a biplot redrawn on another pair puts its names back).
 GMTVTK_API void gmtvtk_xyplot_clear_labels(void *handle) {
 	XYPlot *p = static_cast<XYPlot*>(handle);
@@ -15455,6 +15504,27 @@ GMTVTK_API int gmtvtk_xyplot_axis_ticks(void *handle, int which, double *buf, in
 	const int n = (int)t->GetNumberOfTuples();
 	for (int i = 0; buf && i < n && i < cap; ++i) buf[i] = t->GetValue(i);
 	return n;
+}
+
+// The current page's legend box as last painted, scene px, its corner relative to the plot area's
+// bottom-left: r = {x, y, w, h}. 0 when no legend is on screen. Plot with GMT.jl (xyscript.jl) puts
+// GMT's legend there. vtkChartLegend keeps that box in a protected member only (its Hit test reads
+// it); a member pointer formed through a derived class reaches it without a cast.
+struct XYLegendRectPeek : vtkChartLegend {
+	static vtkRectf vtkChartLegend::*rect() { return &XYLegendRectPeek::Rect; }
+};
+GMTVTK_API int gmtvtk_xyplot_legend_box(void *handle, double *r) {
+	XYPlot *p = static_cast<XYPlot*>(handle);
+	r[0] = r[1] = r[2] = r[3] = 0.0;
+	if (!xyAlive(p) || p->curPageIdx < 0 || p->curPageIdx >= (int)p->pages.size()) return 0;
+	vtkChartXY *c = p->pages[p->curPageIdx].chart;
+	vtkChartLegend *lg = c ? c->GetLegend() : nullptr;
+	if (!lg || !c->GetShowLegend() || !lg->GetVisible()) return 0;
+	const vtkRectf &b = lg->*XYLegendRectPeek::rect();
+	if (b.GetWidth() <= 0.0f || b.GetHeight() <= 0.0f) return 0;
+	r[0] = b.GetX() - c->GetPoint1()[0];  r[1] = b.GetY() - c->GetPoint1()[1];
+	r[2] = b.GetWidth();  r[3] = b.GetHeight();
+	return 1;
 }
 
 // Points of series `sel` on page `page` (any page, not only the current one); -1 on a bad handle/index.

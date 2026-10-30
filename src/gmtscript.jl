@@ -1856,9 +1856,9 @@ end
 """
 	_script_run(scene) -> nothing
 
-The dialog's Run: execute the editor's text statement by statement, in `Main`, while a status window
-names the statement being executed and how far along the script is. A GMT call can take seconds; the
-user sees which one it is, never a dead window.
+The dialog's Run: execute the editor's text statement by statement, in a FRESH module of its own
+(`_script_module`), while a status window names the statement being executed and how far along the
+script is. A GMT call can take seconds; the user sees which one it is, never a dead window.
 
 With `savefig` (the external-editor handoff, craftapps.jl) the script's last `showfig` writes that file
 instead of showing the figure — see `_script_handoff!`. Only the statements run are changed, never the
@@ -1876,18 +1876,31 @@ function _script_run(scene::Ptr{Cvoid}; savefig::String = "", dpi::Int = 0, what
 	end
 	isempty(savefig) || _script_handoff!(stmts, savefig, dpi)
 	n = length(stmts)
+	mod = _script_module()
 	ccall(_fn(:gmtvtk_progress_show_async), Cint, (Cint, Cstring), Cint(n), isempty(what) ? "Plot with GMT.jl" : what)
 	try
 		for (k, (loc, ex)) in enumerate(stmts)
 			stop = k < n ? stmts[k + 1][1].line - 1 : length(lines)
 			ccall(_fn(:gmtvtk_progress_status), Cvoid, (Cint, Cstring), Cint(k - 1),
 			      (isempty(what) ? "" : what * "\n") * "Step $k of $n\n" * _script_stmt_text(lines, loc.line, stop))
-			Core.eval(Main, Expr(:toplevel, loc, ex))
+			Core.eval(mod, Expr(:toplevel, loc, ex))
 		end
 	finally
 		ccall(_fn(:gmtvtk_progress_close), Cvoid, ())
 	end
 	return nothing
+end
+
+# Where a script runs: a NEW module every Run. The script starts with `const REG = …` / `const PROJ`
+# / `const FIGSIZE` (`_script_header`), and in `Main` a second script with another region died on
+# "invalid redefinition of constant REG" — any two Plot with GMT.jl runs in one session, two windows
+# with different limits. A module of its own per run is a clean slate, exactly like running the
+# script file in a new Julia. It starts with what the session's `Main` gives a script: InteractiveGMT
+# loaded — the live-data lines (`X = InteractiveGMT._xy_series_data(…)`, `_find_object`, …) name it.
+function _script_module()::Module
+	m = Module(:PlotWithGMT)
+	Core.eval(m, :(using InteractiveGMT))
+	return m
 end
 
 _is_showfig(ex) = ex isa Expr && ex.head === :call && (ex.args[1] === :showfig || ex.args[1] == :(GMT.showfig))

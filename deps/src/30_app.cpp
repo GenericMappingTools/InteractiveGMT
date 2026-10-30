@@ -1074,8 +1074,12 @@ static JuliaVectorWizardFn g_juliaVectorWizard = nullptr;
 // per band straight back with gmtvtk_histo_set_counts.
 //   `px`   pixel-interleaved bytes, `nb` components each, `npix` pixels
 //   `dlg`  the ImageHistoDialog* to push the counts into
+//   `name` the Scene Objects name of the displayed image, so Julia can count the IMAGE's own data
+//          instead (a 16-bit band is DISPLAYED as an 8-bit copy, a one-band picture as RGBA) and set
+//          the band count and X-axis data range with gmtvtk_histo_set_bands
 // Returns 1 on success, 0 on failure. nullptr to detach.
-typedef int (*JuliaImageHistoFn)(void *scene, void *dlg, const unsigned char *px, int npix, int nb);
+typedef int (*JuliaImageHistoFn)(void *scene, void *dlg, const unsigned char *px, int npix, int nb,
+                                 const char *name);
 static JuliaImageHistoFn g_juliaImageHisto = nullptr;
 
 // "Image -> Image Enhance -> 1 - Indexed and RGB" (port of Mirone src_figs/image_enhance.m). The
@@ -1723,6 +1727,14 @@ static JuliaMoveFn g_juliaMove = nullptr;
 // Set via gmtvtk_set_img_stretch_callback; nullptr -> a status-bar notice.
 typedef void (*JuliaImgStretchFn)(void *scene, const char *req);
 static JuliaImgStretchFn g_juliaImgStretch = nullptr;
+
+// THE save-name rule: a file name gets the default extension ONLY when it has NO extension at all (a
+// bare name typed in). A name that already has one — above all an existing file picked in the
+// dialog — is used exactly as given, never `x.zip.igmtz`. Every save path goes through this; the
+// Julia twin is `_ensure_ext` (savefile.jl).
+static QString withExtIfNone(const QString &fn, const char *ext) {
+	return QFileInfo(fn).suffix().isEmpty() ? fn + QString::fromLatin1(ext) : fn;
+}
 
 // One selectable output format for the Save dialog: a human label, the short code handed to Julia,
 // the QFileDialog filter, and the canonical extension (used to seed/auto-suffix the file name).

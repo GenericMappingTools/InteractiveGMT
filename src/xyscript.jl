@@ -348,8 +348,14 @@ function _xy_with_annot_helpers(txt::String, steps)::String
 	return replace(txt, "using GMT\n" => "using GMT\n" * block; count = 1)
 end
 
-# File > Plot with GMT.jl's text for an X,Y window: the rendered steps, plus what they call.
-_xy_script_text(steps, ctx)::String = _xy_with_annot_helpers(_script_render_text(steps, ctx), steps)
+# File > Plot with GMT.jl's text for an X,Y window: the rendered steps, plus what they call. A figure
+# ended by gmtend(show=true) (a corner plot's, _xy_gmtjl_steps) is shown by it: no showfig() after it,
+# which would show the LAST CLASSIC figure instead (a radar drawn earlier...).
+function _xy_script_text(steps, ctx)::String
+	txt = _xy_with_annot_helpers(_script_render_text(steps, ctx), steps)
+	any(s -> s.mod === :gmtend, steps) && (txt = replace(txt, r"\n+showfig\(\)\s*$" => "\n"))
+	return txt
+end
 
 # One series' legend entry as a pslegend "S" line, drawn as the window's legend draws it: an arrow as an
 # arrow (its head as on the chart), bars as a box, bubbles as a circle, a marker-only curve as its
@@ -365,7 +371,7 @@ function _xy_legend_line(d::Dict{String,String}, kind::Integer, width::Real, col
 	kind == 1  && return string("S ", c(0.4), box, col, " ", spt(width), "p,black ", c(0.9), " ", name)
 	kind == 10 && return string("S ", c(0.4), " c ", c(0.3), " ", col, "@40 0.5p,", col, " ", c(0.9), " ", name)
 	# an area, stacked bars, filled polygons: a box in the fill, outlined by the pen (vtkXYShapePlot's)
-	kind in (2, 6, 7, 8) && return string("S ", c(0.4), box, col, kind == 2 ? "@41" : kind == 8 ? "@57" : "", " ",
+	kind in (2, 6, 7, 8) && return string("S ", c(0.4), box, col, kind == 2 ? "@41" : kind == 8 ? _xy_fill_transp(d) : "", " ",
 	                                      kind == 8 && get(d, "ltype", "1") == "0" ? "-" : pen, " ", c(0.9), " ", name)
 	get(d, "nowcross", "0") == "1" &&
 		return string("S ", c(0.4), " + ", spt(2 * _xy_nums(get(d, "cross", "0 0 24"))[3]), "p - ", pen, " ", c(0.9), " ", name)
@@ -382,13 +388,90 @@ function _xy_legend_line(d::Dict{String,String}, kind::Integer, width::Real, col
 	return [line, "G -1l", mark]
 end
 
-_xy_hex(r, g, b) = "#" * join(string(round(Int, 255 * clamp(v, 0, 1)); base = 16, pad = 2) for v in (r, g, b))
+# A filled polygon's fill transparency as GMT's @t suffix: the chart's (alpha 110/255) unless the series
+# carries its own opacity (XYSeries::fillAlpha).
+_xy_fill_transp(d::Dict{String,String}) =
+	haskey(d, "fillalpha") ? (t = round(Int, 100 * (1 - clamp(parse(Float64, d["fillalpha"]), 0, 1))); t == 0 ? "" : "@$t") : "@57"
+
+_xy_hex(r, g, b) ="#" * join(string(round(Int, 255 * clamp(v, 0, 1)); base = 16, pad = 2) for v in (r, g, b))
 
 # The X,Y chart's pen / marker codes -> GMT (vtkPen: 1 solid, 2 dash, 3 dot, 4 dash-dot, 5 dash-dot-dot;
 # vtkPlotPoints: 1 cross, 2 plus, 3 square, 4 circle, 5 diamond). Widths are px on a 96-dpi chart.
 const _XY_GMT_LINE   = Dict(2 => "dashed", 3 => "dotted", 4 => "-.", 5 => "-..")
 const _XY_GMT_MARKER = Dict(1 => :x, 2 => :+, 3 => :square, 4 => :circle, 5 => :diamond)
 _xy_pt(px) = round(Float64(px) * 72 / 96; sigdigits = 3)
+
+# The data a page that IS one GMT.jl function was drawn from (XYPage::gjSpec), as that function takes it:
+# one named column per variable (cornerplot, parallelplot), or one row per polygon (radar). The script
+# fetches it from the live window.
+function _xy_gmtjl_data(h::Ptr{Cvoid}, page::Integer)
+	for (sec, d) in _xy_manifest_sections(_xy_session_state(h))
+		sec == "page" || continue
+		page == 0 || (page -= 1; continue)
+		fn, M, nms = _xy_gmtjl_parse(_xy_unesc(d["gmtjl.spec"]))
+		return fn == "radar" ? GMT.mat2ds(M) : GMT.mat2ds(M; colnames = nms)
+	end
+	error("the X,Y window has no page $page drawn by a GMT.jl function")
+end
+
+# A page that IS one GMT.jl function is that ONE call on the page's own data — cornerplot(), radar(),
+# parallelplot() — never the panels, polygons and rulers the window draws it with, followed by the
+# window's legend (`steps` holds what the generic emitter made of the page; only its legend is kept). The
+# legend sits in the corner of the figure the window's sits in.
+function _xy_gmtjl_steps(h::Ptr{Cvoid}, pg::Dict{String,String}, cur::Integer, steps, ctx, lcorner::Symbol)
+	fn, M, nms = _xy_gmtjl_parse(_xy_unesc(pg["gmtjl.spec"]))
+	v = _script_var!(ctx, "D", nothing)
+	bind = DataBind(ScriptVar(v.name, _xy_gmtjl_data(h, cur)), :live,
+	                "InteractiveGMT._xy_gmtjl_data(Ptr{Nothing}(UInt($(UInt(h)))), $cur)")
+	kw = Pair{Symbol,Any}[]
+	out = ScriptStep[]
+	what = fn
+	lbox = Pair{Symbol,Any}[]                    # the box the legend is placed in (default: the last call's)
+	if fn == "cornerplot"
+		# its pairs as the side panel says (scatter=true, hexbin=true, density=true, contour=true; Auto is
+		# cornerplot()'s own default, so no keyword)
+		style = _XY_CORNER_STYLES[clamp(parse(Int, get(pg, "gmtjl.style", "0")), 0, length(_XY_CORNER_STYLES) - 1) + 1]
+		style == "auto" || push!(kw, Symbol(style) => true)
+		push!(ctx.notes, "each histogram's and each pair's own colour: GMT.jl's cornerplot() has ONE histcolor " *
+		                 "and one point colour for all of them")
+		style in ("density", "contour") &&
+			push!(ctx.notes, "the $style pairs: GMT.jl's cornerplot() has no `$style` keyword yet and draws its default")
+		what = "cornerplot ($(style == "auto" ? "scatter up to 1000 points, hexbin above" : style))"
+		# cornerplot() is a subplot that ends its own figure: inside gmtbegin()...gmtend() it only ends the
+		# subplot, so the legend can still go on the figure. Its panel size is subplot()'s own guess.
+		n = size(M, 2)
+		W = round(n * (n == 2 ? 8.0 : n == 3 ? 6.0 : 20 / n); digits = 2)
+		lbox = Pair{Symbol,Any}[:region => (0, 1, 0, 1), :proj => "X$(W)/$(W)"]
+		# The file: in GMT.jl's own temp folder (a bare gmtbegin() writes GMTplot.png into the CURRENT
+		# folder), the previous Run's removed first — a viewer still showing it makes Ghostscript fail
+		# ("Could not open the file"), measured on a second Run.
+		fv = _script_var!(ctx, "FIG", nothing)
+		fexpr = "joinpath(GMT.TMPDIR_USR.dir, \"GMTjl_cornerplot.png\")"
+		fig = DataBind(ScriptVar(fv.name, joinpath(GMT.TMPDIR_USR.dir, "GMTjl_cornerplot.png")), :command,
+		               "(f = $fexpr; rm(f, force=true); f)")
+		push!(out, ScriptStep("the figure: cornerplot() ends its subplot inside it, the legend goes on top",
+		                      DataBind[fig], :gmtbegin, fig.var, Pair{Symbol,Any}[], false))
+	elseif fn == "radar"
+		# radar()'s own reading: data in [0, 1] is normalized; anything else gets each axis' limit (its
+		# maximum, which radar() rounds as the window does) and every axis annotated
+		if !all(t -> 0 <= t <= 1, M)
+			push!(kw, :axeslimts => vec(maximum(M; dims = 1)), :annotall => true)
+		end
+		push!(kw, :fill => true)
+	end
+	ttl = _xy_unesc(get(pg, "title", ""))
+	isempty(ttl) || push!(kw, :title => ttl)
+	push!(out, ScriptStep(what, DataBind[bind], Symbol(fn), bind.var, kw, false))
+	k = findfirst(s -> s.mod === :legend, steps)
+	if k !== nothing
+		lk = [p for p in steps[k].kw if !(first(p) in (:pos, :region, :proj))]
+		push!(out, ScriptStep("legend", steps[k].binds, :legend, steps[k].pos,
+		                      vcat(lbox, Pair{Symbol,Any}[:pos => (anchor = lcorner, inside = true, offset = 0.2)], lk), true))
+	end
+	fn == "cornerplot" && push!(out, ScriptStep("show the figure", DataBind[], :gmtend, nothing,
+	                                            Pair{Symbol,Any}[:show => true], false))
+	return out
+end
 
 """
     _xy_script_emit(h) -> (steps, ctx)
@@ -475,6 +558,7 @@ function _xy_script_emit(h::Ptr{Cvoid}; figsize::Real = 15.0)
 
 	steps = ScriptStep[]
 	legs = String[]                                # the legend's entries, as pslegend "S" lines
+	lcorner = :TR                                  # the corner the window's legend sits in
 	for d in pser
 		shown(d) || continue
 		idx = parse(Int, d["idx"]); name = _xy_unesc(get(d, "name", ""))
@@ -529,7 +613,7 @@ function _xy_script_emit(h::Ptr{Cvoid}; figsize::Real = 15.0)
 			push!(calls, ("points", curve(), marks(haskey(_XY_GMT_MARKER, mk) ? mk : 4)))
 		elseif kind == 8             # filled polygons (radar, rose, pie…): see-through fill, outlined by the pen
 			# the fill over the pieces joined (no seams), the pen round each piece as the chart draws it
-			push!(calls, ("polygons", through(_xy_poly_data, true), Pair{Symbol,Any}[:fill => col * "@57"]))
+			push!(calls, ("polygons", through(_xy_poly_data, true), Pair{Symbol,Any}[:fill => col * _xy_fill_transp(d)]))
 			lt != 0 && push!(calls, ("outlines", through(_xy_poly_data, false), Pair{Symbol,Any}[:pen => pen, :close => true]))
 		elseif kind == 10            # bubbles: one circle per point, its diameter as the window maps it
 			sz = _xy_nums(get(d, "bubble", ""))
@@ -616,10 +700,22 @@ function _xy_script_emit(h::Ptr{Cvoid}; figsize::Real = 15.0)
 		lv = ScriptVar(lv.name, GMT.text_record(legs))
 		lb = DataBind(lv, :command, "text_record([\n\t" * join(repr.(legs), ",\n\t") * "])")
 		# its font the chart legend's, at the share of the plot it takes on screen
-		# a page drawing its own frame (radar, corner, parallel…) has its legend beside the plot, in the page's
-		# margin, as on screen
-		kw = Pair{Symbol,Any}[:pos => hidden_axes ? (outside = :TR, justify = :TL, offset = 0.2) :
-		                                                      (inside = true, anchor = :TR, offset = 0.2),
+		# Where the window has it — its default corner or wherever it was dragged, from the plot's
+		# bottom-left at the figure's scale. Pinned by the box corner nearest the plot's own corner, so GMT's
+		# box, a little larger than the chart's, grows inwards. No box on screen (never painted): the
+		# default corner, beside the plot for a page drawing its own frame (radar, corner, parallel…).
+		lbox = zeros(4)
+		pos = if ccall(_fn(:gmtvtk_xyplot_legend_box), Cint, (Ptr{Cvoid}, Ptr{Cdouble}), h, lbox) == 1 &&
+		         plotw[] > 0 && ploth[] > 0
+			right = lbox[1] + lbox[3] / 2 > plotw[] / 2;  top = lbox[2] + lbox[4] / 2 > ploth[] / 2
+			lcorner = Symbol(top ? "T" : "B", right ? "R" : "L")
+			(paper = (round((right ? lbox[1] + lbox[3] : lbox[1]) * w / plotw[]; digits = 2),
+			          round((top ? lbox[2] + lbox[4] : lbox[2]) * hgt / ploth[]; digits = 2)),
+			 justify = Symbol(top ? "T" : "B", right ? "R" : "L"))
+		else
+			hidden_axes ? (outside = :TR, justify = :TL, offset = 0.2) : (inside = true, anchor = :TR, offset = 0.2)
+		end
+		kw = Pair{Symbol,Any}[:pos => pos,
 		                      :box => (pen = 0.5, fill = :white),
 		                      :par => (FONT_ANNOT_PRIMARY = string(legf, "p"),)]
 		# after plotyy's right-hand curves: back to the page's own axes, which everything below is placed on
@@ -646,6 +742,7 @@ function _xy_script_emit(h::Ptr{Cvoid}; figsize::Real = 15.0)
 		push!(ctx.notes, "the isochron fit marks (red star, first guess, fitted and pinned lines)")
 	!isempty(strip(get(pg, "sglines", ""))) && push!(ctx.notes, "the Spector-Grant fit lines")
 	(get(win, "infovisible", "0") == "1") && push!(ctx.notes, "the header strip above the chart")
+	haskey(pg, "gmtjl.spec") && return _xy_gmtjl_steps(h, pg, cur, steps, ctx, lcorner), ctx
 	return steps, ctx
 end
 

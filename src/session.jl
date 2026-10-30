@@ -282,11 +282,12 @@ function _session_pack_generated(scene::Ptr{Cvoid}, r::ElementRecipe, used::Set{
 end
 
 # THE writer for "put this live scene object on disk as a sidecar": grids -> netCDF (GMT.gmtwrite),
-# everything else (images) -> GDAL, driver by extension. (The GMT.jl script export no longer writes
-# sidecars: its standalone zip is built in memory, gmtscript.jl `_script_save_standalone`.)
+# images -> `_save_image` (savefile.jl), THE image writer: compressed GeoTIFF in its true row order.
+# (The GMT.jl script export no longer writes sidecars: its standalone zip is built in memory,
+# gmtscript.jl `_script_save_standalone`.)
 _serialize_object(obj, path::String) =
 	(obj isa GMTgrid || obj isa GMTdataset || obj isa Vector{<:GMTdataset}) ?
-		GMT.gmtwrite(path, obj) : GMT.gdalwrite(path, obj)
+		GMT.gmtwrite(path, obj) : _save_image(obj, "", path)
 
 # Fetch the window's RESTORABLE display state (camera/VE/flat2d/colorbar/shading) as the raw "k=v;" string the
 # C serializer emits — stored verbatim under the manifest [window] `state=` key and fed back to
