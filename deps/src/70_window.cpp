@@ -32543,6 +32543,9 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	mTL->addAction("North Atlantic Oscillation (NAO)…", [climateXY]() {
 		climateXY("NAO", "Downloading the NAO index…", "nao");
 	});
+	mTL->addAction("Southern Oscillation Index (SOI)…", [climateXY]() {
+		climateXY("SOI", "Downloading the Southern Oscillation Index…", "soi");
+	});
 	mTL->addAction("Keeling curve (atmospheric CO2)…", [climateXY]() {
 		climateXY("Keeling curve", "Downloading the Mauna Loa CO2 record…", "keeling");
 	});

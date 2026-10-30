@@ -350,7 +350,7 @@ end
 
 # File > Plot with GMT.jl's text for an X,Y window: the rendered steps, plus what they call. A figure
 # ended by gmtend(show=true) (a corner plot's, _xy_gmtjl_steps) or drawn by a climate function that
-# shows it itself (enso(), keeling()) is shown by it: no showfig() after it, which would show the LAST
+# shows it itself (enso(), nao(), soi(), keeling()) is shown by it: no showfig() after it, which would show the LAST
 # CLASSIC figure instead (a radar drawn earlier...).
 function _xy_script_text(steps, ctx)::String
 	txt = _xy_with_annot_helpers(_script_render_text(steps, ctx), steps)
@@ -478,14 +478,18 @@ function _xy_gmtjl_steps(h::Ptr{Cvoid}, pg::Dict{String,String}, cur::Integer, s
 	return out
 end
 
-# A climate record's page (T & L > ENSO / Keeling curve, climate.jl): GMT.jl's function that downloads
+# A climate record's page (T & L > ENSO / NAO / SOI / Keeling curve, climate.jl): GMT.jl's function that downloads
 # the record and draws it, called with nothing — the page's data is the download, its look the
 # function's own. Such a function shows its figure itself (show=true), so the script ends with it.
-const _XY_CLIMATE_FNS = ("enso", "keeling")
+const _XY_CLIMATE_FNS = ("enso", "nao", "soi", "keeling")
+const _XY_CLIMATE_WHAT = Dict(
+	"enso"    => "the Oceanic Niño Index, downloaded from NOAA CPC and drawn by GMT.jl",
+	"nao"     => "the North Atlantic Oscillation index, downloaded from NOAA CPC and drawn by GMT.jl",
+	"soi"     => "the Southern Oscillation Index, downloaded from NOAA PSL and drawn by GMT.jl",
+	"keeling" => "the Keeling curve (Mauna Loa CO2), downloaded from NOAA GML and drawn by GMT.jl")
 function _xy_climate_steps(fn::String, ctx)
 	push!(ctx.notes, "the page's own look (colours, legend, axes): GMT.jl's $fn() downloads the record and draws it its own way")
-	what = fn == "enso" ? "the Oceanic Niño Index, downloaded from NOAA CPC and drawn by GMT.jl" :
-	                      "the Keeling curve (Mauna Loa CO2), downloaded from NOAA GML and drawn by GMT.jl"
+	what = _XY_CLIMATE_WHAT[fn]
 	return ScriptStep[ScriptStep(what, DataBind[], Symbol(fn), nothing, Pair{Symbol,Any}[], false)]
 end
 
