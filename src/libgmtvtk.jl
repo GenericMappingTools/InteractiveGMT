@@ -259,7 +259,7 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_image_set_draped_h,    # drape an image extra on the grid (its "Drape" menu item)
 	:gmtvtk_show_profile_xy,
 	:gmtvtk_xyplot_open, :gmtvtk_xyplot_add_series, :gmtvtk_xyplot_clear,
-	:gmtvtk_xyplot_is_alive, :gmtvtk_xyplot_close, :gmtvtk_xyplot_raise, :gmtvtk_xyplot_set_owner,
+	:gmtvtk_xyplot_is_alive, :gmtvtk_xyplot_close, :gmtvtk_xyplot_raise, :gmtvtk_xyplot_bring_front,:gmtvtk_xyplot_set_owner,
 	:gmtvtk_xyplot_set_callback, :gmtvtk_xyplot_set_labels, :gmtvtk_xyplot_set_info,
 	:gmtvtk_xyplot_add_now_cross, :gmtvtk_xyplot_add_bars,
 	:gmtvtk_xyplot_set_analysis_callback, :gmtvtk_open_profile_in_xyplot,

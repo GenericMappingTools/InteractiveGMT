@@ -10842,6 +10842,20 @@ GMTVTK_API int gmtvtk_window_owned_test(const char *name) {
 	return -1;
 }
 
+// test hook: AN X,Y PLOT WINDOW'S PARK STATE. With `close` = 1 its window is first closed as the X button
+// closes it (an owned plot parks). Returns bit0 = parked, bit1 = window visible, -1 = no window.
+// No xyAlive: the plot lives in gmtvtk.dll, whose registry this twin library does not share — the
+// caller passes a handle it knows is open.
+GMTVTK_API int gmtvtk_xyplot_park_state_test(void *handle, int close) {
+	XYPlot *p = static_cast<XYPlot*>(handle);
+	if (!p || !p->win) return -1;
+	if (close) {
+		p->win->close();
+		QApplication::processEvents();
+	}
+	return (p->parked ? 1 : 0) | (p->win->isVisible() ? 2 : 0);
+}
+
 // test hook: PRESS RETURN IN A WIDGET of a visible top-level window, both found by object name, the way
 // a keyboard does it (QApplication::sendEvent: an ignored key goes on up to the parents, dialog
 // included). 1 = sent, 0 = no such window/widget.
@@ -14990,6 +15004,15 @@ GMTVTK_API void gmtvtk_xyplot_raise(void *handle) {
 	if (!xyAlive(p) || !p->win) return;
 	p->win->setWindowState(p->win->windowState() & ~Qt::WindowMinimized);
 	p->win->showNormal(); p->win->raise(); p->win->activateWindow();
+}
+
+// Bring an X,Y plot window to the front WHATEVER state it is in: a parked one comes back through its
+// own way back (xyUnpark — its Scene Objects row goes too), any other is raised.
+GMTVTK_API void gmtvtk_xyplot_bring_front(void *handle) {
+	XYPlot *p = static_cast<XYPlot*>(handle);
+	if (!xyAlive(p) || !p->win) return;
+	if (p->parked) xyUnpark(p);
+	else           gmtvtk_xyplot_raise(handle);
 }
 
 // Set the X-axis TIME mode of an X,Y plot window: X is read as Unix epoch SECONDS and the bottom

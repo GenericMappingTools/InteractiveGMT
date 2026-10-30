@@ -349,11 +349,13 @@ function _xy_with_annot_helpers(txt::String, steps)::String
 end
 
 # File > Plot with GMT.jl's text for an X,Y window: the rendered steps, plus what they call. A figure
-# ended by gmtend(show=true) (a corner plot's, _xy_gmtjl_steps) is shown by it: no showfig() after it,
-# which would show the LAST CLASSIC figure instead (a radar drawn earlier...).
+# ended by gmtend(show=true) (a corner plot's, _xy_gmtjl_steps) or drawn by a climate function that
+# shows it itself (enso(), keeling()) is shown by it: no showfig() after it, which would show the LAST
+# CLASSIC figure instead (a radar drawn earlier...).
 function _xy_script_text(steps, ctx)::String
 	txt = _xy_with_annot_helpers(_script_render_text(steps, ctx), steps)
-	any(s -> s.mod === :gmtend, steps) && (txt = replace(txt, r"\n+showfig\(\)\s*$" => "\n"))
+	any(s -> s.mod === :gmtend || String(s.mod) in _XY_CLIMATE_FNS, steps) &&
+		(txt = replace(txt, r"\n+showfig\(\)\s*$" => "\n"))
 	return txt
 end
 
@@ -419,7 +421,10 @@ end
 # window's legend (`steps` holds what the generic emitter made of the page; only its legend is kept). The
 # legend sits in the corner of the figure the window's sits in.
 function _xy_gmtjl_steps(h::Ptr{Cvoid}, pg::Dict{String,String}, cur::Integer, steps, ctx, lcorner::Symbol)
-	fn, M, nms = _xy_gmtjl_parse(_xy_unesc(pg["gmtjl.spec"]))
+	spec = _xy_unesc(pg["gmtjl.spec"])
+	clim = match(r"^fn=(\w+)\s*$", spec)
+	clim !== nothing && String(clim[1]) in _XY_CLIMATE_FNS && return _xy_climate_steps(String(clim[1]), ctx)
+	fn, M, nms = _xy_gmtjl_parse(spec)
 	v = _script_var!(ctx, "D", nothing)
 	bind = DataBind(ScriptVar(v.name, _xy_gmtjl_data(h, cur)), :live,
 	                "InteractiveGMT._xy_gmtjl_data(Ptr{Nothing}(UInt($(UInt(h)))), $cur)")
@@ -471,6 +476,17 @@ function _xy_gmtjl_steps(h::Ptr{Cvoid}, pg::Dict{String,String}, cur::Integer, s
 	fn == "cornerplot" && push!(out, ScriptStep("show the figure", DataBind[], :gmtend, nothing,
 	                                            Pair{Symbol,Any}[:show => true], false))
 	return out
+end
+
+# A climate record's page (T & L > ENSO / Keeling curve, climate.jl): GMT.jl's function that downloads
+# the record and draws it, called with nothing — the page's data is the download, its look the
+# function's own. Such a function shows its figure itself (show=true), so the script ends with it.
+const _XY_CLIMATE_FNS = ("enso", "keeling")
+function _xy_climate_steps(fn::String, ctx)
+	push!(ctx.notes, "the page's own look (colours, legend, axes): GMT.jl's $fn() downloads the record and draws it its own way")
+	what = fn == "enso" ? "the Oceanic Niño Index, downloaded from NOAA CPC and drawn by GMT.jl" :
+	                      "the Keeling curve (Mauna Loa CO2), downloaded from NOAA GML and drawn by GMT.jl"
+	return ScriptStep[ScriptStep(what, DataBind[], Symbol(fn), nothing, Pair{Symbol,Any}[], false)]
 end
 
 """

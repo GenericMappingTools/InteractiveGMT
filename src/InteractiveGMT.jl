@@ -64,6 +64,7 @@ include("xymag.jl")      # X,Y magnetic modelling: bar code, synthetic RTP, isoc
 include("xysession.jl")  # X,Y File > Session: Save / Open (.igmtz, kind=xyplot)
 include("gmtannot.jl")   # annotation!: the X,Y annotations as GMT.jl code, carried by the scripts
 include("xyscript.jl")   # X,Y File > Plot with GMT.jl (the 3-D viewer's own script editor + emitter)
+include("climate.jl")    # T & L > ENSO / NAO / Keeling curve: climate records as X,Y pages
 include("drop.jl")
 include("importxy.jl")  # File > Open xy(z): Mirone point/arrow/scaled-symbol/text table imports
 include("paste.jl")      # Ctrl+V: clipboard image / numeric table -> the SAME builders drop.jl uses

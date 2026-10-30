@@ -32521,6 +32521,31 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// Same QActions Geophysics > Magnetics / Seismology show: a second door, not a move.
 	mTL->addAction(actFaultDemo);
 	mTL->addAction(actMagField3D);
+	// Climate records, each downloaded and drawn as a page of the X,Y plot tool (src/climate.jl): the
+	// Oceanic Niño Index and the Keeling curve from GMT.jl's enso()/keeling() data, the NAO index from
+	// NOAA CPC. Behind the busy notice the download needs; a failure pops up.
+	auto climateXY = [win, s](const char *title, const char *busy, const char *which) {
+		if (!g_juliaEval) {
+			QMessageBox::warning(win, title, "This needs the Julia/GMT host.");
+			return;
+		}
+		showBusyDialog(busy);
+		static std::vector<char> buf(1 << 14);
+		const QByteArray cmd = QString("InteractiveGMT._climate_xy(\"%1\")").arg(which).toUtf8();
+		const int n = g_juliaEval(s, cmd.constData(), buf.data(), (int)buf.size());
+		closeBusyDialog();
+		if (n < 0) QMessageBox::warning(win, title, QString::fromUtf8(buf.data(), -n).trimmed());
+	};
+	mTL->addSeparator();
+	mTL->addAction("El Niño–Southern Oscillation (ENSO)…", [climateXY]() {
+		climateXY("ENSO", "Downloading the Oceanic Niño Index…", "enso");
+	});
+	mTL->addAction("North Atlantic Oscillation (NAO)…", [climateXY]() {
+		climateXY("NAO", "Downloading the NAO index…", "nao");
+	});
+	mTL->addAction("Keeling curve (atmospheric CO2)…", [climateXY]() {
+		climateXY("Keeling curve", "Downloading the Mauna Loa CO2 record…", "keeling");
+	});
 
 	QMenu *mHelp = win->menuBar()->addMenu("&Help");
 	// The project's own manual, in the user's browser. The address is NOT chosen here: it is the
