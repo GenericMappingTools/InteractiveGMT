@@ -1086,13 +1086,13 @@ static JuliaImageHistoFn g_juliaImageHisto = nullptr;
 // dialog (ImageEnhanceDialog, 70_window.cpp, deps/ui/image_enhance.ui) owns the contrast WINDOW (a
 // display state) and sends every PIXEL operation here as "op;args":
 //   init;<name>                     load the image, histogram each band, hand back its data range
-//   stretchlim;<band>;<pct>         the limits that clip <pct>% of outliers (localStretchlim)
+//                                   and its auto-stretch limits
 //   contrast;lo;hi;lo;hi;lo;hi      imadjust with each band's window -> a new stretched image
-//   decorr;<pct>                    decorrelation stretch -> a new image
+//   decorr                          decorrelation stretch (2% outliers) -> a new image
 //   scatter                         the 3-band scatter plot (push_scaterPlot_CB)
 //   close                           the dialog went away; drop its state
 // `dlg` is the ImageEnhanceDialog* so Julia can push the histograms (gmtvtk_enhance_set_band) and
-// answered limits (gmtvtk_enhance_set_window) back into it. Returns 1/0. nullptr to detach.
+// the auto-stretch limits (gmtvtk_enhance_set_auto_limits) back into it. Returns 1/0. nullptr to detach.
 typedef int (*JuliaImageEnhanceFn)(void *scene, void *dlg, const char *params);
 static JuliaImageEnhanceFn g_juliaImageEnhance = nullptr;
 

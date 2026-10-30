@@ -202,7 +202,7 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_overlay_set_filled_h, :gmtvtk_overlay_set_vwkey_h, :gmtvtk_grid_share_zscale_h,
 	:gmtvtk_overlay_set_tool_pick_h,     # a tool's guide line its dialog can be pointed at (src/swot.jl)
 	:gmtvtk_set_image_histo_callback, :gmtvtk_histo_set_counts, :gmtvtk_histo_set_bands,
-	:gmtvtk_set_image_enhance_callback, :gmtvtk_enhance_set_band, :gmtvtk_enhance_set_window, :gmtvtk_enhance_set_data_range,
+	:gmtvtk_set_image_enhance_callback, :gmtvtk_enhance_set_band, :gmtvtk_enhance_set_auto_limits, :gmtvtk_enhance_set_data_range,
 	:gmtvtk_set_rgb_scatter_callback, :gmtvtk_set_forget_callback,
 	:gmtvtk_set_image_resize_callback, :gmtvtk_resize_set_size, :gmtvtk_set_floodfill_callback,
 	:gmtvtk_set_classify_callback, :gmtvtk_classify_set_classes,

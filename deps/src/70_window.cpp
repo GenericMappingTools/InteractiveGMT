@@ -8630,6 +8630,45 @@ static void showImageHistogram(QWidget *parent, Scene *s, const char *name) {
 // operation — the outlier limits, the contrast stretch, the decorrelation stretch — is Julia's
 // (src/imageenhance.jl), so nothing is computed twice.
 // ============================================================================================
+
+// Adjust Contrast's axes: THE image-histogram axes (HistoDataAxesWidget, drawn exactly as Show
+// Histogram draws it) plus, when "Show auto stretch limits" is on, two black vertical lines at the
+// limits "Auto histogram stretch" would stretch this band between. The limits are Julia's
+// (`_enh_auto_limits`, pushed by gmtvtk_enhance_set_auto_limits); this only draws them.
+class EnhanceAxesWidget : public HistoDataAxesWidget {
+public:
+	bool   showAuto = false, haveAuto = false;
+	double autoLo = 0.0, autoHi = 0.0;
+	explicit EnhanceAxesWidget(QWidget *p) : HistoDataAxesWidget(p) {}
+
+protected:
+	void paintEvent(QPaintEvent *e) override {
+		HistoDataAxesWidget::paintEvent(e);
+		if (!showAuto || !haveAuto) return;
+		QPainter g(this);
+		const QRectF box = plotRect();
+		g.setPen(QPen(Qt::black, 1));
+		for (const double v : { autoLo, autoHi }) {
+			const double x = v2x(v);
+			if (x >= box.left() && x <= box.right()) g.drawLine(QPointF(x, box.top()), QPointF(x, box.bottom()));
+		}
+	}
+};
+
+// image_enhance.ui's loader: its three axes are EnhanceAxesWidget.
+class EnhanceUiLoader : public QUiLoader {
+public:
+	QWidget *createWidget(const QString &className, QWidget *parent = nullptr,
+	                       const QString &name = QString()) override {
+		if (className == "EnhanceAxesWidget") {
+			auto *w = new EnhanceAxesWidget(parent);
+			w->setObjectName(name);
+			return w;
+		}
+		return QUiLoader::createWidget(className, parent, name);
+	}
+};
+
 class ImageEnhanceDialog;
 static std::map<Scene *, ImageEnhanceDialog *> g_enhanceDlgs;
 
@@ -8637,11 +8676,11 @@ class ImageEnhanceDialog {
 public:
 	QDialog *dlg = nullptr;
 	Scene *scn = nullptr;
-	HistoDataAxesWidget *ax[3] = { nullptr, nullptr, nullptr };
+	EnhanceAxesWidget *ax[3] = { nullptr, nullptr, nullptr };
 	QLineEdit *eMinRange = nullptr, *eMaxRange = nullptr;
 	QLineEdit *eMin = nullptr, *eMax = nullptr, *eWidth = nullptr, *eCenter = nullptr;
-	QLineEdit *ePct[3] = { nullptr, nullptr, nullptr };
-	QRadioButton *rDelOutliers = nullptr, *rBand[3] = { nullptr, nullptr, nullptr };
+	QRadioButton *rBand[3] = { nullptr, nullptr, nullptr };
+	QCheckBox *cAuto = nullptr;
 	QLabel *stat = nullptr;
 	QString srcName;
 	int  nbands = 1;                        // 1 (indexed/grey) or 3 (RGB)
@@ -8707,16 +8746,16 @@ public:
 	void setDataRange(double lo, double hi) {
 		for (auto *a : ax) if (a) a->setXRange(lo, hi);
 	}
-	// Julia answers a "stretchlim" with the limits it found for that band.
-	void setWindow(int band, double lo, double hi) {
+	// Julia hands each band, at "init", the limits "Auto histogram stretch" would stretch it between.
+	void setAutoLimits(int band, double lo, double hi) {
 		if (band < 0 || band > 2 || !ax[band]) return;
-		ax[band]->setWindow(lo, hi);
-		if (band == cur) syncBoxes();
+		ax[band]->autoLo = lo;  ax[band]->autoHi = hi;  ax[band]->haveAuto = true;
+		ax[band]->update();
 	}
 	// The four Window boxes + the N statistic, from whatever the current axes' window now is
 	// (plot_result's edit-box fill and updateAll's text_stat, one place for both).
 	void syncBoxes() {
-		HistoDataAxesWidget *a = ax[cur];
+		EnhanceAxesWidget *a = ax[cur];
 		if (!a) return;
 		filling = true;
 		if (eMinRange) eMinRange->setText(QString::number(dmin[cur], 'g', 6));
@@ -8736,7 +8775,7 @@ public:
 	// (edit_widthWindow_CB / edit_centerWindow_CB grow the window about its centre, or move it).
 	void windowFromBoxes(int what) {
 		if (filling || !ax[cur]) return;
-		HistoDataAxesWidget *a = ax[cur];
+		EnhanceAxesWidget *a = ax[cur];
 		double lo = a->winLo, hi = a->winHi;
 		if (what == 0)      lo = eMin->text().toDouble();
 		else if (what == 1) hi = eMax->text().toDouble();
@@ -8752,14 +8791,10 @@ public:
 		a->setWindow(lo, hi);
 		syncBoxes();
 	}
-	double pct(int band) const {
-		const double v = ePct[band] ? ePct[band]->text().toDouble() : 2.0;
-		return (v < 0.0 || v > 100.0) ? 2.0 : v;
-	}
 
 	explicit ImageEnhanceDialog(QWidget *parent, Scene *scene, const QString &imgName = QString())
 	    : scn(scene), srcName(imgName) {
-		HistoDataUiLoader loader;
+		EnhanceUiLoader loader;
 		QFile f(gmtvtkUiDir() + "/image_enhance.ui");
 		if (!f.open(QFile::ReadOnly)) {
 			qWarning("ImageEnhanceDialog: cannot open %s", qUtf8Printable(f.fileName()));
@@ -8770,9 +8805,9 @@ public:
 		if (!dlg) return;
 		QDialog *d = dlg;
 
-		ax[0] = static_cast<HistoDataAxesWidget *>(d->findChild<QWidget *>("axes1"));
-		ax[1] = static_cast<HistoDataAxesWidget *>(d->findChild<QWidget *>("axes2"));
-		ax[2] = static_cast<HistoDataAxesWidget *>(d->findChild<QWidget *>("axes3"));
+		ax[0] = static_cast<EnhanceAxesWidget *>(d->findChild<QWidget *>("axes1"));
+		ax[1] = static_cast<EnhanceAxesWidget *>(d->findChild<QWidget *>("axes2"));
+		ax[2] = static_cast<EnhanceAxesWidget *>(d->findChild<QWidget *>("axes3"));
 		if (!ax[0] || !ax[1] || !ax[2]) { delete d; dlg = nullptr; return; }
 
 		// The X button PARKS instead of closing. WA_DeleteOnClose is deliberately NOT set, and the
@@ -8803,10 +8838,7 @@ public:
 		eMax      = d->findChild<QLineEdit *>("edit_maxWindow");
 		eWidth    = d->findChild<QLineEdit *>("edit_widthWindow");
 		eCenter   = d->findChild<QLineEdit *>("edit_centerWindow");
-		ePct[0]   = d->findChild<QLineEdit *>("edit_percentOutliersR");
-		ePct[1]   = d->findChild<QLineEdit *>("edit_percentOutliersG");
-		ePct[2]   = d->findChild<QLineEdit *>("edit_percentOutliersB");
-		rDelOutliers = d->findChild<QRadioButton *>("radio_delOutliers");
+		cAuto     = d->findChild<QCheckBox *>("check_autoLimits");
 		rBand[0]  = d->findChild<QRadioButton *>("radio_R");
 		rBand[1]  = d->findChild<QRadioButton *>("radio_G");
 		rBand[2]  = d->findChild<QRadioButton *>("radio_B");
@@ -8842,16 +8874,10 @@ public:
 		QObject::connect(eWidth, &QLineEdit::editingFinished, d, [this]() { windowFromBoxes(2); });
 		QObject::connect(eCenter, &QLineEdit::editingFinished, d, [this]() { windowFromBoxes(3); });
 
-		// Apply (push_applyRange_CB): either the band's own data range, or the limits that clip the
-		// requested percentage of outliers — the latter is Julia's localStretchlim, on the real pixels.
-		if (auto *b = d->findChild<QPushButton *>("push_applyRange"))
-			QObject::connect(b, &QPushButton::clicked, d, [this]() {
-				if (rDelOutliers && rDelOutliers->isChecked())
-					send(QString("stretchlim;%1;%2").arg(cur).arg(pct(cur)));
-				else {
-					ax[cur]->setWindow(dmin[cur], dmax[cur]);
-					syncBoxes();
-				}
+		// "Show auto stretch limits": the black lines on every band's axes, on or off. Display only.
+		if (cAuto)
+			QObject::connect(cAuto, &QCheckBox::toggled, d, [this](bool on) {
+				for (auto *a : ax) if (a) { a->showAuto = on;  a->update(); }
 			});
 		// Contrast Stretch (push_contStrectch_CB): imadjust with each band's window, [0 1] out.
 		if (auto *b = d->findChild<QPushButton *>("push_contStrectch"))
@@ -8865,7 +8891,7 @@ public:
 			});
 		if (auto *b = d->findChild<QPushButton *>("push_decorrStrectch"))
 			QObject::connect(b, &QPushButton::clicked, d, [this]() {
-				send(QString("decorr;%1").arg(pct(0)));   // the R box is the tolerance, as in Mirone
+				send("decorr");   // Mirone's default 2% outliers (Julia's `decorr` op)
 			});
 		// ScaterPlot reads the pixels that are ON SCREEN RIGHT NOW (sceneDisplayedRGB — the same
 		// reader Show Histogram uses), never anything this dialog remembered: after a Decorrelation
@@ -8907,18 +8933,31 @@ public:
 		// shrinks to the one remaining plot (new_height = 540 - 291 + 40 = 289).
 		if (nbands < 3) {
 			for (const char *n : { "axes2", "axes3", "radio_R", "radio_G", "radio_B",
-			                       "edit_percentOutliersG", "edit_percentOutliersB",
 			                       "push_scaterPlot", "push_decorrStrectch" })
 				if (auto *w = d->findChild<QWidget *>(n)) w->hide();
 			ax[0]->showXAxis = true;
-			// The axes (tick labels included) END where the frame ends, and the tip/statistic line sits
-			// BELOW both — as axes3/text_tip do in the three-band layout. A 160-px axes reaching y=289
-			// put its X labels under the text at y=267.
-			ax[0]->setGeometry(0, 129, 486, 140);
-			if (auto *w = d->findChild<QWidget *>("frame_axes")) w->setGeometry(5, 115, 526, 154);
-			if (auto *w = d->findChild<QWidget *>("text_tip"))   w->setGeometry(6, 271, 250, 15);
-			if (auto *w = d->findChild<QWidget *>("text_stat"))  w->setGeometry(380, 271, 150, 15);
 			d->resize(d->width(), 289);
+		}
+		// Resizable, and never opened taller than the screen: layoutToSize re-places everything from the
+		// dialog's current size, on every resize.
+		struct ResizeLays : QObject {
+			ImageEnhanceDialog *ed;
+			ResizeLays(QObject *parent, ImageEnhanceDialog *e) : QObject(parent), ed(e) {}
+			bool eventFilter(QObject *o, QEvent *e) override {
+				if (e->type() == QEvent::Resize) ed->layoutToSize();
+				return QObject::eventFilter(o, e);
+			}
+		};
+		d->setSizeGripEnabled(true);
+		d->setMinimumSize(d->width(), nbands < 3 ? 240 : 400);
+		d->installEventFilter(new ResizeLays(d, this));
+		if (const QScreen *scr = parent && parent->screen() ? parent->screen() : QGuiApplication::primaryScreen())
+			d->resize(d->width(), std::min(d->height(), scr->availableGeometry().height() - 60));
+		layoutToSize();
+		// An image "Auto histogram stretch" cannot stretch got no limits from "init": nothing to show.
+		if (cAuto && !ax[0]->haveAuto) {
+			cAuto->setEnabled(false);
+			cAuto->setToolTip("Auto histogram stretch does not apply to this image's data type.");
 		}
 		syncBoxes();
 		ready = true;
@@ -8937,6 +8976,36 @@ public:
 		cur = k;
 		if (rBand[k]) rBand[k]->setChecked(true);
 		syncBoxes();
+	}
+
+	// The .ui is the DESIGN size (536x540; 536x289 for one band). The top block keeps its place (its
+	// frame stretches in width); the histogram frame takes the rest of the dialog, the axes stretch in
+	// width and share its height (two 4-px gaps; axes3 is 18 px taller, for its X labels); the R/G/B
+	// radios stay centred on their axes at the right edge; the tip/statistic line hugs the bottom.
+	void layoutToSize() {
+		QDialog *d = dlg;
+		if (!d) return;
+		const int W = d->width(), H = d->height();
+		auto place = [d](const char *name, int x, int y, int w, int h) {
+			if (QWidget *c = d->findChild<QWidget *>(name)) c->setGeometry(x, y, std::max(w, 10), std::max(h, 10));
+		};
+		place("frame_top", 5, 2, W - 10, 116);
+		const int fh = H - 149;                                // frame_axes spans y 120 .. H-29
+		place("frame_axes", 5, 120, W - 10, fh);
+		const int aw = W - 56;
+		if (nbands < 3)
+			place("axes1", 7, 123, aw, fh - 6);
+		else {
+			const int a = (fh - 13 - 18) / 3;
+			const char *axn[3] = { "axes1", "axes2", "axes3" }, *rdn[3] = { "radio_R", "radio_G", "radio_B" };
+			for (int k = 0; k < 3; ++k) {
+				const int y = 123 + k * (a + 4);
+				place(axn[k], 7, y, aw, k == 2 ? fh - 5 - 2 * (a + 4) : a);
+				place(rdn[k], W - 47, y + (a - 11) / 2 - 3, 40, 17);
+			}
+		}
+		place("text_tip", 6, H - 22, 250, 15);
+		place("text_stat", W - 156, H - 22, 150, 15);
 	}
 };
 

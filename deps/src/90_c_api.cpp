@@ -4808,10 +4808,11 @@ GMTVTK_API void gmtvtk_set_rgb_scatter_callback(JuliaRgbScatterFn fn) {
 	g_juliaRgbScatter = fn;
 }
 
-// Push a contrast window into `dlg` — the answer to a "stretchlim" op (Eliminate outliers + Apply).
-GMTVTK_API void gmtvtk_enhance_set_window(void *dlg, int band, double lo, double hi) {
-	if (!dlg) return;
-	reinterpret_cast<ImageEnhanceDialog *>(dlg)->setWindow(band, lo, hi);
+// Push into `dlg`, at "init", the limits "Auto histogram stretch" would stretch band `band` between
+// (Julia's `_enh_auto_limits`) — drawn by the dialog's "Show auto stretch limits" box.
+GMTVTK_API void gmtvtk_enhance_set_auto_limits(void *dlg, int band, double lo, double hi) {
+	if (!dlg || !(hi >= lo)) return;
+	reinterpret_cast<ImageEnhanceDialog *>(dlg)->setAutoLimits(band, lo, hi);
 }
 
 // Register the Empilhador Compute callback (Tools, port of Mirone src_figs/empilhador.m). fn(scene,

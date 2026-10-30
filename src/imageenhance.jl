@@ -182,6 +182,13 @@ function _enh_init(scene::Ptr{Cvoid}, dlg::Ptr{Cvoid}, wanted::String="")
 		      (Ptr{Cvoid}, Cint, Ptr{Cdouble}, Cint, Cdouble, Cdouble, Cint),
 		      dlg, Cint(k - 1), H.counts[k], Cint(length(H.counts[k])), lo, hi, Cint(nb))
 	end
+	# The limits "Auto histogram stretch" would use, for the "Show auto stretch limits" lines — from `I`
+	# itself, the very image that stretch reads (the stashed original, not the band-planar copy).
+	for (k, (lo, hi)) in enumerate(_enh_auto_limits(I, cnts, H.lo, H.binw))
+		k > 3 && break
+		ccall(_fn(:gmtvtk_enhance_set_auto_limits), Cvoid, (Ptr{Cvoid}, Cint, Cdouble, Cdouble),
+		      dlg, Cint(k - 1), lo, hi)
+	end
 	_ENHSTATE[dlg] = _EnhState(scene, String(srcname), Iu, cnts, nb, H.lo, H.binw)
 	return
 end
@@ -207,6 +214,26 @@ function _enh_auto_stretch(I::GMTimage, tol::Float32=0.01f0)::GMTimage
 		lo[k], hi[k] = _enh_stretchlim(Float32.(H.counts[k]), tol, H.lo, H.binw)
 	end
 	return _enh_imadjust(I, lo, hi)
+end
+
+# The per-band limits "Auto histogram stretch (new image)" (savefile.jl `_on_img_stretch`) stretches
+# `I` between, in the image's own data values — shown, never applied, by Adjust Contrast's "Show auto
+# stretch limits". The same two sources that stretch has: a 16-bit image goes through
+# `mat2img(I; stretch=true)`, which takes GMT's `find_histo_limits(I.image)`; an 8-bit one through
+# `_enh_auto_stretch`, i.e. `_enh_stretchlim` at its 1% default on THE image histogram (`counts`,
+# `_image_hist`'s, with its first-bin value `lo` and bin width `binw`). Any other type has no auto
+# stretch, hence no limits.
+function _enh_auto_limits(I::GMTimage, counts::Vector{Vector{Float32}}, lo::Float64, binw::Float64)::Vector{Tuple{Float64,Float64}}
+	T = eltype(I.image)
+	if T == UInt16
+		# Where find_histo_limits throws (a band it cannot read a histogram off), the stretch itself
+		# would throw too: no limits to show, and the dialog greys the box out instead of failing to open.
+		L = try GMT.find_histo_limits(I.image) catch; return Tuple{Float64,Float64}[] end
+		return [(Float64(L[2k - 1]), Float64(L[2k])) for k = 1:length(L) ÷ 2]
+	elseif T == UInt8
+		return [Float64.(_enh_stretchlim(c, 0.01f0, lo, binw)) for c in counts]
+	end
+	return Tuple{Float64,Float64}[]
 end
 
 # push_scaterPlot_CB: plot3(r,g,b,'.') of the three bands.
@@ -255,18 +282,13 @@ function _on_image_enhance(scene::Ptr{Cvoid}, dlg::Ptr{Cvoid}, cparams::Cstring)
 		end
 		st = get(_ENHSTATE, dlg, nothing)
 		(st isa _EnhState) || error("Image Enhance: this dialog has no image loaded")
-		if op == "stretchlim"
-			band = something(tryparse(Int, strip(p[2])), 0)
-			pct  = something(tryparse(Float32, strip(p[3])), 2f0)
-			lo, hi = _enh_stretchlim(st.counts[clamp(band, 0, st.nbands - 1) + 1], pct / 100 / 2, st.lo, st.binw)
-			ccall(_fn(:gmtvtk_enhance_set_window), Cvoid, (Ptr{Cvoid}, Cint, Cdouble, Cdouble),
-			      dlg, Cint(band), Float64(lo), Float64(hi))
-		elseif op == "contrast"
+		if op == "contrast"
 			lo = [parse(Float32, p[2]), parse(Float32, p[4]), parse(Float32, p[6])]
 			hi = [parse(Float32, p[3]), parse(Float32, p[5]), parse(Float32, p[7])]
 			_enh_commit!(st, _enh_imadjust(st.I, lo, hi), "contrast stretch")
 		elseif op == "decorr"
-			pct = something(tryparse(Float32, strip(p[2])), 2f0)
+			# Mirone's default 2% outliers; an explicit "decorr;<pct>" still overrides it.
+			pct = length(p) >= 2 ? something(tryparse(Float32, strip(p[2])), 2f0) : 2f0
 			_enh_commit!(st, _enh_decorrstretch(st.I, pct / 100 / 2), "decorr stretch")
 		else
 			error("Image Enhance: unknown op '$op'")

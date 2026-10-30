@@ -1157,12 +1157,13 @@ static void imageObjectMenu(Scene *s, vtkProp3D *actor, const QPoint &g) {
 	// stretch from and the entry would have nothing to do.
 	QAction *aStretch = s->imgHasOrig.count(s->extras[idx].name)
 	                    ? m.addAction("Auto histogram stretch (new image)") : nullptr;
-	// Binarize, Image Enhance, Shape detector and K-means classification are NOT here: they live in
-	// the Image menu, which opens them — or brings back a parked/hidden one — for the displayed
-	// image. A handle menu carries what belongs to THIS object.
+	// Binarize, Shape detector and K-means classification are NOT here: they live in the Image menu,
+	// which opens them — or brings back a parked/hidden one — for the displayed image.
 	// Same "Image > Show Histogram" the menu bar opens, on THIS handle's image (the menu-bar entry
 	// has to guess which image is displayed; here the handle already says which one).
 	QAction *aHisto = g_showImageHisto ? m.addAction("Show Histogram") : nullptr;
+	// Same "Image > Image Enhance > 1 - Indexed and RGB" dialog, on THIS handle's image.
+	QAction *aEnhance = g_enhanceReopen ? m.addAction("Image Enhance") : nullptr;
 	QAction *aResize = g_showImageResize ? m.addAction("Image resize…") : nullptr;
 	// A MASK (two states, 0/1 — a tsunami file's inundation footprint, a beach) can be DIGITIZED: the
 	// outline of its whites, as vector geometry. Offered only for a handle Julia flagged as a mask.
@@ -1180,6 +1181,7 @@ static void imageObjectMenu(Scene *s, vtkProp3D *actor, const QPoint &g) {
 	if (photoCraftChosen(c, pc, s, "image", QString::fromStdString(s->extras[idx].name))) return;
 	if (aDigit && c == aDigit) { digitizeWhitesUI(s, s->extras[idx].name); return; }
 	if (aHisto && c == aHisto) { g_showImageHisto(s, s->extras[idx].name.c_str()); return; }
+	if (aEnhance && c == aEnhance) { g_enhanceReopen(s, s->extras[idx].name.c_str()); return; }
 	if (aResize && c == aResize) { g_showImageResize(s, s->extras[idx].name.c_str()); return; }
 	if (c == aMove) {
 		const QString nm = QString::fromStdString(s->extras[idx].name);
@@ -3269,10 +3271,10 @@ static void rebuildSceneObjects(Scene *s) {
 			// window's primary image) — see imageObjectMenu above, same rule, same set.
 			QAction *aStretch = s->imgHasOrig.count(std::string())
 			                    ? m.addAction("Auto histogram stretch (new image)") : nullptr;
-			// Binarize / Image Enhance / Shape detector / K-means classification are NOT here — they
-			// belong to the Image menu, which opens them (and reopens a parked one) just as well. Same
-			// rule as imageObjectMenu above: a handle menu carries what belongs to THIS object.
+			// Binarize / Shape detector / K-means classification are NOT here — they belong to the
+			// Image menu, which opens them (and reopens a parked one) just as well.
 			QAction *aHisto    = g_showImageHisto ? m.addAction("Show Histogram")  : nullptr;
+			QAction *aEnhance  = g_enhanceReopen ? m.addAction("Image Enhance")    : nullptr;
 			QAction *aResize   = g_showImageResize ? m.addAction("Image resize…")  : nullptr;
 			// Same entry the extra-image handles carry (imageObjectMenu), for the window's OWN image:
 			// a mask is a mask whichever door it came in by.
@@ -3292,6 +3294,7 @@ static void rebuildSceneObjects(Scene *s) {
 			if (aStretch && c == aStretch) stretchImageObject(s, nm);
 			else if (aDigit && c == aDigit) digitizeWhitesUI(s, std::string());
 			else if (aHisto && c == aHisto) g_showImageHisto(s, "");
+			else if (aEnhance && c == aEnhance) g_enhanceReopen(s, "");
 			else if (aResize && c == aResize) g_showImageResize(s, "");
 			else if (c == aSave) saveObjectDialog(s, "image", nm);
 			else if (c == aClip) copyViewToClipboardUI(s);
