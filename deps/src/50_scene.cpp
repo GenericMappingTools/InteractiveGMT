@@ -595,7 +595,7 @@ static void textLabelMenu(Scene *s, vtkProp3D *act, const QPoint &globalPos) {
 // colourbar / profile). Drawn into a 16x16 transparent pixmap (matches the small checkbox).
 enum ObjIcon { IC_Surface, IC_Image, IC_Line, IC_Points, IC_Curtain,
                IC_Polygon, IC_Polyline, IC_Rect, IC_Circle, IC_Text, IC_ColorBar, IC_Profile, IC_NestRect,
-               IC_Axes, IC_StraightLine, IC_Beachball, IC_LineArea, IC_Cloud };
+               IC_Axes, IC_StraightLine, IC_Beachball, IC_LineArea, IC_Cloud, IC_Arrow };
 
 static QPixmap makeObjectIcon(int kind) {
 	// Drawn in a 16-unit coordinate space but rasterised at high DPI (supersampled) so the glyph
@@ -711,6 +711,14 @@ static QPixmap makeObjectIcon(int kind) {
 		QPolygonF box; box << QPointF(1.5, 7.0) << QPointF(13.0, 3.0) << QPointF(14.5, 9.0) << QPointF(3.0, 13.0);
 		p.drawPolygon(box);
 		p.drawLine(QPointF(2.25, 10.0), QPointF(13.75, 6.0));
+		break;
+	}
+	case IC_Arrow: {                                           // drawn arrow: a thin shaft and a filled head
+		p.setPen(QPen(QColor(40, 40, 40), 1.2, Qt::SolidLine, Qt::FlatCap, Qt::MiterJoin));
+		p.drawLine(QPointF(2.5, 13.5), QPointF(10.0, 6.0));
+		p.setPen(Qt::NoPen); p.setBrush(QColor(40, 40, 40));
+		QPolygonF head; head << QPointF(14.0, 2.0) << QPointF(12.0, 7.6) << QPointF(8.4, 4.0);
+		p.drawPolygon(head);
 		break;
 	}
 	case IC_NestRect: {                                        // "Nested grids": three concentric thin rects
@@ -3661,6 +3669,7 @@ static void rebuildSceneObjects(Scene *s) {
 		       : !pg.groupName.empty()   ? IC_Rect      // slip-model patches are rectangles, not generic polygons
 		       : pg.nestKind == 1        ? IC_NestRect
 		       : pg.isLineArea           ? IC_LineArea
+		       : pg.isArrow              ? IC_Arrow
 		       : !pg.closed              ? (pg.v.size() > 2 ? IC_Polyline : IC_StraightLine)
 		       : nm.startsWith("rect")   ? IC_Rect
 		       : nm.startsWith("circle") ? IC_Circle
@@ -4600,12 +4609,91 @@ static void overlayRemoveSegment(Scene *s, Overlay &ov, int segIdx) {
 	overlayBuildFill(ov);                     // the rings changed: a filled overlay's area follows them
 }
 
+// THE arrow as a UNIT glyph — tail at the origin, tip at (1,0,0), the frame every vector-field layer
+// scales and turns per point — drawn by THE arrow (arrowParts, 10_geometry.cpp) with the layer's GMT
+// vector attributes. `st` without a head size of its own takes heads 0.30 of the arrow (the field look):
+// a field's heads grow with its arrows. Flat (2-D map): the shaft, every filled head and every pen
+// stroke as filled polygons, the shaft and strokes `kShaft` thick. Solid (3-D): that same outline given
+// the same thickness in z — a body that reads from any camera, with the 2-D one's exact proportions.
+static vtkSmartPointer<vtkPolyData> arrowGlyphPD(const ArrowStyle &st, bool solid) {
+	// half-thickness of the shaft and of pen strokes (unit arrow): a body's, or a line drawing's when the
+	// heads are not filled (a field drawn as lines, grdvector with "Solid 3-D arrows" unticked)
+	const double kShaft = st.fill ? 0.045 : 0.012;
+	ArrowStyle g = st;
+	if (!(g.headFrac > 0.0)) g.headFrac = 0.30;
+	g.trimPt[0] = g.trimPt[1] = 0.0;                           // a unit glyph has no points to trim
+	ArrowParts ap;
+	vtkNew<vtkPoints> pts;
+	vtkNew<vtkCellArray> polys;
+	auto poly = [&](const std::vector<AP2> &v) {
+		if (v.size() < 3) return;
+		polys->InsertNextCell((vtkIdType)v.size());
+		for (const AP2 &q : v) polys->InsertCellPoint(pts->InsertNextPoint(q[0], q[1], 0.0));
+	};
+	auto band = [&](const AP2 &a, const AP2 &b) {             // a pen stroke `kShaft` thick
+		const double dx = b[0] - a[0], dy = b[1] - a[1], L = std::hypot(dx, dy);
+		if (!(L > 0.0)) return;
+		const double nx = -dy / L * kShaft, ny = dx / L * kShaft;
+		poly({ { a[0] + nx, a[1] + ny }, { a[0] - nx, a[1] - ny }, { b[0] - nx, b[1] - ny }, { b[0] + nx, b[1] + ny } });
+	};
+	if (arrowParts(1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, g, ap)) {
+		band(ap.s0, ap.s1);
+		for (const auto &f : ap.fills) poly(f);
+		for (const auto &k : ap.strokes) for (size_t i = 1; i < k.size(); ++i) band(k[i - 1], k[i]);
+	}
+	vtkNew<vtkPolyData> flat; flat->SetPoints(pts); flat->SetPolys(polys);
+	vtkNew<vtkTriangleFilter> tri; tri->SetInputData(flat); tri->Update();   // concave heads, one cell type
+	vtkSmartPointer<vtkPolyData> out = vtkSmartPointer<vtkPolyData>::New();
+	if (!solid) { out->DeepCopy(tri->GetOutput()); return out; }
+	// Solid: top and bottom faces at z = +-kShaft, and a wall on every edge only one triangle uses (the
+	// outline). Pieces overlap (a head over the shaft's end): harmless for an opaque lit body.
+	vtkPolyData *t = tri->GetOutput();
+	vtkNew<vtkPoints> sp;
+	vtkNew<vtkCellArray> sc;
+	const vtkIdType n = t->GetNumberOfPoints();
+	for (vtkIdType i = 0; i < n; ++i) { double q[3]; t->GetPoint(i, q); sp->InsertNextPoint(q[0], q[1], kShaft); }
+	for (vtkIdType i = 0; i < n; ++i) { double q[3]; t->GetPoint(i, q); sp->InsertNextPoint(q[0], q[1], -kShaft); }
+	std::map<std::pair<vtkIdType, vtkIdType>, int> edges;      // undirected edge -> how many triangles use it
+	std::vector<std::array<vtkIdType, 2>> directed;
+	vtkCellArray *tc = t->GetPolys();
+	tc->InitTraversal();
+	vtkNew<vtkIdList> ids;
+	while (tc->GetNextCell(ids)) {
+		if (ids->GetNumberOfIds() != 3) continue;
+		const vtkIdType a = ids->GetId(0), b = ids->GetId(1), c = ids->GetId(2);
+		const vtkIdType top[3] = { a, b, c }, bot[3] = { c + n, b + n, a + n };
+		sc->InsertNextCell(3, top); sc->InsertNextCell(3, bot);
+		for (const auto &e : { std::array<vtkIdType, 2>{ a, b }, std::array<vtkIdType, 2>{ b, c }, std::array<vtkIdType, 2>{ c, a } }) {
+			++edges[{ std::min(e[0], e[1]), std::max(e[0], e[1]) }];
+			directed.push_back(e);
+		}
+	}
+	for (const auto &e : directed)
+		if (edges[{ std::min(e[0], e[1]), std::max(e[0], e[1]) }] == 1) {
+			const vtkIdType q1[3] = { e[1], e[0], e[0] + n }, q2[3] = { e[1], e[0] + n, e[1] + n };
+			sc->InsertNextCell(3, q1); sc->InsertNextCell(3, q2);
+		}
+	vtkNew<vtkPolyData> body; body->SetPoints(sp); body->SetPolys(sc);
+	vtkNew<vtkPolyDataNormals> norms;                         // hard edges: a flat-sided body, not a blob
+	norms->SetInputData(body);
+	norms->ComputePointNormalsOn(); norms->ComputeCellNormalsOff(); norms->SplittingOn();
+	norms->ConsistencyOn(); norms->AutoOrientNormalsOff();
+	norms->Update();
+	out->DeepCopy(norms->GetOutput());
+	return out;
+}
+
 // ---- generic screen-constant SYMBOL layers (volcanoes, seismicity, cities, …) ----------------
 // Build a UNIT glyph (centred at origin, fits a radius-0.5 circle -> diameter 1) for a GMT symbol
 // code. Filled shapes -> a single polygon cell (fill = actor colour, outline = actor EdgeVisibility);
 // open shapes (x + -) -> line cells (no fill, drawn in the edge colour). `filled` is returned so the
 // caller knows whether the fill colour applies. Unknown code -> circle.
-static vtkSmartPointer<vtkPolyData> makeSymbolGlyph(const std::string &sym, bool &filled) {
+static vtkSmartPointer<vtkPolyData> makeSymbolGlyph(const std::string &sym, bool &filled,
+                                                    const ArrowStyle *arrow = nullptr) {
+	if (sym == "arrow") {                  // flat arrow: THE arrow (arrowGlyphPD), the layer's own attributes
+		filled = true;                     // same frame as the solid one (tail at the origin, tip at (1,0,0)),
+		return arrowGlyphPD(arrow ? *arrow : ArrowStyle(), false);   // so a layer keeps anchor and length flat
+	}
 	vtkSmartPointer<vtkPolyData> pd = vtkSmartPointer<vtkPolyData>::New();
 	vtkNew<vtkPoints> p;
 	vtkNew<vtkCellArray> ca;
@@ -4621,6 +4709,15 @@ static vtkSmartPointer<vtkPolyData> makeSymbolGlyph(const std::string &sym, bool
 		pd->SetPoints(p); pd->SetPolys(ca);
 	};
 	if      (sym == "c") poly(32, 0.0);    // circle
+	else if (sym == "p") {                 // point: GMT draws a tiny fixed dot -> a small circle
+		filled = true;
+		ca->InsertNextCell(16);
+		for (int i = 0; i < 16; ++i) {
+			const double a = i * 360.0 / 16 * D2R;
+			ca->InsertCellPoint(p->InsertNextPoint(0.15 * std::cos(a), 0.15 * std::sin(a), 0.0));
+		}
+		pd->SetPoints(p); pd->SetPolys(ca);
+	}
 	else if (sym == "s") poly(4, 45.0);    // square
 	else if (sym == "t") poly(3, 90.0);    // triangle (apex up)
 	else if (sym == "i") poly(3, -90.0);   // inverted triangle (apex down)
@@ -4652,7 +4749,7 @@ static vtkSmartPointer<vtkPolyData> makeSymbolGlyph(const std::string &sym, bool
 		lines->InsertCellPoint(v[0]);
 		pd->SetPoints(p); pd->SetPolys(ca); pd->SetLines(lines);
 	}
-	else if (sym == "x" || sym == "+" || sym == "-") {       // open line glyphs
+	else if (sym == "x" || sym == "+" || sym == "-" || sym == "y") {   // open line glyphs
 		filled = false;
 		auto seg = [&](double x0, double y0, double x1, double y1) {
 			const vtkIdType i0 = p->InsertNextPoint(x0, y0, 0.0);
@@ -4661,22 +4758,9 @@ static vtkSmartPointer<vtkPolyData> makeSymbolGlyph(const std::string &sym, bool
 		};
 		if      (sym == "x") { seg(-R, -R, R, R); seg(-R, R, R, -R); }   // diagonal cross
 		else if (sym == "+") { seg(-R, 0, R, 0);  seg(0, -R, 0, R);  }   // plus
+		else if (sym == "y") { seg(0, -R, 0, R); }                       // vertical dash
 		else                 { seg(-R, 0, R, 0); }                       // dash
 		pd->SetPoints(p); pd->SetLines(ca);
-	}
-	else if (sym == "arrow") {             // flat arrow: the top-down outline of the solid "arrow" below
-		// Same frame as the solid one — tail at the origin, tip at (1,0,0) — so an arrow layer keeps
-		// its anchor and length when the view goes flat. Two CONVEX cells (shaft quad + head triangle):
-		// the whole outline is concave, and a single polygon cell would be fan-filled wrong.
-		filled = true;
-		const double hw = 0.04, tw = 0.12, tb = 0.70;         // shaft half-width, head half-width, head base
-		const vtkIdType a0 = p->InsertNextPoint(0.0, -hw, 0.0), a1 = p->InsertNextPoint(tb, -hw, 0.0);
-		const vtkIdType a2 = p->InsertNextPoint(tb,  hw, 0.0),  a3 = p->InsertNextPoint(0.0,  hw, 0.0);
-		ca->InsertNextCell(4); ca->InsertCellPoint(a0); ca->InsertCellPoint(a1); ca->InsertCellPoint(a2); ca->InsertCellPoint(a3);
-		const vtkIdType h0 = p->InsertNextPoint(tb, -tw, 0.0), h1 = p->InsertNextPoint(1.0, 0.0, 0.0);
-		const vtkIdType h2 = p->InsertNextPoint(tb,  tw, 0.0);
-		ca->InsertNextCell(3); ca->InsertCellPoint(h0); ca->InsertCellPoint(h1); ca->InsertCellPoint(h2);
-		pd->SetPoints(p); pd->SetPolys(ca);
 	}
 	else poly(32, 0.0);                    // unknown -> circle
 	return pd;
@@ -4764,22 +4848,10 @@ static vtkSmartPointer<vtkPolyData> makeSatelliteGlyph() {
 // flat XY polygon, so it stays visible from any camera angle (the flat glyphs above go edge-on
 // invisible in an oblique 3-D view). Always filled; normals included so LightingOn() actually
 // shades it (addSymbols turns lighting on only for these two codes).
-static vtkSmartPointer<vtkPolyData> makeSolidGlyph(const std::string &sym) {
+static vtkSmartPointer<vtkPolyData> makeSolidGlyph(const std::string &sym, const ArrowStyle *arrow = nullptr) {
 	if (sym == "sat") return makeSatelliteGlyph();     // spacecraft body (built above, already normalled)
-	if (sym == "arrow") {               // vector arrow: TAIL at the origin, tip at (1,0,0) — a vector is
-		// drawn FROM its point, so unlike the centred glyphs this one is anchored at its tail. The same
-		// vtkArrowSource the Fault plane demo uses, a little bolder so it reads at field density.
-		vtkNew<vtkArrowSource> arr;
-		arr->SetTipLength(0.30); arr->SetTipRadius(0.12); arr->SetShaftRadius(0.045);
-		arr->SetTipResolution(20); arr->SetShaftResolution(16);
-		vtkNew<vtkTriangleFilter> tri;      // one cell type: mixed cells shade unevenly under the glyph mapper
-		tri->SetInputConnection(arr->GetOutputPort());
-		vtkNew<vtkPolyDataNormals> norms;
-		norms->SetInputConnection(tri->GetOutputPort());
-		norms->ComputePointNormalsOn(); norms->ComputeCellNormalsOff(); norms->SplittingOn();
-		norms->Update();
-		return norms->GetOutput();
-	}
+	if (sym == "arrow")                 // vector arrow: TAIL at the origin, tip at (1,0,0) — a vector is drawn
+		return arrowGlyphPD(arrow ? *arrow : ArrowStyle(), true);   // FROM its point. THE arrow, as a body
 	if (sym == "u") {                   // cube: vtkCubeSource has no built-in normals -> compute them
 		vtkNew<vtkCubeSource> cube;
 		cube->SetXLength(1.0); cube->SetYLength(1.0); cube->SetZLength(1.0);
@@ -4885,8 +4957,8 @@ static void symbolSetPipeline(Scene *s, SymbolLayer &sl, vtkPolyData *in, bool s
 	// catalogue, and a loaded model simply takes its place (it arrives normalised to the same unit
 	// contract, so every size/placement rule below is unchanged). The flat branch is untouched: a
 	// top-down 2-D map has no third dimension for a model to be a body in.
-	vtkSmartPointer<vtkPolyData> src = solid ? (sl.customGlyph ? sl.customGlyph : makeSolidGlyph(code))
-	                                         : makeSymbolGlyph(code, glyphFilled);
+	vtkSmartPointer<vtkPolyData> src = solid ? (sl.customGlyph ? sl.customGlyph : makeSolidGlyph(code, &sl.arrow))
+	                                         : makeSymbolGlyph(code, glyphFilled, &sl.arrow);
 	const bool wantFill = glyphFilled && (sl.wantFilled != 0);
 	const double fr = sl.fillRGB[0], fg = sl.fillRGB[1], fb = sl.fillRGB[2];
 	const double er = sl.edgeRGB[0], eg = sl.edgeRGB[1], eb = sl.edgeRGB[2];
@@ -5624,7 +5696,7 @@ static void symbolLayerMenu(Scene *s, vtkActor *act, const QPoint &gp) {
 	static const std::pair<const char*, const char*> KINDS[] = {
 		{"Circle","c"}, {"Square","s"}, {"Triangle","t"}, {"Inverted triangle","i"},
 		{"Diamond","d"}, {"Hexagon","h"}, {"Pentagon","n"}, {"Octagon","g"},
-		{"Star","a"}, {"Cross","x"}, {"Plus","+"}, {"Dash","-"} };
+		{"Star","a"}, {"Cross","x"}, {"Plus","+"}, {"Dash","-"}, {"Vertical dash","y"}, {"Point","p"} };
 	// A WORLD-SIZED layer is a BODY standing in the scene (a spacecraft), not a marker drawn on the
 	// map: it is measured in world units and grows with zoom, so "make it a dash" is not a shape it can
 	// take. Its list is the 3-D solids only, plus the door to an external model. Every other layer
@@ -5666,11 +5738,12 @@ static void symbolLayerMenu(Scene *s, vtkActor *act, const QPoint &gp) {
 	QAction *sizeA = propM->addAction("Size (px)…");
 	QAction *sizePtA = propM->addAction("Size (points)…");
 	QAction *ewA   = propM->addAction("Edge width (px)…");
-	QAction *arrCmapA = nullptr, *arrLenA = nullptr;
+	QAction *arrCmapA = nullptr, *arrLenA = nullptr, *arrHeadA = nullptr;
 	if (arrowLayer) {
 		for (QAction *a : { edgeA, sizeA, sizePtA, ewA }) a->setVisible(false);
 		arrCmapA = propM->addAction("Colour by magnitude…");
 		arrLenA  = propM->addAction("Arrow length…");
+		arrHeadA = propM->addAction("Heads and shape…");     // THE arrow dialog: GMT's vector attributes
 	}
 	m.addSeparator();
 	// Draw-order stacking in the SHARED vector pile (overlays + symbols + polygons): controls who
@@ -5855,6 +5928,24 @@ static void symbolLayerMenu(Scene *s, vtkActor *act, const QPoint &gp) {
 		const double *c = sl->fillRGB;
 		QColor q = QColorDialog::getColor(QColor(int(c[0]*255), int(c[1]*255), int(c[2]*255)), s->widget, "Arrow colour");
 		if (q.isValid()) { arrowLayerSetRGB(s, *sl, nullptr, 0, q.redF(), q.greenF(), q.blueF()); reRender(); }
+		return;
+	}
+	if (arrHeadA && ch == arrHeadA) {                // the glyph is THE arrow: rebuilt through THE constructor
+		const std::string nm = sl->name;
+		auto layer = [s, nm]() -> SymbolLayer * {
+			for (auto &L : s->symbols) if (L.name == nm && !L.uvOrig.empty()) return &L;
+			return nullptr;
+		};
+		arrowPropertiesDialog(s->widget,
+			[layer]() -> ArrowStyle * { SymbolLayer *L = layer(); return L ? &L->arrow : nullptr; },
+			[s, layer]() {
+				SymbolLayer *L = layer();
+				vtkPolyData *pd = L ? symInputPD(*L) : nullptr;
+				if (!pd) return;
+				symbolSetPipeline(s, *L, pd, L->solid3D);
+				symbolRescaleCB(nullptr, 0, s, nullptr);
+				if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+			});
 		return;
 	}
 	if (arrCmapA && ch == arrCmapA) {

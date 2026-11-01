@@ -942,20 +942,7 @@ end
 	@test_throws Exception IG._gv_head(Dict("headang" => "90"))
 	@test_throws Exception IG._gv_head(Dict("norm" => "-1"))
 
-	# One arrow: the shaft, plus a 3-point polyline for each end that carries a head.
-	segs = Matrix{Float64}[]
-	IG._gv_arrow!(segs, 0.0, 0.0, 1.0, 0.0, "", 0.33, tand(18), 1.0)
-	@test length(segs) == 1 && segs[1] == [0.0 0.0; 1.0 0.0]
-	segs = Matrix{Float64}[]
-	IG._gv_arrow!(segs, 0.0, 0.0, 1.0, 0.0, "e", 0.33, tand(18), 1.0)
-	@test length(segs) == 2 && size(segs[2]) == (3, 2) && segs[2][2, :] == [1.0, 0.0]
-	segs = Matrix{Float64}[]
-	IG._gv_arrow!(segs, 0.0, 0.0, 1.0, 0.0, "be", 0.33, tand(18), 1.0)
-	@test length(segs) == 3 && segs[3][2, :] == [0.0, 0.0]
-	# A head shrunk to nothing (+n with a very short arrow) leaves the shaft alone.
-	segs = Matrix{Float64}[]
-	IG._gv_arrow!(segs, 0.0, 0.0, 1.0, 0.0, "e", 0.33, tand(18), 0.0)
-	@test length(segs) == 1
+	# (The arrow itself is THE arrow, arrowParts in C++: its line look is checked in the GUI tier.)
 
 	# The -C stand-in: equal-width classes on the app's own blue-to-red ramp.
 	@test IG._gv_class_color(1, 7)[3] > IG._gv_class_color(1, 7)[1]
@@ -978,25 +965,6 @@ end
 	@test occursin("-Ix2/3", cmd) && occursin("-Si", cmd) && occursin("+a18", cmd)
 	@test occursin("+b", cmd) && occursin("+e", cmd) && occursin("+n0.25", cmd) && occursin("-Wred", cmd)
 	@test occursin("-Sl", IG._gv_command(Dict{String,String}(), "u.grd", "v.grd", 1, 1, 0.0, 4.0, "", 0.33, "18", 0.0))
-end
-
-# grdvector's LINE arrows ("Solid 3-D arrows" unticked) are drawn by `_gv_arrow!`, Mirone's
-# loc_quiver shape. (Solid arrows — the dialog's default and File > Open xy(z) > Import Arrow field —
-# go through the one solid builder `_gv_add_solid` instead, exercised by the GUI tier.)
-@testitem "grdvector: the line-arrow shape" tags=[:unit, :fast] begin
-	IG = InteractiveGMT
-	# loc_quiver is exactly _gv_arrow! with a head at the tip and no taper.
-	segs = Matrix{Float64}[]
-	IG._gv_arrow!(segs, 2.0, 1.0, 0.6, 0.8, "e", 0.33, 0.33, 1.0)
-	@test length(segs) == 2
-	@test segs[1] == [2.0 1.0; 2.6 1.8]                   # the shaft
-	# the two arms meet AT the tip, and the tip is the middle vertex of the head polyline
-	@test segs[2][2, :] == [2.6, 1.8]
-	@test size(segs[2]) == (3, 2)
-	# The arms are symmetric about the shaft direction: equal length, mirrored across it.
-	d = [0.6, 0.8];  a1 = segs[2][1, :] .- segs[2][2, :];  a2 = segs[2][3, :] .- segs[2][2, :]
-	@test isapprox(sum(abs2, a1), sum(abs2, a2); rtol = 1e-12)
-	@test isapprox(sum(a1 .* d), sum(a2 .* d); rtol = 1e-12)
 end
 
 @testitem "grdvector: refuses an unusable request" tags=[:unit, :fast] begin

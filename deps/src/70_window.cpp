@@ -27091,13 +27091,12 @@ static void tideGaugeArm(Scene *s);
 static QIcon makePolygonIcon();
 static QIcon makePolylineIcon();
 static QIcon makeLineIcon();
+static QIcon makeArrowIcon();
 static QIcon makeLineAreaIcon();
 static QIcon makeRectIcon();
 static QIcon makeNestedRectIcon();
 static QIcon makeCircleIcon();
-static QIcon makeSymCircleIcon();   // Symbols flyout glyphs (85_polygon.cpp)
-static QIcon makeSymSquareIcon();
-static QIcon makeSymStarIcon();
+static QIcon makeSymCodeIcon(const char *code);   // Symbols flyout glyphs (85_polygon.cpp)
 static QIcon makeTextIcon();
 static QIcon makePaletteIcon();     // Color Palettes toolbar glyph (85_polygon.cpp)
 static QIcon makeHillshadeIcon();   // Illumination (Hillshade) toolbar glyph (ditto)
@@ -29892,6 +29891,7 @@ static QHash<void *, QDialog *> &scriptEditorRegistry() {
 	static QHash<void *, QDialog *> reg;
 	return reg;
 }
+static void nodeGraphOpen(void *key, QWidget *parent);    // 71_nodegraph.cpp: the editor's Graph… button
 
 static ScriptHost scriptHostScene(Scene *s) {
 	ScriptHost h;
@@ -30189,8 +30189,13 @@ static void buildScriptEditor(const ScriptHost &host, const QString &text) {
 	QHBoxLayout *row = new QHBoxLayout();
 	QPushButton *bRun = new QPushButton("&Run", dlg);
 	QPushButton *bSave = new QPushButton("&Save…", dlg);
+	// Graph…: the script as a graph of boxes (71_nodegraph.cpp), a view of THIS box's text
+	QPushButton *bGraph = new QPushButton("&Graph…", dlg);
+	bGraph->setObjectName("scriptGraphBtn");
+	bGraph->setToolTip("Show the script as a graph of boxes: one box per step, wires from each variable to "
+	                   "the calls that use it. A field edited in a box is rewritten here, in the text.");
 	// Enter must not fire a button while the user is typing in the editor.
-	for (QPushButton *b : { bRun, bSave }) b->setAutoDefault(false);
+	for (QPushButton *b : { bRun, bSave, bGraph }) b->setAutoDefault(false);
 	// LOWER-LEFT: what Save produces. Run ignores it.
 	QCheckBox *cbStandalone = new QCheckBox("Standalone", dlg);
 	cbStandalone->setChecked(false);
@@ -30228,10 +30233,15 @@ static void buildScriptEditor(const ScriptHost &host, const QString &text) {
 		row->addWidget(help);
 	}
 	row->addStretch(1);
+	row->addWidget(bGraph);
 	row->addWidget(bRun);
 	row->addWidget(bSave);
 	lay->addLayout(row);
 	dlg->resize(820, 600);
+
+	QObject::connect(bGraph, &QPushButton::clicked, [host, dlg]() {
+		if (host.alive()) nodeGraphOpen(host.key, dlg);
+	});
 
 	QObject::connect(bRun, &QPushButton::clicked, [host]() {
 		if (!g_juliaEval || !host.alive()) return;
@@ -32768,6 +32778,8 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		                                   "double-click ends the open line.",                                     Scene::SH_Polyline },
 		{ makeLineIcon(),     "Line",      "Draw a straight line: click the start point, then the end point "
 		                                   "(later clicks move the end); double-click ends it.",                   Scene::SH_Line     },
+		{ makeArrowIcon(),    "Arrow",     "Draw an arrow: click the tail, then the tip (later clicks move the tip); "
+		                                   "double-click ends it. Double-click an arrow to move its tail or tip.", Scene::SH_Arrow    },
 		// "Line area" flyout entry: a straight line drawn together with a rectangle around it (20x the line
 		// width); double-click the box to get corner handles that change its width and length
 		{ makeLineAreaIcon(), "Line area", "Draw a line inside a rectangle: click the start point, then the end point; "
@@ -32798,7 +32810,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	QObject::connect(shapeMenu, &QMenu::triggered, flyout, [flyout](QAction *a){ flyout->setDefaultAction(a); });
 	tb->addWidget(flyout);
 
-	// --- Symbols flyout: circle/square/star, placed by ONE click (not drag-to-size) -----------
+	// --- Symbols flyout: every fixed-size GMT symbol, placed by ONE click (not drag-to-size) ---
 	// Same ToolDef/QToolButton/QMenu machinery as the shapes flyout above, routed through the SAME
 	// polygonToolToggled (so it shares s->shapeActs mutual exclusion with every other draw tool). A
 	// placed symbol is a NATIVE `SymbolLayer` (addSymbols, oneShot=true, 50_scene.cpp) — the SAME
@@ -32806,14 +32818,14 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// baked-vertex ring visibly deforms on geographic maps where x/y scale unequally; a glyph never
 	// does). Double-click then drag (polygonHandleDblClick/Move, 85_polygon.cpp) moves the layer's
 	// one point; size/fill/edge-color/width are already generic via the existing symbolLayerMenu.
-	struct SymToolDef { QIcon icon; const char *name; const char *tip; Scene::ShapeKind kind; };
+	// The list is GMT's own fixed-size symbol set (psxy -S codes taking a size only); symbols that
+	// need more than a size (ellipse, rectangle, wedge, vector, front, …) are drawn shapes, not markers.
+	struct SymToolDef { const char *code; const char *name; };
 	const SymToolDef symTools[] = {
-		{ makeSymCircleIcon(), "Circle", "Place a circle symbol: click to drop it. Double-click then drag "
-		                                 "to move it; right-click for size/fill/outline.", Scene::SH_SymCircle },
-		{ makeSymSquareIcon(), "Square", "Place a square symbol: click to drop it. Double-click then drag "
-		                                 "to move it; right-click for size/fill/outline.", Scene::SH_SymSquare },
-		{ makeSymStarIcon(),   "Star",   "Place a star symbol: click to drop it. Double-click then drag "
-		                                 "to move it; right-click for size/fill/outline.",   Scene::SH_SymStar },
+		{ "c", "Circle" },   { "s", "Square" },   { "a", "Star" },     { "t", "Triangle" },
+		{ "i", "Inverted triangle" },             { "d", "Diamond" },  { "n", "Pentagon" },
+		{ "h", "Hexagon" },  { "g", "Octagon" },  { "x", "Cross" },    { "+", "Plus" },
+		{ "-", "Horizontal dash" },               { "y", "Vertical dash" }, { "p", "Point" },
 	};
 	QToolButton *symFlyout = new QToolButton(tb);            // the shared symbol slot
 	symFlyout->setPopupMode(QToolButton::MenuButtonPopup);
@@ -32821,11 +32833,15 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	QMenu *symMenu = new QMenu(symFlyout);
 	QAction *defaultSym = nullptr;
 	for (const SymToolDef &td : symTools) {
-		QAction *act = symMenu->addAction(td.icon, td.name);
+		QAction *act = symMenu->addAction(makeSymCodeIcon(td.code), td.name);
 		act->setCheckable(true);
-		act->setToolTip(td.tip);
-		const Scene::ShapeKind kind = td.kind;
-		QObject::connect(act, &QAction::toggled, [s, act, kind](bool on){ polygonToolToggled(s, act, kind, on); });
+		act->setToolTip(QString("Place a %1 symbol: click to drop it. Double-click then drag to move it; "
+		                        "right-click for size/fill/outline.").arg(QString(td.name).toLower()));
+		const std::string code = td.code;
+		QObject::connect(act, &QAction::toggled, [s, act, code](bool on){
+			if (on) s->polySymCode = code;
+			polygonToolToggled(s, act, Scene::SH_Symbol, on);
+		});
 		s->shapeActs.push_back(act);
 		if (!defaultSym) defaultSym = act;
 	}

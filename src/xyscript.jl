@@ -287,13 +287,18 @@ function _xy_page_annots(h::Ptr{Cvoid}, page::Integer)
 			ans[end] = merge(ans[end], (box = line[10:end] != "0",))
 			continue
 		end
+		if startswith(line, "annotarrow=") && !isempty(ans) # of the annotation just read: THE arrow's attributes
+			ans[end] = merge(ans[end], (arrow = String(line[12:end]),))
+			continue
+		end
 		startswith(line, "annot=") || continue
 		f = split(line[7:end], ' '; limit = 18)
 		length(f) >= 17 || continue
 		v = _xy_nums(join(f[1:17], ' '))
 		push!(ans, (kind = round(Int, v[1]), x0 = v[2], y0 = v[3], x1 = v[4], y1 = v[5], r = v[6], g = v[7], b = v[8],
 		            width = v[9], ltype = round(Int, v[10]), size = v[11], filled = v[12] != 0, fr = v[13], fg = v[14],
-		            fb = v[15], visible = v[16] != 0, text = length(f) == 18 ? _xy_unesc(f[18]) : "", box = true))
+		            fb = v[15], visible = v[16] != 0, text = length(f) == 18 ? _xy_unesc(f[18]) : "", box = true,
+		            arrow = ""))
 	end
 	return ans
 end
@@ -316,7 +321,10 @@ function _xy_annot_steps!(steps, ctx, h::Ptr{Cvoid}, page::Integer, logx::Bool, 
 		r8(v) = round(v; sigdigits = 8)               # a dragged point's float noise is not a coordinate
 		kw = Pair{Symbol,Any}[:x => (r8(a.x0), r8(a.x1)), :y => (r8(a.y0), r8(a.y1)),
 		                      :pen => string(mpt(a.width), "p,", col, haskey(_XY_GMT_LINE, a.ltype) ? "," * _XY_GMT_LINE[a.ltype] : "")]
-		0 <= a.kind <= 2 && push!(kw, :head => string(mpt(3 * max(2.5, a.width) + 4), "p"))   # xyAnnotHead's length
+		if 0 <= a.kind <= 2                     # THE arrow: its head length and GMT vector attributes
+			push!(kw, :head => string(mpt(_arrow_head_px(a.arrow, a.width)), "p"))
+			isempty(a.arrow) || push!(kw, :arrow => _gmt_arrow_mods(a.arrow; pen_fill = col))
+		end
 		a.kind >= 4 && a.filled && push!(kw, :fill => _xy_hex(a.fr, a.fg, a.fb))
 		a.kind == 4 && !a.box && push!(kw, :box => false)        # a text box showing its text only
 		if (a.kind == 0 || a.kind == 4) && !isempty(a.text)
@@ -367,8 +375,11 @@ function _xy_legend_line(d::Dict{String,String}, kind::Integer, width::Real, col
                          mpt::Function, k::Real = 1.0)
 	c(v) = string(round(v * k; sigdigits = 3), "c")  # the entry's geometry, scaled with its font (k = font / 12p)
 	pen = string(spt(width), "p,", col)
-	kind == 11 && return string("S ", c(0.4), " v", spt(3 * max(2.5, width) + 4), "p+e+a", round(2atand(0.35); digits = 1),
-	                            "+h0 ", c(0.8), " ", col, " ", pen, " ", c(0.9), " ", name)
+	if kind == 11                                       # THE arrow, the series' own attributes
+		st = get(d, "arrow", "")
+		return string("S ", c(0.4), " v", spt(_arrow_head_px(st, width)), "p", _gmt_arrow_mods(st; pen_fill = col),
+		              " ", c(0.8), " ", col, " ", pen, " ", c(0.9), " ", name)
+	end
 	box = string(" s ", round(0.4 * k * sqrt(2); sigdigits = 3), "c ")   # a square of side 0.4 (GMT sizes it by its circle)
 	kind == 1  && return string("S ", c(0.4), box, col, " ", spt(width), "p,black ", c(0.9), " ", name)
 	kind == 10 && return string("S ", c(0.4), " c ", c(0.3), " ", col, "@40 0.5p,", col, " ", c(0.9), " ", name)
@@ -641,11 +652,12 @@ function _xy_script_emit(h::Ptr{Cvoid}; figsize::Real = 15.0)
 			d0, d1 = 5.0 * 96 / 72, 20.0 * 96 / 72   # px: the window's bubble range (XY_BUBBLE_PT_LO/HI)
 			dia = [isfinite(v) ? mpt(sqrt(d0^2 + (hi > lo ? (v - lo) / (hi - lo) : 0.5) * (d1^2 - d0^2))) * 2.54 / 72 : 0.0 for v in sz]
 			push!(calls, ("bubbles", curve(), Pair{Symbol,Any}[:marker => :circle, :ms => dia, :mc => col * "@40", :ml => string("0.5p,", col)]))
-		elseif kind == 11            # arrows: GMT vectors from start to end point, the window's head shape
-			hl = 3 * max(2.5, width) + 4          # head length px, half width 0.35 of it (vtkXYShapePlot)
+		elseif kind == 11            # arrows: GMT vectors from start to end point, THE arrow's attributes
+			st = get(d, "arrow", "")             # the series' ArrowStyle (arrowStyleText), as the window draws it
 			push!(calls, ("arrows", through(_xy_arrow_data),
-			              Pair{Symbol,Any}[:symbol => string("v", spt(hl), "p+e+a", round(2atand(0.35); digits = 1), "+h0+s"),
-			                               :pen => string(spt(width), "p,", col), :fill => col]))
+			              Pair{Symbol,Any}[:symbol => string("v", spt(_arrow_head_px(st, width)), "p",
+			                                                 _gmt_arrow_mods(st; pen_fill = col), "+s"),
+			                               :pen => string(spt(width), "p,", col)]))
 		elseif kind == 9             # error bars: the curve, then GMT.jl's error_bars (deltas) in its colour
 			eb = [(ax, _xy_nums(get(d, l, "")), _xy_nums(get(d, u, ""))) for (ax, l, u) in
 			      ((:x, "errxl", "errxh"), (:y, "erryl", "erryh"))]

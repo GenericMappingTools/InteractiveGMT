@@ -499,29 +499,33 @@ end
 		al = arrows()
 		@test length(al) == 1 && al[1].name == "flow solid" && al[1].sym == "arrow"
 		@test size(al[1].uv, 1) > 0 && size(al[1].rgb, 1) == size(al[1].uv, 1) && al[1].worldSize > 0
-		# LINE arrows (the dialog's "Solid 3-D arrows" unticked) keep the GMT-style overlay.
+		# LINE arrows (the dialog's "Solid 3-D arrows" unticked): THE arrow too — the same one field layer,
+		# with open heads, never an overlay of hand-drawn V's.
 		n0 = IG._scene_state(f.h)["n_overlays"]
 		@test call(["usescene=0", "grid1=u", "grid2=v", "incmode=x", "incx=5", "solid=0",
 		            "scalemode=auto", "heads=e", "color=black", "name=flow"]) == 1
 		IG._pump_once()
-		@test IG._scene_state(f.h)["n_overlays"] == n0 + 1        # ONE overlay for the whole field
-		# By magnitude: one overlay per class, all under the one group name.
-		n1 = IG._scene_state(f.h)["n_overlays"]
+		@test IG._scene_state(f.h)["n_overlays"] == n0            # no overlay
+		al = arrows()
+		@test length(al) == 2 && al[2].name == "flow" && size(al[2].uv, 1) == size(al[1].uv, 1)
+		# By magnitude: N equal-width classes, one colour per arrow, still ONE layer.
 		@test call(["usescene=0", "grid1=u", "grid2=v", "incmode=x", "incx=5", "scalemode=auto", "solid=0",
 		            "heads=be", "bymag=1", "nclass=4", "name=flow by |v|", "table=1"]) == 1
 		IG._pump_once()
-		@test IG._scene_state(f.h)["n_overlays"] > n1
+		al = arrows()
+		@test length(al) == 3 && size(al[3].rgb, 1) == size(al[3].uv, 1)
+		@test length(unique(eachrow(round.(al[3].rgb; digits = 6)))) <= 4   # at most nclass colours
 		@test IG._scene_state(f.h)["n_table"] >= 1                # x y u v magnitude direction
 		# Polar input describes the SAME field: r = hypot(u,v), theta = atand(v,u).
 		R = GMT.mat2grid(Float32[hypot(x[ix] - xm, y[iy] - ym) for iy in 1:31, ix in 1:41]; x = x, y = y)
 		T = GMT.mat2grid(Float32[atand(x[ix] - xm, -(y[iy] - ym)) for iy in 1:31, ix in 1:41]; x = x, y = y)
 		IG._SCENE_OBJS[f.h] = vcat(IG._SCENE_OBJS[f.h],
 		                           Tuple{Symbol,String,Any}[(:grid, "r", R), (:grid, "th", T)])
-		n2 = IG._scene_state(f.h)["n_overlays"]
 		@test call(["usescene=0", "grid1=r", "grid2=th", "polar=1", "incmode=x", "incx=5", "solid=0",
 		            "scalemode=auto", "heads=e", "name=flow polar"]) == 1
 		IG._pump_once()
-		@test IG._scene_state(f.h)["n_overlays"] == n2 + 1
+		al = arrows()
+		@test length(al) == 4 && size(al[4].uv, 1) == size(al[2].uv, 1)   # the same field, the same arrows
 	finally
 		ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), f.h)
 	end

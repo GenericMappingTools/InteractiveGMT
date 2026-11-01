@@ -31,6 +31,28 @@ end
 # limits — used to share `Main`, and the second died on "invalid redefinition of constant REG"
 # (found 2026-10-30: the craftapps and X,Y annotation items in one test process). Each run gets its own
 # module: the same header with two regions must run twice, in either order.
+@testitem "gmtscript: THE arrow's attributes as GMT vector modifiers" tags=[:unit, :fast, :gmtscript] begin
+	M = InteractiveGMT
+	# arrowStyleText's 19 numbers: headB headE headM sideB sideE sideM midRev lenPt frac halfW shape fill
+	# fillPen r g b outline trimB trimE
+	st(; b = 0, e = 1, m = 0, sb = 0, se = 0, sm = 0, mr = 0, len = 0, frac = 0, hw = 0.35, sh = 0, fill = 1,
+	     pen = 1, rgb = (0, 0, 0), out = 0, tb = 0, te = 0) =
+		join(string.([b, e, m, sb, se, sm, mr, len, frac, hw, sh, fill, pen, rgb..., out, tb, te]), ' ')
+	# the default arrow: one filled head at the end, the window's angle, filled with the pen
+	@test M._gmt_arrow_mods(st(); pen_fill = "red") == "+e+a38.6+h0.0+gred+p-"
+	@test M._gmt_arrow_mods(st()) == "+e+a38.6+h0.0+p-"                        # fill left to the call's -G
+	# both ends, open heads, a left half, a reversed middle circle, barbed, unfilled, trimmed
+	m = M._gmt_arrow_mods(st(b = 1, e = 2, se = 1, m = 5, mr = 1, sh = 1, fill = 0, tb = 3, te = 4.5))
+	@test occursin("+b+", m) && occursin("+eAl", m) && occursin("+mrc", m) && occursin("+h1.0", m)
+	@test occursin("+g-", m) && !occursin("+p-", m) && occursin("+tb3.0p", m) && occursin("+te4.5p", m)
+	# a fill of its own colour, outlined
+	m = M._gmt_arrow_mods(st(pen = 0, rgb = (1, 0, 0), out = 1))
+	@test occursin("+g255/0/0", m) && !occursin("+p-", m)
+	# the head length: in points when given, else THE arrow's automatic 3*max(2.5, pen)+4 px
+	@test M._arrow_head_px(st(len = 12), 1.0) ≈ 16.0
+	@test M._arrow_head_px(st(), 1.0) ≈ 11.5 && M._arrow_head_px("", 3.0) ≈ 13.0
+end
+
 @testitem "gmtscript: two runs with different regions do not collide" tags=[:unit, :fast, :gmtscript] begin
 	M = InteractiveGMT
 	run_src(src) = (m = M._script_module(); for e in Meta.parseall(src).args
@@ -50,8 +72,13 @@ end
 	@test M._script_linestyle(0) === nothing          # solid: no `ls` kwarg at all
 	@test M._script_linestyle(1) === :dash
 	@test M._script_linestyle(2) === :dot
-	@test M._script_proj(true)  === :merc             # geographic -> Mercator
-	@test M._script_proj(false) === :X                # anything else is plotted linearly
+	# geographic -> what GMT.jl's guess_proj picks for THAT region, never one projection for every map
+	@test M._script_proj(true, (-10.0, 10.0, -20.0, 20.0)) == "M"                       # near the equator
+	@test startswith(M._script_proj(true, (-10.0, 10.0, 30.0, 50.0)), "D0/40/")        # mid latitudes: conic
+	@test startswith(M._script_proj(true, (-180.0, 180.0, -90.0, 90.0)), "N")          # whole Earth: Robinson
+	@test M._script_proj(false, (0.0, 1.0, 0.0, 1.0)) === :X                           # anything else: linear
+	@test M._script_proj_name("D0/40/33.3/53.3") == "Equidistant conic"
+	@test M._script_proj_name(:X) == "Linear (no projection)"
 end
 
 @testitem "gmtscript: vertex blob parsers" tags=[:unit, :fast, :gmtscript] begin

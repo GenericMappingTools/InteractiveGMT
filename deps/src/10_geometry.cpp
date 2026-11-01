@@ -317,6 +317,161 @@ struct Overlay {
 	int veOwner = -1;                        // == kAxesOwnerBase
 };
 
+// GMT's vector attributes (the -Sv/-SV modifiers) of an arrow. THE arrow (arrowParts, below)
+// draws from these; the defaults are the X,Y plot's arrow — one filled head at the end, sized from the pen.
+enum ArrowHeadKind { AH_None, AH_Arrow, AH_Open, AH_Inverted, AH_OpenInverted, AH_Circle, AH_Square, AH_Terminal };
+struct ArrowStyle {
+	int    head[3]   = { AH_None, AH_Arrow, AH_None };  // at the begin (+b), the end (+e), the middle (+m)
+	int    side[3]   = { 0, 0, 0 };                     // 0 the whole head, +1 its left half (+l), -1 its right (+r)
+	bool   midReverse = false;                          // +mr: the middle head points back to the begin
+	double lengthPt  = 0.0;                             // head length, points; 0 = from the pen (3*max(2.5,w)+4 px)
+	double headFrac  = 0.0;                             // > 0: head length as this fraction of the arrow instead
+	                                                    // (a scaled vector field's heads grow with its arrows)
+	double halfWidth = 0.35;                            // head half-width / length = tan(apex angle (+a) / 2)
+	double shape     = 0.0;                             // +h, -2..2: how far the head's back is pulled to its tip
+	bool   fill      = true;                            // +g / +g-
+	bool   fillPen   = true;                            // the fill is the pen's colour …
+	double headRGB[3] = { 0.0, 0.0, 0.0 };              // … or this one
+	bool   outline   = false;                           // +p: the head outlined with the pen
+	double trimPt[2] = { 0.0, 0.0 };                    // +t: the arrow shortened at its begin / end, points
+};
+
+// THE arrow, everywhere one is drawn: the X,Y plot's feather/compass/biplot arrow series (vtkXYShapePlot
+// kind 11) and its legend, its annotation arrows (xyAnnotPaint), the map's drawn arrows (85_polygon.cpp),
+// every vector field's arrow glyph (arrowGlyphPD, 50_scene.cpp: grdvector, the arrow-field import) and
+// the Fault plane demo's slip arrows (68_faultdemo.cpp). On a chart or a drawn arrow it is worked
+// out in a plane of screen PIXELS, so neither unequal axis scales nor a zoom bend or resize it. The tip
+// is at (tx,ty), the tail at (fx,fy); `penW` is the line width and `scale` the pixels per unit of both
+// (a HiDPI ratio). By default (ArrowStyle()) the head is a filled triangle 3*max(2.5, penW)+4 long and
+// 0.35 of that wide each side, never longer than 0.6 of the shaft (0.4 with heads at both ends); the
+// shaft stops at the head's base, so a thick pen never pokes out past the tip. False when tip and tail
+// coincide.
+//
+// The whole arrow, every GMT vector attribute (ArrowStyle, 10_geometry.cpp): `fills` are the filled
+// shapes (heads), `strokes` the open polylines drawn with the pen (open heads, terminal lines, head
+// outlines), s0->s1 the shaft once heads and trims have taken their share. `ptToPx` turns the style's
+// points (head length, trims) into the same pixels. An explicit head length is still capped by the shaft.
+typedef std::array<double,2> AP2;
+struct ArrowParts { std::vector<std::vector<AP2>> fills, strokes; AP2 s0, s1; };
+static bool arrowParts(double tx, double ty, double fx, double fy, double penW, double scale, double ptToPx,
+                       const ArrowStyle &st, ArrowParts &out) {
+	out.fills.clear(); out.strokes.clear();
+	const double dx = tx - fx, dy = ty - fy, len = std::hypot(dx, dy);
+	if (!(len > 0.0)) return false;
+	const double ux = dx / len, uy = dy / len;
+	const double tb = std::max(0.0, st.trimPt[0]) * ptToPx, te = std::max(0.0, st.trimPt[1]) * ptToPx;
+	const double L = len - tb - te;
+	if (!(L > 0.0)) return false;                                      // trimmed away
+	const AP2 B = { fx + ux * tb, fy + uy * tb }, E = { tx - ux * te, ty - uy * te };
+	const int nEnds = (st.head[0] != AH_None) + (st.head[1] != AH_None);
+	const double hl = (st.headFrac > 0.0) ? st.headFrac * len
+	                : (st.lengthPt > 0.0) ? st.lengthPt * ptToPx : (3.0 * std::max(2.5, penW) + 4.0) * scale;
+	const double h = std::min(hl, (nEnds > 1 ? 0.4 : 0.6) * L);       // a short shaft: smaller heads
+	const double w = h * std::max(0.0, st.halfWidth), shape = std::clamp(st.shape, -2.0, 2.0);
+	// One head at P pointing along (ddx,ddy): adds its pieces and returns how far back from P the
+	// shaft has to stop.
+	auto head = [&](const AP2 &P, double ddx, double ddy, int kind, int side) -> double {
+		const double nx = -ddy, ny = ddx;                              // to the head's left
+		auto at = [&](double back, double left) -> AP2 { return { P[0] - back * ddx + left * nx, P[1] - back * ddy + left * ny }; };
+		const bool L = side >= 0, R = side <= 0;                        // which halves
+		std::vector<AP2> poly;
+		double cut = 0.0;
+		switch (kind) {
+		case AH_Arrow: case AH_Inverted: {
+			const bool inv = kind == AH_Inverted;                       // inverted: the base at P, the tip inside
+			const double back = h * (1.0 - 0.5 * shape);               // where the back's middle sits
+			const AP2 tip = inv ? at(h, 0.0) : P, mid = inv ? at(h - back, 0.0) : at(back, 0.0);
+			const AP2 bl = inv ? at(0.0, w) : at(h, w), br = inv ? at(0.0, -w) : at(h, -w);
+			poly.push_back(tip);
+			if (L) poly.push_back(bl);
+			if (shape != 0.0 || !(L && R)) poly.push_back(mid);
+			if (R) poly.push_back(br);
+			cut = inv ? 0.0 : std::max(0.0, back);
+			break;
+		}
+		case AH_Open:
+			out.strokes.push_back({});
+			if (L) out.strokes.back().push_back(at(h, w));
+			out.strokes.back().push_back(P);
+			if (R) out.strokes.back().push_back(at(h, -w));
+			return 0.0;
+		case AH_OpenInverted:
+			out.strokes.push_back({});
+			if (L) out.strokes.back().push_back(at(0.0, w));
+			out.strokes.back().push_back(at(h, 0.0));
+			if (R) out.strokes.back().push_back(at(0.0, -w));
+			return 0.0;
+		case AH_Circle:
+			for (int k = 0; k <= ((L && R) ? 35 : 36); ++k) {           // a whole circle never repeats its start
+				const double a = (L && R ? 2.0 : 1.0) * vtkMath::Pi() * k / 36.0 + (L && R ? 0.0 : R ? vtkMath::Pi() : 0.0);
+				poly.push_back(at(-w * std::cos(a), w * std::sin(a)));
+			}
+			cut = st.fill ? w : 0.0;
+			break;
+		case AH_Square:
+			poly = { at(-w, L ? w : 0.0), at(w, L ? w : 0.0), at(w, R ? -w : 0.0), at(-w, R ? -w : 0.0) };
+			cut = st.fill ? w : 0.0;
+			break;
+		case AH_Terminal:
+			out.strokes.push_back({ at(0.0, L ? w : 0.0), at(0.0, R ? -w : 0.0) });
+			return 0.0;
+		default:
+			return 0.0;
+		}
+		if (st.fill) out.fills.push_back(poly);
+		if (st.outline || !st.fill) {                                  // +p (an unfilled head is its outline)
+			out.strokes.push_back(poly);
+			out.strokes.back().push_back(poly.front());
+		}
+		return cut;
+	};
+	const double cb = head(B, -ux, -uy, st.head[0], st.side[0]);
+	const double ce = head(E,  ux,  uy, st.head[1], st.side[1]);
+	if (st.head[2] != AH_None) {
+		const AP2 M = { 0.5 * (B[0] + E[0]), 0.5 * (B[1] + E[1]) };
+		const double r = st.midReverse ? -1.0 : 1.0;
+		head({ M[0] + r * ux * 0.5 * h, M[1] + r * uy * 0.5 * h }, r * ux, r * uy, st.head[2], st.side[2]);   // centred on the middle
+	}
+	out.s0 = { B[0] + ux * cb, B[1] + uy * cb };
+	out.s1 = { E[0] - ux * ce, E[1] - uy * ce };
+	return true;
+}
+
+// An arrow's lengths are given in points; on screen a point is 96/72 logical px, times the HiDPI `scale`.
+static double arrowPtToPx(double scale) { return scale * 96.0 / 72.0; }
+
+// An ArrowStyle as text and back — THE one spelling of an arrow's attributes wherever they leave the
+// viewer: session files, the X,Y window's state that Plot with GMT.jl reads, the map arrows' get/set.
+// 19 numbers: headB headE headM sideB sideE sideM midReverse lengthPt headFrac halfWidth shape fill
+// fillPen r g b outline trimB trimE (the host's `_gmt_arrow_mods` reads the same order).
+static std::string arrowStyleText(const ArrowStyle &a) {
+	char b[512];
+	snprintf(b, sizeof b, "%d %d %d %d %d %d %d %.10g %.10g %.10g %.10g %d %d %.10g %.10g %.10g %d %.10g %.10g",
+	         a.head[0], a.head[1], a.head[2], a.side[0], a.side[1], a.side[2], a.midReverse ? 1 : 0,
+	         a.lengthPt, a.headFrac, a.halfWidth, a.shape, a.fill ? 1 : 0, a.fillPen ? 1 : 0,
+	         a.headRGB[0], a.headRGB[1], a.headRGB[2], a.outline ? 1 : 0, a.trimPt[0], a.trimPt[1]);
+	return b;
+}
+static bool arrowStyleParse(ArrowStyle &a, const std::string &t) {
+	double v[19];
+	const char *p = t.c_str();
+	for (double &x : v) {
+		char *end = nullptr;
+		x = std::strtod(p, &end);
+		if (end == p) return false;                            // fewer than 19 numbers: not a style
+		p = end;
+	}
+	for (int k = 0; k < 3; ++k) {
+		a.head[k] = std::clamp((int)v[k], (int)AH_None, (int)AH_Terminal);
+		a.side[k] = v[3 + k] > 0 ? 1 : v[3 + k] < 0 ? -1 : 0;
+	}
+	a.midReverse = v[6] != 0;  a.lengthPt = v[7];  a.headFrac = v[8];  a.halfWidth = v[9];  a.shape = v[10];
+	a.fill = v[11] != 0;  a.fillPen = v[12] != 0;
+	a.headRGB[0] = v[13];  a.headRGB[1] = v[14];  a.headRGB[2] = v[15];
+	a.outline = v[16] != 0;  a.trimPt[0] = v[17];  a.trimPt[1] = v[18];
+	return true;
+}
+
 // A generic SCREEN-CONSTANT symbol layer (volcanoes, seismicity, cities, …): N glyphs of one
 // shape (GMT symbol code) stamped at N points by a vtkGlyph3D. The glyph source is a UNIT shape
 // in the XY plane (radius 0.5); a per-frame observer rescales `glyph->SetScaleFactor` so the
@@ -396,6 +551,7 @@ struct SymbolLayer {
 	                                           // The points themselves carry x already multiplied by xfac,
 	                                           // which is a FLAT-map quantity; the globe needs the real
 	                                           // lon/lat to put the point on the sphere (symbolApplyZ).
+	ArrowStyle arrow;                         // ARROW layers only: the glyph's GMT vector attributes (arrowGlyphPD)
 	std::vector<double> uvOrig;               // ARROW layers only: each point's (east, north) vector, 2 per
 	                                           // point, exactly as plotted. The drawn orientation ("symVec")
 	                                           // is (u, v, 0) on a map and the same vector turned into the
@@ -749,6 +905,10 @@ struct Polygon {
 	bool zIsPlaceholder = false;             // the caller's data had no Z (every z sent was the 0 filler):
 	                                         // the data table must not invent a Z column (Overlay twin)
 	bool isRect = false;                     // drawn with a rectangle tool (SH_Rect/SH_RectN): vertex edits stay axis-aligned
+	ArrowStyle arrow;                        // an arrow's GMT vector attributes (Arrow properties…)
+	bool isArrow = false;                    // "Arrow" (SH_Arrow): an open line whose last vertex carries THE arrow's
+	double headKey[5] = { 0, 0, 0, 0, 0 };   // heads (arrowParts, in screen px; the face actor is the heads) —
+	                                         // tip/tail on screen + line width it was last built for
 	bool isLineArea = false;                 // "Line area" (SH_LineArea): v is the 4-corner rectangle ring; the central
 	                                         // line joins the midpoints of its two short ends (v0-v3 and v1-v2) and is
 	                                         // drawn in the same actor. Corner edits keep it a rectangle (lineAreaDragCorner)
@@ -948,6 +1108,9 @@ struct LineRef {
 	vtkActor *actor = nullptr;
 };
 static void showLineProperties(Scene *s, const LineRef &lr);                 // the properties dialog
+static void showArrowProperties(Scene *s, vtkActor *lineActor);             // a drawn arrow's GMT vector attributes (85_polygon.cpp)
+static void arrowPropertiesDialog(QWidget *parent, const std::function<ArrowStyle *()> &style,
+                                  const std::function<void()> &apply);       // THE arrow dialog (65_xyplot.cpp)
 static void popupLineObjectMenu(Scene *s, const LineRef &lr, const QString &name, const QPoint &gp);
 // Clamp-to-ground, the GROUP half (55_lineprops.cpp, which this file is #included before): the Scene
 // Objects group row in 50_scene.cpp offers the toggle for every member of a tagged group at once.
@@ -1545,6 +1708,7 @@ struct Scene {
 	std::vector<ExtraObj> extras;    // grids/images dropped into this window after it opened
 	std::vector<SymbolLayer> symbols;       // screen-constant glyph layers (volcanoes, seismicity, …)
 	vtkSmartPointer<vtkCommand> symSizeCmd; // per-frame rescale observer, installed once (addSymbols)
+	vtkSmartPointer<vtkCommand> arrowHeadCmd; // per-frame observer keeping drawn arrows' heads pixel-sized (85_polygon.cpp)
 
 	// --- coordinate reference system (CRS) ----------------------------------
 	// The single per-window store of the data's georeferencing, pushed down from Julia
@@ -1744,10 +1908,12 @@ struct Scene {
 	// one) and so share preview / edit / delete / Scene-Objects / Line-Properties code. Text places
 	// a billboard label instead. polyShape selects which tool the active (checked) button drives.
 	enum ShapeKind { SH_Polygon, SH_Polyline, SH_Line, SH_Rect, SH_Circle, SH_Text, SH_RectN, SH_Fault, SH_Ruler,
-	                 SH_SymCircle, SH_SymSquare, SH_SymStar,     // Symbols flyout: one-click regular shapes
+	                 SH_Symbol,                                   // Symbols flyout: one click places polySymCode
 	                 SH_LineArea,                                 // a straight line inside its own rectangle
-	                 SH_TideGauge };                              // Tsunamis > Plot virtual tide gauges: one circle per click
+	                 SH_TideGauge,                                // Tsunamis > Plot virtual tide gauges: one circle per click
+	                 SH_Arrow };                                  // drawn like SH_Line, ends as a one-arrow arrow layer
 	ShapeKind polyShape = SH_Polygon;                  // active tool while polyMode is on
+	std::string polySymCode = "c";                     // GMT symbol code the SH_Symbol tool places
 	std::vector<Polygon> polys;                        // finished polygons / polylines / rects / circles
 	// "Point at a line" pick a tool can ARM (Plates > Euler rotations' "Pick in view" / "Rect
 	// select"). Deliberately generic — any later tool that needs the user to point at lines reuses

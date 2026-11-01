@@ -674,15 +674,14 @@ function _xy_polar(plot, p, kind, page)
 			_xyadd!(p, u, v; name=nm)
 		elseif kind == "polarscatter"
 			_xyadd!(p, u, v; name=nm, marker=:circle, linestyle=:none)
-		else                                          # compassplot: an arrow from the origin to each point
-			ax, ay = Float64[], Float64[]
+		else                                          # compassplot: an arrow from the origin to each point —
+			ax, ay = Float64[], Float64[]             # THE arrow (kind 11, as feather draws its sticks)
 			for (a, b) in zip(u, v)
-				L = hypot(a, b); L > 0 || continue
-				t = atan(b, a); h = 0.06
-				append!(ax, [0.0, a, NaN, a, a - h * cos(t - 0.4), NaN, a, a - h * cos(t + 0.4), NaN])
-				append!(ay, [0.0, b, NaN, b, b - h * sin(t - 0.4), NaN, b, b - h * sin(t + 0.4), NaN])
+				hypot(a, b) > 0 || continue
+				append!(ax, [0.0, a, NaN]);  append!(ay, [0.0, b, NaN])
 			end
 			_xyadd!(p, ax, ay; name=nm)
+			_stick_arrows!(plot)
 		end
 	end
 end

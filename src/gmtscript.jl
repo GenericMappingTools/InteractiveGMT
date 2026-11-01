@@ -199,11 +199,34 @@ function _script_zsize(ctx::ScriptCtx, st, stf)
 	return (isfinite(h) && h > 0) ? round(h; sigdigits=4) : nothing
 end
 
-# The projection kwarg. A geographic window gets Mercator (GMT's default map projection, and what a
-# lon/lat grid is normally shown in); anything else is plotted LINEARLY — data already in projected
-# metres must not be re-projected, and an unreferenced grid has no projection to speak of. `-JX`
-# with a width alone preserves the region's aspect ratio.
-_script_proj(geog::Bool) = geog ? :merc : :X
+# The projection kwarg. A geographic window gets the projection GMT.jl's OWN `guess_proj` picks for its
+# region (Mercator near the equator, an equidistant conic at mid latitudes, Robinson for the whole
+# Earth, a polar stereographic round a pole, …) — never one projection for every map. Written out as
+# the string it resolves to (`"D0/40/33.3/53.3"`), so the script says what it draws; GMT.jl appends
+# the figure width itself. Anything else is plotted LINEARLY — data already in projected metres must
+# not be re-projected, and an unreferenced grid has no projection to speak of. `-JX` with a width
+# alone preserves the region's aspect ratio.
+function _script_proj(geog::Bool, region::NTuple{4,Float64})
+	geog || return :X
+	j = strip(GMT.guess_proj([region[1], region[2]], [region[3], region[4]]))   # " -JD0/40/…"
+	return String(startswith(j, "-J") ? j[3:end] : j)
+end
+
+# A projection in plain words (the script's comment, the graph's Projection field).
+const _SCRIPT_PROJ_NAMES = (("Poly", "Polyconic"), ("M", "Mercator"), ("D", "Equidistant conic"),
+	("N", "Robinson"), ("I", "Sinusoidal"), ("S", "Stereographic"), ("E", "Azimuthal equidistant"),
+	("J", "Miller cylindrical"), ("Q", "Cylindrical equidistant"), ("W", "Mollweide"), ("H", "Hammer"),
+	("A", "Lambert azimuthal equal-area"), ("L", "Lambert conic conformal"), ("G", "Orthographic"),
+	("X", "Linear (no projection)"))
+function _script_proj_name(p)::String
+	s = String(string(p))
+	s in ("merc", "mercator") && return "Mercator"
+	s in ("linear", "X", "x") && return "Linear (no projection)"
+	for (code, name) in _SCRIPT_PROJ_NAMES
+		startswith(s, code) && return name
+	end
+	return s
+end
 
 # ── the T1 -> T2 -> T3 data ladder ───────────────────────────────────────────────────────────
 # The GMT command GMT itself recorded for a computed grid (`_grid_command!`, stamped at every
@@ -411,11 +434,9 @@ function _script_rasterize!(ctx::ScriptCtx, r::ElementRecipe, disp, isgrid::Bool
 		                 "which will NOT match the window")
 		return nothing
 	end
-	label = isempty(r.name) ? (isgrid ? "base grid" : "base image") : r.name
-	why = get(disp, "why", "")
-	isempty(why) && (why = isgrid ? "lit 3-D surface" : "viewer look")
-	push!(ctx.notes, "'$label': its displayed colours ($why) are not expressible in GMT, " *
-	                 "so the pixels on screen were captured and are drawn as an image")
+	# Not a note: drawing the pixels on screen IS reproducing the layer (the rule above), so it is not
+	# among what the script does NOT reproduce, nor an error. The layer's own heading in the script says
+	# where its colours come from ("displayed pixels: …", _script_emit_raster_finish!).
 	# The displayed pixels are ALREADY IN MEMORY. They fill a GMTimage and that object is handed to GMT
 	# directly — never written to disk and read back.
 	#
@@ -941,6 +962,76 @@ function _poly_layer(scene::Ptr{Cvoid}, name::String, want3d::Bool=false)
 end
 
 """
+	_arrow_poly_layer(scene, name, want3d=false) -> Vector{GMTdataset}
+
+A DRAWN arrow (the Arrow draw tool) by its Scene Objects name, as ONE GMT vector row `x0 y0 [z0] x1 y1
+[z1]` for `S="v…+s"`: its last segment, tail to tip, as the window draws it.
+"""
+function _arrow_poly_layer(scene::Ptr{Cvoid}, name::String, want3d::Bool=false)
+	D = _poly_layer(scene, name, want3d)
+	isempty(D) && return GMTdataset[]
+	M = D[1].data
+	size(M, 1) >= 2 || return GMTdataset[]
+	a, b = M[end-1, :], M[end, :]
+	return [GMT.mat2ds(reshape(vcat(a, b), 1, :))]
+end
+
+# A map arrow's GMT vector attributes as THE text (arrowStyleText, 10_geometry.cpp): `what` 0 = a
+# vector-field arrow layer, 1 = a drawn arrow. "" when the window has no such arrow.
+function _map_arrow_style(scene::Ptr{Cvoid}, what::Integer, name::String)::String
+	n = ccall(_fn(:gmtvtk_arrow_style_get_h), Cint, (Ptr{Cvoid}, Cint, Cstring, Ptr{UInt8}, Cint), scene, what, name, C_NULL, 0)
+	n < 0 && return ""
+	buf = Vector{UInt8}(undef, n + 1)
+	ccall(_fn(:gmtvtk_arrow_style_get_h), Cint, (Ptr{Cvoid}, Cint, Cstring, Ptr{UInt8}, Cint), scene, what, name, buf, n + 1)
+	return unsafe_string(pointer(buf))
+end
+
+"""
+	_gmt_arrow_mods(style; pen_fill = nothing) -> String
+
+THE translation of an arrow's attributes (the 19-number text `arrowStyleText` writes) into GMT's vector
+modifiers: the heads at the begin, end and middle (+b +e +m, their kind letter and +l/+r half), the
+apex angle (+a), the head shape (+h), the fill (+g, or +g- for unfilled heads), no head outline (+p-)
+unless asked, and the trims (+t). The head LENGTH is the caller's (it knows its paper units). A head
+filled with the pen's colour takes `pen_fill` when given; `nothing` leaves the fill to the call's own
+-G (a segment header, say). Every exporter of an arrow comes through here, so a script can never draw
+an arrow differently from the window.
+"""
+function _gmt_arrow_mods(style::AbstractString; pen_fill::Union{Nothing,AbstractString} = nothing)::String
+	v = something.(tryparse.(Float64, split(strip(style))), NaN)
+	length(v) == 19 || return "+e"
+	letter = Dict(1 => "", 2 => "A", 3 => "i", 4 => "I", 5 => "c", 6 => "s", 7 => "t")
+	half(s) = s > 0 ? "l" : s < 0 ? "r" : ""
+	m = ""
+	h = round.(Int, v[1:3]); sd = v[4:6]
+	h[1] != 0 && (m *= "+b" * get(letter, h[1], "") * half(sd[1]))
+	h[2] != 0 && (m *= "+e" * get(letter, h[2], "") * half(sd[2]))
+	h[3] != 0 && (m *= "+m" * (v[7] != 0 ? "r" : "f") * get(letter, h[3], "") * half(sd[3]))
+	m *= "+a" * string(round(2atand(v[10]); digits = 1))
+	m *= "+h" * string(round(v[11]; digits = 3))
+	fill, fillpen = v[12] != 0, v[13] != 0
+	if !fill
+		m *= "+g-"
+	elseif !fillpen
+		m *= "+g" * string(round(Int, 255v[14]), "/", round(Int, 255v[15]), "/", round(Int, 255v[16]))
+	elseif pen_fill !== nothing
+		m *= "+g" * pen_fill
+	end
+	fill && v[17] == 0 && (m *= "+p-")                       # the window outlines a head only when asked
+	v[18] > 0 && (m *= "+tb" * string(round(v[18]; digits = 2)) * "p")
+	v[19] > 0 && (m *= "+te" * string(round(v[19]; digits = 2)) * "p")
+	return m
+end
+
+# The head length an arrow's attributes give, in the WINDOW's pixels of a pen `penpx` wide: its length in
+# points, or THE arrow's automatic one (arrowParts: 3*max(2.5, pen)+4 px).
+function _arrow_head_px(style::AbstractString, penpx::Real)::Float64
+	v = something.(tryparse.(Float64, split(strip(style))), NaN)
+	(length(v) == 19 && v[8] > 0) && return v[8] * 96 / 72
+	return 3 * max(2.5, penpx) + 4
+end
+
+"""
 	_text_labels(scene, szpt, rgb, skip="")
 
 The window's text labels of ONE style (`szpt` = the size as SET, in points, + `r/g/b` colour), with
@@ -1135,10 +1226,14 @@ function _script_emit_arrows!(ctx::ScriptCtx, sl::SymbolRow)
 	expr = "InteractiveGMT._arrow_layer(Ptr{Nothing}(UInt(" * string(UInt(ctx.scene)) * ")), " *
 	       "$(_lit(sl.name)), $(cm_per_unit), $(_lit(want3d)))"
 	bind = DataBind(var, :live, expr)
-	# Head: filled, as the solid arrow's cone — 0.3 of the LONGEST arrow, shrunk in proportion on the
-	# shorter ones (+n at that longest length), so every arrow keeps the solid glyph's proportions.
+	# Heads: THE arrow's attributes (_gmt_arrow_mods). A field's head is a fraction of its arrow: that
+	# fraction of the LONGEST arrow, shrunk in proportion on the shorter ones (+n at that longest
+	# length), so every arrow keeps the window's proportions. Its fill is the segment's own -G.
 	L = sl.worldSize * cm_per_unit
-	kw = Pair{Symbol,Any}[:S => "v$(round(0.3L, sigdigits=3))c+e+a40+h0.5+n$(round(L, sigdigits=3))c"]
+	st = _map_arrow_style(ctx.scene, 0, sl.name)
+	sv = something.(tryparse.(Float64, split(strip(st))), NaN)
+	frac = (length(sv) == 19 && sv[9] > 0) ? sv[9] : 0.30
+	kw = Pair{Symbol,Any}[:S => "v$(round(frac * L, sigdigits=3))c" * _gmt_arrow_mods(st) * "+n$(round(L, sigdigits=3))c"]
 	name = isempty(sl.name) ? "arrows" : sl.name
 	return ScriptStep("$name  (vector field)", DataBind[bind], want3d ? :plot3 : :plot, bind.var, kw, true)
 end
@@ -1157,6 +1252,14 @@ function _script_emit_poly!(ctx::ScriptCtx, line::String)
 	M = _script_verts(String(p[13]))
 	isempty(M) && return nothing
 	want3d = ctx.view !== nothing && any(!iszero, view(M, :, 3))
+	st = _map_arrow_style(ctx.scene, 1, name)
+	if !isempty(st)                   # a DRAWN ARROW: a GMT vector, THE arrow's attributes (_gmt_arrow_mods)
+		bind = _script_bind_live_vector!(ctx, "_arrow_poly_layer", name, want3d, _arrow_poly_layer(ctx.scene, name, want3d))
+		col = _script_rgb(lr, lg, lb)
+		kw = Pair{Symbol,Any}[:S => "v" * _script_ptstr_w(_arrow_head_px(st, lw), ctx) * _gmt_arrow_mods(st; pen_fill = col) * "+s",
+		                      :pen => _script_pen(_script_ptstr_w(lw, ctx), col)]
+		return ScriptStep("$(name)  (drawn arrow)", DataBind[bind], want3d ? :plot3 : :plot, bind.var, kw, true)
+	end
 	bind = _script_bind_live_vector!(ctx, "_poly_layer", name, want3d, [GMT.mat2ds(want3d ? M : M[:, 1:2])])
 	kw = Pair{Symbol,Any}[:pen => _script_pen(_script_ptstr_w(lw, ctx), _script_rgb(lr, lg, lb))]
 	if closed && fop > 0
@@ -1567,8 +1670,9 @@ function _script_emit(h::Ptr{Cvoid}; figsize::Real=15.0, recompute::Bool=false, 
 	geog = occursin("longlat", crs.proj4) || (isempty(crs.proj4) && get(st, "crs", 0) == 1)
 	ctx = ScriptCtx(h, (Float64(get(st, "x0", 0)), Float64(get(st, "x1", 0)),
 	                    Float64(get(st, "y0", 0)), Float64(get(st, "y1", 0))),
-	                geog, _script_proj(geog), Float64(figsize), nothing, nothing,
+	                geog, nothing, Float64(figsize), nothing, nothing,
 	                recompute, Dict{String,Int}(), String[], false, 0, 96.0)
+	ctx.proj = _script_proj(geog, ctx.region)
 	ctx.dpi = _script_dpi(h, stf)
 	ctx.view  = _script_view(st, stf)
 	ctx.zsize = _script_zsize(ctx, st, stf)
@@ -1722,7 +1826,7 @@ function _script_header(ctx::ScriptCtx)
 	println(io, "# Fidelity: layer set, order, region, CPT and geometry are exact. A layer whose LOOK is the")
 	println(io, "# viewer's rather than GMT's (shading, a drape, a composited image) is drawn from the pixels")
 	println(io, "# that were on screen — captured as an image and, in 3-D, draped over its own grid — so the")
-	println(io, "# figure matches the window; those layers are listed below and are not re-projectable.")
+	println(io, "# figure matches the window; such a layer's own heading below says so, and it is not re-projectable.")
 	println(io, "# Colour-bar placement and, for a tilted view, the -p azimuth/elevation approximate the")
 	println(io, "# live camera.")
 	if !isempty(ctx.notes)
@@ -1739,7 +1843,8 @@ function _script_header(ctx::ScriptCtx)
 	# The knobs, hoisted: change the region, projection or plot width in ONE place and every call
 	# below follows, which is the difference between a script you can edit and a transcript.
 	println(io, "const REG     = ", _lit(ctx.region))
-	println(io, "const PROJ    = ", _lit(ctx.proj))
+	println(io, "const PROJ    = ", _lit(ctx.proj), "    # ", _script_proj_name(ctx.proj),
+	        ctx.geog ? " (GMT.jl's guess_proj for this region)" : "")
 	println(io, "const FIGSIZE = ", _lit(ctx.figsize))
 	println(io)
 	return String(take!(io))

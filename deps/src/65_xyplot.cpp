@@ -73,6 +73,7 @@ struct XYSeries {
 	int                       stack = 0;
 	std::vector<double>       base;
 	bool                      rightAxis = false;   // plotyy: drawn against the right-hand Y axis
+	ArrowStyle                arrow;               // kind 11 (feathers, arrows): THE arrow's GMT vector attributes
 	// Screen-constant "+" cross (e.g. Tide tool's "Now" indicator) -- NOT a vtkPlotPoints marker
 	// (VTK's marker glyph rendering literally overwrites the plot's pen width with MarkerSize, so a
 	// marker-only series has no independent thickness control at all; see xyRecomputeCross). Built
@@ -195,7 +196,16 @@ struct XYAnnot {
 	bool   shown = false;
 	float  sx0 = 0, sy0 = 0, sx1 = 0, sy1 = 0;
 	float  tbx = 0, tby = 0, tbw = 0, tbh = 0;  // its text's box (text kinds), 0 wide = none
+	ArrowStyle arrow;                          // arrow kinds: THE arrow's GMT vector attributes (xyAnnotSetKind)
 };
+// An annotation's kind, and with it the arrow its kind means: Arrow / Text Arrow a head at the end,
+// Double Arrow at both ends, anything else none. THE way an annotation gets its kind.
+static void xyAnnotSetKind(XYAnnot &a, int kind) {
+	a.kind = kind;
+	a.arrow = ArrowStyle();
+	a.arrow.head[0] = kind == XY_AN_DARROW ? AH_Arrow : AH_None;
+	a.arrow.head[1] = (kind == XY_AN_ARROW || kind == XY_AN_DARROW || kind == XY_AN_TEXTARROW) ? AH_Arrow : AH_None;
+}
 static bool xyAnnotIsLine(int k) { return k == XY_AN_TEXTARROW || k == XY_AN_ARROW || k == XY_AN_DARROW || k == XY_AN_LINE; }
 static bool xyAnnotHasText(int k) { return k == XY_AN_TEXTARROW || k == XY_AN_TEXTBOX; }
 
@@ -453,6 +463,184 @@ static const double *xyPalette(int i) {
 	return pal[((i % 10) + 10) % 10];
 }
 
+// THE arrow's pieces (arrowParts, in px) painted on a 2-D chart with the painter's pen and brush; a px
+// point (x,y) is drawn at (ox + x*sx, oy + y*sy). The shaft takes the pen as it is (dashed included);
+// the heads are always solid, and a head with a colour of its own (fillPen off) borrows the brush.
+static void paintArrowParts(vtkContext2D *p, const ArrowParts &ap, const ArrowStyle &st,
+                            double ox, double oy, double sx, double sy) {
+	auto pts = [&](const std::vector<AP2> &v) {
+		std::vector<float> f;
+		for (const AP2 &q : v) { f.push_back((float)(ox + q[0] * sx)); f.push_back((float)(oy + q[1] * sy)); }
+		return f;
+	};
+	p->DrawLine((float)(ox + ap.s0[0] * sx), (float)(oy + ap.s0[1] * sy), (float)(ox + ap.s1[0] * sx), (float)(oy + ap.s1[1] * sy));
+	const int lt = p->GetPen()->GetLineType();
+	p->GetPen()->SetLineType(vtkPen::SOLID_LINE);
+	if (!ap.fills.empty()) {
+		unsigned char keep[4];
+		p->GetBrush()->GetColor(keep);
+		if (!st.fillPen)
+			p->GetBrush()->SetColorF(st.headRGB[0], st.headRGB[1], st.headRGB[2], keep[3] / 255.0);
+		for (const auto &f : ap.fills) { std::vector<float> v = pts(f); p->DrawPolygon(v.data(), (int)f.size()); }
+		p->GetBrush()->SetColor(keep);
+	}
+	for (const auto &k : ap.strokes) { std::vector<float> v = pts(k); p->DrawPoly(v.data(), (int)k.size()); }
+	p->GetPen()->SetLineType(lt);
+}
+
+// "Arrow properties…": every GMT vector attribute of ONE arrow style — the heads at the begin, end and
+// middle (+b +e +m, each a kind and a half, the middle one reversible), the head length, apex angle (+a)
+// and shape (+h), fill or not and in which colour (+g), head outline (+p) and the trims (+t). The pen
+// (colour, width, opacity) stays in Line Properties. THE dialog for every arrow: a map's drawn arrow and
+// an X,Y feather/arrow series. `style` hands back the live style (null when it is gone), `apply` redraws
+// after each change.
+static void arrowPropertiesDialog(QWidget *parent, const std::function<ArrowStyle *()> &style,
+                                  const std::function<void()> &apply) {
+	if (!style()) return;
+	const ArrowStyle st0 = *style();
+	QDialog dlg(parent);
+	dlg.setWindowTitle("Arrow Properties");
+	QFormLayout *form = new QFormLayout(&dlg);
+
+	// --- the three heads: kind + which half (+l/+r); the middle one may point back (+mr) ------------------
+	const QStringList kinds = { "None", "Arrow", "Open arrow", "Inverted arrow", "Open inverted arrow",
+	                            "Circle", "Square", "Terminal line" };
+	const char *where[3] = { "Head at begin", "Head at end", "Head in middle" };
+	for (int e = 0; e < 3; ++e) {
+		QWidget *row = new QWidget(&dlg);
+		QHBoxLayout *hb = new QHBoxLayout(row);
+		hb->setContentsMargins(0, 0, 0, 0);
+		QComboBox *kc = new QComboBox(row);
+		kc->setObjectName(QString("arrowHead%1").arg(e));
+		kc->addItems(kinds);
+		kc->setCurrentIndex(st0.head[e]);
+		QComboBox *sc = new QComboBox(row);
+		sc->addItems({ "Whole", "Left half", "Right half" });
+		sc->setCurrentIndex(st0.side[e] == 0 ? 0 : st0.side[e] > 0 ? 1 : 2);
+		sc->setToolTip("A whole head, or only its left / right half (GMT +l / +r)");
+		hb->addWidget(kc, 1);
+		hb->addWidget(sc, 0);
+		QObject::connect(kc, QOverload<int>::of(&QComboBox::currentIndexChanged), [style, apply, e](int i) {
+			if (ArrowStyle *a = style()) { a->head[e] = i; apply(); }
+		});
+		QObject::connect(sc, QOverload<int>::of(&QComboBox::currentIndexChanged), [style, apply, e](int i) {
+			if (ArrowStyle *a = style()) { a->side[e] = i == 0 ? 0 : i == 1 ? 1 : -1; apply(); }
+		});
+		if (e == 2) {
+			QCheckBox *rv = new QCheckBox("Reverse", row);
+			rv->setChecked(st0.midReverse);
+			rv->setToolTip("The middle head points back to the begin (GMT +mr)");
+			hb->addWidget(rv, 0);
+			QObject::connect(rv, &QCheckBox::toggled, [style, apply](bool on) {
+				if (ArrowStyle *a = style()) { a->midReverse = on; apply(); }
+			});
+		}
+		form->addRow(where[e], row);
+	}
+
+	// --- head size and shape -----------------------------------------------------------------------------
+	QDoubleSpinBox *lenBox = new QDoubleSpinBox(&dlg);
+	lenBox->setRange(0.0, 200.0); lenBox->setSingleStep(1.0); lenBox->setDecimals(1);
+	lenBox->setSpecialValueText("Automatic (from the line width)");
+	lenBox->setValue(st0.lengthPt);
+	QObject::connect(lenBox, QOverload<double>::of(&QDoubleSpinBox::valueChanged), [style, apply](double v) {
+		if (ArrowStyle *a = style()) { a->lengthPt = v; apply(); }
+	});
+	form->addRow("Head length (points)", lenBox);
+
+	QDoubleSpinBox *fracBox = new QDoubleSpinBox(&dlg);
+	fracBox->setRange(0.0, 1.0); fracBox->setSingleStep(0.05); fracBox->setDecimals(2);
+	fracBox->setSpecialValueText("Not used (the length above)");
+	fracBox->setValue(st0.headFrac);
+	fracBox->setToolTip("The head as a fraction of its arrow's length, so the heads of a scaled vector field "
+	                    "grow and shrink with their arrows; when set it overrides the length in points");
+	QObject::connect(fracBox, QOverload<double>::of(&QDoubleSpinBox::valueChanged), [style, apply](double v) {
+		if (ArrowStyle *a = style()) { a->headFrac = v; apply(); }
+	});
+	form->addRow("Head length (fraction)", fracBox);
+
+	QDoubleSpinBox *angBox = new QDoubleSpinBox(&dlg);
+	angBox->setRange(5.0, 160.0); angBox->setSingleStep(1.0); angBox->setDecimals(1);
+	angBox->setValue(vtkMath::DegreesFromRadians(2.0 * std::atan(st0.halfWidth)));
+	angBox->setToolTip("The angle at the head's tip (GMT +a)");
+	QObject::connect(angBox, QOverload<double>::of(&QDoubleSpinBox::valueChanged), [style, apply](double v) {
+		if (ArrowStyle *a = style()) { a->halfWidth = std::tan(vtkMath::RadiansFromDegrees(v) / 2.0); apply(); }
+	});
+	form->addRow("Head angle (degrees)", angBox);
+
+	QDoubleSpinBox *shpBox = new QDoubleSpinBox(&dlg);
+	shpBox->setRange(-2.0, 2.0); shpBox->setSingleStep(0.25); shpBox->setDecimals(2);
+	shpBox->setValue(st0.shape);
+	shpBox->setToolTip("0 = a straight back; towards 2 the back is pulled in to the tip (a barbed head), "
+	                   "towards -2 pushed out (GMT +h)");
+	QObject::connect(shpBox, QOverload<double>::of(&QDoubleSpinBox::valueChanged), [style, apply](double v) {
+		if (ArrowStyle *a = style()) { a->shape = v; apply(); }
+	});
+	form->addRow("Head shape", shpBox);
+
+	// --- fill and outline ---------------------------------------------------------------------------------
+	QWidget *fillRow = new QWidget(&dlg);
+	QHBoxLayout *fh = new QHBoxLayout(fillRow);
+	fh->setContentsMargins(0, 0, 0, 0);
+	QCheckBox *fillChk = new QCheckBox("Filled", fillRow);
+	fillChk->setChecked(st0.fill);
+	fillChk->setToolTip("Fill the heads (GMT +g); unfilled heads are drawn as outlines (+g-)");
+	QCheckBox *penChk = new QCheckBox("Line colour", fillRow);
+	penChk->setChecked(st0.fillPen);
+	QPushButton *fillBtn = new QPushButton(fillRow);
+	auto paintFill = [fillBtn](const double c[3]) {
+		fillBtn->setStyleSheet(QString("background:%1; min-width:48px;")
+		                       .arg(QColor(int(c[0]*255), int(c[1]*255), int(c[2]*255)).name()));
+	};
+	paintFill(st0.headRGB);
+	fillBtn->setEnabled(st0.fill && !st0.fillPen);
+	penChk->setEnabled(st0.fill);
+	fh->addWidget(fillChk); fh->addWidget(penChk); fh->addWidget(fillBtn); fh->addStretch(1);
+	QObject::connect(fillChk, &QCheckBox::toggled, [style, apply, penChk, fillBtn](bool on) {
+		if (ArrowStyle *a = style()) { a->fill = on; penChk->setEnabled(on); fillBtn->setEnabled(on && !a->fillPen); apply(); }
+	});
+	QObject::connect(penChk, &QCheckBox::toggled, [style, apply, fillBtn](bool on) {
+		if (ArrowStyle *a = style()) { a->fillPen = on; fillBtn->setEnabled(!on); apply(); }
+	});
+	QObject::connect(fillBtn, &QPushButton::clicked, [&dlg, style, apply, paintFill]() {
+		ArrowStyle *a = style();
+		if (!a) return;
+		const QColor q = QColorDialog::getColor(QColor(int(a->headRGB[0]*255), int(a->headRGB[1]*255),
+		                                               int(a->headRGB[2]*255)), &dlg, "Head fill colour");
+		if (!q.isValid()) return;
+		a->headRGB[0] = q.redF(); a->headRGB[1] = q.greenF(); a->headRGB[2] = q.blueF();
+		paintFill(a->headRGB);
+		apply();
+	});
+	form->addRow("Head fill", fillRow);
+
+	QCheckBox *outChk = new QCheckBox(&dlg);
+	outChk->setChecked(st0.outline);
+	outChk->setToolTip("Draw the heads' outline with the line's pen (GMT +p)");
+	QObject::connect(outChk, &QCheckBox::toggled, [style, apply](bool on) {
+		if (ArrowStyle *a = style()) { a->outline = on; apply(); }
+	});
+	form->addRow("Head outline", outChk);
+
+	// --- trims ----------------------------------------------------------------------------------------------
+	const char *trimName[2] = { "Trim at begin (points)", "Trim at end (points)" };
+	for (int e = 0; e < 2; ++e) {
+		QDoubleSpinBox *tb = new QDoubleSpinBox(&dlg);
+		tb->setRange(0.0, 500.0); tb->setSingleStep(1.0); tb->setDecimals(1);
+		tb->setValue(st0.trimPt[e]);
+		tb->setToolTip("Shorten the arrow at this end, leaving a gap before the point (GMT +t)");
+		QObject::connect(tb, QOverload<double>::of(&QDoubleSpinBox::valueChanged), [style, apply, e](double v) {
+			if (ArrowStyle *a = style()) { a->trimPt[e] = v; apply(); }
+		});
+		form->addRow(trimName[e], tb);
+	}
+
+	QDialogButtonBox *bb = new QDialogButtonBox(QDialogButtonBox::Close, &dlg);
+	QObject::connect(bb, &QDialogButtonBox::rejected, &dlg, &QDialog::accept);
+	form->addRow(bb);
+	dlg.exec();
+}
+
 // The plot items the plot-type gallery adds to vtkPlotLine: AREA (filled down to y = 0, or down to
 // another curve -- fill_between), STEM (a stick from y = 0 up to each point, a marker on its top),
 // STAIRS (a step at every x) and BASED BARS (each bar standing on its own base -- stacked bars, stacked
@@ -465,7 +653,12 @@ public:
 	vtkTypeMacro(vtkXYShapePlot, vtkPlotLine);
 	int Shape = 2;                     // XYSeries::kind: 2 area, 3 stem, 4 stairs, 6 bars, 7 horizontal bars, 8 polygons,
 	                                   // 9 error bars, 10 bubbles, 11 arrows
+	ArrowStyle Arrow;                  // kind 11: the series' GMT vector attributes (XYSeries::arrow)
 	std::vector<double> Base;          // per row, data units: what an area / a bar stands on (empty = 0)
+
+	void PaintArrowParts(vtkContext2D *p, const ArrowParts &ap, double ox, double oy, double sx, double sy) {
+		paintArrowParts(p, ap, this->Arrow, ox, oy, sx, sy);
+	}
 	double BarW = 1.0;                 // bar width, data units of the position axis
 	double VLo = 0, VHi = 0, PLo = 0, PHi = 0;   // a based bar series' data extent: values / positions
 	// Error bars: per row, the bar's ENDS in data units (empty = none on that axis); CapPx the half
@@ -518,13 +711,10 @@ public:
 			return this->Superclass::Paint(painter);
 		}
 		if (Shape == 11) {
-			// Arrows (feather): every NaN-separated run is a shaft from its first point to its last, with a
-			// filled head on the last. The head is sized in screen px, so neither the axes' different x and
-			// y scales nor a zoom bend it.
+			// Arrows (feather): every NaN-separated run is a shaft from its first point to its last — THE
+			// arrow (arrowParts) with the series' GMT vector attributes, worked out in screen px.
 			painter->ApplyPen(this->Pen);
 			painter->ApplyBrush(this->Brush);
-			const double hl = 3.0 * std::max(2.5f, this->Pen->GetWidth()) + 4.0;   // head length, px
-			const double hw = 0.35 * hl;                                             // half width, px
 			vtkIdType i = 0;
 			while (i < n) {
 				double a[3], b[3];
@@ -539,19 +729,11 @@ public:
 				}
 				this->Points->GetPoint(j, b);
 				i = j + 1;
-				const double dx = (b[0] - a[0]) / pxX, dy = (b[1] - a[1]) / pxY;   // the shaft in px
-				const double len = std::hypot(dx, dy);
-				if (len <= 0.0) continue;
-				const double ux = dx / len, uy = dy / len;
-				const double h = std::min(hl, 0.6 * len), w = h * hw / hl;          // a short shaft: smaller head
-				// the shaft stops where the head begins, so a thick pen never pokes through its tip
-				painter->DrawLine((float)a[0], (float)a[1], (float)(b[0] - h * ux * pxX), (float)(b[1] - h * uy * pxY));
-				float tri[6] = {
-					(float)b[0], (float)b[1],
-					(float)(b[0] + (-h * ux - w * uy) * pxX), (float)(b[1] + (-h * uy + w * ux) * pxY),
-					(float)(b[0] + (-h * ux + w * uy) * pxX), (float)(b[1] + (-h * uy - w * ux) * pxY),
-				};
-				painter->DrawPolygon(tri, 3);
+				ArrowParts ap;                                                        // in px, tail at the origin
+				if (!arrowParts((b[0] - a[0]) / pxX, (b[1] - a[1]) / pxY, 0.0, 0.0, this->Pen->GetWidth(), 1.0,
+				                arrowPtToPx(1.0), this->Arrow, ap))
+					continue;
+				this->PaintArrowParts(painter, ap, a[0], a[1], pxX, pxY);
 			}
 			return true;
 		}
@@ -771,11 +953,9 @@ public:
 		painter->ApplyBrush(this->Brush);
 		if (Shape == 11) {                             // an arrow's legend is an arrow: the head Paint draws
 			const float y = rect[1] + rect[3] / 2, xa = rect[0], xb = rect[0] + rect[2];
-			const float hl = 3.0f * std::max(2.5f, this->Pen->GetWidth()) + 4.0f;
-			const float h = std::min(hl, 0.6f * (xb - xa)), w = 0.35f * h;
-			painter->DrawLine(xa, y, xb - h, y);
-			float tri[6] = { xb, y, xb - h, y + w, xb - h, y - w };
-			painter->DrawPolygon(tri, 3);
+			ArrowParts ap;                             // THE arrow, the series' own style
+			if (arrowParts(xb, y, xa, y, this->Pen->GetWidth(), 1.0, arrowPtToPx(1.0), this->Arrow, ap))
+				this->PaintArrowParts(painter, ap, 0.0, 0.0, 1.0, 1.0);
 			return true;
 		}
 		if (Shape == 10) {                             // a bubble's legend is a bubble
@@ -796,6 +976,7 @@ static vtkPlot *xyAddPlotItem(vtkChartXY *chart, const XYSeries &se) {
 	if ((se.kind >= 2 && se.kind <= 4) || (se.kind >= 6 && se.kind <= 11)) {
 		vtkNew<vtkXYShapePlot> sp;
 		sp->Shape = se.kind;
+		sp->Arrow = se.arrow;                         // a feather/arrow series' GMT vector attributes
 		chart->AddPlot(sp);                           // the chart keeps its own reference
 		pl = sp;
 	}
@@ -1737,6 +1918,9 @@ static void xyObjMgrMenu(XYPlot *s, const QPoint &pos) {
 	}
 	QMenu m(s->objMgr);
 	QAction *aProp = m.addAction("Line properties…");
+	QAction *aArrow = nullptr;                         // a feather / arrow series: THE arrow dialog
+	if (idx >= 0 && idx < (int)xyCur(s).series.size() && xyCur(s).series[idx].kind == 11)
+		aArrow = m.addAction("Arrow properties…");
 	QAction *aTable = m.addAction("Show in Data Table");
 	QAction *aSave = m.addAction("Save data…");
 	QAction *aRen = m.addAction("Rename…");
@@ -1745,6 +1929,18 @@ static void xyObjMgrMenu(XYPlot *s, const QPoint &pos) {
 	std::vector<XYSeries> &series = xyCur(s).series;
 	if (pick == aProp) {
 		xyLineProperties(s, idx);
+	}
+	else if (pick && pick == aArrow) {
+		XYPage *pg = &xyCur(s);
+		arrowPropertiesDialog(s->win,
+			[s, pg, idx]() -> ArrowStyle * {
+				return (xyAlive(s) && idx < (int)pg->series.size()) ? &pg->series[idx].arrow : nullptr;
+			},
+			[s, pg, idx]() {
+				if (!xyAlive(s) || idx >= (int)pg->series.size()) return;
+				if (auto *sp = vtkXYShapePlot::SafeDownCast(pg->series[idx].plot)) sp->Arrow = pg->series[idx].arrow;
+				if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+			});
 	}
 	else if (pick == aTable) {
 		xyShowDataTable(s, idx);
@@ -3403,17 +3599,6 @@ protected:
 
 // ---- annotations (the tool bar's Text Arrow ... Ellipse tools) -------------------------------------
 
-// The head of an arrow: a filled triangle with its tip at (tx,ty), pointing away from (fx,fy). Same
-// shape as an arrow series' (vtkXYShapePlot, kind 11): length 3*max(2.5, w)+4 px, half width 0.35 of it.
-static float xyAnnotHeadLen(const XYAnnot &a, float dpr) { return (float)(3.0 * std::max(2.5, a.width) + 4.0) * dpr; }
-static void xyAnnotHead(vtkContext2D *p, float tx, float ty, float fx, float fy, float hl) {
-	const float dx = tx - fx, dy = ty - fy, L = std::hypot(dx, dy);
-	if (!(L > 0.0f)) return;
-	const float ux = dx / L, uy = dy / L, hw = 0.35f * hl;
-	float pts[6] = { tx, ty, tx - ux * hl - uy * hw, ty - uy * hl + ux * hw, tx - ux * hl + uy * hw, ty - uy * hl - ux * hw };
-	p->DrawPolygon(pts, 3);
-}
-
 // The page's annotations, at their data positions, with the selected one's grab handles. Not clipped
 // to the plot frame: an annotation belongs to the figure, as in MATLAB, and may point at anything.
 static void xyAnnotPaint(XYPlot *s, vtkChartXY *chart, vtkContext2D *p) {
@@ -3447,17 +3632,14 @@ static void xyAnnotPaint(XYPlot *s, vtkChartXY *chart, vtkContext2D *p) {
 		p->GetPen()->SetWidth((float)a.width * dpr);
 		p->GetPen()->SetLineType(a.lineType);
 		if (xyAnnotIsLine(a.kind)) {
-			const float hl = xyAnnotHeadLen(a, dpr);
 			const float L = std::hypot(a.sx1 - a.sx0, a.sy1 - a.sy0);
 			const float ux = L > 0 ? (a.sx1 - a.sx0) / L : 0, uy = L > 0 ? (a.sy1 - a.sy0) / L : 0;
-			const bool he = a.kind != XY_AN_LINE, hb = a.kind == XY_AN_DARROW;
-			// the shaft stops inside the head, so a thick pen never pokes out past its tip
-			const float e = (he && L > hl) ? 0.8f * hl : 0.0f, bgn = (hb && L > 2 * hl) ? 0.8f * hl : 0.0f;
-			p->DrawLine(a.sx0 + ux * bgn, a.sy0 + uy * bgn, a.sx1 - ux * e, a.sy1 - uy * e);
-			p->GetPen()->SetLineType(vtkPen::SOLID_LINE);
+			// THE arrow with this annotation's GMT vector attributes (a Line's carry no heads)
 			p->GetBrush()->SetColorF(a.r, a.g, a.b, 1.0);
-			if (he) xyAnnotHead(p, a.sx1, a.sy1, a.sx0, a.sy0, hl);
-			if (hb) xyAnnotHead(p, a.sx0, a.sy0, a.sx1, a.sy1, hl);
+			ArrowParts ap;
+			if (arrowParts(a.sx1, a.sy1, a.sx0, a.sy0, a.width, dpr, arrowPtToPx(dpr), a.arrow, ap))
+				paintArrowParts(p, ap, a.arrow, 0.0, 0.0, 1.0, 1.0);
+			p->GetPen()->SetLineType(vtkPen::SOLID_LINE);
 			if (a.kind == XY_AN_TEXTARROW && !a.text.empty()) {
 				// the text sits at the TAIL, on the far side from the head
 				const float off = 3.0f * dpr;
@@ -3738,11 +3920,19 @@ static void xyAnnotMenu(XYPlot *s, int i, const QPoint &global) {
 	if (i < 0 || i >= (int)pg.annots.size()) return;
 	QMenu m(s->win);
 	QAction *aProps = m.addAction("Properties…");
+	const int k = pg.annots[i].kind;                   // an arrow kind: THE arrow dialog
+	QAction *aArrow = (k == XY_AN_ARROW || k == XY_AN_DARROW || k == XY_AN_TEXTARROW) ? m.addAction("Arrow properties…") : nullptr;
 	QAction *aText = xyAnnotHasText(pg.annots[i].kind) ? m.addAction("Edit text") : nullptr;
 	QAction *aDel = m.addAction("Delete");
 	QAction *pick = m.exec(global);
 	if (!xyAlive(s)) return;
-	if (pick == aProps)              xyAnnotProps(s, i);
+	if (aArrow && pick == aArrow) {
+		XYPage *pp = &pg;
+		arrowPropertiesDialog(s->win,
+			[s, pp, i]() -> ArrowStyle * { return (xyAlive(s) && i < (int)pp->annots.size()) ? &pp->annots[i].arrow : nullptr; },
+			[s]() { if (xyAlive(s)) xyAnnotRender(s); });
+	}
+	else if (pick == aProps)         xyAnnotProps(s, i);
 	else if (aText && pick == aText) xyAnnotEditText(s, i);
 	else if (pick == aDel)           xyAnnotDelete(s, i);
 }
@@ -3860,7 +4050,7 @@ protected:
 		// a press or a double-click
 		if (me->button() == Qt::LeftButton && s->annotTool >= 0 && t == QEvent::MouseButtonPress) {
 			XYAnnot a;
-			a.kind = s->annotTool;
+			xyAnnotSetKind(a, s->annotTool);
 			pg.annots.push_back(a);
 			grab = (int)pg.annots.size() - 1;
 			pg.annotSel = grab;
@@ -5561,6 +5751,8 @@ static std::string xySessionState(XYPlot *s) {
 			                     a.size, a.filled ? 1.0 : 0.0, a.fr, a.fg, a.fb, a.visible ? 1.0 : 0.0, a.fit ? 1.0 : 0.0 }) +
 			            " " + xyEsc(QString::fromStdString(a.text)));
 			if (!a.boxed) kv("annotbox", "0");           // of the annotation just written (a text box without its box)
+			if (a.kind == XY_AN_ARROW || a.kind == XY_AN_DARROW || a.kind == XY_AN_TEXTARROW)
+				kv("annotarrow", QString::fromStdString(arrowStyleText(a.arrow)));   // its GMT vector attributes
 		}
 		if (!pg.bpVar.empty()) {                         // a biplot page: its side panel, and what redraws it
 			kv("biplot.var", xyNums(pg.bpVar));
@@ -5622,6 +5814,7 @@ static std::string xySessionState(XYPlot *s) {
 			kv("idx", QString::number(i));
 			kv("name", xyEsc(QString::fromStdString(se.name)));
 			kv("kind", QString::number(se.kind));
+			if (se.kind == 11) kv("arrow", QString::fromStdString(arrowStyleText(se.arrow)));   // THE arrow's attributes
 			kv("barh", QString::number(se.barH ? 1 : 0));
 			kv("stack", QString::number(se.stack));
 			kv("right", QString::number(se.rightAxis ? 1 : 0));
@@ -5732,7 +5925,7 @@ static void xySessionApply(XYPlot *s, const char *text) {
 				const QStringList f = v.split(' ');
 				if (f.size() >= 18) {
 					XYAnnot a;
-					a.kind = std::max(0, std::min(XY_AN_COUNT - 1, f[0].toInt()));
+					xyAnnotSetKind(a, std::max(0, std::min(XY_AN_COUNT - 1, f[0].toInt())));
 					a.x0 = xyToNum(f[1]); a.y0 = xyToNum(f[2]); a.x1 = xyToNum(f[3]); a.y1 = xyToNum(f[4]);
 					a.r = xyToNum(f[5]); a.g = xyToNum(f[6]); a.b = xyToNum(f[7]);
 					a.width = xyToNum(f[8]); a.lineType = f[9].toInt(); a.size = xyToNum(f[10]);
@@ -5742,6 +5935,9 @@ static void xySessionApply(XYPlot *s, const char *text) {
 					a.text = xyUnesc(f.mid(17).join(' ')).toStdString();
 					pg.annots.push_back(a);
 				}
+			}
+			else if (k == "annotarrow") {                     // of the annotation just read
+				if (!pg.annots.empty()) arrowStyleParse(pg.annots.back().arrow, v.toStdString());
 			}
 			else if (k == "annotbox") {
 				if (!pg.annots.empty()) pg.annots.back().boxed = v.toInt() != 0;
@@ -5837,6 +6033,10 @@ static void xySessionApply(XYPlot *s, const char *text) {
 					se.plot->SetTooltipLabelFormat("%x, %y");
 					se.plot->SetVisible(se.visible);
 				}
+			}
+			else if (k == "arrow") {                          // a feather/arrow series' GMT vector attributes
+				arrowStyleParse(se.arrow, v.toStdString());
+				if (auto *sp = vtkXYShapePlot::SafeDownCast(se.plot)) sp->Arrow = se.arrow;
 			}
 			else if (k == "magrole") se.magRole = v.toInt();
 			else if (k == "trackgeog") se.trackGeog = v.toInt();

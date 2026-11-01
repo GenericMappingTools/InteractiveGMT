@@ -1019,6 +1019,8 @@ GMTVTK_API int gmtvtk_add_arrows_h(void *handle, const double *xyz, const double
 	                std::string(name ? name : ""), info, false, scale.data(), ptRGB, uv))
 		return 0;
 	SymbolLayer &sl = s->symbols.back();
+	if (!(sl.arrow.headFrac > 0.0)) sl.arrow.headFrac = 0.30;   // what arrowGlyphPD already draws, said
+	                                                             // here so the Heads dialog shows it
 	sl.worldSize = length;                             // a vector is measured in the map's units, not px
 	sl.arrowGrounded = std::move(grounded);
 	symbolRescaleCB(nullptr, 0, s, nullptr);
@@ -1041,6 +1043,80 @@ GMTVTK_API int gmtvtk_arrows_set_rgb_h(void *handle, const char *name, const dou
 		return 1;
 	}
 	return 0;
+}
+
+// The arrow layer `name`'s heads — GMT's -Q of a vector field: the head kind (ArrowHeadKind) at the tail
+// and at the tip, the head length as a fraction of each arrow, its half-width over its length (tan of
+// half the apex angle), filled or not, and whether the layer is a SOLID body in 3-D (0 = it stays a flat
+// arrow on the map in every view, a field drawn as lines). Rebuilt through THE constructor
+// (symbolSetPipeline -> arrowGlyphPD). Returns 1, or 0 when there is no such arrow layer.
+GMTVTK_API int gmtvtk_arrows_set_style_h(void *handle, const char *name, int headBegin, int headEnd,
+                                         double headFrac, double halfWidth, int filled, int solid) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !name) return 0;
+	for (size_t li = s->symbols.size(); li-- > 0; ) {
+		SymbolLayer &sl = s->symbols[li];
+		if (sl.name != name || sl.uvOrig.empty()) continue;
+		sl.arrow.head[0] = std::clamp(headBegin, (int)AH_None, (int)AH_Terminal);
+		sl.arrow.head[1] = std::clamp(headEnd, (int)AH_None, (int)AH_Terminal);
+		if (headFrac > 0.0) sl.arrow.headFrac = headFrac;
+		if (halfWidth > 0.0) sl.arrow.halfWidth = halfWidth;
+		sl.arrow.fill = filled != 0;
+		sl.wantSolid = solid != 0;
+		vtkPolyData *pd = symInputPD(sl);
+		if (!pd) return 0;
+		symbolSetPipeline(s, sl, pd, sl.wantSolid && !s->flat2d);
+		symbolRescaleCB(nullptr, 0, s, nullptr);
+		if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+		return 1;
+	}
+	return 0;
+}
+
+// A map arrow's GMT vector attributes as THE text (arrowStyleText): `what` 0 = the vector-field arrow
+// layer called `name`, 1 = the drawn arrow (Arrow draw tool) called `name`. Returns the text's length
+// (call with cap 0 to size the buffer), -1 when there is no such arrow. The setter takes the same text
+// and redraws the arrow through THE arrow; 1, or 0.
+static ArrowStyle *mapArrowStyle(Scene *s, int what, const char *name) {
+	if (!sceneAlive(s) || !name) return nullptr;
+	if (what == 0) {
+		for (size_t li = s->symbols.size(); li-- > 0; )
+			if (s->symbols[li].name == name && !s->symbols[li].uvOrig.empty()) return &s->symbols[li].arrow;
+	}
+	else
+		for (auto &pg : s->polys) if (pg.isArrow && pg.name == name) return &pg.arrow;
+	return nullptr;
+}
+GMTVTK_API int gmtvtk_arrow_style_get_h(void *handle, int what, const char *name, char *buf, int cap) {
+	ArrowStyle *a = mapArrowStyle(static_cast<Scene*>(handle), what, name);
+	if (!a) return -1;
+	const std::string t = arrowStyleText(*a);
+	if (buf && cap > 0) { std::strncpy(buf, t.c_str(), (size_t)cap - 1); buf[cap - 1] = '\0'; }
+	return (int)t.size();
+}
+GMTVTK_API int gmtvtk_arrow_style_set_h(void *handle, int what, const char *name, const char *text) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (what != 0 && sceneAlive(s) && name)         // a drawn line of that name (a session's): an arrow again
+		for (auto &pg : s->polys)
+			if (pg.name == name && !pg.isArrow && !pg.closed && pg.v.size() >= 2) {
+				pg.isArrow = true;                                 // (its colour is the restored line's)
+				arrowHeadInstall(s);
+				rebuildSceneObjects(s);                            // its row's icon becomes the arrow's
+				break;
+			}
+	ArrowStyle *a = mapArrowStyle(s, what, name);
+	if (!a || !text || !arrowStyleParse(*a, text)) return 0;
+	if (what == 0) {
+		for (auto &sl : s->symbols)
+			if (&sl.arrow == a) {
+				if (vtkPolyData *pd = symInputPD(sl)) symbolSetPipeline(s, sl, pd, sl.solid3D);
+				symbolRescaleCB(nullptr, 0, s, nullptr);
+			}
+	}
+	else
+		for (auto &pg : s->polys) if (&pg.arrow == a) polyRebuildLine(s, pg);
+	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+	return 1;
 }
 
 // Read back the arrow layer `name`'s vectors: fills `uv` (2 per arrow, east/north, as plotted) up to
@@ -1375,6 +1451,54 @@ GMTVTK_API int gmtvtk_script_editor_text_h(void *handle, char *buf, int cap) {
 		buf[u.size()] = '\0';
 	}
 	return (int)u.size();
+}
+
+// set_text: replace the editor's text with `text` (UTF-8) WITHOUT bringing the editor up — a field edited
+// in the script graph (src/nodescript.jl `_nodegraph_edit`). Done as one edit of the document, so the
+// editor's Ctrl+Z takes it back. Returns 1 when there was an editor to write to.
+GMTVTK_API int gmtvtk_script_editor_set_text_h(void *handle, const char *text) {
+	if (!text) return 0;
+	if (!sceneAlive(static_cast<Scene*>(handle)) && !xyAlive(static_cast<XYPlot*>(handle))) return 0;
+	QDialog *d = scriptEditorRegistry().value(handle, nullptr);
+	QPlainTextEdit *ed = d ? d->findChild<QPlainTextEdit *>() : nullptr;
+	if (!ed) return 0;
+	const int vpos = ed->verticalScrollBar()->value();           // the user keeps their place in the text
+	QTextCursor c(ed->document());
+	c.select(QTextCursor::Document);
+	c.insertText(QString::fromUtf8(text));
+	ed->verticalScrollBar()->setValue(vpos);
+	return 1;
+}
+
+// The script graph's pictures: box `id` shows `rgb` (w*h*3 bytes, RGB, row by row from the top) — the
+// figure as it stands after that step. id 0 clears them all (a new graph is coming). Sent BEFORE
+// gmtvtk_nodegraph_show_h, which draws them. Returns 1 when stored.
+GMTVTK_API int gmtvtk_nodegraph_preview_h(void *handle, int id, int w, int h, const unsigned char *rgb) {
+	QWidget *parent = nullptr;
+	if (sceneAlive(static_cast<Scene*>(handle))) parent = static_cast<Scene*>(handle)->win;
+	else if (xyAlive(static_cast<XYPlot*>(handle))) parent = static_cast<XYPlot*>(handle)->win;
+	if (!parent) return 0;
+	NodeGraph *g = nodeGraphWindow(handle, parent);
+	if (id == 0) {
+		g->previews.clear();
+		return 1;
+	}
+	if (!rgb || w <= 0 || h <= 0) return 0;
+	g->previews.insert(id, QImage(rgb, w, h, 3 * w, QImage::Format_RGB888).copy());
+	return 1;
+}
+
+// The script graph (71_nodegraph.cpp): show (or refresh) the graph window of `handle`'s script editor,
+// holding the graph Julia parsed from the editor's text (`_nodegraph_blob`, one tab-separated record per
+// line). Returns 1 when shown.
+GMTVTK_API int gmtvtk_nodegraph_show_h(void *handle, const char *blob) {
+	if (!blob) return 0;
+	QWidget *parent = nullptr;
+	if (sceneAlive(static_cast<Scene*>(handle))) parent = static_cast<Scene*>(handle)->win;
+	else if (xyAlive(static_cast<XYPlot*>(handle))) parent = static_cast<XYPlot*>(handle)->win;
+	if (!parent) return 0;
+	nodeGraphShow(handle, parent, QString::fromUtf8(blob));
+	return 1;
 }
 
 // Close and destroy the progress dialog. Safe to call when none exists.
@@ -6667,6 +6791,98 @@ GMTVTK_API int gmtvtk_dblclick_test(void *scene, double x, double y, double z, i
 	return s->ovEditSeg;
 }
 
+// A draw tool, the real gesture: trigger the toolbar entry named `tool` ("Arrow", "Line", …) — the very
+// QAction the user clicks — then a left press at each of the `npts` (x,y,z) TRUE points and a
+// double-click on the last. Returns the number of drawn shapes afterwards, -1 when there is no such tool.
+GMTVTK_API int gmtvtk_draw_tool_test(void *scene, const char *tool, const double *xyz, int npts) {
+	Scene *s = static_cast<Scene*>(scene);
+	if (!sceneAlive(s) || !s->widget || !tool || !xyz || npts <= 0) return -1;
+	QAction *act = nullptr;
+	for (QAction *a : s->shapeActs)
+		if (a->text() == QString::fromUtf8(tool)) act = a;
+	if (!act) return -1;
+	act->trigger();
+	double d[2];
+	for (int i = 0; i < npts; ++i) {
+		polyToDisplay(s, { xyz[3*i], xyz[3*i+1], xyz[3*i+2] }, d);
+		polygonHandlePress(s, 0, (int)std::lround(d[0]), (int)std::lround(d[1]), false);
+	}
+	polygonHandleDblClick(s, (int)std::lround(d[0]), (int)std::lround(d[1]));
+	return (int)s->polys.size();
+}
+
+// Set drawn arrow `idx`'s GMT vector attributes, as Arrow properties… does, then rebuild it through THE
+// arrow. `spec` = "key=value;…" with keys b e m (head kinds, ArrowHeadKind numbers), bs es ms (side: 0, 1
+// left, -1 right), mr (0/1), len (pt), ang (apex degrees), shape, fill (0/1), pen (0/1 fill = line
+// colour), rgb (r,g,b 0..1), out (0/1), tb te (trims, pt). Returns 1, or 0 when `idx` is not an arrow.
+static void testArrowStyleFromSpec(ArrowStyle &a, const char *spec);
+GMTVTK_API int gmtvtk_arrow_style_test(void *scene, int idx, const char *spec) {
+	Scene *s = static_cast<Scene*>(scene);
+	if (!s || !spec || idx < 0 || idx >= (int)s->polys.size() || !s->polys[idx].isArrow) return 0;
+	Polygon &pg = s->polys[idx];
+	testArrowStyleFromSpec(pg.arrow, spec);
+	polyRebuildLine(s, pg);
+	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+	return 1;
+}
+
+// The same, for X,Y series `idx` of the current page (a feather / arrow series): set its style as the
+// Arrow properties dialog does and repaint. 1, or 0 when it is not an arrow series.
+GMTVTK_API int gmtvtk_xyplot_arrow_style_test(void *handle, int idx, const char *spec) {
+	XYPlot *p = static_cast<XYPlot*>(handle);              // never xyAlive: g_xyplots is per DLL
+	if (!p || !spec || p->pages.empty()) return 0;
+	XYPage &pg = xyCur(p);
+	if (idx < 0 || idx >= (int)pg.series.size() || pg.series[idx].kind != 11) return 0;
+	testArrowStyleFromSpec(pg.series[idx].arrow, spec);
+	if (auto *sp = vtkXYShapePlot::SafeDownCast(pg.series[idx].plot)) sp->Arrow = pg.series[idx].arrow;
+	if (p->widget && p->widget->renderWindow()) p->widget->renderWindow()->Render();
+	return 1;
+}
+
+static void testArrowStyleFromSpec(ArrowStyle &a, const char *spec) {
+	for (const QString &kv : QString::fromUtf8(spec).split(';', Qt::SkipEmptyParts)) {
+		const QString k = kv.section('=', 0, 0).trimmed(), v = kv.section('=', 1).trimmed();
+		const double d = v.toDouble();
+		if      (k == "b")  a.head[0] = (int)d;
+		else if (k == "e")  a.head[1] = (int)d;
+		else if (k == "m")  a.head[2] = (int)d;
+		else if (k == "bs") a.side[0] = (int)d;
+		else if (k == "es") a.side[1] = (int)d;
+		else if (k == "ms") a.side[2] = (int)d;
+		else if (k == "mr") a.midReverse = d != 0;
+		else if (k == "len") a.lengthPt = d;
+		else if (k == "ang") a.halfWidth = std::tan(vtkMath::RadiansFromDegrees(d) / 2.0);
+		else if (k == "shape") a.shape = d;
+		else if (k == "fill") a.fill = d != 0;
+		else if (k == "pen") a.fillPen = d != 0;
+		else if (k == "rgb") { const QStringList c = v.split(','); for (int i = 0; i < 3 && i < c.size(); ++i) a.headRGB[i] = c[i].toDouble(); }
+		else if (k == "out") a.outline = d != 0;
+		else if (k == "tb") a.trimPt[0] = d;
+		else if (k == "te") a.trimPt[1] = d;
+	}
+}
+
+// The drawn shape `idx`: out5 = { vertex count, line cells in its actor, isArrow, head length on screen
+// in px (tip to the shaft's end), filled triangles shown (0 when its face actor is hidden or absent) }.
+GMTVTK_API int gmtvtk_poly_shape_test(void *scene, int idx, double *out5) {
+	Scene *s = static_cast<Scene*>(scene);
+	if (!s || !out5 || idx < 0 || idx >= (int)s->polys.size()) return 0;
+	const Polygon &pg = s->polys[idx];
+	out5[0] = (double)pg.v.size();
+	out5[1] = pg.linePD ? (double)pg.linePD->GetNumberOfLines() : 0.0;
+	out5[2] = pg.isArrow ? 1.0 : 0.0;
+	out5[3] = 0.0;
+	ArrowMap am;
+	if (pg.isArrow && arrowMapParts(s, pg, am)) {
+		double d0[2], d1[2];
+		polyToDisplay(s, pg.v.back(), d0);
+		polyToDisplay(s, am.s1, d1);
+		out5[3] = std::hypot(d1[0] - d0[0], d1[1] - d0[1]);
+	}
+	out5[4] = (pg.fill && pg.fill->GetVisibility() && pg.fillPD) ? (double)pg.fillPD->GetNumberOfPolys() : 0.0;
+	return 1;
+}
+
 // Remove every line/point OVERLAY tagged with `groupName`, plus the text labels that carry the same
 // group tag (gmtvtk_add_texts_h's groupName) -- the overlay twin of gmtvtk_remove_meca_group_h, and
 // the same "drop the batch's labels too, or a re-plot leaves the old ones behind" rule
@@ -7548,6 +7764,70 @@ GMTVTK_API int gmtvtk_dialog_button_test(const char *title, const char *name, in
 		return 1;
 	}
 	return 0;
+}
+
+// test hook: THE GMT.jl SCRIPT GRAPH (71_nodegraph.cpp), driven like a user. Searched over the shared
+// topLevelWidgets, so it reaches the window the PRODUCTION dll built. `label` empty: returns the number of
+// boxes in the visible graph (0 = no graph on screen). Otherwise: clicks — a real press and release on the
+// view — the first field row labelled `label`, types `text` into the in-place editor that opens over it,
+// then Enter. Returns 1 when the row was found and its editor took the text, 0 otherwise.
+GMTVTK_API int gmtvtk_nodegraph_test(const char *label, const char *text) {
+	QWidget *win = nullptr;
+	for (QWidget *w : QApplication::topLevelWidgets())
+		if (w->objectName() == "nodeGraphWindow" && w->isVisible()) { win = w; break; }
+	QGraphicsView *v = win ? win->findChild<QGraphicsView *>() : nullptr;
+	if (!v || !v->scene()) return 0;
+	const QString want = QString::fromUtf8(label ? label : "");
+	if (want.isEmpty()) {
+		int n = 0;
+		for (QGraphicsItem *it : v->scene()->items())
+			if (!it->parentItem() && (it->flags() & QGraphicsItem::ItemIsMovable)) n++;
+		return n;
+	}
+	QGraphicsItem *row = nullptr;
+	for (QGraphicsItem *it : v->scene()->items(Qt::AscendingOrder))
+		if (it->data(0).toInt() > 0 && it->data(3).toString() == want) { row = it; break; }
+	if (!row) return 0;
+	v->ensureVisible(row);
+	QApplication::processEvents();
+	const QString val = QString::fromUtf8(text ? text : "");
+	const QPoint at = v->mapFromScene(row->sceneBoundingRect().center());
+	const QPointF gat(v->viewport()->mapToGlobal(at));
+	QMouseEvent press(QEvent::MouseButtonPress, QPointF(at), gat, Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+	QApplication::sendEvent(v->viewport(), &press);
+	QMouseEvent rel(QEvent::MouseButtonRelease, QPointF(at), gat, Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+	QApplication::sendEvent(v->viewport(), &rel);
+	for (int i = 0; i < 3; i++) QApplication::processEvents();    // the panel opens one event-loop turn later
+	// The click opens the field's panel under the row, in the graph — no dialog. Answer it as the user would:
+	// the item picked from its list by name, or the number typed and the box left.
+	QFrame *panel = v->viewport()->findChild<QFrame *>("nodeGraphPanel");
+	if (panel && panel->isVisible()) {
+		if (QComboBox *cb = panel->findChild<QComboBox *>()) {
+			const int i = cb->findText(val);
+			if (i < 0) return 0;
+			cb->hidePopup();
+			cb->setCurrentIndex(i);
+			cb->activated(i);
+			QApplication::processEvents();
+			return 1;
+		}
+		if (QDoubleSpinBox *sb = panel->findChild<QDoubleSpinBox *>()) {
+			sb->setValue(val.toDouble());
+			sb->editingFinished();
+			QApplication::processEvents();
+			return 1;
+		}
+		return 0;
+	}
+	QLineEdit *le = nullptr;                                      // a field edited as code: the in-place editor
+	for (QLineEdit *e : v->viewport()->findChildren<QLineEdit *>())
+		if (e->isVisible()) le = e;
+	if (!le) return 0;
+	le->setText(QString::fromUtf8(text ? text : ""));
+	QKeyEvent kp(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
+	QApplication::sendEvent(le, &kp);
+	QApplication::processEvents();
+	return 1;
 }
 
 // test hook: in the top-level window titled `title`, bring its tab labelled `tab` to the front (as a
@@ -10675,8 +10955,12 @@ GMTVTK_API int gmtvtk_line_menu_click_test(void *scene, const char *overlay, con
 	if (!s || !overlay || !item) return -1;
 	testBorrowScene(s);
 	vtkActor *act = nullptr;
+	LineKind kind = LK_Overlay;
 	for (auto it = s->overlays.rbegin(); it != s->overlays.rend(); ++it)
 		if (it->name == overlay) { act = it->actor.Get(); break; }
+	if (!act)                                          // …or a drawn shape (line, arrow, polygon) of that name
+		for (auto &pg : s->polys)
+			if (pg.name == overlay) { act = pg.line.Get(); kind = LK_Polygon; break; }
 	if (!act) return -1;
 	const QString want = QString::fromUtf8(item);
 	auto clicked = std::make_shared<int>(0);
@@ -10720,7 +11004,7 @@ GMTVTK_API int gmtvtk_line_menu_click_test(void *scene, const char *overlay, con
 	auto *f = new MenuClicker;
 	f->want = want; f->clicked = clicked;
 	qApp->installEventFilter(f);
-	popupLineObjectMenu(s, LineRef{ LK_Overlay, act }, QString::fromUtf8(overlay), QPoint(200, 200));
+	popupLineObjectMenu(s, LineRef{ kind, act }, QString::fromUtf8(overlay), QPoint(200, 200));
 	qApp->removeEventFilter(f);
 	delete f;
 	QElapsedTimer t; t.start();

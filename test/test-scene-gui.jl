@@ -225,6 +225,77 @@ end
 # ground". The two differ the moment the camera is not looking straight down, and answering the
 # second one killed the tooltip for every event with a real depth: only depth-0 events (which sit
 # ABOVE the surface) ever answered. Depth by itself must never disable hover.
+@testitem "draw tools: the Arrow entry draws a thin arrow that edits like a line" tags=[:gui] setup=[GmtvtkTest] begin
+	IG = InteractiveGMT; GMT = IG.GMT
+	G = GMT.mat2grid(Float32[ix + iy for iy in 0:20, ix in 0:20]; x=[0.0, 20.0], y=[0.0, 20.0])
+	f = viz(G)
+	try
+		IG._pump_once()
+		ccall(_test_fn(:gmtvtk_scene_adopt_test), Cint, (Ptr{Cvoid},), f.h)   # the test dll must see it alive
+		pts = [4.0, 5.0, 9.0, 14.0, 11.0, 25.0]                  # on the surface: z = x + y
+		n = ccall(_test_fn(:gmtvtk_draw_tool_test), Cint, (Ptr{Cvoid}, Cstring, Ptr{Cdouble}, Cint), f.h, "Arrow", pts, 2)
+		@test n == 1                                             # the tool exists and made ONE drawn shape
+		IG._pump_once()
+		sh = zeros(Cdouble, 5)
+		@test ccall(_test_fn(:gmtvtk_poly_shape_test), Cint, (Ptr{Cvoid}, Cint, Ptr{Cdouble}), f.h, 0, sh) == 1
+		@test sh[1] == 2 && sh[3] == 1                           # a two-vertex line flagged as an arrow…
+		@test sh[2] == 1                                         # …one shaft…
+		@test sh[5] >= 1                                         # …and a filled head (a triangle), shown
+		@test 11.4 <= sh[4] <= 4 * 124.1                         # THE arrow's head: (3*max(2.5, width)+4)*HiDPI px
+		# GMT vector attributes: two filled heads (+b +e); an open head is pen strokes, no fill (+eA)
+		style(spec) = (ccall(_test_fn(:gmtvtk_arrow_style_test), Cint, (Ptr{Cvoid}, Cint, Cstring), f.h, 0, spec);
+		               ccall(_test_fn(:gmtvtk_poly_shape_test), Cint, (Ptr{Cvoid}, Cint, Ptr{Cdouble}), f.h, 0, sh); copy(sh))
+		s2 = style("b=1;e=1");  @test s2[5] >= 2 && s2[2] == 1
+		s3 = style("b=0;e=2");  @test s3[5] == 0 && s3[2] >= 2
+		s4 = style("e=1;len=30"); @test s4[4] > sh[4] - 1e-9 && s4[5] >= 1
+		style("e=1;len=0")                                       # back to the default for what follows
+		# leaving the viewer: THE text (session, script) carries the attributes, and the script draws a
+		# GMT vector with them (not the line the arrow is drawn on)
+		st = IG._map_arrow_style(f.h, 1, "arrow 1")
+		@test length(split(st)) == 19
+		@test occursin("arrow 1\t" * st, IG._serialize_arrow_styles(f.h))
+		steps, _ = IG._script_emit(f.h)
+		av = filter(s -> occursin("drawn arrow", s.comment), steps)
+		@test length(av) == 1 && any(kv -> kv[1] === :S && occursin("+e", kv[2]) && endswith(kv[2], "+s"), av[1].kw)
+		# double-click on it: vertex editing, as a line gets
+		e2 = zeros(Cint, 2)
+		ccall(_test_fn(:gmtvtk_dblclick_test), Cint, (Ptr{Cvoid}, Cdouble, Cdouble, Cdouble, Ptr{Cint}), f.h, 9.0, 8.0, 17.0, e2)
+		@test e2[1] == 0                                         # polyEdit = this shape
+		# its properties: line ones, and no data table
+		@test ccall(_test_fn(:gmtvtk_line_menu_click_test), Cint, (Ptr{Cvoid}, Cstring, Cstring), f.h, "arrow 1", "Copy to Clipboard") == 1
+		@test ccall(_test_fn(:gmtvtk_line_menu_click_test), Cint, (Ptr{Cvoid}, Cstring, Cstring), f.h, "arrow 1", "Show data table…") == 0
+		x = Ref{Cint}(0); y = Ref{Cint}(0)
+		@test ccall(_test_fn(:gmtvtk_objrow_screen_test), Cint, (Ptr{Cvoid}, Cstring, Ref{Cint}, Ref{Cint}),
+		            f.h, "arrow 1", x, y) == 1                   # listed in Scene Objects
+	finally
+		ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), f.h)
+	end
+end
+
+@testitem "draw tools: X,Y feathers are THE arrow, with its GMT vector attributes" tags=[:gui] setup=[GmtvtkTest] begin
+	IG = InteractiveGMT
+	t = collect(0.0:0.5:6.0)
+	f = IG.feather(t, [cos.(t) sin.(t)]; lc=:black)
+	try
+		IG._pump_once()
+		k = findfirst(s -> s[3] == "sticks", f.series) - 1
+		kb = findfirst(s -> s[3] == "baseline", f.series) - 1
+		set(i, spec) = ccall(_test_fn(:gmtvtk_xyplot_arrow_style_test), Cint, (Ptr{Cvoid}, Cint, Cstring), f.h, i, spec)
+		@test set(k, "b=5;e=2;shape=1") == 1                     # the sticks are an arrow series: styled
+		@test set(kb, "e=2") == 0                                # the baseline is a line, not an arrow
+		IG._pump_once()
+		# the window's state (session, Plot with GMT.jl) carries the series' attributes ...
+		@test occursin(r"\narrow=5 2 0 ", IG._xy_session_state(f.h))
+		# ... and the script draws its vectors with them: a circle at the tail, an open head at the tip
+		steps, _ = IG._xy_script_emit(f.h)
+		sym = [kv[2] for s in steps for kv in s.kw if kv[1] === :symbol && occursin("+s", string(kv[2]))]
+		@test !isempty(sym) && occursin("+bc", sym[1]) && occursin("+eA", sym[1]) && occursin("+h1.0", sym[1])
+		@test isalive(f)
+	finally
+		close(f)
+	end
+end
+
 @testitem "hover: a buried hypocentre still answers; the terrain only hides its pixels" tags=[:gui] setup=[GmtvtkTest] begin
 	IG = InteractiveGMT; GMT = IG.GMT
 	# REAL RELIEF, and depths of the same order as it — the same fixture rule the pixel test below

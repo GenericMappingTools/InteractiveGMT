@@ -1411,8 +1411,12 @@ static void popupLineObjectMenu(Scene *s, const LineRef &lr, const QString &name
 
 	// Slip-model patches (Import Model Slip) have ONLY the elastic-deformation dialog — no line
 	// properties, save, table, measurements, or delete. The GROUP carries the delete action.
+	const int api = (lr.kind == LK_Polygon) ? polyIndexOfActor(s, a) : -1;
+	const bool isArrowShape = api >= 0 && s->polys[api].isArrow;       // a drawn arrow (SH_Arrow)
 	if (!isSlip) {
 		m.addAction("Line properties…", [s, lr]() { showLineProperties(s, lr); });
+		if (isArrowShape)                                                 // its GMT vector attributes
+			m.addAction("Arrow properties…", [s, a]() { showArrowProperties(s, a); });
 		// Drape this element on the terrain, or put it back on its own z. Offered only where there IS
 		// a ground to clamp to; checkable, because it is a state the user flips both ways.
 		if (!guide && lineCanClamp(s, lr)) {
@@ -1462,7 +1466,7 @@ static void popupLineObjectMenu(Scene *s, const LineRef &lr, const QString &name
 			QApplication::clipboard()->setText(lineTableText(s, polylines, have3D));
 			if (s->win) s->win->statusBar()->showMessage("Coordinates copied to clipboard", 4000);
 		});
-		if (!ovp || !ovp->noDataTable)                                       // e.g. mgd77 cruise tracks: no table
+		if ((!ovp || !ovp->noDataTable) && !isArrowShape)                    // e.g. mgd77 cruise tracks, a drawn arrow: no table
 			m.addAction("Show data table…",                                  // floating vertex table viewer
 						[s, lr, name]() { showLineDataTable(s, lr, name); });
 	}

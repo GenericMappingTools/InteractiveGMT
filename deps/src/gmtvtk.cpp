@@ -55,6 +55,7 @@ static bool dayLengthOpen(QWidget *parent, Scene *scene);
 static bool dayLengthPicOpen(QWidget *parent, Scene *scene);
 static bool dayLengthPicWired();
 #include "70_window.cpp"
+#include "71_nodegraph.cpp"
 #include "68_faultdemo.cpp"
 #include "69_magfield.cpp"
 #include "74_daylength.cpp"

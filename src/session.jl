@@ -366,6 +366,35 @@ end
 
 # Serialize the window's user-drawn polygons/polylines/rects/circles to the C serializer's raw blob
 # (one line each; empty if none). Snapshotted at save like text (no add-time recipe). Two-pass buffer.
+# Every map arrow's GMT vector attributes (THE text, `_map_arrow_style`): one line "what<TAB>name<TAB>
+# style" per vector-field arrow layer (what 0) and per drawn arrow (what 1). A drawn arrow is saved by the
+# polygon blob as the line it is drawn on; this is what makes it an arrow again on load.
+function _serialize_arrow_styles(h::Ptr{Cvoid})::String
+	io = IOBuffer()
+	for sl in _parse_symbols_blob(_serialize_symbols_raw(h))
+		isempty(sl.uv) && continue
+		st = _map_arrow_style(h, 0, sl.name)
+		isempty(st) || println(io, "0\t", sl.name, "\t", st)
+	end
+	for line in split(_serialize_polys_raw(h), '\n'; keepempty = false)
+		p = split(line, ';'; limit = 13)
+		length(p) < 13 && continue
+		st = _map_arrow_style(h, 1, String(p[12]))
+		isempty(st) || println(io, "1\t", p[12], "\t", st)
+	end
+	return String(take!(io))
+end
+
+function _session_apply_arrow_styles!(h::Ptr{Cvoid}, blob::String)
+	for line in split(blob, '\n'; keepempty = false)
+		f = split(line, '\t'; limit = 3)
+		length(f) == 3 || continue
+		ccall(_fn(:gmtvtk_arrow_style_set_h), Cint, (Ptr{Cvoid}, Cint, Cstring, Cstring),
+		      h, parse(Int, f[1]), f[2], f[3])
+	end
+	return nothing
+end
+
 function _serialize_polys_raw(h::Ptr{Cvoid})::String
 	n = ccall(_fn(:gmtvtk_serialize_polys), Cint, (Ptr{Cvoid}, Ptr{UInt8}, Cint), h, C_NULL, Cint(0))
 	n <= 0 && return ""
@@ -894,7 +923,8 @@ function _on_save_session(scene::Ptr{Cvoid}, path::String)
 	                      ("drawn/texts.txt",    _session_strip_recipe_rows(_serialize_texts_raw(scene), _parse_texts_blob, owned)),
 	                      ("drawn/overlays.txt", _session_strip_recipe_rows(_serialize_overlays_raw(scene), _parse_overlays_blob, owned)),
 	                      ("drawn/symbols.txt",  _session_strip_recipe_rows(_serialize_symbols_raw(scene), _parse_symbols_blob, owned)),
-	                      ("drawn/rulers.txt",   _serialize_rulers_raw(scene)))
+	                      ("drawn/rulers.txt",   _serialize_rulers_raw(scene)),
+	                      ("drawn/arrows.txt",   _serialize_arrow_styles(scene)))
 		isempty(blob) || push!(files, (entry, Vector{UInt8}(codeunits(blob))))
 	end
 	_zip_write(path, files)
@@ -1191,6 +1221,9 @@ function _on_load_session(scene::Ptr{Cvoid}, path::String)
 				_session_rebuild_symbols!(fig, String(entries["drawn/symbols.txt"]), have_sl)
 			haskey(entries, "drawn/rulers.txt") &&
 				_session_rebuild_rulers!(fig, String(entries["drawn/rulers.txt"]))
+			# LAST: every map arrow's attributes back on the arrow layers and drawn shapes just rebuilt
+			haskey(entries, "drawn/arrows.txt") &&
+				_session_apply_arrow_styles!(hf, String(entries["drawn/arrows.txt"]))
 		end
 		ccall(_fn(:gmtvtk_progress_update), Cvoid, (Cint,), 95)
 		# The checkboxes exactly as they were saved, FIRST: they decide which raster is the active one,

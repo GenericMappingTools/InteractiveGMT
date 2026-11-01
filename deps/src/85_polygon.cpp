@@ -75,6 +75,19 @@ static QIcon makeLineIcon() {
 	p.end(); return QIcon(pm);
 }
 
+// Arrow icon: a thin shaft from lower-left to upper-right and a slim filled head at the tip (the look of
+// the drawn element, THE arrow's proportions).
+static QIcon makeArrowIcon() {
+	QPixmap pm = iconCanvas();
+	QPainter p(&pm); p.setRenderHint(QPainter::Antialiasing, true);
+	p.setPen(QPen(QColor(40, 40, 40), 1.4, Qt::SolidLine, Qt::FlatCap, Qt::MiterJoin));
+	p.drawLine(QPointF(4, 20), QPointF(15, 9));
+	p.setPen(Qt::NoPen); p.setBrush(QColor(40, 40, 40));
+	QPolygonF head; head << QPointF(20.5, 3.5) << QPointF(17.6, 11.4) << QPointF(12.6, 6.4);
+	p.drawPolygon(head);
+	p.end(); return QIcon(pm);
+}
+
 // "Line area" icon: a tilted rectangle with its central line, no fill (the look of the drawn element).
 static QIcon makeLineAreaIcon() {
 	QPixmap pm = iconCanvas();
@@ -124,33 +137,50 @@ static QIcon makeCircleIcon() {
 // above) — these place a native screen-constant-size glyph (SymbolLayer), not a drawn shape, so
 // the icon must read as "drop a small marker", not "draw a circle/square". Radii are deliberately
 // a fraction of the shape-tool icons' (~30% canvas fill vs ~75%).
-static QIcon makeSymCircleIcon() {
+// ONE icon maker for every GMT symbol code the flyout offers, drawn with the same orientation
+// conventions as makeSymbolGlyph (50_scene.cpp) so the icon is the glyph the click will place.
+static QIcon makeSymCodeIcon(const char *code) {
 	QPixmap pm = iconCanvas();
 	QPainter p(&pm); p.setRenderHint(QPainter::Antialiasing, true);
-	p.setPen(QPen(QColor(40, 40, 40), 1.2)); p.setBrush(QColor(255, 200, 120));
-	p.drawEllipse(QPointF(12, 12), 4.2, 4.2);
-	p.end(); return QIcon(pm);
-}
-static QIcon makeSymSquareIcon() {
-	QPixmap pm = iconCanvas();
-	QPainter p(&pm); p.setRenderHint(QPainter::Antialiasing, true);
-	p.setPen(QPen(QColor(40, 40, 40), 1.2)); p.setBrush(QColor(255, 200, 120));
-	p.drawRect(QRectF(8.2, 8.2, 7.6, 7.6));
-	p.end(); return QIcon(pm);
-}
-static QIcon makeSymStarIcon() {
-	QPixmap pm = iconCanvas();
-	QPainter p(&pm); p.setRenderHint(QPainter::Antialiasing, true);
-	QPolygonF star;
 	const QPointF c(12, 12);
-	for (int k = 0; k < 10; ++k) {
-		const double r = (k % 2 == 0) ? 4.8 : 2.1;
-		const double a = -vtkMath::Pi()/2.0 + k * vtkMath::Pi()/5.0;
-		star << QPointF(c.x() + r*std::cos(a), c.y() + r*std::sin(a));
-	}
-	p.setPen(QPen(QColor(40, 40, 40), 1.0, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+	const std::string sym = code;
+	p.setPen(QPen(QColor(40, 40, 40), 1.2, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
 	p.setBrush(QColor(255, 200, 120));
-	p.drawPolygon(star);
+	// regular n-gon, first vertex at `startDeg` (math convention, y up -> flip for Qt's y down)
+	auto ngon = [&](int n, double startDeg, double r) {
+		QPolygonF g;
+		for (int k = 0; k < n; ++k) {
+			const double a = (startDeg + k * 360.0 / n) * vtkMath::Pi() / 180.0;
+			g << QPointF(c.x() + r*std::cos(a), c.y() - r*std::sin(a));
+		}
+		p.drawPolygon(g);
+	};
+	if      (sym == "c") p.drawEllipse(c, 4.2, 4.2);
+	else if (sym == "p") p.drawEllipse(c, 1.8, 1.8);
+	else if (sym == "s") p.drawRect(QRectF(8.2, 8.2, 7.6, 7.6));
+	else if (sym == "t") ngon(3, 90.0, 5.2);
+	else if (sym == "i") ngon(3, -90.0, 5.2);
+	else if (sym == "d") ngon(4, 90.0, 5.2);
+	else if (sym == "h") ngon(6, 0.0, 4.8);
+	else if (sym == "n") ngon(5, 90.0, 5.0);
+	else if (sym == "g") ngon(8, 22.5, 4.8);
+	else if (sym == "a") {
+		QPolygonF star;
+		for (int k = 0; k < 10; ++k) {
+			const double r = (k % 2 == 0) ? 4.8 : 2.1;
+			const double a = -vtkMath::Pi()/2.0 + k * vtkMath::Pi()/5.0;
+			star << QPointF(c.x() + r*std::cos(a), c.y() + r*std::sin(a));
+		}
+		p.setPen(QPen(QColor(40, 40, 40), 1.0, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+		p.drawPolygon(star);
+	}
+	else {                                     // open line glyphs: x + - y
+		p.setPen(QPen(QColor(40, 40, 40), 1.6, Qt::SolidLine, Qt::RoundCap));
+		const double R = 4.6;
+		if (sym == "x") { p.drawLine(QPointF(12-R, 12-R), QPointF(12+R, 12+R)); p.drawLine(QPointF(12-R, 12+R), QPointF(12+R, 12-R)); }
+		if (sym == "+" || sym == "-") p.drawLine(QPointF(12-R, 12), QPointF(12+R, 12));
+		if (sym == "+" || sym == "y") p.drawLine(QPointF(12, 12-R), QPointF(12, 12+R));
+	}
 	p.end(); return QIcon(pm);
 }
 
@@ -675,14 +705,95 @@ static void polyDrapeCorners(Scene *s, const std::vector<std::array<double,3>> &
 	out.push_back(last);                            // at the previous corner's z, off the ground)
 }
 
-// Rebuild the finished-polygon actor `pg` from its vertices. pg.v is a closed ring (first == last);
-// each edge is draped on the relief so the outline hugs the terrain.
+// The tip and the tail of a drawn arrow on SCREEN (display px, x y depth) — where the X,Y plot works
+// its arrows out too — plus the line width: what its head is built from, and what it is rebuilt on.
+static bool arrowScreenEnds(Scene *s, const Polygon &pg, double dt[3], double da[3], double &penW) {
+	if (pg.v.size() < 2 || !s->ren) return false;
+	const auto &a = pg.v[pg.v.size() - 2], &t = pg.v.back();
+	double w[3];
+	sceneGeoToWorld(s, t[0], t[1], t[2], w);
+	s->ren->SetWorldPoint(w[0], w[1], w[2], 1.0); s->ren->WorldToDisplay(); s->ren->GetDisplayPoint(dt);
+	sceneGeoToWorld(s, a[0], a[1], a[2], w);
+	s->ren->SetWorldPoint(w[0], w[1], w[2], 1.0); s->ren->WorldToDisplay(); s->ren->GetDisplayPoint(da);
+	penW = pg.line ? pg.line->GetProperty()->GetLineWidth() : prefLineWidthPx(s);
+	return true;
+}
+
+// A drawn arrow's pieces in TRUE coords: THE arrow (arrowParts, 65_xyplot.cpp) — the X,Y plot's own,
+// with the shape's GMT vector attributes (pg.arrow) — worked out in screen px along the last segment and
+// taken back to the map, each point at the depth of where it sits between tail and tip. `fills` are the
+// filled heads, `strokes` the pen-drawn pieces, s0/s1 where the shaft starts and stops. False when tip
+// and tail fall on one pixel (or the trims eat the whole arrow).
+struct ArrowMap { std::vector<std::vector<std::array<double,3>>> fills, strokes; std::array<double,3> s0, s1; };
+static bool arrowMapParts(Scene *s, const Polygon &pg, ArrowMap &m) {
+	double dt[3], da[3], penW;
+	if (!arrowScreenEnds(s, pg, dt, da, penW)) return false;
+	// display px are DEVICE px: the X,Y plot's HiDPI scale, and its points-to-px
+	const double dpr = s->widget ? s->widget->devicePixelRatioF() : 1.0;
+	ArrowParts p;
+	if (!arrowParts(dt[0], dt[1], da[0], da[1], penW, dpr, arrowPtToPx(dpr), pg.arrow, p)) return false;
+	const auto &t = pg.v.back();
+	const double ex = dt[0] - da[0], ey = dt[1] - da[1], e2 = ex * ex + ey * ey;
+	auto back = [&](const AP2 &q) -> std::array<double,3> {
+		const double f = e2 > 0.0 ? std::clamp(((q[0] - da[0]) * ex + (q[1] - da[1]) * ey) / e2, 0.0, 1.0) : 1.0;
+		s->ren->SetDisplayPoint(q[0], q[1], da[2] + f * (dt[2] - da[2])); s->ren->DisplayToWorld();
+		double w[4]; s->ren->GetWorldPoint(w);
+		if (w[3] != 0.0) { w[0] /= w[3]; w[1] /= w[3]; w[2] /= w[3]; }
+		double lon, lat, z;
+		if (!sceneWorldToGeo(s, w, lon, lat, z)) return { t[0], t[1], t[2] };
+		return { lon, lat, z };
+	};
+	m.fills.clear(); m.strokes.clear();
+	for (const auto &f : p.fills)   { m.fills.push_back({});   for (const auto &q : f) m.fills.back().push_back(back(q)); }
+	for (const auto &k : p.strokes) { m.strokes.push_back({}); for (const auto &q : k) m.strokes.back().push_back(back(q)); }
+	m.s0 = back(p.s0);  m.s1 = back(p.s1);
+	return true;
+}
+
+// Per frame: an arrow's head is screen-sized, as in the X,Y plot, so a zoom/pan/rotation (or a new line
+// width) rebuilds the arrows whose tip or tail moved on screen. Untouched arrows cost a comparison.
+static void polyRebuildLine(Scene *s, Polygon &pg);
+static void arrowHeadsCB(vtkObject *, unsigned long, void *cd, void *);
+// The per-frame head observer, installed once per scene the first time it holds a drawn arrow (a new one,
+// or a line a session load makes an arrow again).
+static void arrowHeadInstall(Scene *s) {
+	if (!s || s->arrowHeadCmd || !s->ren) return;
+	vtkSmartPointer<vtkCallbackCommand> cmd = vtkSmartPointer<vtkCallbackCommand>::New();
+	cmd->SetCallback(arrowHeadsCB);
+	cmd->SetClientData(s);
+	s->ren->AddObserver(vtkCommand::StartEvent, cmd);
+	s->arrowHeadCmd = cmd;
+}
+static void arrowHeadsCB(vtkObject *, unsigned long, void *cd, void *) {
+	Scene *s = static_cast<Scene*>(cd);
+	if (!s || !s->ren) return;
+	for (auto &pg : s->polys) {
+		if (!pg.isArrow || !pg.line || !pg.line->GetVisibility()) continue;
+		if (pg.fill && pg.fill->GetProperty() != pg.line->GetProperty() &&     // a head of its own colour
+		    pg.fill->GetProperty()->GetOpacity() != pg.line->GetProperty()->GetOpacity())   // keeps the pen's opacity
+			pg.fill->GetProperty()->SetOpacity(pg.line->GetProperty()->GetOpacity());
+		double dt[3], da[3], penW;
+		if (!arrowScreenEnds(s, pg, dt, da, penW)) continue;
+		const double key[5] = { dt[0], dt[1], da[0], da[1], penW };
+		if (std::equal(key, key + 5, pg.headKey)) continue;
+		polyRebuildLine(s, pg);
+	}
+}
+
 // Rebuild the filled FACE of a closed polygon/rectangle from its draped ring. The fill colour and
 // opacity live on pg (fillColor/fillOpacity) INDEPENDENT of the outline; default opacity 0 keeps the
 // historic outline-only look until the user dials up transparency in Line Properties. Open polylines
 // have no fill (hidden). The face sits just below the outline (polygon offset) but above the surface.
 static void polyRebuildFill(Scene *s, Polygon &pg) {
-	if (!pg.closed) {                                  // only closed rings can carry a fill
+	// An ARROW's face is its filled heads (arrowMapParts). With the pen's colour its actor shares the
+	// line's property, so whatever Line Properties does to the line (colour, opacity) the heads follow.
+	std::vector<std::vector<std::array<double,3>>> rings(1);
+	if (pg.isArrow) {
+		ArrowMap am;
+		if (!arrowMapParts(s, pg, am) || am.fills.empty()) { if (pg.fill) pg.fill->VisibilityOff(); return; }
+		rings = am.fills;
+	}
+	else if (!pg.closed) {                             // only closed rings can carry a fill
 		if (pg.fill) pg.fill->VisibilityOff();
 		return;
 	}
@@ -692,9 +803,11 @@ static void polyRebuildFill(Scene *s, Polygon &pg) {
 	// for the fill: triangulating the 3-D draped, non-planar boundary makes vtkPolygon project to a
 	// best-fit plane where the wiggly ring self-intersects -> garbage triangulation (the half-filled
 	// "bowtie"). Need >=3 corners for a face.
-	std::vector<std::array<double,3>> ring = pg.v;
-	if (ring.size() >= 2 && ring.front() == ring.back()) ring.pop_back();
-	if ((int)ring.size() < 3) { if (pg.fill) pg.fill->VisibilityOff(); return; }
+	if (!pg.isArrow) rings[0] = pg.v;
+	for (auto &ring : rings)
+		if (ring.size() >= 2 && ring.front() == ring.back()) ring.pop_back();
+	rings.erase(std::remove_if(rings.begin(), rings.end(), [](const auto &r) { return r.size() < 3; }), rings.end());
+	if (rings.empty()) { if (pg.fill) pg.fill->VisibilityOff(); return; }
 
 	const bool canDrape = !s->gridZ.empty();
 	double spacing = 0.0;
@@ -710,10 +823,12 @@ static void polyRebuildFill(Scene *s, Polygon &pg) {
 	//    relief, so the filled face hugs the terrain instead of a flat chord that the hills poke
 	//    through (which read as a half-filled polygon).
 	vtkNew<vtkPoints> flatPts;
-	for (auto &c : ring) flatPts->InsertNextPoint(c[0], c[1], 0.0);
 	vtkNew<vtkCellArray> flatPoly;
-	{ vtkNew<vtkIdList> ids; for (vtkIdType i = 0; i < (vtkIdType)ring.size(); ++i) ids->InsertNextId(i);
-	  flatPoly->InsertNextCell(ids); }
+	for (const auto &ring : rings) {                   // one cell per ring (an arrow may have several heads)
+		vtkNew<vtkIdList> ids;
+		for (auto &c : ring) ids->InsertNextId(flatPts->InsertNextPoint(c[0], c[1], 0.0));
+		flatPoly->InsertNextCell(ids);
+	}
 	vtkNew<vtkPolyData> flat; flat->SetPoints(flatPts); flat->SetPolys(flatPoly);
 	vtkNew<vtkTriangleFilter> tri; tri->SetInputData(flat); tri->Update();
 	vtkPolyData *base = tri->GetOutput();
@@ -768,9 +883,25 @@ static void polyRebuildFill(Scene *s, Polygon &pg) {
 		pg.fill->PickableOff();
 		s->ren->AddActor(pg.fill);
 	}
+	pg.fill->SetScale(s->xfac, 1.0, layerZScale(s, pg.veOwner));
+	if (pg.isArrow && pg.line) {                       // the heads: the pen's own property, or a fill colour
+		if (pg.arrow.fillPen) {                        // of their own at the pen's opacity (+g<fill>)
+			if (pg.fill->GetProperty() != pg.line->GetProperty()) pg.fill->SetProperty(pg.line->GetProperty());
+		}
+		else {
+			if (pg.fill->GetProperty() == pg.line->GetProperty()) {
+				vtkNew<vtkProperty> own;
+				own->LightingOff(); own->EdgeVisibilityOff(); own->BackfaceCullingOff();
+				pg.fill->SetProperty(own);
+			}
+			pg.fill->GetProperty()->SetColor(pg.arrow.headRGB);
+			pg.fill->GetProperty()->SetOpacity(pg.line->GetProperty()->GetOpacity());
+		}
+		pg.fill->SetVisibility(pg.line->GetVisibility());
+		return;
+	}
 	pg.fill->GetProperty()->SetColor(pg.fillColor[0], pg.fillColor[1], pg.fillColor[2]);
 	pg.fill->GetProperty()->SetOpacity(pg.fillOpacity);
-	pg.fill->SetScale(s->xfac, 1.0, layerZScale(s, pg.veOwner));
 	pg.fill->SetVisibility(pg.fillOpacity > 0.0 ? 1 : 0);   // no fill drawn until the user raises opacity
 }
 
@@ -780,8 +911,27 @@ static void polyAppendLine(Scene *s, vtkPolyData *pd, const double a[3], const d
 static void polyRebuildLine(Scene *s, Polygon &pg) {
 	if (!pg.linePD) pg.linePD = vtkSmartPointer<vtkPolyData>::New();
 	std::vector<std::array<double,3>> draped;
-	polyDrapeCorners(s, pg.v, draped);
+	ArrowMap am;
+	const bool arrowOk = pg.isArrow && arrowMapParts(s, pg, am);
+	if (pg.isArrow) {                                  // arrow: the shaft between what its heads and trims leave
+		std::vector<std::array<double,3>> shaft = pg.v;
+		if (arrowOk) {
+			shaft.back() = am.s1;
+			if (shaft.size() == 2) shaft.front() = am.s0;
+		}
+		polyDrapeCorners(s, shaft, draped);
+		double dt[3], da[3], penW;                     // what it was built for (arrowHeadsCB compares)
+		if (arrowScreenEnds(s, pg, dt, da, penW)) {
+			const double key[5] = { dt[0], dt[1], da[0], da[1], penW };
+			std::copy(key, key + 5, pg.headKey);
+		}
+	}
+	else
+		polyDrapeCorners(s, pg.v, draped);
 	polyFillLine(pg.linePD, draped, false);
+	if (arrowOk)                                       // open heads, terminal lines, head outlines: the pen's
+		for (const auto &k : am.strokes)
+			for (size_t i = 1; i < k.size(); ++i) polyAppendLine(s, pg.linePD, k[i - 1].data(), k[i].data());
 	if (pg.isLineArea && pg.v.size() >= 4) {                        // line area: its central line, same actor
 		double a[3], b[3];
 		lineAreaMidline(pg, a, b);
@@ -1309,6 +1459,10 @@ static void polyFinalize(Scene *s, std::vector<std::array<double,3>> verts, bool
 	if (std::string(prefix) == "fault") pg.isFault = true;            // Draw Fault line: props open the elastic dialog
 	if (std::string(prefix) == "rectangle" || pg.nestKind == 1) pg.isRect = true;   // rect tools: edits keep it axis-aligned
 	if (std::string(prefix) == "line area") pg.isLineArea = true;     // rectangle ring + its central line
+	if (std::string(prefix) == "arrow" && pg.v.size() >= 2) {         // open line + THE arrow's head at its
+		pg.isArrow = true;                                             // last vertex, kept pixel-sized per frame
+		arrowHeadInstall(s);
+	}
 	if (closed && pg.v.size() >= 2 && !(pg.v.front() == pg.v.back()))
 		pg.v.push_back(pg.v.front());      // close the ring (first == last)
 	const std::string pre = std::string(prefix) + " ";   // number PER type: "polygon 1", "rectangle 1", ...
@@ -1316,6 +1470,10 @@ static void polyFinalize(Scene *s, std::vector<std::array<double,3>> verts, bool
 	for (auto &p : s->polys) if (p.name.rfind(pre, 0) == 0) ++idx;
 	pg.name = pre + std::to_string(idx);
 	polyRebuildLine(s, pg);
+	if (pg.isArrow && pg.line) {                       // an arrow is black (user order), head included
+		pg.line->GetProperty()->SetColor(0.0, 0.0, 0.0);
+		polyRebuildFill(s, pg);
+	}
 	pg.stack = s->vecSeq++;                 // new polygon lands on top of the shared vector pile
 	pg.veOwner = activeOwnerTag(s);
 	s->polys.push_back(pg);
@@ -1367,6 +1525,24 @@ static void polyFinalize(Scene *s, std::vector<std::array<double,3>> verts, bool
 	else            polygonSetMode(s, false);
 }
 
+// "Arrow properties…" of a drawn arrow: THE arrow dialog (arrowPropertiesDialog, 65_xyplot.cpp) on this
+// shape's GMT vector attributes, each change applied live through THE arrow (polyRebuildLine ->
+// arrowMapParts -> arrowParts).
+static void showArrowProperties(Scene *s, vtkActor *lineActor) {
+	if (!s || !lineActor || polyIndexOfActor(s, lineActor) < 0) return;
+	arrowPropertiesDialog(s->win,
+		[s, lineActor]() -> ArrowStyle * {
+			const int pi = polyIndexOfActor(s, lineActor);
+			return pi >= 0 ? &s->polys[pi].arrow : nullptr;
+		},
+		[s, lineActor]() {
+			const int pi = polyIndexOfActor(s, lineActor);
+			if (pi < 0) return;
+			polyRebuildLine(s, s->polys[pi]);
+			if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+		});
+}
+
 // Tear down the "Copy me" floating clone (commit or abandon) and reset the drag state.
 static void copyMeEnd(Scene *s) {
 	if (s->copyGhost.fill) s->ren->RemoveActor(s->copyGhost.fill);
@@ -1386,6 +1562,8 @@ static void copyMeStart(Scene *s, const Polygon &src) {
 	s->copyGhost.v           = src.v;
 	s->copyGhost.closed      = src.closed;
 	s->copyGhost.isLineArea  = src.isLineArea;   // the ghost shows (and the copy keeps) the central line
+	s->copyGhost.isArrow     = src.isArrow;      // …and the arrow, with all its vector attributes
+	s->copyGhost.arrow       = src.arrow;
 	s->copyGhost.fillColor[0] = src.fillColor[0];
 	s->copyGhost.fillColor[1] = src.fillColor[1];
 	s->copyGhost.fillColor[2] = src.fillColor[2];
@@ -2454,13 +2632,15 @@ static bool polygonHandlePress(Scene *s, int button, int x, int y, bool shift) {
 			const double fillOpacity  = s->copyGhost.fillOpacity;
 			const std::string groupName = s->copyGhost.groupName;
 			const bool lineArea = s->copyGhost.isLineArea;
+			const bool arrow = s->copyGhost.isArrow;
+			const ArrowStyle arrowStyle = s->copyGhost.arrow;
 			double outCol[3] = { 1.0, 0.55, 0.0 }; double outW = 2.5;
 			if (s->copyGhost.line) {
 				s->copyGhost.line->GetProperty()->GetColor(outCol);
 				outW = s->copyGhost.line->GetProperty()->GetLineWidth();
 			}
 			copyMeEnd(s);
-			const char *prefix = lineArea ? "line area"
+			const char *prefix = lineArea ? "line area" : arrow ? "arrow"
 			                   : !closed ? (verts.size() == 2 ? "line" : "polyline") : "polygon";
 			polyFinalize(s, verts, closed, prefix);
 			if (!s->polys.empty()) {                        // restyle the just-finalized element to match the copy source
@@ -2470,7 +2650,8 @@ static bool polygonHandlePress(Scene *s, int button, int x, int y, bool shift) {
 				np.fillColor[0] = fillColor[0]; np.fillColor[1] = fillColor[1]; np.fillColor[2] = fillColor[2];
 				np.fillOpacity  = fillOpacity;
 				np.groupName    = groupName;
-				polyRebuildFill(s, np);
+				if (arrow) { np.arrow = arrowStyle; polyRebuildLine(s, np); }   // the source's vector attributes
+				polyRebuildFill(s, np);                     // an arrow's head takes the restyled line's look
 				if (!groupName.empty()) rebuildSceneObjects(s);   // fold under the source's group (polyFinalize just built it top-level)
 			}
 			if (s->widget->renderWindow()) s->widget->renderWindow()->Render();
@@ -2482,7 +2663,8 @@ static bool polygonHandlePress(Scene *s, int button, int x, int y, bool shift) {
 		return true;
 	const bool vertexTool = (s->polyShape == Scene::SH_Polygon || s->polyShape == Scene::SH_Polyline ||
 	                         s->polyShape == Scene::SH_Line || s->polyShape == Scene::SH_Fault ||
-	                         s->polyShape == Scene::SH_LineArea || s->polyShape == Scene::SH_Ruler);
+	                         s->polyShape == Scene::SH_LineArea || s->polyShape == Scene::SH_Ruler ||
+	                         s->polyShape == Scene::SH_Arrow);
 	// A tool armed a "point at a line" pick (Scene::vectorPickMode — Plates > Euler rotations'
 	// "Pick in view" / "Rect select"). CLICK mode resolves the line under the cursor with the SAME
 	// two hit tests, in the same order, the double-click edit path uses: a drawn Polygon first, then
@@ -2650,6 +2832,7 @@ static bool polygonHandlePress(Scene *s, int button, int x, int y, bool shift) {
 		case Scene::SH_Line:                             // exactly two points: first click sets the start,
 		case Scene::SH_Fault:                            // fault is a two-point line (Draw Fault tool)
 		case Scene::SH_LineArea:                         // line area: the same two-point line, its box follows
+		case Scene::SH_Arrow:                            // arrow: the same two-point line, tail then tip
 			if (!s->polyDrawing) { s->polyDrawing = true; s->polyCur.clear(); }
 			if (s->polyCur.size() >= 2) s->polyCur.pop_back();   // any later click just replaces the end point
 			s->polyCur.push_back({ w[0], w[1], w[2] });
@@ -2670,18 +2853,14 @@ static bool polygonHandlePress(Scene *s, int button, int x, int y, bool shift) {
 				polyFinalize(s, corners, true, pre);
 			}
 			break;
-		case Scene::SH_SymCircle:
-		case Scene::SH_SymSquare:
-		case Scene::SH_SymStar: {                        // symbols: ONE click places a NATIVE screen-constant
+		case Scene::SH_Symbol: {                         // symbols: ONE click places a NATIVE screen-constant
 			                                              // glyph (SymbolLayer/vtkGlyph3D), not a drawn Polygon —
 			                                              // never deforms on geographic maps (see addSymbols, 50).
 			// 10 points, using the SAME px<->pt constant as the Size (points) property dialog
 			// (symbolLayerMenu's liveSizeDialog, 50_scene.cpp: pxPerUnit = 96.0/72.0) — must match
 			// exactly or the dialog wouldn't read back "10.0" for a symbol placed with this default.
 			const double sizePx = 10.0 * (96.0 / 72.0);
-			const char *sym = s->polyShape == Scene::SH_SymCircle ? "c"
-			                : s->polyShape == Scene::SH_SymSquare ? "s" : "a";
-			addSymbols(s, w, 1, sym, sizePx, 1, 1.0, 0.55, 0.0, 0.0, 0.0, 0.0, 1.0, "", nullptr, true);
+			addSymbols(s, w, 1, s->polySymCode.c_str(), sizePx, 1, 1.0, 0.55, 0.0, 0.0, 0.0, 0.0, 1.0, "", nullptr, true);
 			if (s->polyAct) s->polyAct->setChecked(false);   // one-shot tool, same as every other draw tool
 			else            polygonSetMode(s, false);
 			break;
@@ -2834,6 +3013,9 @@ static bool polygonHandleDblClick(Scene *s, int x, int y) {
 			s->widget->renderWindow()->Render();
 		} else if (s->polyShape == Scene::SH_Fault && s->polyCur.size() >= 2) {     // two-point fault line
 			polyFinalize(s, s->polyCur, false, "fault");
+			s->widget->renderWindow()->Render();
+		} else if (s->polyShape == Scene::SH_Arrow && s->polyCur.size() >= 2) {     // tail + tip: a line with a head
+			polyFinalize(s, s->polyCur, false, "arrow");
 			s->widget->renderWindow()->Render();
 		}
 		else if (s->polyShape == Scene::SH_LineArea && s->polyCur.size() >= 2) {   // the line + its box

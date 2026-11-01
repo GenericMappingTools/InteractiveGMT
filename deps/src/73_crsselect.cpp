@@ -406,6 +406,18 @@ static bool crsSelectDialog(QWidget *parent, const QString &initial, QString &ch
 	return ok;
 }
 
+// A picked system spelled the way GMT.jl's `proj` takes it: an EPSG code as it is ("EPSG:32629"), any
+// other authority's system (ESRI, IAU, IGNF, ...) as its PROJ string, which GMT reads but not its ID.
+static QString crsGmtProj(const QString &id) {
+	if (id.startsWith("EPSG:")) return id;
+	QByteArray a;
+	if (!crsAsk("info " + id, a)) return id;
+	const QString s = QString::fromUtf8(a);
+	const int k = s.indexOf(QChar(0x1f));
+	const QString proj = k >= 0 ? s.mid(k + 1).trimmed() : QString();
+	return proj.isEmpty() ? id : proj;
+}
+
 // The selector as a door from another dialog (Tools > Project's "Projections" combo, 70_window.cpp).
 // The Julia side is wired on first use (warm_register "crs"), so the first call waits for it -- wait
 // cursor, ~10 s cap -- exactly as the grdblend menu entry does. `done` gets the authority ID and the

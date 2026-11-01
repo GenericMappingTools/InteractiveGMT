@@ -14,7 +14,8 @@ const _SYMBOL_CODES = Dict{Symbol,String}(
 	:diamond=>"d", :d=>"d",         :hexagon=>"h", :h=>"h",
 	:pentagon=>"n", :n=>"n",        :octagon=>"g", :g=>"g",
 	:star=>"a", :a=>"a",            :cross=>"x", :x=>"x",
-	:plus=>"+",                     :dash=>"-", :minus=>"-",
+	:plus=>"+",                     :dash=>"-", :minus=>"-", :xdash=>"-",
+	:ydash=>"y", :y=>"y",           :point=>"p", :p=>"p",
 	:sphere=>"o", :ball=>"o", :o=>"o",
 	:cube=>"u", :box=>"u", :u=>"u")
 
@@ -39,7 +40,7 @@ _sym_ptr(f) = f.h                          # QtFigure (and friends) carry the Sc
 Stamp a screen-constant symbol layer at points `(x, y[, z])` (TRUE data coords) on an existing
 viewer `handle` (a `QtFigure` or a raw `Scene*` `Ptr`). `symbol` is a friendly name (`:circle`,
 `:square`, `:triangle`, `:itriangle`, `:diamond`, `:hexagon`, `:pentagon`, `:octagon`, `:star`,
-`:cross`, `:plus`, `:dash`, `:sphere`, `:cube`) or a 1-char GMT code. `:sphere`/`:cube` are true
+`:cross`, `:plus`, `:dash`, `:ydash`, `:point`, `:sphere`, `:cube`) or a 1-char GMT code. `:sphere`/`:cube` are true
 3-D, lit volumes (visible from any angle, e.g. edge-on in perspective) — every other shape is a
 flat, unlit XY glyph. `size` is on screen, in `:px` or `:pt`. `fill` and `edge` accept any colour
 `_ovl_color` understands (name Symbol/String, 0-1 or 0-255 tuple). Symbols stay the same pixel

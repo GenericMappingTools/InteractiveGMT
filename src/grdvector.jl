@@ -5,10 +5,10 @@
 # ONE THING TO BE CLEAR ABOUT, because it decides everything below: grdvector is a PLOTTING module.
 # Its entire output is PostScript — there is no -D dump, no table, no grid, nothing an API can hand
 # back as geometry (grdcontour has -D and that is why the contour tool can run the real module; this
-# one has no such door). So this dialog speaks grdvector's OPTIONS and builds the arrows here, then
-# hands them to the same overlay builder every imported/drawn line goes through. The arrow shape is
-# not invented for the occasion either: it is the one File > Open xy(z) > "Arrow field" already draws
-# (`_import_xy_arrows`, importxy.jl — Mirone's draw_funs.m loc_quiver), so the two agree.
+# one has no such door). So this dialog speaks grdvector's OPTIONS and works out the arrows here, then
+# hands them to the ONE vector-field layer (`_gv_add_solid` -> gmtvtk_add_arrows_h), the same one File >
+# Open xy(z) > "Arrow field" draws with. The arrow itself is THE arrow every arrow in the app is
+# (arrowParts, 10_geometry.cpp — SACRED_LAW), with the module's -Q heads set on it.
 #
 # Two of the module's switches are therefore NOT offered, rather than offered as dead knobs:
 #   -N (no clip)  our overlay is never clipped at a border — an arrow is drawn whole wherever it
@@ -23,8 +23,10 @@
 #   -A / -Z   polar (r, theta) input, and theta as an azimuth instead of a direction
 #   -I        which nodes carry an arrow (every n-th, or one every dx/dy)
 #   -S        how long an arrow is per unit of magnitude — see `_gv_factor` for the four modes
-#   -Q        the head: which end(s), how long, how wide, and the +n length below which it shrinks
-#   -C        colour by magnitude (as N equal-width classes, since one overlay carries one colour)
+#   -Q        the head: which end(s), how long (a fraction of each arrow) and how wide. Its +n is
+#             read and written to the console's GMT command, but a head that is a fraction of its
+#             arrow already shrinks with every shorter arrow, so it changes nothing on screen
+#   -C        colour by magnitude: solid arrows through the colormap, line arrows as N equal-width classes
 #   -R        the sub-region to draw over
 
 # A grid box may name a layer already in this window OR a file on disk — the same two-sided reference
@@ -154,29 +156,6 @@ function _gv_head(d::Dict{String,String})
 	return heads, len, tand(ang), norm
 end
 
-# THE arrow shape, for every caller that draws one: this dialog and File > Open xy(z) > "Arrow field"
-# (`_import_xy_arrows`, importxy.jl, Mirone's draw_funs.m loc_quiver) — one function, never a second
-# spelling of the same geometry (SACRED_LAW.md). loc_quiver is the case heads="e", shrink=1.
-# One arrow: the shaft, plus a 3-point polyline (arm, point, arm) for each end that carries a head.
-# `dx`/`dy` are the FINISHED displacement, scale and all — including, on a geographic grid, the extra
-# 1/cos(lat) the caller put on dx, because the window draws x compressed by cos(midlat) and an
-# eastward vector would otherwise come out shorter on screen than an equal northward one.
-# `shrink` is the +n taper: 1 for an arrow at or above the shrink length, len/norm below it.
-function _gv_arrow!(segs::Vector{Matrix{Float64}}, x::Float64, y::Float64, dx::Float64, dy::Float64,
-                    heads::AbstractString, alpha::Float64, beta::Float64, shrink::Float64)
-	tx = x + dx;  ty = y + dy
-	push!(segs, [x y; tx ty])
-	a = alpha * shrink
-	a > 0 || return
-	if occursin('e', heads)
-		push!(segs, [tx-a*(dx+beta*dy) ty-a*(dy-beta*dx); tx ty; tx-a*(dx-beta*dy) ty-a*(dy+beta*dx)])
-	end
-	if occursin('b', heads)                             # the same head at the tail, pointing back
-		push!(segs, [x+a*(dx+beta*dy) y+a*(dy-beta*dx); x y; x+a*(dx-beta*dy) y+a*(dy+beta*dx)])
-	end
-	return
-end
-
 # The equal-width magnitude classes -C stands in for, and the colour each one wears. The ramp is the
 # app's own (the one the scaled-symbol import paints z with), so a magnitude field reads the same way
 # here as everywhere else: blue low, red high.
@@ -185,11 +164,11 @@ function _gv_class_color(k::Int, n::Int)
 	return (clamp(1.5 - abs(4t - 3), 0, 1), clamp(1.5 - abs(4t - 2), 0, 1), clamp(1.5 - abs(4t - 1), 0, 1))
 end
 
-# ---- SOLID arrows: a vector field as ONE symbol layer of 3-D arrows (gmtvtk_add_arrows_h) --------
-# THE drawing of a vector field as solid arrows — the grdvector dialog and File > Open xy(z) >
-# Import Arrow field both come here, so the two can never draw a field two ways. The arrows are the
-# Fault plane demo's vtkArrowSource, one GPU-instanced layer with ONE Scene Objects row, its own
-# properties (single colour / colour by magnitude / length) and Remove.
+# ---- a vector field as ONE symbol layer of arrows (gmtvtk_add_arrows_h) ---------------------------
+# THE drawing of a vector field — the grdvector dialog (both its looks) and File > Open xy(z) > Import
+# Arrow field come here, so a field can never be drawn two ways. Every arrow is THE arrow (arrowGlyphPD
+# -> arrowParts), one instanced layer with ONE Scene Objects row, its own properties (single colour /
+# colour by magnitude / length / heads and shape) and Remove.
 #   x, y     tail positions; z = NaN stands the arrow on the displayed relief (the C side takes the
 #            highest ground under its whole length, so a rigid arrow is not buried in a slope)
 #   u, v     the vector (east, north); zero vectors must already be gone
@@ -197,9 +176,11 @@ end
 #   mags     what "magnitude" means for colour, hover and table — normally hypot(u, v); a fixed-length
 #            field passes unit u, v and its real magnitudes here
 #   cmap     colour by magnitude through this GMT CPT, or `nothing` for one flat `color`
+#   rgb      one RGB (0..1) per arrow, 3n values, given outright (grdvector's -C classes); wins over cmap
 function _gv_add_solid(scene::Ptr{Cvoid}, x::Vector{Float64}, y::Vector{Float64}, z::Vector{Float64},
                        u::Vector{Float64}, v::Vector{Float64}, name::String, len::Float64;
-                       mags::Vector{Float64}=hypot.(u, v), cmap=:jet, color=:black)::Nothing
+                       mags::Vector{Float64}=hypot.(u, v), cmap=:jet, color=:black,
+                       rgb::Union{Nothing,Vector{Float64}}=nothing)::Nothing
 	n = length(x)
 	n > 0 || error("no vector to draw")
 	(len > 0 && isfinite(len)) || error("arrow length must be a positive number")
@@ -208,7 +189,7 @@ function _gv_add_solid(scene::Ptr{Cvoid}, x::Vector{Float64}, y::Vector{Float64}
 		xyz[3k-2] = x[k]; xyz[3k-1] = y[k]; xyz[3k] = z[k]
 		uv[2k-1] = u[k];  uv[2k] = v[k]
 	end
-	rgb = cmap === nothing ? nothing : _gv_mag_rgb(mags, cmap)
+	rgb === nothing && cmap !== nothing && (rgb = _gv_mag_rgb(mags, cmap))
 	fr, fg, fb = _ovl_color(color, :lines)
 	sc = mags ./ max.(hypot.(u, v), eps())            # back to the real components (fixed-length fields)
 	ur = u .* sc;  vr = v .* sc
@@ -344,66 +325,34 @@ function _on_grdvector(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		name = _get(d, "name", "grdvector")
 		isempty(name) && (name = "grdvector")
 
-		# SOLID arrows (the default; the dialog's "Solid 3-D arrows" box): one layer through the ONE
-		# solid-field builder. Its length is the longest arrow's; a fixed-length scale hands unit
-		# vectors in and keeps the real magnitudes for colour, hover and table.
+		# THE arrow layer for both looks the dialog offers (SACRED_LAW: every arrow is THE arrow,
+		# arrowParts): one layer through the ONE field builder, then the module's -Q heads on it. Its
+		# length is the longest arrow's; a fixed-length scale hands unit vectors in and keeps the real
+		# magnitudes for colour, hover and table. "Solid 3-D arrows" ticked: filled heads, a body in 3-D;
+		# unticked: open heads, the field stays a flat drawing on the map in every view.
 		solid = _get(d, "solid", "1") == "1"
-		maxlen = 0.0
-		if solid
-			len = fixedlen > 0 ? fixedlen : maximum(mag) * fac
-			uu = fixedlen > 0 ? pu ./ mag : pu
-			vv = fixedlen > 0 ? pv ./ mag : pv
-			zz = _on(d, "drape") ? fill(NaN, length(px)) : zeros(length(px))
-			_gv_add_solid(scene, px, py, zz, uu, vv, name, len; mags = mag,
-			              cmap = _on(d, "bymag") ? :jet : nothing, color = _get(d, "color", "black"))
-			maxlen = len
-		end
-
-		# LINE arrows (the box unticked). Build the geometry. Each arrow's displacement is its (u, v)
-		# times the common factor — or, with the fixed-length scale, its direction alone. The x half
-		# carries the extra 1/cos(lat) on a geographic grid (see `_gv_arrow!`).
-		if !solid
-			classes = _on(d, "bymag") ? max(2, min(24, something(tryparse(Int, _get(d, "nclass", "7")), 7))) : 1
+		maxlen = fixedlen > 0 ? fixedlen : maximum(mag) * fac
+		uu = fixedlen > 0 ? pu ./ mag : pu
+		vv = fixedlen > 0 ? pv ./ mag : pv
+		zz = _on(d, "drape") ? fill(NaN, length(px)) : zeros(length(px))
+		# -C: solid arrows colour by magnitude through the colormap; line arrows by the dialog's N
+		# equal-width classes on the app's blue-to-red ramp (`_gv_class_color`).
+		classrgb = nothing
+		if !solid && _on(d, "bymag")
+			classes = max(2, min(24, something(tryparse(Int, _get(d, "nclass", "7")), 7)))
 			mlo, mhi = extrema(mag)
-			bag = [Matrix{Float64}[] for _ in 1:classes]
-			for k in eachindex(px)
-				len = fixedlen > 0 ? fixedlen : mag[k] * fac
-				ux = fixedlen > 0 ? pu[k] / mag[k] * len : pu[k] * fac
-				uy = fixedlen > 0 ? pv[k] / mag[k] * len : pv[k] * fac
-				geog && (ux /= max(cosd(py[k]), 0.01))
-				shrink = (norm > 0 && len < norm) ? len / norm : 1.0
-				len > maxlen && (maxlen = len)
-				cls = 1
-				if classes > 1 && mhi > mlo
-					cls = clamp(floor(Int, (mag[k] - mlo) / (mhi - mlo) * classes) + 1, 1, classes)
-				end
-				_gv_arrow!(bag[cls], px[k], py[k], ux, uy, heads, alpha, beta, shrink)
-			end
-
-			# Drape: without it the arrows lie flat at z = 0 (a map overlay, like the coastlines); with it
-			# each vertex is lifted onto the DISPLAYED surface so the field follows the relief.
-			Gd = _on(d, "drape") ? _find_object(scene, :grid, _get(d, "grid")) : nothing
-			lift(m::Matrix{Float64}) = Gd === nothing ? m :
-				hcat(m, [Float64(_sample_grid(Gd, m[r, 1], m[r, 2])) for r in axes(m, 1)])
-
-			if classes == 1
-				D = GMTdataset[GMT.mat2ds(lift(m)) for m in bag[1]]
-				_add_dataset_to_scene(scene, D, name; color = _get(d, "color", "black"),
-				                      forceMode = :lines, noConvertToPoints = true)
-			else
-				# One overlay per magnitude class (an overlay carries ONE colour), all under a single
-				# Scene Objects group so the whole field still folds under one row with one checkbox.
-				step = (mhi - mlo) / classes
-				for k in 1:classes
-					isempty(bag[k]) && continue
-					D = GMTdataset[GMT.mat2ds(lift(m)) for m in bag[k]]
-					lab = string(name, " ", round(mlo + (k - 1) * step, sigdigits = 4), " – ",
-					             round(mlo + k * step, sigdigits = 4))
-					_add_dataset_to_scene(scene, D, lab; groupName = name, color = _gv_class_color(k, classes),
-					                      forceMode = :lines, noConvertToPoints = true)
-				end
+			classrgb = Float64[]
+			for m in mag
+				k = mhi > mlo ? clamp(floor(Int, (m - mlo) / (mhi - mlo) * classes) + 1, 1, classes) : 1
+				append!(classrgb, collect(_gv_class_color(k, classes)))
 			end
 		end
+		_gv_add_solid(scene, px, py, zz, uu, vv, name, maxlen; mags = mag, rgb = classrgb,
+		              cmap = _on(d, "bymag") ? :jet : nothing, color = _get(d, "color", "black"))
+		kind = solid ? 1 : 2                             # ArrowHeadKind: AH_Arrow (filled) / AH_Open
+		ccall(_fn(:gmtvtk_arrows_set_style_h), Cint,
+		      (Ptr{Cvoid}, Cstring, Cint, Cint, Cdouble, Cdouble, Cint, Cint), scene, name,
+		      occursin('b', heads) ? kind : 0, occursin('e', heads) ? kind : 0, alpha, beta, solid ? 1 : 0, solid ? 1 : 0)
 
 		# The field itself (the nodes that got an arrow), for the Data Viewer and for a file.
 		if _on(d, "table") || !isempty(_get(d, "outfile"))

@@ -80,6 +80,7 @@ include("bgregion.jl")   # File > Background region -> blank white 2-D map frame
 include("savefile.jl")   # File > Save Grid / Save Image -> gmtwrite (netCDF/Surfer) / gdalwrite
 include("session.jl")    # File > Save/Load Session (.igmtz): provenance registry + manifest + store-only zip
 include("gmtscript.jl")  # reproduce a window as GMT.jl calls (live) or a standalone script
+include("nodescript.jl") # ...that script as a graph of boxes (the editor's Graph… button)
 include("geography.jl")  # Geography menu -> GSHHG coastlines for the current view
 include("solar.jl")      # Geography > Sun and terminators: day/night + twilights + night paint + sun position
 include("plateboundaries.jl") # Geography > Plate boundaries -> 7 grouped boundary-type overlays

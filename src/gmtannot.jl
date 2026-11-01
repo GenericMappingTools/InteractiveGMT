@@ -14,20 +14,22 @@ const _GMT_ANNOT_SRC = raw"""
 #   x = (x0, x1), y = (y0, y1)  a line's start and end (an arrow's head at the end, a text arrow's text
 #                               at the start), or two opposite corners of a box / of an ellipse's box
 #   pen     = "width,colour[,style]"   head = the arrow head's length, e.g. "8p"
+#   arrow   = the arrow's GMT vector modifiers ("+e+a38.6+h0…": its heads, angle, shape, fill, trims);
+#             "" = a filled head at the end (a double arrow: at both ends)
 #   fill    = the colour inside a box or an ellipse, or nothing
 #   box     = a text box draws its box (false: only its text)
 #   text    = a text arrow's / text box's text, font = (size, name, colour)
 #   justify = where the text hangs from its point ("MR", "TL", ...), offset = its shift ("dx/dy")
 #   logx / logy = the axes are logarithmic (an ellipse is traced in their log space)
-function annotation!(kind::Symbol; x, y, pen = "1p,black", head = "8p", fill = nothing, text = "", box = true,
-                     font = (11, "Helvetica", "black"), justify = "", offset = "", logx = false, logy = false)
+function annotation!(kind::Symbol; x, y, pen = "1p,black", head = "8p", arrow = "", fill = nothing, text = "",
+                     box = true, font = (11, "Helvetica", "black"), justify = "", offset = "", logx = false, logy = false)
 	x0, x1 = Float64.(x)
 	y0, y1 = Float64.(y)
 	p = split(pen, ',')
 	pc = length(p) >= 2 ? String(p[2]) : "black"              # the head is filled with the pen's colour
 	if kind in (:arrow, :doublearrow, :textarrow)
-		sym = "v" * head * (kind == :doublearrow ? "+b" : "") * "+e+a39.3+h0+s"
-		GMT.plot!(GMT.mat2ds([x0 y0 x1 y1]), symbol = sym, pen = pen, fill = pc, noclip = true)
+		mods = !isempty(arrow) ? arrow : (kind == :doublearrow ? "+b" : "") * "+e+a38.6+h0+g" * pc * "+p-"
+		GMT.plot!(GMT.mat2ds([x0 y0 x1 y1]), symbol = "v" * head * mods * "+s", pen = pen, noclip = true)
 	elseif kind == :line
 		GMT.plot!(GMT.mat2ds([x0 y0; x1 y1]), pen = pen, noclip = true)
 	elseif kind in (:rectangle, :textbox, :ellipse)

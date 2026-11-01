@@ -47,7 +47,7 @@ const _TEST_SYMBOLS = (
 	:gmtvtk_fault_open_dialog_test, :gmtvtk_fault_close_dialog_test, :gmtvtk_trace_zbounds_test,
 	:gmtvtk_meca_drag_test,
 	:gmtvtk_symbol_add_test, :gmtvtk_symbol_drag_test,
-	:gmtvtk_symbol_get_pos_test, :gmtvtk_symbol_ui_drag_test, :gmtvtk_sym_debug_test, :gmtvtk_dblclick_test,
+	:gmtvtk_symbol_get_pos_test, :gmtvtk_symbol_ui_drag_test, :gmtvtk_sym_debug_test, :gmtvtk_dblclick_test, :gmtvtk_draw_tool_test, :gmtvtk_poly_shape_test, :gmtvtk_arrow_style_test, :gmtvtk_xyplot_arrow_style_test,
 	:gmtvtk_symbol_click_jitter_test, :gmtvtk_symbol_layer_test, :gmtvtk_symbol_remove_test, :gmtvtk_seismicity_send_test, :gmtvtk_active_axes_test, :gmtvtk_symbol_table_test, :gmtvtk_symbol_toplayer_test, :gmtvtk_pixel_count_test, :gmtvtk_symbol_hover_test,
 	:gmtvtk_send_ctrlc_test, :gmtvtk_clipboard_get_test, :gmtvtk_camera_get_test,
 	:gmtvtk_vector_ground_gap_test, :gmtvtk_overlay_probe_test,
@@ -136,6 +136,7 @@ const _TEST_SYMBOLS = (
 	:gmtvtk_dialog_button_test,       # a dialog's push button by objectName: its text, and a click
 	:gmtvtk_xyplot_annot_props_test,  # an X,Y annotation's properties dialog, one control clicked
 	:gmtvtk_dialog_tab_test,          # a dialog tab brought to the front, as a click on it does
+	:gmtvtk_nodegraph_test,           # the script graph: its box count, a field double-clicked and edited
 	:gmtvtk_set_remotes_callback,     # NOT test-only -- mirrored: this dll's Remote sensing dialogs call Julia too
 )
 

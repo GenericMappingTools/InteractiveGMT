@@ -967,6 +967,7 @@ static QDialog *faultDemoOpen(QWidget *parent, Scene *scene) {
 	arrow->SetTipResolution(24); arrow->SetShaftResolution(16);
 	vtkNew<vtkPolyDataMapper> mapper;
 	mapper->SetInputConnection(arrow->GetOutputPort());
+	//mapper->SetInputData(arrowGlyphPD(ArrowStyle(), true));
 	f->arrow = vtkSmartPointer<vtkActor>::New();
 	f->arrow->SetMapper(mapper);
 	f->arrow->GetProperty()->SetColor(0.85, 0.12, 0.10);
