@@ -32528,7 +32528,16 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	});
 	// Earth round the Sun and the day length it makes (74_daylength.cpp): all C++, no host round-trip.
 	mDayLen->addAction("Earth orbit…", [win, s]() { dayLengthOpen(win, s); });
+	// A satellite's orbit plane turned by the Earth's bulge at the Sun's pace (74_sunsync.cpp): all C++.
+	mTL->addAction("Sun-synchronous orbit…", [win, s]() { sunSyncOpen(win, s); });
+	// The planets round the Sun at any instant (74_solarsys.cpp) and the sky they make from a place on the
+	// Earth (74_skyview.cpp): one ephemeris (74_ephem.cpp), all C++.
+	mTL->addAction("Solar system…", [win, s]() { solarSysOpen(win, s); });
+	mTL->addAction("Sky viewer…", [win, s]() { skyViewOpen(win, s); });
+	// The Earth and the Moon to scale, their shadows and the eclipses they make (74_eclipse.cpp).
+	mTL->addAction("Earth-Moon system…", [win, s]() { eclipseOpen(win, s); });
 	// Same QActions Geophysics > Magnetics / Seismology show: a second door, not a move.
+	mTL->addSeparator();
 	mTL->addAction(actFaultDemo);
 	mTL->addAction(actMagField3D);
 	// Climate records, each downloaded and drawn as a page of the X,Y plot tool (src/climate.jl): the
@@ -32547,13 +32556,14 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		if (n < 0) QMessageBox::warning(win, title, QString::fromUtf8(buf.data(), -n).trimmed());
 	};
 	mTL->addSeparator();
-	mTL->addAction("El Niño–Southern Oscillation (ENSO)…", [climateXY]() {
+	QMenu *mOsc = mTL->addMenu("ENSO, NAO, SOI");          // the oscillation indices, one submenu
+	mOsc->addAction("El Niño–Southern Oscillation (ENSO)…", [climateXY]() {
 		climateXY("ENSO", "Downloading the Oceanic Niño Index…", "enso");
 	});
-	mTL->addAction("North Atlantic Oscillation (NAO)…", [climateXY]() {
+	mOsc->addAction("North Atlantic Oscillation (NAO)…", [climateXY]() {
 		climateXY("NAO", "Downloading the NAO index…", "nao");
 	});
-	mTL->addAction("Southern Oscillation Index (SOI)…", [climateXY]() {
+	mOsc->addAction("Southern Oscillation Index (SOI)…", [climateXY]() {
 		climateXY("SOI", "Downloading the Southern Oscillation Index…", "soi");
 	});
 	mTL->addAction("Keeling curve (atmospheric CO2)…", [climateXY]() {

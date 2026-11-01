@@ -341,6 +341,12 @@ const _LIB_OPTIONAL = (
 	:gmtvtk_set_sentinelhub_callback, # Copernicus > Sentinel Hub imagery (src/sentinelhub.jl)
 	:gmtvtk_set_satellite_callback,   # Satellite > Satellite orbits (src/satellite.jl)
 	:gmtvtk_set_remotes_callback,     # Satellite > Remote sensing (src/RemoteS/remotes_gui.jl)
+	:gmtvtk_sunsync_test,             # T & L > Sun-synchronous orbit: drive/read the demo (74_sunsync.cpp; tests)
+	:gmtvtk_ephem_test,               # T & L > Solar system / Sky viewer: the shared ephemeris (74_ephem.cpp; tests)
+	:gmtvtk_solarsys_test,            # T & L > Solar system: drive/read the demo (74_solarsys.cpp; tests)
+	:gmtvtk_sky_test,                 # T & L > Sky viewer: drive/read the viewer (74_skyview.cpp; tests)
+	:gmtvtk_eclipse_search_test,      # T & L > Earth-Moon system: the eclipse search (74_eclipse.cpp; tests)
+	:gmtvtk_eclipse_test,             # T & L > Earth-Moon system: drive/read the demo (74_eclipse.cpp; tests)
 	:gmtvtk_app_init,                 # create the Qt application without a window (the test run's window filter)
 	:gmtvtk_remotes_queue_open,       # a dropped L2 swath opens "MODIS L2 swath to grid" with it (drop.jl)
 	# SGP4/SDP4 satellite propagation (deps/src/satellite.cpp over the vendored

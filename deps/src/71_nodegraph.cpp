@@ -750,9 +750,14 @@ static void nodeGraphFieldDialog(NodeGraph *g, QGraphicsItem *row) {
 // on the window, Esc parks it (and is consumed: left to QDialog it would reject = destroy).
 struct NodeGraphFilter : QObject {
 	NodeGraph *g;
-	NodeGraphFilter(QObject *parent, NodeGraph *ng) : QObject(parent), g(ng) {}
+	// The view's viewport, guarded: while the window deletes its children it still sends this filter events
+	// (ChildRemoved) after the view is gone, so `g->view->viewport()` there would read a freed view.
+	QPointer<QWidget> vp;
+	NodeGraphFilter(QObject *parent, NodeGraph *ng) : QObject(parent), g(ng), vp(ng->view->viewport()) {}
 	bool eventFilter(QObject *o, QEvent *e) override {
-		if (o == g->view->viewport() && e->type() == QEvent::Wheel) {
+		const QObject *port = vp.data();
+		if (!port) return QObject::eventFilter(o, e);             // the view is gone: the window is going too
+		if (o == port && e->type() == QEvent::Wheel) {
 			const double f = std::pow(1.15, static_cast<QWheelEvent *>(e)->angleDelta().y() / 120.0);
 			const double z = g->view->transform().m11() * f;
 			if (z > 0.05 && z < 4.0) g->view->scale(f, f);
@@ -766,7 +771,7 @@ struct NodeGraphFilter : QObject {
 			nodeGraphPanelClose(g);                                 // Esc closes the panel, never parks the window
 			return true;
 		}
-		if (o == g->view->viewport() && (e->type() == QEvent::MouseButtonPress ||
+		if (o == port && (e->type() == QEvent::MouseButtonPress ||
 		                                 e->type() == QEvent::MouseButtonDblClick)) {
 			nodeGraphPanelClose(g);                                 // a click elsewhere on the canvas closes it
 			// remember which field row the press is on; the drag (pan, move a box) goes on as usual
@@ -777,7 +782,7 @@ struct NodeGraphFilter : QObject {
 					if (nodeGraphEditable(it)) { g->pressRow = it; g->pressAt = me->pos(); break; }
 			return false;
 		}
-		if (o == g->view->viewport() && e->type() == QEvent::MouseButtonRelease) {
+		if (o == port && e->type() == QEvent::MouseButtonRelease) {
 			// a press and release on the same spot of an editable row is a CLICK: edit that value in place
 			auto *me = static_cast<QMouseEvent *>(e);
 			QGraphicsItem *row = g->pressRow;
@@ -790,7 +795,7 @@ struct NodeGraphFilter : QObject {
 			}
 			return false;
 		}
-		if (o == g->view->viewport() && e->type() == QEvent::ContextMenu) {
+		if (o == port && e->type() == QEvent::ContextMenu) {
 			// right-click on a field: change it (its dialog) or, for those who want it, edit its GMT.jl code
 			auto *ce = static_cast<QContextMenuEvent *>(e);
 			QGraphicsItem *row = nullptr;

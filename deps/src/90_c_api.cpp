@@ -5545,6 +5545,354 @@ GMTVTK_API int gmtvtk_daylength_test(void *handle, const char *action, double *o
 	return 1;
 }
 
+// Drive / read the "Sun-synchronous orbit" demo (74_sunsync.cpp; tests). `action`: "" = read only,
+// "day:N", "alt:H" (km), "incl:I", "ltan:L" (h, on 1 January), "sso" = press "Make sun-synchronous",
+// "play" = one Play frame, "close" = close (= park). out[0..8] = dialog exists, visible, day,
+// inclination, node drift (deg/day), LTAN today (h), share of the revolution in shadow, beta (deg),
+// parked row in window `handle`, and out[9] = 1 (plane disc shown) + 2 (Earth shown) + 4 (both
+// arrows shown) + 8 (both cameras orthographic). "ortho:0/1" sets the "Orthographic" box; "plane:0/1"
+// sets the "Orbit plane only" box. Returns 1, or 0 with no dialog.
+GMTVTK_API int gmtvtk_sunsync_test(void *handle, const char *action, double *out) {
+	SunSyncDialog *m = g_sunSync;
+	if (!m || !m->dlg) return 0;
+	const QString a = QString::fromUtf8(action ? action : "");
+	if (a.startsWith("day:")) m->slider->setValue(a.mid(4).toInt());
+	else if (a.startsWith("alt:")) m->alt->setValue(a.mid(4).toDouble());
+	else if (a.startsWith("incl:")) m->incl->setValue(a.mid(5).toDouble());
+	else if (a.startsWith("ltan:")) m->ltan0->setValue(a.mid(5).toDouble());
+	else if (a == "sso") {
+		for (QPushButton *b : m->dlg->findChildren<QPushButton *>())
+			if (b->text() == "Make sun-synchronous") b->click();
+	}
+	else if (a.startsWith("plane:")) m->planeBox->setChecked(a.mid(6).toInt() != 0);
+	else if (a.startsWith("ortho:")) m->orthoBox->setChecked(a.mid(6).toInt() != 0);
+	else if (a == "play") m->tick();
+	else if (a == "close") m->dlg->close();
+	Scene *s = static_cast<Scene *>(handle);
+	bool row = false;
+	if (sceneAlive(s))
+		for (auto &pt : s->parkedTools)
+			if (pt.win == m->dlg) row = true;
+	if (out) {
+		const int d = m->slider->value();
+		out[9] = (m->disc->GetVisibility() ? 1 : 0) + (m->earth->GetVisibility() ? 2 : 0) +
+		         (m->normalArrow->GetVisibility() && m->sunArrow->GetVisibility() ? 4 : 0) +
+		         (m->ren->GetActiveCamera()->GetParallelProjection() &&
+		          m->inset->GetActiveCamera()->GetParallelProjection() ? 8 : 0);
+		out[0] = 1;
+		out[1] = m->dlg->isVisible() ? 1 : 0;
+		out[2] = d;
+		out[3] = m->incl->value();
+		out[4] = ssNodeRate(m->h(), m->incl->value());
+		out[5] = m->chart->ltan[size_t(d - 1)];
+		out[6] = m->chart->shadow[size_t(d - 1)];
+		out[7] = m->beta;
+		out[8] = row ? 1 : 0;
+	}
+	return 1;
+}
+
+// The ephemeris of "Solar system" / "Sky viewer" (74_ephem.cpp; tests). `what`: "sun", "moon", "mercury"
+// .. "neptune" -> out[0..2] = RA, Dec (deg, mean equator and equinox OF DATE) and distance (AU) at the
+// Terrestrial-Time Julian Date `jd`; "moonecl" -> out[0..2] = the Moon's ecliptic longitude, latitude
+// (deg, of date) and distance (km); "helio:<body>" (mercury .. neptune, earth, pluto, ceres, eris) ->
+// out[0..2] = heliocentric x, y, z (AU, J2000 ecliptic) at the TT Julian Date `jd`; "gmst" -> out[0] = GMST (deg) at the UT Julian Date `jd`; "deltat"
+// -> out[0] = TT - UT (s) for the decimal year `jd`; "stars" -> out[0..2] = catalogue stars, named stars,
+// constellations. Returns 1, or 0 for an unknown `what`.
+GMTVTK_API int gmtvtk_ephem_test(const char *what, double jd, double *out) {
+	const QString w = QString::fromUtf8(what ? what : "").toLower();
+	if (w == "gmst") { out[0] = ephGMST(jd); return 1; }
+	if (w == "deltat") { out[0] = ephDeltaT(jd); return 1; }
+	if (w == "moonecl") { ephMoon(jd, out[0], out[1], out[2]); return 1; }
+	if (w.startsWith("helio:"))
+		for (int p = 0; p < EPH_NPLANETS; ++p)
+			if (w.mid(6) == QString(kEphPlanetName[p]).toLower()) {
+				ephPlanetHelio(p, jd, out);
+				return 1;
+			}
+	if (w == "stars") {
+		const EphCatalog &c = ephCatalog();
+		out[0] = double(c.stars.size());
+		out[1] = double(c.names.size());
+		out[2] = double(c.constellations.size());
+		return 1;
+	}
+	for (int b = 0; b < SKY_NBODIES; ++b)
+		if (w == QString(kSkyBodyName[b]).toLower()) {
+			double q[3], P[3][3], v[3];
+			ephGeocentric(b, jd, q);
+			ephPrecession(jd, P);
+			for (int i = 0; i < 3; ++i) v[i] = P[i][0] * q[0] + P[i][1] * q[1] + P[i][2] * q[2];
+			const double d = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+			out[0] = std::atan2(v[1], v[0]) / kEphRad;
+			if (out[0] < 0) out[0] += 360.0;
+			out[1] = std::asin(v[2] / d) / kEphRad;
+			out[2] = d;
+			return 1;
+		}
+	return 0;
+}
+
+// Drive / read the "Solar system" demo (74_solarsys.cpp; tests). `action`: "" = read only, "jd:J" = the
+// UT Julian Date J, "scale:N" = the "Distances" pick (3 = Titius-Bode), "names:0/1" = the "Names" box,
+// "dwarfs:0/1" = the "Ceres & Eris" box, "panel:0/1" = fold/unfold the right panel (by its button),
+// "hover:N" = the cursor on body N's centre (-1 = off the view), "close:N" = a long-lens camera on body N
+// from outside its orbit, "png:path" = the view saved as a PNG, "play" = one Play frame, "close" =
+// close (= park). out[0..9] = dialog exists, visible, JD (UT), Earth's heliocentric x, y (AU, J2000
+// ecliptic), Mars' distance from the Sun (AU), Earth's drawn distance from the Sun (scene units), parked
+// row in window `handle`, the "Distances" pick, Earth's drawn x; out[10..15] = names on screen, 1 Ceres
+// + 2 Eris + 4 Pluto drawn, right panel shown, hovered body (-1 none), Neptune's drawn distance (scene
+// units), Neptune's distance from the Sun (AU). Returns 1, or 0 with no dialog.
+GMTVTK_API int gmtvtk_solarsys_test(void *handle, const char *action, double *out) {
+	SolarSysDialog *m = g_solarSys;
+	if (!m || !m->dlg) return 0;
+	const QString a = QString::fromUtf8(action ? action : "");
+	if (a.startsWith("jd:")) m->setJD(a.mid(3).toDouble());
+	else if (a.startsWith("scale:")) m->scaleBox->setCurrentIndex(a.mid(6).toInt());
+	else if (a.startsWith("names:")) m->labelsBox->setChecked(a.mid(6).toInt() != 0);
+	else if (a.startsWith("dwarfs:")) m->dwarfBox->setChecked(a.mid(7).toInt() != 0);
+	else if (a.startsWith("panel:")) {
+		if ((a.mid(6).toInt() != 0) != m->side->isVisible()) m->sideBtn->click();
+	}
+	else if (a.startsWith("close:")) {
+		// The camera on body N, from outside its orbit looking sunwards, slightly above the plane.
+		const int p = std::clamp(a.mid(6).toInt(), 0, EPH_NPLANETS - 1);
+		const double R = m->bodyR(p), *c = m->pos[p];
+		const double r = std::hypot(c[0], c[1]);
+		vtkCamera *cam = m->ren->GetActiveCamera();
+		cam->SetFocalPoint(c[0], c[1], c[2]);
+		// From far outside, through a long lens: the clipping range then spans the whole system, as in the
+		// demo's own wide views, while the body still fills a third of the picture.
+		cam->SetPosition(c[0] + 150.0 * c[0] / r, c[1] + 150.0 * c[1] / r, c[2] + 15.0);
+		cam->SetViewUp(0, 0, 1);
+		cam->SetViewAngle(2.0 * std::atan(3.0 * R / 150.0) / kEphRad);
+		m->ren->ResetCameraClippingRange();
+		m->view->renderWindow()->Render();
+	}
+	else if (a.startsWith("png:")) {
+		m->view->renderWindow()->Render();
+		vtkNew<vtkWindowToImageFilter> w2i;
+		w2i->SetInput(m->view->renderWindow());
+		w2i->ReadFrontBufferOff();
+		w2i->Update();
+		vtkNew<vtkPNGWriter> wr;
+		wr->SetFileName(a.mid(4).toUtf8().constData());
+		wr->SetInputConnection(w2i->GetOutputPort());
+		wr->Write();
+	}
+	else if (a.startsWith("hover:")) {
+		// The cursor put on body N's centre (widget coordinates), or off the view with "hover:-1".
+		const int p = a.mid(6).toInt();
+		if (p < 0 || p >= EPH_NPLANETS) m->hover(QPoint(), false);
+		else {
+			double d[3];
+			m->ren->SetWorldPoint(m->pos[p][0], m->pos[p][1], m->pos[p][2], 1.0);
+			m->ren->WorldToDisplay();
+			m->ren->GetDisplayPoint(d);
+			const double r = m->view->devicePixelRatioF();
+			const int H = m->view->renderWindow()->GetSize()[1];
+			m->hover(QPoint(int(std::lround(d[0] / r)), int(std::lround((H - d[1]) / r))), true);
+		}
+	}
+	else if (a == "play") m->tick();
+	else if (a == "close") m->dlg->close();
+	Scene *s = static_cast<Scene *>(handle);
+	bool row = false;
+	if (sceneAlive(s))
+		for (auto &pt : s->parkedTools)
+			if (pt.win == m->dlg) row = true;
+	if (out) {
+		int nLbl = 0;
+		for (auto &l : m->label) nLbl += l->GetVisibility() ? 1 : 0;
+		out[10] = nLbl;
+		out[11] = (m->planet[EPH_CERES]->GetVisibility() ? 1 : 0) + (m->planet[EPH_ERIS]->GetVisibility() ? 2 : 0) +
+		          (m->planet[EPH_PLUTO]->GetVisibility() ? 4 : 0);
+		out[12] = m->side->isVisible() ? 1 : 0;
+		out[13] = m->hovered;
+		out[14] = std::sqrt(m->pos[EPH_NEPTUNE][0] * m->pos[EPH_NEPTUNE][0] +
+		                    m->pos[EPH_NEPTUNE][1] * m->pos[EPH_NEPTUNE][1] +
+		                    m->pos[EPH_NEPTUNE][2] * m->pos[EPH_NEPTUNE][2]);
+		out[15] = std::sqrt(m->helio[EPH_NEPTUNE][0] * m->helio[EPH_NEPTUNE][0] +
+		                    m->helio[EPH_NEPTUNE][1] * m->helio[EPH_NEPTUNE][1] +
+		                    m->helio[EPH_NEPTUNE][2] * m->helio[EPH_NEPTUNE][2]);
+		out[0] = 1;
+		out[1] = m->dlg->isVisible() ? 1 : 0;
+		out[2] = m->jd;
+		out[3] = m->helio[EPH_EMB][0];
+		out[4] = m->helio[EPH_EMB][1];
+		out[5] = std::sqrt(m->helio[EPH_MARS][0] * m->helio[EPH_MARS][0] + m->helio[EPH_MARS][1] * m->helio[EPH_MARS][1] +
+		                   m->helio[EPH_MARS][2] * m->helio[EPH_MARS][2]);
+		out[6] = std::sqrt(m->pos[EPH_EMB][0] * m->pos[EPH_EMB][0] + m->pos[EPH_EMB][1] * m->pos[EPH_EMB][1] +
+		                   m->pos[EPH_EMB][2] * m->pos[EPH_EMB][2]);
+		out[7] = row ? 1 : 0;
+		out[8] = m->scaleBox->currentIndex();
+		out[9] = m->pos[EPH_EMB][0];
+	}
+	return 1;
+}
+
+// The eclipse search of "Earth-Moon system" (74_eclipse.cpp; tests): every eclipse with greatest eclipse
+// between the UT Julian Dates jd0 and jd1, up to `max` rows of 5 doubles in `out`: UT Julian Date,
+// 1 solar / 0 lunar, kind (solar 0 partial 1 annular 2 total; lunar 0 penumbral 1 partial 2 total),
+// gamma (Earth radii, + north), magnitude (lunar: umbral, penumbral for kind 0). Returns the count found.
+GMTVTK_API int gmtvtk_eclipse_search_test(double jd0, double jd1, double *out, int max) {
+	const std::vector<EclEvent> ev = eclSearch(jd0, jd1);
+	for (int i = 0; i < int(ev.size()) && i < max; ++i) {
+		out[5 * i] = ev[size_t(i)].jdUT;
+		out[5 * i + 1] = ev[size_t(i)].solar ? 1 : 0;
+		out[5 * i + 2] = ev[size_t(i)].kind;
+		out[5 * i + 3] = ev[size_t(i)].gamma;
+		out[5 * i + 4] = ev[size_t(i)].mag;
+	}
+	return int(ev.size());
+}
+
+// Drive / read the "Earth-Moon system" demo (74_eclipse.cpp; tests). `action`: "" = read only, "jd:J" =
+// the UT Julian Date J, "next" / "prev" = the eclipse buttons, "row:N" = click list row N, "solar:0/1",
+// "lunar:0/1", "pen:0/1" = the list filters, "cam:N" = camera mode, "panel:0/1" = fold the panel,
+// "play", "close" (= park), "png:path" = the view saved as a PNG. out[0..11] = dialog exists, visible,
+// JD (UT), list rows, events found, share of the Moon's sunward half in the Earth's umbra, largest share
+// of the Sun hidden on the Earth, Moon's sunward-half share of skin vertices that are dark (night
+// skin), camera mode, parked row in window `handle`, panel shown, current list row. The info panel's
+// text goes to `text` (up to `ntext` bytes) when not null. Returns 1, or 0 with no dialog.
+GMTVTK_API int gmtvtk_eclipse_test(void *handle, const char *action, double *out, char *text, int ntext) {
+	EclipseDialog *m = g_eclipse;
+	if (!m || !m->dlg) return 0;
+	const QString a = QString::fromUtf8(action ? action : "");
+	if (a.startsWith("jd:")) m->setJD(a.mid(3).toDouble());
+	else if (a == "next") m->stepEvent(1);
+	else if (a == "prev") m->stepEvent(-1);
+	else if (a.startsWith("row:")) {
+		const int r = a.mid(4).toInt();
+		if (r >= 0 && r < m->list->count()) {
+			m->list->setCurrentRow(r);
+			m->gotoEvent(m->list->item(r)->data(Qt::UserRole).toInt());   // what the row's click does
+		}
+	}
+	else if (a.startsWith("solar:")) m->solarBox->setChecked(a.mid(6).toInt() != 0);
+	else if (a.startsWith("lunar:")) m->lunarBox->setChecked(a.mid(6).toInt() != 0);
+	else if (a.startsWith("pen:")) m->penBox->setChecked(a.mid(4).toInt() != 0);
+	else if (a.startsWith("cam:")) {
+		m->camMode = std::clamp(a.mid(4).toInt(), 0, 3);
+		if (m->camMode == 0) m->overview();
+		else m->update();
+	}
+	else if (a.startsWith("panel:")) {
+		if ((a.mid(6).toInt() != 0) != m->side->isVisible()) m->sideBtn->click();
+	}
+	else if (a.startsWith("png:")) {
+		m->view->renderWindow()->Render();
+		vtkNew<vtkWindowToImageFilter> w2i;
+		w2i->SetInput(m->view->renderWindow());
+		w2i->ReadFrontBufferOff();
+		w2i->Update();
+		vtkNew<vtkPNGWriter> wr;
+		wr->SetFileName(a.mid(4).toUtf8().constData());
+		wr->SetInputConnection(w2i->GetOutputPort());
+		wr->Write();
+	}
+	else if (a == "play") m->tick();
+	else if (a == "close") m->dlg->close();
+	Scene *s = static_cast<Scene *>(handle);
+	bool row = false;
+	if (sceneAlive(s))
+		for (auto &pt : s->parkedTools)
+			if (pt.win == m->dlg) row = true;
+	if (out) {
+		// Night on the Moon: the share of its skin vertices facing away from the Sun that are darkened.
+		double sd[3];
+		for (int i = 0; i < 3; ++i) sd[i] = m->S[i] - m->M[i];
+		vtkMath::Normalize(sd);
+		int nNight = 0, nDark = 0;
+		vtkPoints *pts = m->skin[1].pd->GetPoints();
+		for (vtkIdType v = 0; v < pts->GetNumberOfPoints(); ++v) {
+			double p[3];
+			pts->GetPoint(v, p);
+			if (eclDot(p, sd) >= 0.0) continue;
+			++nNight;
+			unsigned char c[4];
+			m->skin[1].rgba->GetTypedTuple(v, c);
+			nDark += c[3] > 0 ? 1 : 0;
+		}
+		out[0] = 1;
+		out[1] = m->dlg->isVisible() ? 1 : 0;
+		out[2] = m->jd;
+		out[3] = m->list->count();
+		out[4] = double(m->events.size());
+		out[5] = m->moonUmbra;
+		out[6] = m->earthShadow;
+		out[7] = nNight ? double(nDark) / nNight : 0.0;
+		out[8] = m->camMode;
+		out[9] = row ? 1 : 0;
+		out[10] = m->side->isVisible() ? 1 : 0;
+		out[11] = m->list->currentRow();
+	}
+	if (text && ntext > 0) {
+		const QByteArray t = m->info->text().toUtf8();
+		const int n = std::min(int(t.size()), ntext - 1);
+		std::memcpy(text, t.constData(), size_t(n));
+		text[n] = 0;
+	}
+	return 1;
+}
+
+// Drive / read the "Sky viewer" (74_skyview.cpp; tests). `action`: "" = read only, "jd:J" = the UT
+// Julian Date J, "lat:L", "lon:L", "place:Name" = pick a city, "mag:M" = the magnitude limit,
+// "day:0/1" = the "Daylight" box, "look:B" = look at body B (0 Sun, 1 Moon, 2.. planets), "click:x,y" =
+// a click at widget point (x, y) ("click:center" = the view's centre), "play" = one Play frame, "close" = close (= park). out[0..12] = dialog
+// exists, visible, JD (UT), stars drawn, Sun altitude, Sun azimuth, Moon altitude, Moon azimuth, parked
+// row in window `handle`, gaze altitude, gaze azimuth, the latitude, the Moon's lit share. The text of
+// the identify panel goes to `pick` (up to `npick` bytes) when not null. Returns 1, or 0 with no dialog.
+GMTVTK_API int gmtvtk_sky_test(void *handle, const char *action, double *out, char *pick, int npick) {
+	SkyViewDialog *m = g_skyView;
+	if (!m || !m->dlg) return 0;
+	const QString a = QString::fromUtf8(action ? action : "");
+	if (a.startsWith("jd:")) m->setJD(a.mid(3).toDouble());
+	else if (a.startsWith("lat:")) m->lat->setValue(a.mid(4).toDouble());
+	else if (a.startsWith("lon:")) m->lon->setValue(a.mid(4).toDouble());
+	else if (a.startsWith("place:")) m->place->setCurrentIndex(m->place->findText(a.mid(6)));
+	else if (a.startsWith("mag:")) m->magLim->setValue(a.mid(4).toDouble());
+	else if (a.startsWith("day:")) m->dayBox->setChecked(a.mid(4).toInt() != 0);
+	else if (a.startsWith("look:")) m->lookAt(std::clamp(a.mid(5).toInt(), 0, SKY_NBODIES - 1));
+	else if (a == "click:center") m->identify(m->view->rect().center());
+	else if (a.startsWith("click:")) {
+		const QStringList xy = a.mid(6).split(',');
+		if (xy.size() == 2) m->identify(QPoint(xy[0].toInt(), xy[1].toInt()));
+	}
+	else if (a == "play") m->tick();
+	else if (a == "close") m->dlg->close();
+	Scene *s = static_cast<Scene *>(handle);
+	bool row = false;
+	if (sceneAlive(s))
+		for (auto &pt : s->parkedTools)
+			if (pt.win == m->dlg) row = true;
+	if (out) {
+		double sa, sz, ma, mz;
+		SkyViewDialog::altAz(m->bodyW[SKY_SUN], sa, sz);
+		SkyViewDialog::altAz(m->bodyW[SKY_MOON], ma, mz);
+		out[0] = 1;
+		out[1] = m->dlg->isVisible() ? 1 : 0;
+		out[2] = m->jd;
+		out[3] = m->nShown;
+		out[4] = sa;
+		out[5] = sz;
+		out[6] = ma;
+		out[7] = mz;
+		out[8] = row ? 1 : 0;
+		out[9] = m->alt;
+		out[10] = m->az;
+		out[11] = m->lat->value();
+		out[12] = m->moonIllum;
+	}
+	if (pick && npick > 0) {
+		const QByteArray t = m->pickLbl->text().toUtf8();
+		const int n = std::min(int(t.size()), npick - 1);
+		std::memcpy(pick, t.constData(), size_t(n));
+		pick[n] = 0;
+	}
+	return 1;
+}
+
 // "Magnetic field lines (3-D)" (69_magfield.cpp): the IGRF streamline tracer and the Earth texture,
 // both computed on the Julia side (src/magfield.jl).
 GMTVTK_API void gmtvtk_set_magfield_callback(JuliaMagLinesFn linesFn, JuliaMagTexFn texFn) {

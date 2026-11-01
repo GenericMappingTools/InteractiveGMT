@@ -80,6 +80,7 @@ const titles = Dict(
     "79-mbnavadjust.md" => "MBnavadjust",
     "80-benchmark1.md" => "Catalina Benchmark 1",
     "81-gmtsarplugin.md" => "GMTSAR plugin",
+    "82-earth-moon.md" => "Tutorial: The Earth-Moon System",
     "90-user-manual.md" => "User Manual",
     "95-reference.md" => "API Reference",
     "96-recipes.md" => "Recipes (experimental)",

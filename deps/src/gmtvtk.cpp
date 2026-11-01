@@ -26,6 +26,11 @@
 //   73_crsselect   Coordinate Reference System selector (modal picker, PROJ catalogue via src/crsselect.jl)
 //   74_daylength   T & L > Day length & axial tilt: Earth round the Sun in VTK + day-length chart (after 69_magfield, whose globe it uses)
 //   74_daylength_gmt  T & L > Day length & axial tilt: GMT.jl base picture + per-day overlay list (src/daylength.jl)
+//   74_sunsync     T & L > Sun-synchronous orbit: J2 nodal precession vs the Sun's year (after 74_daylength, whose Sun/globe/view it uses)
+//   74_ephem       the ephemeris of the two below: JPL planet elements, Meeus Moon, BSC5 stars (data/bsc5*), after astroterm
+//   74_solarsys    T & L > Solar system: the planets round the Sun at any instant (after 69_magfield, whose globe it uses)
+//   74_skyview     T & L > Sky viewer: stars, figures, Sun, Moon and planets from a place on the Earth
+//   74_eclipse     T & L > Earth-Moon system: both bodies to scale, day/night, shadows, eclipse list 1900-2100
 //   70_window     buildAndShow — the Qt main window
 //   69_magfield    Magnetic field lines (3-D): IGRF streamlines traced round a textured globe
 //   80_rubberband  Ctrl+right-drag point-cloud selection
@@ -54,12 +59,21 @@ static QDialog *magFieldOpen(QWidget *parent, Scene *scene);
 static bool dayLengthOpen(QWidget *parent, Scene *scene);
 static bool dayLengthPicOpen(QWidget *parent, Scene *scene);
 static bool dayLengthPicWired();
+static bool sunSyncOpen(QWidget *parent, Scene *scene);
+static bool solarSysOpen(QWidget *parent, Scene *scene);
+static bool skyViewOpen(QWidget *parent, Scene *scene);
+static bool eclipseOpen(QWidget *parent, Scene *scene);
 #include "70_window.cpp"
 #include "71_nodegraph.cpp"
 #include "68_faultdemo.cpp"
 #include "69_magfield.cpp"
 #include "74_daylength.cpp"
 #include "74_daylength_gmt.cpp"
+#include "74_sunsync.cpp"
+#include "74_ephem.cpp"
+#include "74_solarsys.cpp"
+#include "74_skyview.cpp"
+#include "74_eclipse.cpp"
 #include "80_rubberband.cpp"
 #include "85_polygon.cpp"
 #include "87_vtkio.cpp"
