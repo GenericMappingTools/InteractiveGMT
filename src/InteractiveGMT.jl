@@ -201,6 +201,7 @@ isfile(joinpath(@__DIR__, "mbgrdviz.jl")) && include("mbgrdviz.jl")
 # OFF since 2026-10-03 (user): not good enough yet -- left out of iGMT, code kept for a future revisit.
 # isfile(joinpath(@__DIR__, "pointcloudeditor.jl")) && include("pointcloudeditor.jl")
 include("wcdviewer.jl")  # Geophysics > MB-System > Water column viewer (port of kmwcd_viewer.py; KMALL #MWC/#SPO/#SKM/#MRZ)
+include("whereami.jl")   # T & L > Earth-Moon system: "My location" from GMT.jl's whereami()
 include("daylength.jl")  # T & L > Day length & axial tilt (GMT figures): GMT.jl-drawn pictures for 74_daylength_gmt.cpp
 include("isocs.jl")      # parse Mirone data/isocs/*.dat isochron header -> write via shapenc
 include("palettes.jl")   # Image > Color Palettes: the six palette families + CPT I/O (port of Mirone color_palettes.m)

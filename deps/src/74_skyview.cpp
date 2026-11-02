@@ -197,34 +197,18 @@ struct SkyViewDialog {
 	void toJ2000(const double w[3], double q[3]) const {
 		for (int i = 0; i < 3; ++i) q[i] = M[0][i] * w[0] + M[1][i] * w[1] + M[2][i] * w[2];
 	}
-	static void altAz(const double w[3], double &a, double &z) {
-		const double n = std::sqrt(w[0] * w[0] + w[1] * w[1] + w[2] * w[2]);
-		a = std::asin(std::clamp(w[2] / n, -1.0, 1.0)) / kEphRad;
-		z = std::atan2(w[0], w[1]) / kEphRad;
-		if (z < 0) z += 360.0;
-	}
+	static void altAz(const double w[3], double &a, double &z) { ephAltAz(w, a, z); }
 	static void raDec(const double q[3], double &ra, double &de) {
 		const double n = std::sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2]);
 		de = std::asin(std::clamp(q[2] / n, -1.0, 1.0)) / kEphRad;
 		ra = std::atan2(q[1], q[0]) / kEphRad;
 		if (ra < 0) ra += 360.0;
 	}
-	double lst() const {
-		double l = std::fmod(ephGMST(jd) + lon->value(), 360.0);
-		return l < 0 ? l + 360.0 : l;
-	}
+	double lst() const { return ephLST(jd, lon->value()); }
 
 	// eqM: horizon <- of date (sidereal time, latitude) <- J2000 (precession).
 	void buildMatrix(double tt) {
-		double P[3][3];
-		ephPrecession(tt, P);
-		const double L = lst() * kEphRad, f = lat->value() * kEphRad;
-		const double H[3][3] = {
-			{-std::sin(L), std::cos(L), 0.0},
-			{-std::sin(f) * std::cos(L), -std::sin(f) * std::sin(L), std::cos(f)},
-			{std::cos(f) * std::cos(L), std::cos(f) * std::sin(L), std::sin(f)}};
-		for (int i = 0; i < 3; ++i)
-			for (int j = 0; j < 3; ++j) M[i][j] = H[i][0] * P[0][j] + H[i][1] * P[1][j] + H[i][2] * P[2][j];
+		ephHorizonMatrix(jd, tt, lat->value(), lon->value(), M);
 		for (int i = 0; i < 3; ++i) {
 			for (int j = 0; j < 3; ++j) eqM->SetElement(i, j, M[i][j]);
 			eqM->SetElement(i, 3, 0.0);
@@ -328,15 +312,7 @@ struct SkyViewDialog {
 		for (int b = 0; b < SKY_NBODIES; ++b) {
 			double q[3];
 			ephGeocentric(b, tt, q);
-			if (b == SKY_MOON) {
-				// Topocentric: the observer's place on the Earth taken out (up to ~1 deg).
-				double P[3][3];
-				ephPrecession(tt, P);
-				const double L = lst() * kEphRad, f = lat->value() * kEphRad;
-				const double od[3] = {std::cos(f) * std::cos(L), std::cos(f) * std::sin(L), std::sin(f)};
-				for (int i = 0; i < 3; ++i)
-					q[i] -= kEphEarthRkm / kEphAUkm * (P[0][i] * od[0] + P[1][i] * od[1] + P[2][i] * od[2]);
-			}
+			if (b == SKY_MOON) ephTopocentric(jd, tt, lat->value(), lon->value(), q);   // up to ~1 deg
 			double w[3];
 			toWorld(q, w);
 			vtkMath::Normalize(w);
@@ -902,20 +878,8 @@ static bool skyViewOpen(QWidget *parent, Scene *scene) {
 	m->place->setEditable(false);
 	m->place->setMinimumContentsLength(14);
 	m->place->setToolTip("Pick a city to stand in; or type a latitude and longitude beside it.");
-	{
-		std::vector<std::tuple<QString, double, double>> cities;
-		QFile f(QDir(gmtvtkDataDir()).filePath("wcity_major.dat"));
-		if (f.open(QIODevice::ReadOnly | QIODevice::Text))
-			while (!f.atEnd()) {
-				const QStringList w = QString::fromUtf8(f.readLine()).simplified().split(' ');
-				if (w.size() >= 3)
-					cities.emplace_back(w.mid(2).join(' ').replace('_', ' '), w[1].toDouble(), w[0].toDouble());
-			}
-		std::sort(cities.begin(), cities.end());
-		m->place->addItem("(lat / lon)", QVariant());
-		for (const auto &c : cities)
-			m->place->addItem(std::get<0>(c), QVariant(QPointF(std::get<1>(c), std::get<2>(c))));
-	}
+	m->place->addItem("(lat / lon)", QVariant());
+	for (const EphCity &c : ephCities()) m->place->addItem(c.name, QVariant(QPointF(c.lat, c.lon)));
 	m->lat = new QDoubleSpinBox(dlg);                         // the observer's latitude
 	m->lat->setRange(-90.0, 90.0);
 	m->lat->setDecimals(2);

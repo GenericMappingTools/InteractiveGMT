@@ -5748,20 +5748,86 @@ GMTVTK_API int gmtvtk_eclipse_search_test(double jd0, double jd1, double *out, i
 }
 
 // Drive / read the "Earth-Moon system" demo (74_eclipse.cpp; tests). `action`: "" = read only, "jd:J" =
-// the UT Julian Date J, "next" / "prev" = the eclipse buttons, "row:N" = click list row N, "solar:0/1",
+// the UT Julian Date J, "next" / "prev" = the eclipse buttons, "animate" = click "Animate eclipse" (READ
+// mode "anim": out[0..4] = its first and last contacts as UT JDs, still running 1/0, track frames,
+// frames with umbra limits, points of the penumbra's limits), "row:N" = click list row N, "solar:0/1",
 // "lunar:0/1", "pen:0/1" = the list filters, "cam:N" = camera mode, "panel:0/1" = fold the panel,
 // "play", "close" (= park), "png:path" = the view saved as a PNG. out[0..11] = dialog exists, visible,
 // JD (UT), list rows, events found, share of the Moon's sunward half in the Earth's umbra, largest share
 // of the Sun hidden on the Earth, Moon's sunward-half share of skin vertices that are dark (night
 // skin), camera mode, parked row in window `handle`, panel shown, current list row. The info panel's
 // text goes to `text` (up to `ntext` bytes) when not null. Returns 1, or 0 with no dialog.
+// "slider:V" = drag the time slider to V minutes, "place:LAT,LON" = type a place into the lat/lon boxes.
+// Two READ modes replace out[0..11] (and `text`): "moon" = the "Moon from a place" panel -- lit fraction,
+// bright limb x/y on screen (y down), altitude, azimuth, age (d), elongation, next rise, next set, next
+// new, next full (UT JDs), above the horizon (1/0); its text goes to `text`. "camera" = the camera's
+// position (0..2) and focal point (3..5), the slider's centre JD (6) and value (7), the place's latitude
+// (8), longitude (9) and city row (10), the points of the solar eclipse's umbra edge + 1000 x those of
+// its penumbra edge on the Earth (11), the place's name to `text`. "placerow:N" = pick city row N (0 = typed lat/lon).
+GMTVTK_API void gmtvtk_set_whereami_callback(JuliaWhereamiFn fn) {
+	g_juliaWhereami = fn;
+}
+
 GMTVTK_API int gmtvtk_eclipse_test(void *handle, const char *action, double *out, char *text, int ntext) {
 	EclipseDialog *m = g_eclipse;
 	if (!m || !m->dlg) return 0;
 	const QString a = QString::fromUtf8(action ? action : "");
+	if (a == "anim") {                                      // "Animate eclipse": first, last contact, running
+		if (out) {
+			for (int i = 0; i < 12; ++i) out[i] = 0.0;
+			out[0] = m->animBegin;
+			out[1] = m->animFinish;
+			out[2] = m->animEnd > 0.0 ? 1.0 : 0.0;
+			out[3] = double(m->trC.size());                    // the track: frames, and those with umbra limits
+			auto valid = [](const std::vector<std::array<double, 3>> &v) {
+				return double(std::count_if(v.begin(), v.end(), [](const std::array<double, 3> &p) { return !std::isnan(p[0]); }));
+			};
+			out[4] = valid(m->trN);
+			out[5] = valid(m->trPN) + valid(m->trPS);          // the penumbra's limits
+		}
+		return 1;
+	}
+	if (a == "moon" || a == "camera") {
+		if (out) {
+			for (int i = 0; i < 12; ++i) out[i] = 0.0;
+			if (a == "moon") {
+				const double v[12] = {m->phase->illum, m->phase->bx, m->phase->by, m->mAlt, m->mAz, m->mAge,
+				                      m->mElong, m->mRise, m->mSet, m->mNew, m->mFull, m->phase->up ? 1.0 : 0.0};
+				for (int i = 0; i < 12; ++i) out[i] = v[i];
+			}
+			else {
+				vtkCamera *cam = m->ren->GetActiveCamera();
+				cam->GetPosition(out);
+				cam->GetFocalPoint(out + 3);
+				out[6] = m->sliderMid;
+				out[7] = m->slider->value();
+				out[8] = m->lat->value();
+				out[9] = m->lon->value();
+				out[10] = m->place->currentIndex();
+				out[11] = m->edgePD[0]->GetNumberOfPoints() + 1000.0 * m->edgePD[1]->GetNumberOfPoints();
+			}
+		}
+		if (text && ntext > 0) {
+			const QByteArray t = (a == "moon" ? m->moonInfo->text() : m->place->currentText()).toUtf8();
+			const int n = std::min(int(t.size()), ntext - 1);
+			std::memcpy(text, t.constData(), size_t(n));
+			text[n] = 0;
+		}
+		return 1;
+	}
 	if (a.startsWith("jd:")) m->setJD(a.mid(3).toDouble());
+	else if (a.startsWith("slider:")) m->slider->setValue(a.mid(7).toInt());   // what a drag does
+	else if (a.startsWith("placerow:")) m->place->setCurrentIndex(a.mid(9).toInt());
+	else if (a.startsWith("place:")) {
+		const QStringList p = a.mid(6).split(',');
+		if (p.size() == 2) {
+			m->lat->setValue(p[0].toDouble());                 // what typing in the boxes does
+			m->lon->setValue(p[1].toDouble());
+		}
+	}
 	else if (a == "next") m->stepEvent(1);
 	else if (a == "prev") m->stepEvent(-1);
+	else if (a == "animate") m->animBtn->click();
 	else if (a.startsWith("row:")) {
 		const int r = a.mid(4).toInt();
 		if (r >= 0 && r < m->list->count()) {
@@ -5775,7 +5841,7 @@ GMTVTK_API int gmtvtk_eclipse_test(void *handle, const char *action, double *out
 	else if (a.startsWith("cam:")) {
 		m->camMode = std::clamp(a.mid(4).toInt(), 0, 3);
 		if (m->camMode == 0) m->overview();
-		else m->update();
+		else m->applyCamera();
 	}
 	else if (a.startsWith("panel:")) {
 		if ((a.mid(6).toInt() != 0) != m->side->isVisible()) m->sideBtn->click();

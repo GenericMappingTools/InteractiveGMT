@@ -1,5 +1,6 @@
-// 74_ephem.cpp -- the ephemeris of T & L > "Solar system" (74_solarsys.cpp) and "Sky viewer"
-// (74_skyview.cpp). ONE place for every position both demos draw: the two never compute a body twice.
+// 74_ephem.cpp -- the ephemeris of T & L > "Solar system" (74_solarsys.cpp), "Sky viewer"
+// (74_skyview.cpp) and "Earth-Moon system" (74_eclipse.cpp). ONE place for every position the demos draw:
+// they never compute a body twice.
 //
 // Ported from astroterm (https://github.com/da-luce/astroterm, MIT, (c) 2024 Dalton Luce), whose
 // terminal renderer is not used -- only its sources of numbers:
@@ -337,6 +338,69 @@ static void ephGeocentric(int b, double jdTT, double q[3]) {
 	rel(jdTT, e);
 	rel(jdTT - std::sqrt(e[0] * e[0] + e[1] * e[1] + e[2] * e[2]) * kEphLightDay, e);
 	ephEclToEqu(e, q);
+}
+
+// ---- an observer on the Earth ------------------------------------------------------------------
+// One place for "where is it from HERE": the Sky viewer and the Earth-Moon system's "Moon from a place"
+// both go through these, never through a copy of their own.
+
+// Local sidereal time (deg, 0..360) at east longitude `lonDeg`, for a UT Julian Date.
+static double ephLST(double jdUT, double lonDeg) {
+	double l = std::fmod(ephGMST(jdUT) + lonDeg, 360.0);
+	return l < 0 ? l + 360.0 : l;
+}
+
+// The horizon of a place: M takes a J2000 equatorial vector to (east, north, up) -- precession to the
+// equator of date, then the local sidereal time and the latitude.
+static void ephHorizonMatrix(double jdUT, double jdTT, double latDeg, double lonDeg, double M[3][3]) {
+	double P[3][3];
+	ephPrecession(jdTT, P);
+	const double L = ephLST(jdUT, lonDeg) * kEphRad, f = latDeg * kEphRad;
+	const double H[3][3] = {
+		{-std::sin(L), std::cos(L), 0.0},
+		{-std::sin(f) * std::cos(L), -std::sin(f) * std::sin(L), std::cos(f)},
+		{std::cos(f) * std::cos(L), std::cos(f) * std::sin(L), std::sin(f)}};
+	for (int i = 0; i < 3; ++i)
+		for (int j = 0; j < 3; ++j) M[i][j] = H[i][0] * P[0][j] + H[i][1] * P[1][j] + H[i][2] * P[2][j];
+}
+
+// A geocentric J2000 equatorial vector (AU) made topocentric: the place's own position on the (spherical)
+// Earth taken out. Matters for the Moon only (up to ~1 deg); the rest move by seconds of arc.
+static void ephTopocentric(double jdUT, double jdTT, double latDeg, double lonDeg, double q[3]) {
+	double P[3][3];
+	ephPrecession(jdTT, P);
+	const double L = ephLST(jdUT, lonDeg) * kEphRad, f = latDeg * kEphRad;
+	const double od[3] = {std::cos(f) * std::cos(L), std::cos(f) * std::sin(L), std::sin(f)};
+	for (int i = 0; i < 3; ++i)
+		q[i] -= kEphEarthRkm / kEphAUkm * (P[0][i] * od[0] + P[1][i] * od[1] + P[2][i] * od[2]);
+}
+
+// Altitude and azimuth (deg; azimuth from north through east) of a horizon-frame (east, north, up) vector.
+static void ephAltAz(const double w[3], double &alt, double &az) {
+	const double n = std::sqrt(w[0] * w[0] + w[1] * w[1] + w[2] * w[2]);
+	alt = std::asin(std::clamp(w[2] / n, -1.0, 1.0)) / kEphRad;
+	az = std::atan2(w[0], w[1]) / kEphRad;
+	if (az < 0) az += 360.0;
+}
+
+// The cities a place can be picked from (data/wcity_major.dat: lon lat Name), sorted by name; read once.
+struct EphCity { QString name; double lat, lon; };
+static const std::vector<EphCity> &ephCities() {
+	static std::vector<EphCity> c;
+	static bool loaded = false;
+	if (loaded) return c;
+	loaded = true;
+	std::vector<std::tuple<QString, double, double>> t;
+	QFile f(QDir(gmtvtkDataDir()).filePath("wcity_major.dat"));
+	if (f.open(QIODevice::ReadOnly | QIODevice::Text))
+		while (!f.atEnd()) {
+			const QStringList w = QString::fromUtf8(f.readLine()).simplified().split(' ');
+			if (w.size() >= 3)
+				t.emplace_back(w.mid(2).join(' ').replace('_', ' '), w[1].toDouble(), w[0].toDouble());
+		}
+	std::sort(t.begin(), t.end());
+	for (const auto &x : t) c.push_back({std::get<0>(x), std::get<1>(x), std::get<2>(x)});
+	return c;
 }
 
 // Apparent visual magnitude of body `p` at heliocentric distance r, geocentric distance d (AU) and

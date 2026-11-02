@@ -27,6 +27,11 @@
 static const double kEclRE = kEphEarthRkm;                 // km per scene unit
 static const double kEclDanjon = 1.0 + 1.0 / 85.0;        // the Earth's shadow, enlarged for its air
 
+// The user's own place, from GMT.jl's whereami() (src/whereami.jl): out[0..1] = lon, lat; the place's
+// name ("City, Country") to `name`. 1, or 0 when it could not be found.
+using JuliaWhereamiFn = int (*)(double *, char *, int);
+static JuliaWhereamiFn g_juliaWhereami = nullptr;
+
 static double eclDot(const double a[3], const double b[3]) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
 static double eclNorm(const double a[3]) { return std::sqrt(eclDot(a, a)); }
 
@@ -172,22 +177,29 @@ static bool eclClassify(double tt, bool solar, EclEvent &e) {
 	return true;
 }
 
+static const double kEclRate = 12.190749;                  // mean Sun-Moon elongation rate, deg/day
+
+// The instant (TT) near `t` when the elongation is `target` (0 new Moon, 180 full Moon): Newton.
+static double eclSyzygy(double t, double target) {
+	for (int i = 0; i < 8; ++i) {
+		const double dt = eclElong(t, target) / kEclRate;
+		t -= dt;
+		if (std::fabs(dt) < 1e-6) break;
+	}
+	return t;
+}
+
 // Every eclipse with greatest eclipse between the UT Julian Dates `jd0` and `jd1`.
 static std::vector<EclEvent> eclSearch(double jd0, double jd1) {
 	std::vector<EclEvent> out;
-	const double rate = 12.190749;                            // mean Sun-Moon elongation rate, deg/day
 	double t = ephTT(jd0);
 	const double t1 = ephTT(jd1);
 	// The first syzygy after jd0, new or full, then alternately the other, half a synodic month apart.
 	const double e0 = eclElong(t, 0.0);
 	double target = e0 < 0.0 ? 0.0 : 180.0;
-	t += (target - e0) / rate;
+	t += (target - e0) / kEclRate;
 	while (t < t1 + 1.0) {
-		for (int i = 0; i < 8; ++i) {
-			const double dt = eclElong(t, target) / rate;
-			t -= dt;
-			if (std::fabs(dt) < 1e-6) break;
-		}
+		t = eclSyzygy(t, target);
 		const bool solar = target == 0.0;
 		EclEvent e;
 		if (eclClassify(eclGreatest(t, solar), solar, e) && e.jdUT >= jd0 && e.jdUT <= jd1) out.push_back(e);
@@ -208,13 +220,94 @@ struct EclSkin {
 	vtkSmartPointer<vtkMatrix4x4> m, ringM;
 };
 
+// The Moon's disc as a place sees it: the lit part from the phase, turned so that "up" is that place's
+// zenith -- a crescent's tilt changes with the latitude and the hour, and is upside down south of the
+// equator. Plain painting: the disc has no texture.
+class MoonPhaseView : public QWidget {
+public:
+	double illum = 0.5;              // lit fraction, 0..1
+	double bx = 1.0, by = 0.0;       // the bright limb's direction on screen (x right, y down)
+	bool up = true;                  // the Moon above the horizon
+	explicit MoonPhaseView(QWidget *parent) : QWidget(parent) { setFixedSize(160, 160); }
+protected:
+	void paintEvent(QPaintEvent *) override {
+		QPainter p(this);
+		p.setRenderHint(QPainter::Antialiasing);
+		p.fillRect(rect(), QColor(8, 8, 20));
+		const double r = 0.4 * std::min(width(), height());
+		p.translate(width() / 2.0, height() / 2.0 - (up ? 0.0 : 6.0));
+		p.setPen(Qt::NoPen);
+		p.setBrush(QColor(48, 48, 56));                       // the night side (earthshine)
+		p.drawEllipse(QPointF(0, 0), r, r);
+		// The lit part, in a frame whose +x is the bright limb: the limb's half circle out, the terminator
+		// (a half ellipse, r * (1 - 2 * lit) wide) back.
+		p.save();
+		p.rotate(std::atan2(by, bx) / kEphRad);
+		QPainterPath lit;
+		const double w = r * (1.0 - 2.0 * std::clamp(illum, 0.0, 1.0));
+		const int n = 90;
+		for (int i = 0; i <= n; ++i) {
+			const double f = (-90.0 + 180.0 * i / n) * kEphRad;
+			const QPointF q(r * std::cos(f), r * std::sin(f));
+			if (i == 0) lit.moveTo(q);
+			else lit.lineTo(q);
+		}
+		for (int i = n; i >= 0; --i) {
+			const double f = (-90.0 + 180.0 * i / n) * kEphRad;
+			lit.lineTo(w * std::cos(f), r * std::sin(f));
+		}
+		lit.closeSubpath();
+		p.setBrush(up ? QColor(236, 232, 218) : QColor(140, 138, 130));
+		p.drawPath(lit);
+		p.restore();
+		if (!up) {
+			p.resetTransform();
+			p.setPen(QColor(200, 160, 90));
+			p.drawText(QRect(0, height() - 18, width(), 16), Qt::AlignCenter, "below the horizon");
+		}
+	}
+};
+
 class EclipseView : public GLView {
 public:
+	vtkRenderer *ren = nullptr;                // the scene's renderer, for Shift+drag panning
 	EclipseView(QWidget *parent) : GLView() { setParent(parent); }
 protected:
+	bool panning = false;
+	QPoint panLast;
 	void enterEvent(QEnterEvent *e) override {
 		setFocus(Qt::MouseFocusReason);
 		GLView::enterEvent(e);
+	}
+	// Shift+left-drag pans (a plain drag rotates).
+	void mousePressEvent(QMouseEvent *e) override {
+		if (ren && e->button() == Qt::LeftButton && (e->modifiers() & Qt::ShiftModifier)) {
+			panning = true;
+			panLast = e->position().toPoint();
+			return;
+		}
+		GLView::mousePressEvent(e);
+	}
+	void mouseMoveEvent(QMouseEvent *e) override {
+		if (panning) {
+			const QPoint cp = e->position().toPoint();
+			double ox, oy, nx, ny;
+			devPx(panLast, ox, oy);
+			devPx(cp, nx, ny);
+			camPanByDisplay(ren, ox, oy, nx, ny);
+			ren->ResetCameraClippingRange();
+			renderWindow()->Render();
+			panLast = cp;
+			return;
+		}
+		GLView::mouseMoveEvent(e);
+	}
+	void mouseReleaseEvent(QMouseEvent *e) override {
+		if (panning && e->button() == Qt::LeftButton) {
+			panning = false;
+			return;
+		}
+		GLView::mouseReleaseEvent(e);
 	}
 };
 
@@ -226,30 +319,54 @@ struct EclipseDialog {
 	QComboBox *stepBox = nullptr;
 	QDoubleSpinBox *sizeBox = nullptr;
 	QPushButton *play = nullptr;
-	QCheckBox *backBox = nullptr, *conesBox = nullptr, *pathBox = nullptr, *namesBox = nullptr,
+	QPushButton *animBtn = nullptr;          // "Animate eclipse": the one at the instant shown, start to end
+	double animBegin = 0.0, animEnd = 0.0, animStep = 0.0;   // its contacts (UT JD; animEnd 0 = not running)
+	double animFinish = 0.0;                 // the last animated eclipse's last contact (kept after it ends)
+	bool animFollow = false;                 // a lunar one: the camera follows the Moon
+	QCheckBox *backBox = nullptr, *conesBox = nullptr, *pathBox = nullptr,
 	          *solarBox = nullptr, *lunarBox = nullptr, *penBox = nullptr;
 	QLabel *info = nullptr;
 	QListWidget *list = nullptr;
 	QWidget *side = nullptr;
 	QToolButton *sideBtn = nullptr;
 	QTimer *timer = nullptr;
+	QSlider *slider = nullptr;               // time, smoothly: one lunar month round sliderMid
+	QComboBox *place = nullptr;              // "Moon from a place": a city, or the lat/lon boxes
+	QDoubleSpinBox *lat = nullptr, *lon = nullptr;
+	MoonPhaseView *phase = nullptr;
+	QLabel *moonInfo = nullptr;
 	bool parked = false;
 	bool reallyClose = false;
 	double jd = 2451545.0;                   // the instant shown (UT)
-	int camMode = 0;                         // 0 free, 1 Earth from the Sun, 2 Moon from the Earth, 3 Earth from the Moon
-	double S[3], M[3];                       // Sun and Moon now (scene units)
+	double sliderMid = 2451545.0;            // the slider's centre (UT)
+	int camMode = 0;                         // the last camera placed: 0 free, 1 Earth from the Sun, 2 Moon from the Earth, 3 Earth from the Moon
+	double S[3] = {1, 0, 0}, M[3] = {60, 0, 0};   // Sun and Moon now (scene units)
 	double moonUmbra = 0.0;                  // share of the Moon's sunward half in the Earth's umbra
 	double earthShadow = 0.0;                // largest share of the Sun hidden anywhere on the Earth
+	double litFrac = 0.0;                    // the Moon's lit fraction (the panel's "% lit")
+	// "Moon from a place", for the tests: altitude, azimuth, age (d), elongation (deg), next rise / set (UT
+	// JD, 0 = none within 36 h), next new / full Moon (UT JD).
+	double mAlt = 0.0, mAz = 0.0, mAge = 0.0, mElong = 0.0, mRise = 0.0, mSet = 0.0, mNew = 0.0, mFull = 0.0;
 	std::vector<EclEvent> events;
 
 	vtkSmartPointer<vtkRenderer> ren, labRen;
 	vtkSmartPointer<vtkActor> earth, moon, sunLine, path, ecliptic, nodes;
 	vtkSmartPointer<vtkActor> cone[4];       // Earth umbra, Earth penumbra, Moon umbra, Moon penumbra
 	vtkSmartPointer<vtkPolyData> conePD[4], pathPD, eclPD, nodePD;
+	vtkSmartPointer<vtkActor> edge[2];       // a solar eclipse on the Earth's surface: umbra, penumbra edges
+	vtkSmartPointer<vtkPolyData> edgePD[2];
+	// "Animate eclipse"'s track on the Earth, in the EARTH's frame (unit sphere; the actor wears earthM, so
+	// it turns with the globe): the line of greatest eclipse, and the umbra's north and south limits
+	// (a NaN x = no umbra on the Earth at that frame); in light grey, the penumbra's limits (the partial
+	// eclipse's zone).
+	vtkSmartPointer<vtkActor> track, trackPen;
+	vtkSmartPointer<vtkPolyData> trackPD, trackPenPD;
+	std::vector<std::array<double, 3>> trC, trN, trS, trPN, trPS;
+	double eAx[3][3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};   // the Earth's axes now, in the ecliptic frame
 	vtkSmartPointer<vtkMatrix4x4> earthM, moonM;
 	vtkSmartPointer<vtkLineSource> sunSrc;
 	EclSkin skin[2];                         // 0 Earth, 1 Moon
-	vtkSmartPointer<vtkBillboardTextActor3D> earthLbl, moonLbl, sunLbl, nodeLbl[2];
+	vtkSmartPointer<vtkBillboardTextActor3D> sunLbl, nodeLbl[2];
 
 	void unpark() {
 		if (!dlg) return;
@@ -384,6 +501,49 @@ struct EclipseDialog {
 		pd->Modified();
 	}
 
+	// Where a shadow cone of the Moon (radius Rm + slope * x at x along `um` from the Moon; past an
+	// umbra's tip, the antumbra) meets the Earth's surface: its edge, on the sunward side only. True
+	// geometry, the same the skins are darkened with, put on the globe as it is drawn.
+	void shadowEdge(vtkPolyData *pd, const double um[3], double slope) {
+		const double Rm = kEphMoonRkm / kEclRE, R = drawR(0) * 1.006;
+		double ex[3], ey[3];
+		const double z[3] = {0, 0, 1};
+		vtkMath::Cross(z, um, ex);
+		if (vtkMath::Normalize(ex) == 0.0) ex[0] = 1.0;
+		vtkMath::Cross(um, ex, ey);
+		vtkNew<vtkPoints> pts;
+		vtkNew<vtkCellArray> lines;
+		std::vector<vtkIdType> run;
+		auto flush = [&]() {
+			if (run.size() > 1) lines->InsertNextCell(vtkIdType(run.size()), run.data());
+			run.clear();
+		};
+		const int n = 360;
+		for (int i = 0; i <= n; ++i) {
+			const double t = 2.0 * vtkMath::Pi() * i / n;
+			double A[3], B[3];                                // the cone's generator: A + x * B
+			for (int a = 0; a < 3; ++a) {
+				const double e = std::cos(t) * ex[a] + std::sin(t) * ey[a];
+				A[a] = M[a] + Rm * e;
+				B[a] = um[a] + slope * e;
+			}
+			const double qa = eclDot(B, B), qb = 2.0 * eclDot(A, B), qc = eclDot(A, A) - 1.0;
+			const double disc = qb * qb - 4.0 * qa * qc;
+			const double x = disc < 0.0 ? -1.0 : (-qb - std::sqrt(disc)) / (2.0 * qa);
+			if (x < 0.0) {                                    // this generator misses the Earth
+				flush();
+				continue;
+			}
+			double P[3];
+			for (int a = 0; a < 3; ++a) P[a] = R * (A[a] + x * B[a]);
+			run.push_back(pts->InsertNextPoint(P));
+		}
+		flush();
+		pd->SetPoints(pts);
+		pd->SetLines(lines);
+		pd->Modified();
+	}
+
 	// The Moon's path over +-15 days, and where it crosses the ecliptic (the nodes: eclipses happen
 	// only when a syzygy falls near one).
 	void buildPath(double tt) {
@@ -450,6 +610,9 @@ struct EclipseDialog {
 				earthM->SetElement(i, 1, R * e2[i]);
 				earthM->SetElement(i, 2, R * e3[i]);
 				earthM->SetElement(i, 3, 0.0);
+				eAx[0][i] = e1[i];
+				eAx[1][i] = e2[i];
+				eAx[2][i] = e3[i];
 			}
 			earthM->Modified();
 		}
@@ -464,38 +627,66 @@ struct EclipseDialog {
 		const double origin[3] = {0, 0, 0};
 		shadeSkin(0, origin);
 		shadeSkin(1, M);
-		// Shadow cones at true scale.
+		// Shadow cones, as wide as the bodies are drawn ("Size ×" times the true width), their tips where
+		// they truly are. An umbra ends at its apex; the penumbrae (and the Earth's umbra, apex ~217 radii)
+		// run far past the Moon's orbit, so no cone is seen ending in empty space.
 		{
 			const double Rs = kEphSunRkm / kEclRE, Rm = kEphMoonRkm / kEclRE, Re = kEclDanjon;
+			const double reach = 400.0, sz = sizeBox->value();
 			const double dS = eclNorm(S);
 			double u[3];
 			for (int i = 0; i < 3; ++i) u[i] = -S[i] / dS;
-			coneMesh(conePD[0], origin, u, Re, -(Rs - Re) / dS, std::min(Re * dS / (Rs - Re), 90.0));
-			coneMesh(conePD[1], origin, u, Re, (Rs + Re) / dS, 90.0);
+			coneMesh(conePD[0], origin, u, sz * Re, -sz * (Rs - Re) / dS, std::min(Re * dS / (Rs - Re), reach));
+			coneMesh(conePD[1], origin, u, sz * Re, sz * (Rs + Re) / dS, reach);
 			double SM[3], um[3];
 			for (int i = 0; i < 3; ++i) SM[i] = M[i] - S[i];
 			const double dSM = eclNorm(SM);
 			for (int i = 0; i < 3; ++i) um[i] = SM[i] / dSM;
-			const double reach = eclNorm(M) + 3.0;
-			coneMesh(conePD[2], M, um, Rm, -(Rs - Rm) / dSM, std::min(Rm * dSM / (Rs - Rm), reach));
-			coneMesh(conePD[3], M, um, Rm, (Rs + Rm) / dSM, reach);
+			coneMesh(conePD[2], M, um, sz * Rm, -sz * (Rs - Rm) / dSM, std::min(Rm * dSM / (Rs - Rm), reach));
+			coneMesh(conePD[3], M, um, sz * Rm, sz * (Rs + Rm) / dSM, reach);
+			shadowEdge(edgePD[0], um, -(Rs - Rm) / dSM);
+			shadowEdge(edgePD[1], um, (Rs + Rm) / dSM);
+			// From the Earth's sunward surface, never from inside it (a line through the globe shows on it).
+			const double r0 = drawR(0) * 1.01;
+			sunSrc->SetPoint1(r0 * -u[0], r0 * -u[1], r0 * -u[2]);
 			sunSrc->SetPoint2(75.0 * -u[0], 75.0 * -u[1], 75.0 * -u[2]);
 			sunLbl->SetPosition(80.0 * -u[0], 80.0 * -u[1], 80.0 * -u[2]);
 		}
 		buildPath(tt);
-		earthLbl->SetPosition(0, 0, drawR(0) + 0.8);
-		moonLbl->SetPosition(M[0], M[1], M[2] + drawR(1) + 0.6);
-		placeCamera();
+		// A change of time moves the bodies and nothing else: the camera stays where it is.
 		updateInfo(tt);
+		updatePlace(tt);
 		ren->ResetCameraClippingRange();
 		view->renderWindow()->Render();
 	}
 
-	// The camera presets that follow the bodies (re-placed at every step).
+	// Before every render: the near plane as far out as the nearest body allows. VTK's own fit sets it at
+	// a thousandth of the far plane (the long cones push that far away), and with so little depth
+	// precision the terminator rings and the lines lose to the globes they lie on.
+	void fixClip() {
+		if (!sizeBox) return;
+		vtkCamera *cam = ren->GetActiveCamera();
+		double p[3], pm[3], r[2];
+		cam->GetPosition(p);
+		cam->GetClippingRange(r);
+		for (int i = 0; i < 3; ++i) pm[i] = p[i] - M[i];
+		const double nearest = std::min(eclNorm(p) - drawR(0), eclNorm(pm) - drawR(1));
+		if (nearest > 0.0) r[0] = std::max(r[0], 0.3 * nearest);
+		cam->SetClippingRange(r[0], std::max(r[1], 1.01 * r[0]));
+	}
+
+	// A camera preset, placed ONCE (its button, or going to an eclipse); time changes never move it.
+	void applyCamera() {
+		placeCamera();
+		ren->ResetCameraClippingRange();
+		view->renderWindow()->Render();
+	}
+
+	// Where each camera preset stands, for the instant shown.
 	void placeCamera() {
 		// The Sun line runs straight through the camera of "Earth from the Sun": hidden there.
 		sunLine->SetVisibility(camMode != 1);
-		sunLbl->SetVisibility(camMode != 1 && namesBox->isChecked());
+		sunLbl->SetVisibility(camMode != 1);
 		if (camMode == 0) return;
 		vtkCamera *cam = ren->GetActiveCamera();
 		double s[3], m[3];
@@ -503,20 +694,23 @@ struct EclipseDialog {
 		vtkMath::Normalize(s);
 		const double dm = eclNorm(M);
 		for (int i = 0; i < 3; ++i) m[i] = M[i] / dm;
+		// Each preset frames its body as it is DRAWN: the distances follow the "Size ×" box.
+		const double sz = sizeBox->value();
 		if (camMode == 1) {                                   // the Earth from the Sun's side
 			cam->SetFocalPoint(0, 0, 0);
-			cam->SetPosition(9.0 * s[0], 9.0 * s[1], 9.0 * s[2]);
+			cam->SetPosition(9.0 * sz * s[0], 9.0 * sz * s[1], 9.0 * sz * s[2]);
 			cam->SetViewAngle(30.0);
 		}
 		else if (camMode == 2) {                              // the Moon from the Earth
 			cam->SetFocalPoint(M);
-			cam->SetPosition(M[0] - 3.0 * m[0], M[1] - 3.0 * m[1], M[2] - 3.0 * m[2]);
+			cam->SetPosition(M[0] - 3.0 * sz * m[0], M[1] - 3.0 * sz * m[1], M[2] - 3.0 * sz * m[2]);
 			cam->SetViewAngle(30.0);
 		}
 		else {                                                // the Earth from beside the Moon
 			cam->SetFocalPoint(0, 0, 0);
-			cam->SetPosition(M[0] * 0.85, M[1] * 0.85, M[2] * 0.85 + 2.0);
-			cam->SetViewAngle(12.0);
+			const double p[3] = {M[0] * 0.85, M[1] * 0.85, M[2] * 0.85 + 2.0};
+			cam->SetPosition(p);
+			cam->SetViewAngle(std::min(80.0, 2.0 * std::atan(5.4 * drawR(0) / eclNorm(p)) / kEphRad));
 		}
 		cam->SetViewUp(0, 0, 1);
 	}
@@ -536,6 +730,7 @@ struct EclipseDialog {
 	void updateInfo(double tt) {
 		const double dM = eclNorm(M) * kEclRE, dS = eclNorm(S) * kEclRE / kEphAUkm;
 		const double ce = std::clamp(eclDot(S, M) / (eclNorm(S) * eclNorm(M)), -1.0, 1.0);
+		litFrac = 0.5 * (1.0 - ce);
 		// The list's own classifier, at this instant (one formula for the list and for "now").
 		QString now = "no eclipse";
 		EclEvent e;
@@ -547,8 +742,139 @@ struct EclipseDialog {
 		info->setText(QString("<b>%1 UTC</b><br>TT − UT = %2 s<br><br>Moon: %3 km (%4 Earth radii), %5% lit<br>"
 		                      "Sun: %6 AU<br><br>Now: %7")
 			.arg(ephDateTime(jd).toString("yyyy-MM-dd HH:mm:ss")).arg(ephDeltaT(2000.0 + (jd - 2451545.0) / 365.25), 0, 'f', 0)
-			.arg(dM, 0, 'f', 0).arg(dM / kEclRE, 0, 'f', 2).arg(50.0 * (1.0 - ce), 0, 'f', 0).arg(dS, 0, 'f', 4)
+			.arg(dM, 0, 'f', 0).arg(dM / kEclRE, 0, 'f', 2).arg(100.0 * litFrac, 0, 'f', 0).arg(dS, 0, 'f', 4)
 			.arg(now));
+	}
+
+	// The Moon's direction from the place (east, north, up; unit) at the UT Julian Date `t`, and the Sun's.
+	void placeDirs(double t, double m[3], double s[3]) const {
+		const double tt = ephTT(t), la = lat->value(), lo = lon->value();
+		double sq[3], mq[3], H[3][3];
+		ephGeocentric(SKY_SUN, tt, sq);
+		ephGeocentric(SKY_MOON, tt, mq);
+		ephTopocentric(t, tt, la, lo, mq);
+		ephHorizonMatrix(t, tt, la, lo, H);
+		for (int i = 0; i < 3; ++i) {
+			m[i] = H[i][0] * mq[0] + H[i][1] * mq[1] + H[i][2] * mq[2];
+			s[i] = H[i][0] * sq[0] + H[i][1] * sq[1] + H[i][2] * sq[2];
+		}
+		vtkMath::Normalize(m);
+		vtkMath::Normalize(s);
+	}
+
+	// The next instant within 36 h after `jd` when the Moon's centre crosses the rise/set altitude going
+	// up (`rising`) or down; 0 = none. -0.833 deg: the upper limb on a horizon lifted by refraction.
+	double nextCrossing(bool rising) const {
+		const double h0 = -0.833;
+		auto alt = [this](double t) {
+			double m[3], s[3], a, z;
+			placeDirs(t, m, s);
+			ephAltAz(m, a, z);
+			return a;
+		};
+		const double step = 10.0 / 1440.0;
+		double t0 = jd, a0 = alt(t0) - h0;
+		for (double t1 = jd + step; t1 <= jd + 1.5; t1 += step) {
+			const double a1 = alt(t1) - h0;
+			if ((rising && a0 < 0.0 && a1 >= 0.0) || (!rising && a0 >= 0.0 && a1 < 0.0)) {
+				double lo = t0, hi = t1;
+				for (int i = 0; i < 20; ++i) {
+					const double mid = 0.5 * (lo + hi);
+					if (((alt(mid) - h0) >= 0.0) == rising) hi = mid;
+					else lo = mid;
+				}
+				return 0.5 * (lo + hi);
+			}
+			t0 = t1;
+			a0 = a1;
+		}
+		return 0.0;
+	}
+
+	// "Moon from a place": the disc as that place sees it, and its numbers.
+	void updatePlace(double tt) {
+		double m[3], s[3], alt, az;
+		placeDirs(jd, m, s);
+		ephAltAz(m, alt, az);
+		// The disc's own axes: "up" is the zenith squared to the line of sight (north if the Moon is AT the
+		// zenith), "right" is sight x up; the bright limb points at the Sun along the disc.
+		double u[3] = {0.0, 0.0, 1.0}, r[3], b[3];
+		const double zm = eclDot(u, m);
+		for (int i = 0; i < 3; ++i) u[i] -= zm * m[i];
+		if (vtkMath::Normalize(u) < 1e-9) {
+			const double n[3] = {0.0, 1.0, 0.0};
+			const double nm = eclDot(n, m);
+			for (int i = 0; i < 3; ++i) u[i] = n[i] - nm * m[i];
+			vtkMath::Normalize(u);
+		}
+		vtkMath::Cross(m, u, r);
+		const double sm = eclDot(s, m);
+		for (int i = 0; i < 3; ++i) b[i] = s[i] - sm * m[i];
+		vtkMath::Normalize(b);
+		phase->illum = litFrac;
+		phase->bx = eclDot(b, r);
+		phase->by = -eclDot(b, u);
+		phase->up = alt > -0.833;
+		phase->update();
+		// Phase name and age, from the Sun-Moon elongation (0 new, 180 full; growing = waxing).
+		double e = eclElong(tt, 0.0);
+		if (e < 0.0) e += 360.0;
+		static const char *names[8] = {"New Moon", "Waxing crescent", "First quarter", "Waxing gibbous",
+		                               "Full Moon", "Waning gibbous", "Last quarter", "Waning crescent"};
+		const int sec = int(std::floor((e + 22.5) / 45.0)) % 8;
+		const double tNew = eclSyzygy(tt - e / kEclRate, 0.0);
+		double tNext = eclSyzygy(tt + (360.0 - e) / kEclRate, 0.0);
+		if (tNext <= tt) tNext = eclSyzygy(tNext + 29.530589, 0.0);
+		double tFull = eclSyzygy(tt + std::fmod(540.0 - e, 360.0) / kEclRate, 180.0);
+		if (tFull <= tt) tFull = eclSyzygy(tFull + 29.530589, 180.0);
+		mAlt = alt;
+		mAz = az;
+		mElong = e;
+		mAge = tt - tNew;
+		mNew = eclUT(tNext);
+		mFull = eclUT(tFull);
+		mRise = nextCrossing(true);
+		mSet = nextCrossing(false);
+		static const char *pts[16] = {"N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW",
+		                              "W", "WNW", "NW", "NNW"};
+		auto when = [](double t) {
+			return t > 0.0 ? ephDateTime(t).toString("yyyy-MM-dd HH:mm") : QString("none within 36 h");
+		};
+		moonInfo->setText(QString("<b>%1</b>, %2% lit, %3 days old<br>Altitude %4°, azimuth %5° (%6)%7<br>"
+		                          "Next rise: %8<br>Next set: %9<br>New Moon: %10<br>Full Moon: %11<br>"
+		                          "<small>Times in UTC.</small>")
+			.arg(names[sec]).arg(100.0 * litFrac, 0, 'f', 0).arg(mAge, 0, 'f', 1)
+			.arg(alt, 0, 'f', 1).arg(az, 0, 'f', 1).arg(pts[int(std::floor(az / 22.5 + 0.5)) % 16])
+			.arg(phase->up ? "" : " — <b>below the horizon</b>")
+			.arg(when(mRise)).arg(when(mSet))
+			.arg(ephDateTime(mNew).toString("yyyy-MM-dd HH:mm")).arg(ephDateTime(mFull).toString("yyyy-MM-dd HH:mm")));
+	}
+
+	// The place picked: kept in the same settings the Sky viewer stands on (one place for both).
+	void savePlace() {
+		QSettings st = igmtSettings();
+		st.setValue("sky/lat", lat->value());
+		st.setValue("sky/lon", lon->value());
+		st.setValue("sky/place", place->currentText());
+	}
+
+	// "My location": where the user is, asked of GMT.jl's whereami() once per session (a web lookup),
+	// put first in the place list and picked.
+	void setHome() {
+		static bool found = false;
+		static double ll[2] = {0.0, 0.0};
+		static QString name;
+		if (!found && g_juliaWhereami) {
+			showBusyDialog("Finding your location...");
+			char buf[256] = {};
+			found = g_juliaWhereami(ll, buf, int(sizeof(buf))) == 1;
+			closeBusyDialog();
+			name = QString::fromUtf8(buf);
+		}
+		if (!found || !dlg) return;
+		const QString txt = "My location" + (name.isEmpty() ? QString() : " (" + name + ")");
+		if (place->findText(txt) < 0) place->insertItem(1, txt, QVariant(QPointF(ll[1], ll[0])));
+		place->setCurrentIndex(place->findText(txt));   // sets the lat/lon boxes, saves, redraws
 	}
 
 	// The list, by the Solar / Lunar / Penumbral boxes; the row nearest `jd` current.
@@ -578,7 +904,9 @@ struct EclipseDialog {
 	void gotoEvent(int i) {
 		if (i < 0 || i >= int(events.size())) return;
 		camMode = events[size_t(i)].solar ? 1 : 2;
+		clearTrack();                                         // another eclipse: the last one's track goes
 		setJD(events[size_t(i)].jdUT);
+		applyCamera();
 	}
 
 	// The next (dir +1) or previous (-1) listed eclipse from the current instant.
@@ -601,6 +929,173 @@ struct EclipseDialog {
 	void stopPlay() {
 		if (timer && timer->isActive()) timer->stop();
 		if (play) play->setText("Play");
+		animEnd = 0.0;
+		if (animBtn) animBtn->setText("Animate eclipse");
+	}
+
+	// The listed eclipse at the instant shown (greatest eclipse within half a day of it), or -1.
+	int eventAt() const {
+		int best = -1;
+		double bd = 0.5;
+		for (int i = 0; i < int(events.size()); ++i) {
+			const double d = std::fabs(events[size_t(i)].jdUT - jd);
+			if (d < bd) {
+				bd = d;
+				best = i;
+			}
+		}
+		return best;
+	}
+
+	// An eclipse's first and last contacts (UT JD): where the list's own test (eclClassify) starts and
+	// stops finding it -- out from greatest eclipse a minute at a time, then halved down to a second.
+	void contacts(const EclEvent &e, double &t0, double &t1) const {
+		auto in = [&](double t) {
+			EclEvent x;
+			return eclClassify(ephTT(t), e.solar, x);
+		};
+		for (int dir = -1; dir <= 1; dir += 2) {
+			double a = e.jdUT, b = a;
+			for (int k = 0; k < 720; ++k) {
+				b = a + dir / 1440.0;
+				if (!in(b)) break;
+				a = b;
+			}
+			for (int k = 0; k < 11; ++k) {
+				const double c = 0.5 * (a + b);
+				(in(c) ? a : b) = c;
+			}
+			(dir < 0 ? t0 : t1) = a;
+		}
+	}
+
+	// The track's new frame: where the Moon's shadow axis meets the Earth (in a partial eclipse, the point
+	// of the Earth nearest it), and the umbra edge's points farthest either side of the way it goes.
+	void addTrack() {
+		const double nan = std::numeric_limits<double>::quiet_NaN();
+		auto body = [this](const double p[3], double s) {     // ecliptic frame -> the Earth's, above its skin
+			std::array<double, 3> b;
+			for (int i = 0; i < 3; ++i) b[size_t(i)] = s * eclDot(p, eAx[i]);
+			return b;
+		};
+		double SM[3], um[3], Q[3], c[3];
+		for (int i = 0; i < 3; ++i) SM[i] = M[i] - S[i];
+		const double dSM = eclNorm(SM);
+		for (int i = 0; i < 3; ++i) um[i] = SM[i] / dSM;
+		const double xq = -eclDot(M, um);
+		for (int i = 0; i < 3; ++i) Q[i] = M[i] + xq * um[i];
+		const double d = eclNorm(Q);
+		if (d < 1.0) {
+			const double x = xq - std::sqrt(1.0 - d * d);
+			for (int i = 0; i < 3; ++i) c[i] = M[i] + x * um[i];
+		}
+		else
+			for (int i = 0; i < 3; ++i) c[i] = Q[i] / d;
+		trC.push_back(body(c, 1.007));
+		// The limits: the edge's generator square to the way the shadow moves over the ground, followed down
+		// to the Earth -- the umbra's (k 0) and the penumbra's (k 1), north and south. A generator that misses
+		// the Earth = no limit there (the zone runs off the Earth on that side).
+		const double Rs = kEphSunRkm / kEclRE, Rm = kEphMoonRkm / kEclRE;
+		double e[3] = {0, 0, 0};
+		bool haveDir = false;
+		if (trC.size() >= 2) {
+			const auto &a = trC[trC.size() - 2], &b = trC.back();
+			double dir[3] = {0, 0, 0}, side[3];
+			for (int j = 0; j < 3; ++j)                           // the ground motion, Earth frame -> ecliptic
+				for (int i = 0; i < 3; ++i) dir[i] += (b[size_t(j)] - a[size_t(j)]) * eAx[j][i];
+			vtkMath::Cross(c, dir, side);
+			const double sa = eclDot(side, um);
+			for (int i = 0; i < 3; ++i) e[i] = side[i] - sa * um[i];
+			haveDir = vtkMath::Normalize(e) > 0.0;
+		}
+		for (int k = 0; k < 2; ++k) {
+			const double slope = k == 0 ? -(Rs - Rm) / dSM : (Rs + Rm) / dSM;
+			std::array<double, 3> lim[2] = {{nan, 0, 0}, {nan, 0, 0}};
+			for (int sd = 0; haveDir && sd < 2; ++sd) {
+				double A[3], B[3];                                // the generator through +-e: A + x * B
+				for (int i = 0; i < 3; ++i) {
+					const double ei = (sd == 0 ? 1.0 : -1.0) * e[i];
+					A[i] = M[i] + Rm * ei;
+					B[i] = um[i] + slope * ei;
+				}
+				const double qa = eclDot(B, B), qb = 2.0 * eclDot(A, B), qc = eclDot(A, A) - 1.0;
+				const double disc = qb * qb - 4.0 * qa * qc;
+				const double x = disc < 0.0 ? -1.0 : (-qb - std::sqrt(disc)) / (2.0 * qa);
+				if (x < 0.0) continue;
+				double P[3];
+				for (int i = 0; i < 3; ++i) P[i] = A[i] + x * B[i];
+				lim[sd] = body(P, 1.007);
+			}
+			(k == 0 ? trN : trPN).push_back(lim[0]);
+			(k == 0 ? trS : trPS).push_back(lim[1]);
+		}
+		buildTrack();
+	}
+
+	// One track polydata from point lists (a NaN x breaks the line).
+	static void trackLines(vtkPolyData *pd, std::initializer_list<const std::vector<std::array<double, 3>> *> lists) {
+		vtkNew<vtkPoints> pts;
+		vtkNew<vtkCellArray> lines;
+		for (const auto *v : lists) {
+			std::vector<vtkIdType> run;
+			auto flush = [&]() {
+				if (run.size() > 1) lines->InsertNextCell(vtkIdType(run.size()), run.data());
+				run.clear();
+			};
+			for (const auto &p : *v) {
+				if (std::isnan(p[0])) {
+					flush();
+					continue;
+				}
+				run.push_back(pts->InsertNextPoint(p.data()));
+			}
+			flush();
+		}
+		pd->SetPoints(pts);
+		pd->SetLines(lines);
+		pd->Modified();
+	}
+
+	void buildTrack() {
+		trackLines(trackPD, {&trC, &trN, &trS});
+		trackLines(trackPenPD, {&trPN, &trPS});
+	}
+
+	void clearTrack() {
+		for (auto *v : {&trC, &trN, &trS, &trPN, &trPS}) v->clear();
+		if (trackPD) buildTrack();
+	}
+
+	// "Animate eclipse": the eclipse at the instant shown, first contact to last, in 600 frames (~24 s).
+	// Its camera is placed once, at the start; a lunar one follows the Moon (as the user turned it).
+	void animateEclipse() {
+		if (animEnd > 0.0) {
+			stopPlay();
+			return;
+		}
+		const int i = eventAt();
+		if (i < 0) {
+			QMessageBox::information(dlg, dlg->windowTitle(),
+			                         "There is no eclipse at the instant shown.\n\nPick one in the list (or go to "
+			                         "one with ◀ Eclipse / Eclipse ▶), then animate it.");
+			return;
+		}
+		stopPlay();
+		const EclEvent &e = events[size_t(i)];
+		double t0 = e.jdUT, t1 = e.jdUT;
+		contacts(e, t0, t1);
+		animBegin = t0;
+		animEnd = animFinish = t1;
+		animStep = (t1 - t0) / 600.0;
+		animFollow = !e.solar;
+		camMode = e.solar ? 1 : 2;
+		clearTrack();
+		setJD(t0);
+		if (e.solar) addTrack();
+		applyCamera();
+		play->setText("Pause");
+		animBtn->setText("Stop");
+		timer->start();
 	}
 
 	double stepDays() const {
@@ -608,15 +1103,47 @@ struct EclipseDialog {
 		return d[std::clamp(stepBox->currentIndex(), 0, 5)];
 	}
 
-	void setJD(double v) {
+	// Every change of time comes here. The slider keeps its centre while `jd` stays within its month (and
+	// always when the slider itself moved); otherwise it re-centres on the new instant.
+	void setJD(double v, bool fromSlider = false) {
 		const double lo = ephJD(when->minimumDateTime()), hi = ephJD(when->maximumDateTime());
 		jd = std::clamp(v, lo, hi);
-		QSignalBlocker b(when);
-		when->setDateTime(ephDateTime(jd));
+		{
+			QSignalBlocker b(when);
+			when->setDateTime(ephDateTime(jd));
+		}
+		if (!fromSlider) {
+			if (std::fabs(jd - sliderMid) * 1440.0 > slider->maximum()) sliderMid = jd;
+			QSignalBlocker b(slider);
+			slider->setValue(int(std::lround((jd - sliderMid) * 1440.0)));
+		}
 		update();
 	}
 
 	void tick() {
+		if (animEnd > 0.0) {                                   // "Animate eclipse" running
+			const double t = std::min(jd + animStep, animEnd), M0[3] = {M[0], M[1], M[2]};
+			setJD(t);
+			if (!animFollow) {                                 // a solar eclipse leaves its track on the Earth
+				addTrack();
+				view->renderWindow()->Render();
+			}
+			else {                                             // keep the Moon where it was in the view
+				vtkCamera *cam = ren->GetActiveCamera();
+				double p[3], f[3];
+				cam->GetPosition(p);
+				cam->GetFocalPoint(f);
+				for (int i = 0; i < 3; ++i) {
+					p[i] += M[i] - M0[i];
+					f[i] += M[i] - M0[i];
+				}
+				cam->SetPosition(p);
+				cam->SetFocalPoint(f);
+				view->renderWindow()->Render();
+			}
+			if (t >= animEnd) stopPlay();
+			return;
+		}
 		setJD(jd + (backBox->isChecked() ? -1.0 : 1.0) * stepDays());
 	}
 
@@ -677,7 +1204,14 @@ static bool eclipseOpen(QWidget *parent, Scene *scene) {
 	m->ren = vtkSmartPointer<vtkRenderer>::New();
 	m->ren->SetBackground(0.01, 0.01, 0.04);
 	rw->AddRenderer(m->ren);
-	m->labRen = vtkSmartPointer<vtkRenderer>::New();        // labels: overlay, same camera
+	m->view->ren = m->ren;
+	{
+		vtkNew<vtkCallbackCommand> clip;                    // fixClip, before every render (interaction too)
+		clip->SetClientData(m);
+		clip->SetCallback([](vtkObject *, unsigned long, void *cd, void *) { static_cast<EclipseDialog *>(cd)->fixClip(); });
+		m->ren->AddObserver(vtkCommand::StartEvent, clip);
+	}
+	m->labRen =vtkSmartPointer<vtkRenderer>::New();        // labels: overlay, same camera
 	m->labRen->SetLayer(1);
 	m->labRen->InteractiveOff();
 	m->labRen->SetActiveCamera(m->ren->GetActiveCamera());
@@ -750,6 +1284,24 @@ static bool eclipseOpen(QWidget *parent, Scene *scene) {
 		m->cone[c]->GetProperty()->BackfaceCullingOn();
 		m->ren->AddActor(m->cone[c]);
 	}
+	const double cEdge[3] = {1.0, 1.0, 1.0};
+	for (int k = 0; k < 2; ++k) {                             // a solar eclipse's edges on the Earth, in white
+		m->edgePD[k] = vtkSmartPointer<vtkPolyData>::New();
+		m->edge[k] = eclActor(m->edgePD[k], cEdge, 1.0, k == 0 ? 3.0 : 1.5);
+		m->ren->AddActor(m->edge[k]);
+	}
+	{                                                         // "Animate eclipse"'s track, turning with the Earth
+		const double cTrack[3] = {1.0, 0.3, 0.2};
+		m->trackPD = vtkSmartPointer<vtkPolyData>::New();
+		m->track = eclActor(m->trackPD, cTrack, 1.0, 2.5);
+		m->track->SetUserMatrix(m->earthM);
+		m->ren->AddActor(m->track);
+		const double cPenTrack[3] = {0.8, 0.8, 0.8};
+		m->trackPenPD = vtkSmartPointer<vtkPolyData>::New();
+		m->trackPen = eclActor(m->trackPenPD, cPenTrack, 1.0, 1.8);
+		m->trackPen->SetUserMatrix(m->earthM);
+		m->ren->AddActor(m->trackPen);
+	}
 	m->sunSrc = vtkSmartPointer<vtkLineSource>::New();
 	m->sunSrc->SetPoint1(0, 0, 0);
 	m->sunSrc->Update();
@@ -772,14 +1324,10 @@ static bool eclipseOpen(QWidget *parent, Scene *scene) {
 	m->nodePD = vtkSmartPointer<vtkPolyData>::New();
 	m->nodes = eclActor(m->nodePD, cNode, 1.0);
 	m->ren->AddActor(m->nodes);
-	const double cE[3] = {0.55, 0.75, 1.0}, cM[3] = {0.85, 0.85, 0.82};
-	m->earthLbl = eclLabel("Earth", 13, cE);
-	m->moonLbl = eclLabel("Moon", 12, cM);
 	m->sunLbl = eclLabel("to the Sun", 12, cSun);
 	m->nodeLbl[0] = eclLabel("", 11, cNode);
 	m->nodeLbl[1] = eclLabel("", 11, cNode);
-	for (auto *a : {m->earthLbl.GetPointer(), m->moonLbl.GetPointer(), m->sunLbl.GetPointer(),
-	                m->nodeLbl[0].GetPointer(), m->nodeLbl[1].GetPointer()})
+	for (auto *a : {m->sunLbl.GetPointer(), m->nodeLbl[0].GetPointer(), m->nodeLbl[1].GetPointer()})
 		m->labRen->AddActor(a);
 
 	// ---- the controls ----------------------------------------------------------------------------
@@ -789,7 +1337,18 @@ static bool eclipseOpen(QWidget *parent, Scene *scene) {
 	m->when->setMinimumDateTime(QDateTime(QDate(100, 1, 1), QTime(0, 0), Qt::UTC));
 	m->when->setMaximumDateTime(QDateTime(QDate(2999, 12, 31), QTime(23, 59), Qt::UTC));
 	m->when->setDateTime(QDateTime::currentDateTimeUtc());
-	m->when->setToolTip("The instant shown, in UTC (proleptic Gregorian calendar).");
+	m->when->setCalendarPopup(true);
+	m->when->setCurrentSection(QDateTimeEdit::DaySection);   // the arrows step days until another part is clicked
+	m->when->setToolTip("The instant shown, in UTC (proleptic Gregorian calendar). The arrows (and the mouse "
+	                    "wheel) step the part the cursor is in: click the hour to step hours. The button opens "
+	                    "a calendar.");
+	m->slider = new QSlider(Qt::Horizontal, dlg);              // time, smoothly, through one lunar month
+	m->slider->setRange(-21262, 21262);                       // +-14.77 days (half a synodic month), in minutes
+	m->slider->setSingleStep(10);
+	m->slider->setPageStep(360);
+	m->slider->setToolTip("Drag to move time smoothly through one lunar month: 14.8 days either side of the "
+	                      "date in the box. Only the Moon, the Sun's direction and the shadows move; the view "
+	                      "stays put. Arrow keys: 10 minutes; Page Up / Down: 6 hours.");
 	QPushButton *nowBtn = new QPushButton("Now", dlg);        // back to the present instant
 	m->play = new QPushButton("Play", dlg);                   // run the clock
 	m->play->setToolTip("Run time forward (or backward, with \"Backward\" ticked), one step per frame.");
@@ -809,28 +1368,37 @@ static bool eclipseOpen(QWidget *parent, Scene *scene) {
 	QPushButton *nextBtn = new QPushButton("Eclipse ▶", dlg); // the next listed eclipse
 	prevBtn->setToolTip("Go to the previous eclipse in the list (as filtered).");
 	nextBtn->setToolTip("Go to the next eclipse in the list (as filtered).");
+	m->animBtn = new QPushButton("Animate eclipse", dlg);     // the eclipse at the instant shown, start to end
+	m->animBtn->setToolTip("Run the eclipse at the instant shown from its first contact to its last, in about "
+	                       "24 seconds: a solar eclipse's shadow (the white circles) crossing the Earth, leaving "
+	                       "its track in red (the line of greatest eclipse and the umbra's limits) and light "
+	                       "grey (the limits of the partial zone), or the "
+	                       "Moon crossing the Earth's shadow. Its camera is placed once, at the start. Click "
+	                       "again (or Pause) to stop.");
 	m->sizeBox = new QDoubleSpinBox(dlg);                     // drawn size of the two bodies
-	m->sizeBox->setRange(1.0, 6.0);
+	m->sizeBox->setRange(1.0, 10.0);
 	m->sizeBox->setDecimals(1);
-	m->sizeBox->setValue(1.0);
+	m->sizeBox->setValue(2.0);                               // at true scale (×1) the two are specks in the Overview
 	m->sizeBox->setPrefix("Size ×");
-	m->sizeBox->setToolTip("Draw the Earth and the Moon this many times their size. Distances, shadows and "
-	                       "cones stay true: at ×1 everything is to scale.");
+	m->sizeBox->setToolTip("Draw the Earth and the Moon this many times their size (they open at ×2). The shadow "
+	                       "cones widen with them; distances, and where each cone ends, stay true. At ×1 "
+	                       "everything is to scale, and the Moon is 60 Earth radii away.");
 	m->conesBox = new QCheckBox("Shadow cones", dlg);         // umbra and penumbra of both bodies
 	m->conesBox->setChecked(true);
 	m->pathBox = new QCheckBox("Moon path && nodes", dlg);    // the Moon's path, the ecliptic and the nodes
 	m->pathBox->setChecked(true);
-	m->namesBox = new QCheckBox("Names", dlg);                // body names
-	m->namesBox->setChecked(true);
 	QPushButton *ovBtn = new QPushButton("Overview", dlg);            // free camera over the system
-	QPushButton *sunBtn = new QPushButton("Earth from the Sun", dlg); // follows: where the Moon's shadow falls
-	QPushButton *moonBtn = new QPushButton("Moon from the Earth", dlg);   // follows: the Moon, its phase and the Earth's shadow
-	QPushButton *eFromMBtn = new QPushButton("Earth from the Moon", dlg); // follows
+	QPushButton *sunBtn = new QPushButton("Earth from the Sun", dlg); // camera once: where the Moon's shadow falls
+	QPushButton *moonBtn = new QPushButton("Moon from the Earth", dlg);   // camera once: the Moon and the Earth's shadow
+	QPushButton *eFromMBtn = new QPushButton("Earth from the Moon", dlg); // camera once
 	ovBtn->setToolTip("Free camera over the whole system: the Earth, the Moon's orbit and the shadow cones. "
-	                  "Drag to rotate, wheel to zoom.");
-	sunBtn->setToolTip("Follow the Earth's day side, seen from the Sun: the Moon's shadow in a solar eclipse.");
-	moonBtn->setToolTip("Follow the Moon, seen from the Earth: its phase, and the Earth's shadow in a lunar eclipse.");
-	eFromMBtn->setToolTip("Follow the Earth, seen from beside the Moon.");
+	                  "Drag to rotate, Shift+drag to pan, wheel to zoom.");
+	sunBtn->setToolTip("Look at the Earth's day side from the Sun: the Moon's shadow in a solar eclipse. The camera "
+	                   "is placed once; changing the time leaves it there.");
+	moonBtn->setToolTip("Look at the Moon from the Earth: its phase, and the Earth's shadow in a lunar eclipse. The "
+	                    "camera is placed once; changing the time leaves it there.");
+	eFromMBtn->setToolTip("Look at the Earth from beside the Moon. The camera is placed once; changing the time "
+	                      "leaves it there.");
 	for (QPushButton *b : {nowBtn, m->play, prevBtn, nextBtn, ovBtn, sunBtn, moonBtn, eFromMBtn}) {
 		b->setAutoDefault(false);
 		b->setDefault(false);
@@ -839,6 +1407,40 @@ static bool eclipseOpen(QWidget *parent, Scene *scene) {
 	m->info->setTextFormat(Qt::RichText);
 	m->info->setAlignment(Qt::AlignLeft | Qt::AlignTop);
 	m->info->setWordWrap(true);
+	// "Moon from a place": the place is the Sky viewer's (the same settings), picked by city or lat/lon.
+	{
+		QSettings st = igmtSettings();
+		m->place = new QComboBox(dlg);                        // a city: sets the latitude and longitude
+		m->place->setMinimumContentsLength(12);
+		m->place->setToolTip("Pick a city to see the Moon from; or type a latitude and longitude beside it. "
+		                     "\"My location\" is where you are (GMT.jl's whereami); the panel opens there.");
+		m->place->addItem("(lat / lon)", QVariant());
+		for (const EphCity &c : ephCities()) m->place->addItem(c.name, QVariant(QPointF(c.lat, c.lon)));
+		m->lat = new QDoubleSpinBox(dlg);                     // the place's latitude
+		m->lat->setRange(-90.0, 90.0);
+		m->lat->setDecimals(2);
+		m->lat->setPrefix("lat ");
+		m->lat->setSuffix("°");
+		m->lat->setValue(st.value("sky/lat", 38.72).toDouble());
+		m->lat->setToolTip("The place's latitude (north positive).");
+		m->lon = new QDoubleSpinBox(dlg);                     // the place's longitude
+		m->lon->setRange(-180.0, 180.0);
+		m->lon->setDecimals(2);
+		m->lon->setPrefix("lon ");
+		m->lon->setSuffix("°");
+		m->lon->setValue(st.value("sky/lon", -9.13).toDouble());
+		m->lon->setToolTip("The place's longitude (east positive).");
+		const int k = m->place->findText(st.value("sky/place", "Lisbon").toString());
+		m->place->setCurrentIndex(k >= 0 ? k : 0);
+	}
+	m->phase = new MoonPhaseView(dlg);                        // the Moon's disc as the place sees it
+	m->phase->setToolTip("The Moon as seen from the place at the instant shown: its phase, and the tilt of the "
+	                     "lit side in that place's sky (up = the zenith). A crescent lies on its back near the "
+	                     "equator and turns over south of it.");
+	m->moonInfo = new QLabel(dlg);                            // phase name, age, altitude, rise / set, next new / full
+	m->moonInfo->setTextFormat(Qt::RichText);
+	m->moonInfo->setAlignment(Qt::AlignLeft | Qt::AlignTop);
+	m->moonInfo->setWordWrap(true);
 	m->solarBox = new QCheckBox("Solar", dlg);                // list solar eclipses
 	m->lunarBox = new QCheckBox("Lunar", dlg);                // list lunar eclipses
 	m->penBox = new QCheckBox("Penumbral", dlg);              // list penumbral lunar eclipses too
@@ -876,6 +1478,7 @@ static bool eclipseOpen(QWidget *parent, Scene *scene) {
 	row1->addSpacing(12);
 	row1->addWidget(prevBtn);
 	row1->addWidget(nextBtn);
+	row1->addWidget(m->animBtn);
 	row1->addStretch(1);
 	// The green ? disk: this demo's tutorial page (docs/src/82-earth-moon.md) or the manual, in the
 	// browser -- the same plain openUrl the Help menu's manual uses.
@@ -904,7 +1507,6 @@ static bool eclipseOpen(QWidget *parent, Scene *scene) {
 	row2->addWidget(m->sizeBox);
 	row2->addWidget(m->conesBox);
 	row2->addWidget(m->pathBox);
-	row2->addWidget(m->namesBox);
 	row2->addStretch(1);
 	row2->addWidget(ovBtn);
 	row2->addWidget(sunBtn);
@@ -914,6 +1516,21 @@ static bool eclipseOpen(QWidget *parent, Scene *scene) {
 	auto *sideLay = new QVBoxLayout(m->side);
 	sideLay->setContentsMargins(0, 0, 0, 0);
 	sideLay->addWidget(m->info);
+	{
+		auto *box = new QGroupBox("Moon from a place", m->side);
+		auto *bl = new QVBoxLayout(box);
+		bl->setContentsMargins(6, 4, 6, 4);
+		auto *pr = new QHBoxLayout;
+		pr->addWidget(m->place, 1);
+		pr->addWidget(m->lat);
+		pr->addWidget(m->lon);
+		bl->addLayout(pr);
+		auto *mr = new QHBoxLayout;
+		mr->addWidget(m->phase, 0, Qt::AlignTop);
+		mr->addWidget(m->moonInfo, 1);
+		bl->addLayout(mr);
+		sideLay->addWidget(box);
+	}
 	auto *filt = new QHBoxLayout;
 	filt->addWidget(new QLabel("<b>Eclipses</b>", m->side));
 	filt->addWidget(m->solarBox);
@@ -937,6 +1554,13 @@ static bool eclipseOpen(QWidget *parent, Scene *scene) {
 	auto *lay = new QVBoxLayout(dlg);
 	lay->setContentsMargins(6, 6, 6, 6);
 	lay->addLayout(top, 1);
+	{
+		auto *row0 = new QHBoxLayout;
+		row0->addWidget(new QLabel("−14.8 d", dlg));
+		row0->addWidget(m->slider, 1);
+		row0->addWidget(new QLabel("+14.8 d", dlg));
+		lay->addLayout(row0);
+	}
 	lay->addLayout(row1);
 	lay->addLayout(row2);
 	{
@@ -958,15 +1582,34 @@ static bool eclipseOpen(QWidget *parent, Scene *scene) {
 		m->play->setText("Pause");
 		m->timer->start();
 	});
-	QObject::connect(m->when, &QDateTimeEdit::dateTimeChanged, dlg, [m](const QDateTime &t) {
-		m->jd = ephJD(t);
+	QObject::connect(m->when, &QDateTimeEdit::dateTimeChanged, dlg, [m](const QDateTime &t) { m->setJD(ephJD(t)); });
+	QObject::connect(m->slider, &QSlider::valueChanged, dlg, [m](int v) { m->setJD(m->sliderMid + v / 1440.0, true); });
+	QObject::connect(m->place, &QComboBox::currentIndexChanged, dlg, [m](int) {
+		const QVariant v = m->place->currentData();
+		if (v.isValid()) {
+			const QPointF p = v.toPointF();
+			QSignalBlocker a(m->lat), b(m->lon);
+			m->lat->setValue(p.x());
+			m->lon->setValue(p.y());
+		}
+		m->savePlace();
 		m->update();
 	});
+	for (QDoubleSpinBox *s : {m->lat, m->lon})
+		QObject::connect(s, &QDoubleSpinBox::valueChanged, dlg, [m](double) {
+			{
+				QSignalBlocker b(m->place);
+				m->place->setCurrentIndex(0);                     // typed by hand: no city any more
+			}
+			m->savePlace();
+			m->update();
+		});
 	QObject::connect(nowBtn, &QPushButton::clicked, dlg, [m]() { m->setJD(ephJD(QDateTime::currentDateTimeUtc())); });
 	QObject::connect(stepLeft, &QToolButton::clicked, dlg, [m]() { m->setJD(m->jd - m->stepDays()); });
 	QObject::connect(stepRight, &QToolButton::clicked, dlg, [m]() { m->setJD(m->jd + m->stepDays()); });
 	QObject::connect(prevBtn, &QPushButton::clicked, dlg, [m]() { m->stepEvent(-1); });
 	QObject::connect(nextBtn, &QPushButton::clicked, dlg, [m]() { m->stepEvent(1); });
+	QObject::connect(m->animBtn, &QPushButton::clicked, dlg, [m]() { m->animateEclipse(); });
 	QObject::connect(m->sizeBox, &QDoubleSpinBox::valueChanged, dlg, [m](double) { m->update(); });
 	QObject::connect(m->conesBox, &QCheckBox::toggled, dlg, [m](bool on) {
 		for (auto &c : m->cone) c->SetVisibility(on);
@@ -980,21 +1623,15 @@ static bool eclipseOpen(QWidget *parent, Scene *scene) {
 		m->nodeLbl[1]->SetVisibility(on);
 		m->view->renderWindow()->Render();
 	});
-	QObject::connect(m->namesBox, &QCheckBox::toggled, dlg, [m](bool on) {
-		m->earthLbl->SetVisibility(on);
-		m->moonLbl->SetVisibility(on);
-		m->sunLbl->SetVisibility(on);
-		m->view->renderWindow()->Render();
-	});
 	for (QCheckBox *b : {m->solarBox, m->lunarBox, m->penBox})
 		QObject::connect(b, &QCheckBox::toggled, dlg, [m](bool) { m->fillList(); });
 	QObject::connect(m->list, &QListWidget::itemClicked, dlg, [m](QListWidgetItem *it) {
 		m->gotoEvent(it->data(Qt::UserRole).toInt());
 	});
 	QObject::connect(ovBtn, &QPushButton::clicked, dlg, [m]() { m->overview(); });
-	QObject::connect(sunBtn, &QPushButton::clicked, dlg, [m]() { m->camMode = 1; m->update(); });
-	QObject::connect(moonBtn, &QPushButton::clicked, dlg, [m]() { m->camMode = 2; m->update(); });
-	QObject::connect(eFromMBtn, &QPushButton::clicked, dlg, [m]() { m->camMode = 3; m->update(); });
+	QObject::connect(sunBtn, &QPushButton::clicked, dlg, [m]() { m->camMode = 1; m->applyCamera(); });
+	QObject::connect(moonBtn, &QPushButton::clicked, dlg, [m]() { m->camMode = 2; m->applyCamera(); });
+	QObject::connect(eFromMBtn, &QPushButton::clicked, dlg, [m]() { m->camMode = 3; m->applyCamera(); });
 	QObject::connect(m->sideBtn, &QToolButton::clicked, dlg, [m]() { m->setSide(!m->side->isVisible()); });
 
 	// PARKED LIKE EVERY TOOL WINDOW (parkTool / parkOnMinimise, 50_scene.cpp).
@@ -1036,6 +1673,7 @@ static bool eclipseOpen(QWidget *parent, Scene *scene) {
 	                      ephJD(QDateTime(QDate(2100, 12, 31), QTime(23, 59), Qt::UTC)));
 	QApplication::restoreOverrideCursor();
 	m->jd = ephJD(m->when->dateTime());
+	m->sliderMid = m->jd;
 	m->update();
 	m->fillList();
 	m->overview();
@@ -1050,5 +1688,18 @@ static bool eclipseOpen(QWidget *parent, Scene *scene) {
 		m->earth->GetProperty()->SetColor(1.0, 1.0, 1.0);
 		m->view->renderWindow()->Render();
 	}
+	// "My location", once the host has wired whereami (lazily, on this menu entry; ~10 s at most).
+	warmupTool("whereami");
+	auto tries = std::make_shared<int>(0);
+	auto step = std::make_shared<std::function<void()>>();
+	*step = [dlg, tries, step]() {
+		if (g_eclipse == nullptr || g_eclipse->dlg != dlg) return;
+		if (!g_juliaWhereami && ++*tries < 200) {
+			QTimer::singleShot(50, dlg, *step);
+			return;
+		}
+		g_eclipse->setHome();
+	};
+	QTimer::singleShot(0, dlg, *step);
 	return true;
 }
