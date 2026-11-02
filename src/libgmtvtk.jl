@@ -129,7 +129,7 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_view_points, :gmtvtk_promote_points_h, :gmtvtk_selection_count, :gmtvtk_get_selection,
 	:gmtvtk_get_selection_xyz, :gmtvtk_set_cloud_selection_callback,   # a cloud selection reaches the REPL (points.jl)
 	:gmtvtk_set_object_visible, :gmtvtk_set_grid_frame_h, :gmtvtk_set_axes_shown_h, :gmtvtk_set_extra_owner_h, :gmtvtk_restack_grid_h, :gmtvtk_raster_layers_h, :gmtvtk_refit_view_h,
-	:gmtvtk_view_fv, :gmtvtk_promote_fv_h, :gmtvtk_set_julia_eval, :gmtvtk_set_julia_complete, :gmtvtk_set_console_history_path,:gmtvtk_set_table, :gmtvtk_log_error, :gmtvtk_log_info,
+	:gmtvtk_view_fv, :gmtvtk_promote_fv_h, :gmtvtk_set_julia_eval, :gmtvtk_set_julia_complete, :gmtvtk_set_console_history_path,:gmtvtk_set_table, :gmtvtk_set_matrix_table,:gmtvtk_log_error, :gmtvtk_log_info,
 	:gmtvtk_error_box, :gmtvtk_get_xfac,
 	:gmtvtk_take_messages, :gmtvtk_shutdown, :gmtvtk_set_headless,   # Qt's own warnings -> the failure sink; ordered teardown
 	:gmtvtk_save_png, :gmtvtk_orbit, :gmtvtk_set_stereo,
@@ -233,6 +233,7 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_set_magfield_coast_callback,
 	:gmtvtk_set_magfield_mask_callback,
 	:gmtvtk_set_okada_inset_callback,
+	:gmtvtk_set_workspace_callback, :gmtvtk_workspace_show_h,
 	:gmtvtk_daylength_test, :gmtvtk_set_daylength_callback,
 	:gmtvtk_set_whereami_callback,
 	:gmtvtk_set_crs_select_callback, :gmtvtk_crs_select,

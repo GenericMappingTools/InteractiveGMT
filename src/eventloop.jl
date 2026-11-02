@@ -153,6 +153,7 @@ function _ensure_callbacks()
 	                    ("magfield",    _register_magfield),
 	                    ("magfield-poles", _register_magfield_poles),
 	                    ("okada-inset", _register_okada_inset),
+	                    ("workspace",   _register_workspace),     # View > Workspace Panel (workspace.jl)
 	                    ("meca-props",  _register_meca_props),
 	                    ("cloud-select", _register_cloud_select),   # a cloud selection reaches the REPL (points.jl)
 	                    # the MBIO beside GMT_CUSTOM_LIBS's MB-System supplement (mbedit.jl, included only when present)

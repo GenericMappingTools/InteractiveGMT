@@ -1184,8 +1184,12 @@ GMTVTK_API int gmtvtk_add_curtain_file_h(void *handle, const double *px, const d
 // one the per-line "Show data table…" and the X,Y tool's "Show in Data Table" use, Save button and
 // all. There is exactly ONE "show a table of numbers" implementation in the app; the old bottom-dock
 // "Data Viewer" spreadsheet tab was a second one, and is gone.
-GMTVTK_API int gmtvtk_set_table(void *handle, const char *name, const double *data,
-								int nrows, int ncols, const char *headers, const char *text) {
+//
+// `matrix` (gmtvtk_set_matrix_table): a grid or an image band, shown as MATLAB's variable editor shows a
+// matrix -- uniform narrow columns, values to 5 significant digits (the y column, the first, keeps 10).
+// Save writes the full values either way.
+static int setDataTable(void *handle, const char *name, const double *data, int nrows, int ncols,
+                        const char *headers, const char *text, bool matrix) {
 	Scene *s = static_cast<Scene*>(handle);
 	if (!sceneAlive(s))
 		return 0;
@@ -1206,16 +1210,34 @@ GMTVTK_API int gmtvtk_set_table(void *handle, const char *name, const double *da
 	}
 	const bool hasTxt = !txt.isEmpty();
 
-	std::vector<double> vals;                            // own the numbers: the caller's buffer dies now
+	// Own the numbers: the caller's buffer dies now. ONE copy, shared by the lazy table (it reads them
+	// while painting) and Save — a big grid must not be held three times over.
+	auto valsp = std::make_shared<std::vector<double>>();
+	std::vector<double> &vals = *valsp;
 	vals.reserve((size_t)nrows * (size_t)ncols);
 	for (int c = 0; c < ncols; ++c)
 		for (int r = 0; r < nrows; ++r)
 			vals.push_back(data ? data[(size_t)c * nrows + r] : 0.0);
+	auto txtp = std::make_shared<const QStringList>(txt);
+	// A matrix's y column (its first): just enough significant digits to tell neighbouring rows apart,
+	// the same rule the x heads are written with (_table_heads, table.jl).
+	int ydig = 10;
+	if (matrix && ncols > 0 && nrows > 1) {
+		double dy = HUGE_VAL, my = 0.0;
+		for (int r = 0; r < nrows; ++r) {
+			my = std::max(my, std::fabs(vals[r]));
+			if (r) dy = std::min(dy, std::fabs(vals[r] - vals[r - 1]));
+		}
+		if (dy > 0 && my > 0 && std::isfinite(dy))
+			ydig = std::clamp((int)std::ceil(std::log10(my / dy)) + 1, 3, 10);
+	}
 
 	const QString title = (name && name[0]) ? QString::fromUtf8(name) : QString("Data");
 	// Save…: the table as it stands, tab-separated with its header line — the plain text every other
 	// tool in this app can read straight back.
-	auto onSave = [vals, hdr, txt, hasTxt, nrows, ncols, title]() {
+	auto onSave = [valsp, hdr, txtp, hasTxt, nrows, ncols, title]() {
+		const std::vector<double> &vals = *valsp;
+		const QStringList &txt = *txtp;
 		QString fn = QFileDialog::getSaveFileName(nullptr, "Save table", prefStartDir("table.txt"),
 		                                          "Text (*.txt *.dat *.csv);;All files (*)");
 		if (fn.isEmpty()) return;
@@ -1235,16 +1257,27 @@ GMTVTK_API int gmtvtk_set_table(void *handle, const char *name, const double *da
 		}
 		f.close();
 	};
-	QTableWidget *tbl = buildDataTableDialog(title, nrows, hdr,
-		[vals, txt, nrows, ncols](int row, int col) {
-			return (col >= ncols) ? txt[row] : QString::number(vals[(size_t)col * nrows + row], 'g', 10);
+	QTableView *tbl = buildDataTableDialog(title, nrows, hdr,
+		[valsp, txtp, nrows, ncols, matrix, ydig](int row, int col) {
+			if (col >= ncols) return (*txtp)[row];
+			return QString::number((*valsp)[(size_t)col * nrows + row], 'g', !matrix ? 10 : col > 0 ? 5 : ydig);
 		},
-		/*editable=*/false, onSave);
+		/*editable=*/false, onSave, matrix);
 	// Remember the last table popped for this window, ONLY so gmtvtk_scene_state can report its row
 	// count (n_table). It is parentless and self-deleting, so drop the pointer when it goes.
 	s->dataTable = tbl;
 	if (tbl) QObject::connect(tbl, &QObject::destroyed, tbl, [s]() { if (sceneAlive(s)) s->dataTable = nullptr; });
 	return 1;
+}
+
+GMTVTK_API int gmtvtk_set_table(void *handle, const char *name, const double *data,
+								int nrows, int ncols, const char *headers, const char *text) {
+	return setDataTable(handle, name, data, nrows, ncols, headers, text, false);
+}
+
+GMTVTK_API int gmtvtk_set_matrix_table(void *handle, const char *name, const double *data,
+                                       int nrows, int ncols, const char *headers) {
+	return setDataTable(handle, name, data, nrows, ncols, headers, nullptr, true);
 }
 
 // Plot a generic (x,y) series in the bottom-dock "Profile" panel and surface it. Used by the tide
@@ -1650,7 +1683,7 @@ GMTVTK_API int gmtvtk_scene_state(void *handle, char *buf, int cap) {
 		// Colour bar: is one drawn, and (an INDEXED image's palette legend) how many class blocks.
 		kvi("bar",  (s->bar && s->bar->GetVisibility() != 0) ? 1 : 0);
 		{ PaletteLegend *pl = resolveActivePalette(s); kvi("palN", pl ? (long)pl->n : 0L); }
-		kvi("n_table",    s->dataTable ? (long)s->dataTable->rowCount() : -1);
+		kvi("n_table",    (s->dataTable && s->dataTable->model()) ? (long)s->dataTable->model()->rowCount() : -1);
 		o += "surf_name="; o += s->surfName; o += ';';
 		// …and whether the BASE layer is on screen, the same question `extravis<i>` answers for each
 		// extra. Without it a caller can read every extra's checked state and not the base's, which is
@@ -5503,6 +5536,27 @@ GMTVTK_API void gmtvtk_set_fault_demo_callback(JuliaFaultDemoFn fn, JuliaFaultDe
 // callback, because a computed grid has no business travelling as the console's captured stdout.
 GMTVTK_API void gmtvtk_set_okada_inset_callback(JuliaOkadaInsetFn fn) {
 	g_juliaOkadaInset = fn;
+}
+
+// View > Workspace Panel (77_workspace.cpp -> src/workspace.jl): lists the Julia session's variables
+// and shows one as a table or a picture. nullptr to detach.
+GMTVTK_API void gmtvtk_set_workspace_callback(JuliaWorkspaceFn fn) {
+	g_juliaWorkspace = fn;
+}
+
+// Open the Workspace dock of window `handle` (tests; the menu row calls workspaceShow directly).
+// Returns the number of variable rows it lists, or -1 for a dead handle.
+GMTVTK_API int gmtvtk_workspace_show_h(void *handle) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !s->win) return -1;
+	workspaceShow(s);
+	QDockWidget *dock = s->win->findChild<QDockWidget*>(kWsDockName);
+	auto *tree = dock ? qobject_cast<QTreeWidget*>(dock->widget()) : nullptr;
+	if (!tree) return -1;
+	int n = 0;
+	for (int i = 0; i < tree->topLevelItemCount(); ++i)
+		if (!tree->topLevelItem(i)->data(0, Qt::UserRole).toString().isEmpty()) ++n;
+	return n;
 }
 
 // T & L > "Day length & axial tilt" (74_daylength_gmt.cpp): the host draws the base picture with GMT.jl
@@ -12475,6 +12529,67 @@ GMTVTK_API int gmtvtk_axesprops_tabmask_test(void *scene) {
 
 // Grab the first visible top-level window whose title contains `title` to a PNG (docs screenshots of
 // tool dialogs, e.g. "NSWING"). 1 = saved, 0 = no such window or the save failed.
+// Press the Workspace dock's fold bar (the same mousePressEvent a click runs, away from its glyphs).
+// Returns the dock's width afterwards, negated when the dock is now folded; 0 = no Workspace dock, or
+// a hidden one (then nothing is pressed).
+GMTVTK_API int gmtvtk_workspace_fold_test(void *handle) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!s || !s->win) return 0;          // (not sceneAlive: that registry is the production dll's)
+	QDockWidget *dock = s->win->findChild<QDockWidget*>(kWsDockName);
+	// (a plain QWidget here: the bar's C++ type belongs to the production dll, not to this test twin)
+	QWidget *bar = dock ? dock->titleBarWidget() : nullptr;
+	if (!bar || !dock->widget() || dock->isHidden()) return 0;
+	QMouseEvent press(QEvent::MouseButtonPress, QPointF(3, 3), QPointF(bar->mapToGlobal(QPoint(3, 3))),
+	                  Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+	QApplication::sendEvent(bar, &press);
+	QApplication::processEvents();
+	return dock->widget()->isVisible() ? dock->width() : -dock->width();
+}
+
+// The widths the Workspace panel's room-making is judged by: the display area (central widget) and the
+// window. 1 = filled, 0 = no window.
+GMTVTK_API int gmtvtk_window_widths_test(void *handle, int *central, int *window) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!s || !s->win || !s->win->centralWidget() || !central || !window) return 0;
+	QApplication::processEvents();
+	*central = s->win->centralWidget()->width();
+	*window  = s->win->width();
+	return 1;
+}
+
+// Count the display area's (central widget's) Resize and Paint events -- a blink is the display
+// resized / painted at an in-between size. start = 1: begin counting (from 0); start = 0: return the
+// counts so far in `resizes` / `paints`. 1 = done, 0 = no window.
+struct PaintCounter : QObject {
+	int resizes = 0, paints = 0;
+	using QObject::QObject;
+	bool eventFilter(QObject *, QEvent *e) override {
+		if (e->type() == QEvent::Resize) ++resizes;
+		else if (e->type() == QEvent::Paint || e->type() == QEvent::UpdateRequest) ++paints;
+		return false;
+	}
+};
+GMTVTK_API int gmtvtk_paint_count_test(void *handle, int start, int *resizes, int *paints) {
+	Scene *s = static_cast<Scene*>(handle);
+	QWidget *c = (s && s->win) ? s->win->centralWidget() : nullptr;
+	if (!c) return 0;
+	auto *pc = static_cast<PaintCounter*>(c->findChild<QObject*>("igPaintCounter", Qt::FindDirectChildrenOnly));
+	if (start) {
+		if (!pc) {
+			pc = new PaintCounter(c);
+			pc->setObjectName("igPaintCounter");
+			c->installEventFilter(pc);
+		}
+		pc->resizes = pc->paints = 0;
+		return 1;
+	}
+	QApplication::processEvents();
+	if (!pc || !resizes || !paints) return 0;
+	*resizes = pc->resizes;
+	*paints  = pc->paints;
+	return 1;
+}
+
 GMTVTK_API int gmtvtk_toplevel_grab_test(const char *title, const char *path) {
 	if (!title || !path) return 0;
 	const QString want = QString::fromUtf8(title);

@@ -68,6 +68,7 @@ include("climate.jl")    # T & L > ENSO / NAO / Keeling curve: climate records a
 include("drop.jl")
 include("importxy.jl")  # File > Open xy(z): Mirone point/arrow/scaled-symbol/text table imports
 include("paste.jl")      # Ctrl+V: clipboard image / numeric table -> the SAME builders drop.jl uses
+include("workspace.jl")  # View > Workspace Panel: Main's variables as tables / pictures (MATLAB's workspace)
 include("basemap.jl")    # World Topo Tiles picker (ported from Mirone bg_map.m)
 include("tilestool.jl")  # Tools > Tiles Tool (ported from Mirone tiles_tool.m; mosaic via GMT.mosaic)
 include("lidarpt.jl")    # Tools > LIDAR2011 PT (ported from Mirone cartas_militares.m 'nikles' mode)

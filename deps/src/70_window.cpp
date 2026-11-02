@@ -27112,6 +27112,7 @@ static QIcon makeRulerIcon();               // graduated ruler glyph (85_polygon
 static QIcon makeGlobeIcon();               // graticule globe for the status-corner CRS chip (85_polygon.cpp)
 static QIcon makeCubeViewIcon();            // wireframe cube glyph for the CUBE view mode (85_polygon.cpp)
 static QIcon makeMessagesIcon(bool unread); // speech bubble for the status-corner Messages button (ditto)
+static QIcon makeWorkspaceIcon();           // small table for the status-corner Workspace button (ditto)
 
 // ============================================================================
 //  Bottom-RIGHT status corner (QGIS-style): the CRS chip + the Messages button.
@@ -27193,6 +27194,17 @@ static void buildIGStatusBar(Scene *s, QMainWindow *win) {
 	crs->setCursor(Qt::PointingHandCursor);
 	cl->addWidget(crs);
 	s->crsChip = crs;
+
+	// The Workspace panel's door (77_workspace.cpp): the session's variables, as MATLAB's workspace.
+	QToolButton *wsb = new QToolButton(corner);
+	wsb->setObjectName("igWorkspaceBtn");
+	wsb->setIcon(makeWorkspaceIcon());
+	wsb->setToolTip("Workspace — the variables of this Julia session");
+	wsb->setCursor(Qt::PointingHandCursor);
+	wsb->setFocusPolicy(Qt::NoFocus);
+	wsb->setCheckable(true);                          // pressed while the panel is on screen
+	cl->addWidget(wsb);
+	QObject::connect(wsb, &QToolButton::clicked, wsb, [s]() { workspaceToggle(s); });   // show <-> hide
 
 	QToolButton *msg = new QToolButton(corner);
 	msg->setIcon(makeMessagesIcon(false));
@@ -33106,30 +33118,8 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// (resizeDocks), so the collapsed dock no longer leaves its full open width as dead space;
 	// the strip carries the title rotated 90° down the window edge. Un-folding restores the body
 	// and the remembered open width. This is the fold control Qt's default title bar never gave us.
-	auto makeFoldable = [win](QDockWidget *d, QWidget *body, const QString &titleText) -> FoldTitleBar* {
-		FoldTitleBar *bar = new FoldTitleBar(titleText, d);  // GRAPHICAL ELEMENT: dock title bar = fold toggle
-		d->setTitleBarWidget(bar);                        // swap Qt's default title bar for our fold strip
-		bar->onClick = [win, d, body, bar]() {
-			const bool fold = body->isVisible();          // visible now -> fold it away
-			// Remember the open width only from a DOCKED dock: a floating one is a free-resized
-			// top-level window, and storing its width here would hand that size to the dock area
-			// the panel is put back into.
-			if (fold && !d->isFloating()) bar->openWidth = d->width();
-			body->setVisible(!fold);                      // hide body -> dock can shrink to the strip
-			bar->folded = fold;
-			bar->updateGeometry();                        // sizeHint flips orientation
-			bar->update();
-			const int w = fold ? bar->sizeHint().width()
-							   : (bar->openWidth > 0 ? bar->openWidth : objDockOpenWidthPx(d));
-			// resizeDocks only moves docks INSIDE the main window; a floating dock is a top-level
-			// window and must be resized as one, or folding it leaves a thin strip rattling around
-			// inside a full-width window that never shrank.
-			if (d->isFloating()) d->resize(w, d->height());
-			else                 win->resizeDocks({d}, {w}, Qt::Horizontal);  // collapse to / expand from the strip width
-		};
-		return bar;
-	};
-	s->objFoldBar = makeFoldable(objDock, s->objPanel, "Scene Objects");  // keep the bar so an empty launcher can start folded
+	// makeDockFoldable (10_geometry.cpp) is that fold; the Workspace dock (77_workspace.cpp) uses it too.
+	s->objFoldBar = makeDockFoldable(win, objDock, s->objPanel, "Scene Objects");  // keep the bar so an empty launcher can start folded
 	s->objFoldBar->compactMin = true;                        // its title must not hold the dock above 3 cm
 	// Undock / re-dock button on the fold bar. A custom title bar widget swallows the press Qt turns
 	// into a drag, so this glyph is the dock's ONLY tear-off affordance -- and it goes through the
@@ -33306,6 +33296,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	};
 	mView->addAction("&Profile Panel",       [showTab, s]()        { showTab(s->prof); });
 	mView->addAction("Julia &Console Panel", [showTab, con]()      { showTab(con); con->setFocus(Qt::OtherFocusReason); });
+	// (No "Workspace Panel" row: the Workspace opens from its own status-corner button, buildIGStatusBar.)
 	// No "Messages Panel" row (removed by request). The log is still reachable: the status corner's
 	// message bubble opens the same dock through the same sceneShowMessages.
 	// No "Data Viewer Panel" entry: there is no such tab any more. A table of numbers pops up in THE

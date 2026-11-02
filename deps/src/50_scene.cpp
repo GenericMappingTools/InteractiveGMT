@@ -23,9 +23,12 @@ static void rulerRemove(Scene *s, int idx);          // 85_polygon.cpp: delete O
 static void mecaGroupPropsDialog(Scene *s, const QString &groupName, const QPoint &gp); // defined below
 // THE shared "pop a floating table of this object's data" dialog (55_lineprops.cpp) — Save button
 // included. Every table in the app is this one function; a second one is the violation.
-static QTableWidget *buildDataTableDialog(const QString &title, int nrows, const QStringList &hdr,
-                                          const std::function<QString(int,int)> &cell,
-                                          bool editable, std::function<void()> onSave);
+// Read-only tables are lazy (cell() is kept and called while painting); editable ones come back as a
+// QTableWidget. `matrixLook` = a grid/image laid out as a matrix (MATLAB's variable editor).
+static QTableView *buildDataTableDialog(const QString &title, int nrows, const QStringList &hdr,
+                                        const std::function<QString(int,int)> &cell,
+                                        bool editable, std::function<void()> onSave,
+                                        bool matrixLook = false);
 static int  addSymbols(Scene *s, const double *xyz, int npts, const std::string &sym,   // defined below:
                        double sizePx, int filled, double fr, double fg, double fb,      // THE symbol-layer
                        double er, double eg, double eb, double edgeWidth,               // builder
@@ -5410,20 +5413,24 @@ static void showSymbolDataTable(Scene *s, vtkActor *act, const QString &name) {
 	// "Show data table…", the X,Y tool's "Show in Data Table" and gmtvtk_set_table pop, Save button
 	// and all. A symbol layer had its own hand-built dialog here, which is exactly the second
 	// implementation SACRED_LAW forbids: it drifted feature-short (no Save at all).
-	QTableWidget *tbl = buildDataTableDialog(
+	// A catalog's table is read-only, hence read while it is painted: its rows are owned by the cell
+	// reader, never looked up through s->symbols[si0], which a removed layer would leave dangling.
+	// The coordinate table is editable, hence built whole right here, so it may read the layer live.
+	auto rows = haveData ? std::make_shared<const std::vector<std::vector<std::string>>>(sl0.dataRows) : nullptr;
+	QTableWidget *tbl = qobject_cast<QTableWidget*>(buildDataTableDialog(
 		name.isEmpty() ? QString("Symbol data") : (name + " — data"), nrows, hdr,
-		[s, si0, haveData, xfacInv](int row, int col) {
-			SymbolLayer &sl = s->symbols[(size_t)si0];
-			if (haveData) {
-				const auto &r = sl.dataRows[(size_t)row];
+		[s, si0, rows, xfacInv](int row, int col) {
+			if (rows) {
+				const auto &r = (*rows)[(size_t)row];
 				return col < (int)r.size() ? QString::fromStdString(r[(size_t)col]) : QString();
 			}
-			vtkPolyData *pd = symInputPD(sl);
+			vtkPolyData *pd = symInputPD(s->symbols[(size_t)si0]);
 			double p[3];  pd->GetPoints()->GetPoint(row, p);
 			return QString::number(col == 0 ? p[0] * xfacInv : p[col], 'g', 10);
 		},
 		/*editable=*/!haveData,                   // a catalog is a record, not a form
-		[s, si0]() { symbolSaveData(s, s->symbols[(size_t)si0]); });
+		[s, si0]() { symbolSaveData(s, s->symbols[(size_t)si0]); }));
+	if (!tbl) return;                             // read-only catalog: nothing to write back
 
 	std::shared_ptr<bool> guard = std::make_shared<bool>(false);
 	QObject::connect(tbl, &QTableWidget::cellChanged, tbl, [s, tbl, act, guard](int row, int col) {

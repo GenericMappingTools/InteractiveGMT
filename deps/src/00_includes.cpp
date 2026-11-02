@@ -99,6 +99,8 @@
 #include <QTabWidget>
 #include <QTabBar>
 #include <QTableWidget>
+#include <QAbstractTableModel>
+#include <QTableView>
 #include <QListWidget>
 #include <QHeaderView>
 #include <QAbstractItemView>
@@ -363,6 +365,7 @@ static void mbnavadjustMenuOpen(QWidget *win, Scene *s);
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <optional>
 #include <vector>
 #include <array>
 #include <set>

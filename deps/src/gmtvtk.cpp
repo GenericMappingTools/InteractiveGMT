@@ -32,6 +32,7 @@
 //   74_skyview     T & L > Sky viewer: stars, figures, Sun, Moon and planets from a place on the Earth
 //   74_eclipse     T & L > Earth-Moon system: both bodies to scale, day/night, shadows, eclipse list 1900-2100
 //   70_window     buildAndShow — the Qt main window
+//   77_workspace  status-corner Workspace button: the Julia session's variables (MATLAB's workspace), via src/workspace.jl
 //   69_magfield    Magnetic field lines (3-D): IGRF streamlines traced round a textured globe
 //   80_rubberband  Ctrl+right-drag point-cloud selection
 //   85_polygon     toolbar polygon draw/edit tool (3-D vertices draped on the relief)
@@ -63,8 +64,11 @@ static bool sunSyncOpen(QWidget *parent, Scene *scene);
 static bool solarSysOpen(QWidget *parent, Scene *scene);
 static bool skyViewOpen(QWidget *parent, Scene *scene);
 static bool eclipseOpen(QWidget *parent, Scene *scene);
+static void workspaceShow(Scene *s);   // 77_workspace.cpp (status-corner Workspace button)
+static void workspaceToggle(Scene *s); // 77_workspace.cpp (that button: show <-> hide)
 #include "70_window.cpp"
 #include "71_nodegraph.cpp"
+#include "77_workspace.cpp"
 #include "68_faultdemo.cpp"
 #include "69_magfield.cpp"
 #include "74_daylength.cpp"

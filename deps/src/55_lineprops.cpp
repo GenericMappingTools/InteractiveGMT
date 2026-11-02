@@ -428,11 +428,49 @@ static int polyIndexOfActor(Scene *s, vtkActor *a) {
 // (0-based, matching hdr[col+1]) TEXT for `row` — text, not a number, because some columns are not
 // numbers (a catalog's date) and the caller is the only one that knows how its own values read.
 // `editable` leaves the "#" column non-editable but opens the data cells for editing -- the caller
-// wires its own cellChanged handler on the returned QTableWidget (write-back rules are caller-
-// specific, e.g. polygon vertices vs. a read-only catalog). `onSave`, if set, adds a "Save…" button.
-static QTableWidget *buildDataTableDialog(const QString &title, int nrows, const QStringList &hdr,
-                                           const std::function<QString(int,int)> &cell,
-                                           bool editable, std::function<void()> onSave) {
+// wires its own cellChanged handler on the returned table, which is then a QTableWidget (write-back
+// rules are caller-specific, e.g. polygon vertices vs. a read-only catalog). `onSave`, if set, adds a
+// "Save…" button.
+//
+// A READ-ONLY table is never filled cell by cell: a QTableWidget item per cell made a 1000x1000 grid
+// a million objects before the window could even appear. It is a QTableView over DataTableModel,
+// which asks `cell` only for the cells being painted, so its size costs nothing. That is why `cell`
+// is KEPT for the life of the window: whatever it reads must be owned by the lambda (by value or a
+// shared_ptr), never a reference to a caller's local or a pointer into an element that can be
+// deleted while the table is open. An editable table is still built whole (small by nature -- the
+// vertices of a drawn shape, hand-placed symbols), because its cellChanged handlers edit its items.
+class DataTableModel : public QAbstractTableModel {
+public:
+	DataTableModel(int nrows, const QStringList &hdr, std::function<QString(int,int)> cell, bool alignRight,
+	               QObject *parent)
+		: QAbstractTableModel(parent), nrows_(nrows), hdr_(hdr), cell_(std::move(cell)), alignRight_(alignRight) {}
+	int rowCount(const QModelIndex &p = QModelIndex()) const override { return p.isValid() ? 0 : nrows_; }
+	int columnCount(const QModelIndex &p = QModelIndex()) const override { return p.isValid() ? 0 : (int)hdr_.size(); }
+	QVariant data(const QModelIndex &i, int role) const override {
+		if (!i.isValid()) return QVariant();
+		if (role == Qt::TextAlignmentRole && alignRight_) return QVariant(Qt::AlignRight | Qt::AlignVCenter);
+		if (role != Qt::DisplayRole) return QVariant();
+		return i.column() == 0 ? QString::number(i.row() + 1) : cell_(i.row(), i.column() - 1);
+	}
+	QVariant headerData(int sec, Qt::Orientation o, int role) const override {
+		if (o == Qt::Horizontal && role == Qt::DisplayRole && sec >= 0 && sec < (int)hdr_.size()) return hdr_[sec];
+		return QAbstractTableModel::headerData(sec, o, role);
+	}
+private:
+	int nrows_;
+	QStringList hdr_;
+	std::function<QString(int,int)> cell_;
+	bool alignRight_;
+};
+
+// `matrixLook` (a grid or an image band, read-only): MATLAB's variable editor -- every data column the
+// SAME narrow width, sized from a sample of cells and the x headers, compact rows, numbers right-aligned
+// and cells (not rows) selected, so as many cells as possible fit on screen. The "#" and y columns
+// (the first two) keep their own widths.
+static QTableView *buildDataTableDialog(const QString &title, int nrows, const QStringList &hdr,
+                                        const std::function<QString(int,int)> &cell,
+                                        bool editable, std::function<void()> onSave,
+                                        bool matrixLook) {
 	QDialog *dlg = new QDialog(nullptr);                  // top-level, parentless -> truly floating
 	dlg->setAttribute(Qt::WA_DeleteOnClose);
 	dlg->setWindowTitle(title);
@@ -440,23 +478,52 @@ static QTableWidget *buildDataTableDialog(const QString &title, int nrows, const
 	QVBoxLayout *lay = new QVBoxLayout(dlg);
 
 	const int ncoord = hdr.size() - 1;
-	QTableWidget *tbl = new QTableWidget(nrows, ncoord + 1, dlg);
-	tbl->setHorizontalHeaderLabels(hdr);
-	tbl->verticalHeader()->setVisible(false);             // our "#" column already numbers the rows
-	tbl->setSelectionBehavior(QAbstractItemView::SelectRows);
-	if (!editable) tbl->setEditTriggers(QAbstractItemView::NoEditTriggers);
-
-	for (int k = 0; k < nrows; ++k) {
-		QTableWidgetItem *idx = new QTableWidgetItem(QString::number(k + 1));
-		idx->setFlags(idx->flags() & ~Qt::ItemIsEditable);   // the "#" column is never editable
-		tbl->setItem(k, 0, idx);
-		for (int c = 0; c < ncoord; ++c) {
-			QTableWidgetItem *it = new QTableWidgetItem(cell(k, c));
-			if (!editable) it->setFlags(it->flags() & ~Qt::ItemIsEditable);
-			tbl->setItem(k, c + 1, it);
+	QTableView *tbl = nullptr;
+	if (editable) {
+		QTableWidget *tw = new QTableWidget(nrows, ncoord + 1, dlg);
+		tw->setHorizontalHeaderLabels(hdr);
+		for (int k = 0; k < nrows; ++k) {
+			QTableWidgetItem *idx = new QTableWidgetItem(QString::number(k + 1));
+			idx->setFlags(idx->flags() & ~Qt::ItemIsEditable);   // the "#" column is never editable
+			tw->setItem(k, 0, idx);
+			for (int c = 0; c < ncoord; ++c)
+				tw->setItem(k, c + 1, new QTableWidgetItem(cell(k, c)));
 		}
+		tbl = tw;
 	}
-	tbl->resizeColumnsToContents();
+	else {
+		tbl = new QTableView(dlg);
+		tbl->setModel(new DataTableModel(nrows, hdr, cell, matrixLook, tbl));
+		tbl->setEditTriggers(QAbstractItemView::NoEditTriggers);
+		tbl->verticalHeader()->setSectionResizeMode(QHeaderView::Fixed);   // no per-row height pass
+	}
+	tbl->verticalHeader()->setVisible(false);             // our "#" column already numbers the rows
+	QHeaderView *hh = tbl->horizontalHeader();
+	if (matrixLook && !editable) {
+		tbl->setSelectionBehavior(QAbstractItemView::SelectItems);
+		tbl->setWordWrap(false);
+		const QFontMetrics fc(tbl->font()), fh(hh->font());
+		const int pad = 10;
+		int w = fc.horizontalAdvance("0.0000");
+		for (int c = 2; c < (int)hdr.size(); ++c)        // the x heads (cheap: one line each)
+			w = std::max(w, fh.horizontalAdvance(hdr[c]));
+		const int sr = std::min(nrows, 40), sc = std::min(ncoord, 40);
+		for (int r = 0; r < sr; ++r)
+			for (int c = 1; c < sc; ++c)
+				w = std::max(w, fc.horizontalAdvance(cell(r, c)));
+		hh->setMinimumSectionSize(8);
+		hh->setDefaultSectionSize(w + pad);
+		tbl->verticalHeader()->setMinimumSectionSize(8);
+		tbl->verticalHeader()->setDefaultSectionSize(fc.height() + 4);
+		hh->setResizeContentsPrecision(200);
+		tbl->resizeColumnToContents(0);
+		if (ncoord > 0) tbl->resizeColumnToContents(1);
+	}
+	else {
+		tbl->setSelectionBehavior(QAbstractItemView::SelectRows);
+		hh->setResizeContentsPrecision(200);   // size columns from the first rows, not all
+		tbl->resizeColumnsToContents();
+	}
 	lay->addWidget(tbl);
 
 	if (onSave) {
@@ -467,7 +534,15 @@ static QTableWidget *buildDataTableDialog(const QString &title, int nrows, const
 		lay->addLayout(btnRow);
 		QObject::connect(saveBtn, &QPushButton::clicked, tbl, onSave);
 	}
-	dlg->resize(360, 450);
+	if (matrixLook && !editable) {                        // a matrix wants room: as many cells as fit
+		const QRect av = QGuiApplication::primaryScreen()->availableGeometry();
+		int wneed = 40;
+		for (int c = 0; c < std::min((int)hdr.size(), 400); ++c) wneed += tbl->columnWidth(c);
+		const int hneed = 90 + std::min(nrows, 400) * tbl->verticalHeader()->defaultSectionSize();
+		dlg->resize(std::clamp(wneed, 360, av.width() * 3 / 4), std::clamp(hneed, 200, av.height() * 3 / 4));
+	}
+	else
+		dlg->resize(360, 450);
 	dlg->show();                                          // non-modal: REPL + viewer stay live
 	return tbl;
 }
@@ -524,23 +599,26 @@ static void showLineDataTable(Scene *s, const LineRef &lr, const QString &name) 
 		hdr << "#";
 		for (const std::string &h : ovp->dataHdr) hdr << QString::fromStdString(h);
 	}
-	const std::vector<std::vector<std::string>> *rows = haveSrc ? &ovp->dataRows : nullptr;
+	// Owned by the cell reader: a read-only table reads them while it is painted, long after this
+	// function has returned and possibly after the overlay itself has been removed.
+	auto rows = haveSrc ? std::make_shared<const std::vector<std::vector<std::string>>>(ovp->dataRows) : nullptr;
+	auto plv  = std::make_shared<const std::vector<std::array<double,3>>>(std::move(pl));
 
-	QTableWidget *tbl = buildDataTableDialog(
+	QTableWidget *tbl = qobject_cast<QTableWidget*>(buildDataTableDialog(
 		name.isEmpty() ? QString("Line data") : (name + " — data"), nrows, hdr,
-		[&pl, rows](int row, int col) {
+		[plv, rows](int row, int col) {
 			if (rows) {
 				const std::vector<std::string> &r = (*rows)[row];
 				return (col >= 0 && col < (int)r.size()) ? QString::fromStdString(r[col]) : QString();
 			}
-			return QString::number(pl[row][col], 'g', 10);
+			return QString::number((*plv)[row][col], 'g', 10);
 		},
-		editable && !haveSrc, [s, lr]() { lineSavePoints(s, lr); });
+		editable && !haveSrc, [s, lr]() { lineSavePoints(s, lr); }));
 
 	// Live write-back: a committed X/Y/Z cell updates pg.v and rebuilds the outline. Connected only
 	// for editable (LK_Polygon) tables. cellChanged also fires when we programmatically fix a cell,
 	// so a guard flag stops re-entrancy.
-	if (editable) {
+	if (editable && tbl) {
 		std::shared_ptr<bool> guard = std::make_shared<bool>(false);
 		QObject::connect(tbl, &QTableWidget::cellChanged, tbl, [s, tbl, actor, guard](int row, int col) {
 			if (*guard || col < 1 || col > 3) return;        // ignore the "#" column / our own edits

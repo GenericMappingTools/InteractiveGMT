@@ -1403,7 +1403,9 @@ static void xyShowDataTable(XYPlot *s, int idx) {
 	if (idx < 0 || idx >= (int)series.size())
 		return;
 	const XYSeries &se = series[idx];
-	vtkTable *t = se.table;
+	// Held by the cell reader: the table is read while it is painted, and the series may be deleted
+	// while it is open.
+	vtkSmartPointer<vtkTable> t = se.table;
 	const int nrows = t ? (int)t->GetNumberOfRows() : 0;
 
 	// The columns the points came from (XYSeries::srcCols) first, then the series' own X and Y.

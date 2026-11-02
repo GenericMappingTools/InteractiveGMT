@@ -26,6 +26,14 @@ struct FoldTitleBar : QWidget {
 	// it every dock in the window is torn off and put back through ONE function (dockToggleFloat).
 	std::function<void()> onFloat;
 	QRect   floatRect;                // hit area of that glyph while open (empty when folded)
+	// Close button, painted right of the float glyph -- only for a dock that can be closed and opened
+	// again from a menu (the Workspace panel). Unset = no glyph, the bar as it always was.
+	std::function<void()> onClose;
+	QRect   closeRect;
+	int glyphsWidth(const QFontMetrics &fm) const {
+		return (onFloat ? fm.horizontalAdvance(QString::fromUtf8("\xE2\x9D\x90")) + 12 : 0)
+		     + (onClose ? fm.horizontalAdvance(QString::fromUtf8("\xE2\x9C\x95")) + 12 : 0);
+	}
 	explicit FoldTitleBar(const QString &t, QWidget *parent = nullptr)
 		: QWidget(parent), title(t) {
 		setCursor(Qt::PointingHandCursor);
@@ -34,20 +42,19 @@ struct FoldTitleBar : QWidget {
 	QSize sizeHint() const override {
 		QFontMetrics fm(font());
 		const int thick = fm.height() + 8;                       // strip thickness
-		const int along = fm.horizontalAdvance(title) + thick + 12
-		                + (onFloat ? fm.horizontalAdvance(QString::fromUtf8("\xE2\x9D\x90")) + 12 : 0);
+		const int along = fm.horizontalAdvance(title) + thick + 12 + glyphsWidth(fm);
 		return folded ? QSize(thick, along) : QSize(along, thick);
 	}
 	QSize minimumSizeHint() const override {
 		if (!compactMin || folded) return sizeHint();
 		QFontMetrics fm(font());
 		const int thick = fm.height() + 8;
-		return QSize(fm.horizontalAdvance(QStringLiteral("▾ ")) + 12
-		             + (onFloat ? fm.horizontalAdvance(QString::fromUtf8("\xE2\x9D\x90")) + 12 : 0), thick);
+		return QSize(fm.horizontalAdvance(QStringLiteral("▾ ")) + 12 + glyphsWidth(fm), thick);
 	}
 	void mousePressEvent(QMouseEvent *e) override {
 		// The float glyph first (it sits inside the bar, so a plain "anywhere folds" test would
 		// swallow it), then the fold anywhere else on the bar.
+		if (onClose && !folded && closeRect.contains(e->position().toPoint())) { onClose(); return; }
 		if (onFloat && !folded && floatRect.contains(e->position().toPoint())) { onFloat(); return; }
 		if (onClick) onClick();
 	}
@@ -60,18 +67,28 @@ struct FoldTitleBar : QWidget {
 		if (!folded) {
 			const int y = (height() + fm.ascent() - fm.descent()) / 2;
 			const QString fg = QString::fromUtf8("\xE2\x9D\x90");
+			const QString cg = QString::fromUtf8("\xE2\x9C\x95");
 			const int fw = onFloat ? fm.horizontalAdvance(fg) + 8 : 0;
+			const int cw = onClose ? fm.horizontalAdvance(cg) + 8 : 0;
+			const int cgap = onClose ? 4 : 0;
 			// Elided to the room left of the float glyph: a no-op at the bar's full sizeHint, and what
 			// keeps a compactMin bar readable at a narrower width.
-			p.drawText(6, y, fm.elidedText(glyph + " " + title, Qt::ElideRight, width() - 6 - fw - 8));
+			p.drawText(6, y, fm.elidedText(glyph + " " + title, Qt::ElideRight, width() - 6 - fw - cw - cgap - 8));
+			if (onClose) {                                  // close glyph, right end
+				closeRect = QRect(width() - cw - 4, 0, cw, height());
+				p.drawText(closeRect, Qt::AlignCenter, cg);
+			}
+			else
+				closeRect = QRect();
 			if (onFloat) {                                  // undock / re-dock glyph, right end
-				floatRect = QRect(width() - fw - 4, 0, fw, height());
+				floatRect = QRect(width() - fw - 4 - cw - cgap, 0, fw, height());
 				p.drawText(floatRect, Qt::AlignCenter, fg);
 			}
 			else
 				floatRect = QRect();
 		} else {
 			floatRect = QRect();                            // no float glyph on the folded strip
+			closeRect = QRect();
 			// arrow centred near the top of the vertical strip
 			p.drawText(QRect(0, 2, width(), fm.height()), Qt::AlignHCenter, glyph);
 			// title rotated to read bottom->top, filling the strip below the arrow
@@ -1838,7 +1855,7 @@ struct Scene {
 	// --- bottom tabbed panel (Profile / Julia Console) ----------------------
 	QDockWidget *bottomDock    = nullptr;   // the single bottom dock holding the tab widget
 	QTabWidget *bottomTabs    = nullptr;   // its QTabWidget; the corner "Hide" collapses the body
-	QTableWidget *dataTable     = nullptr;   // LAST floating table popped for this window by
+	QTableView *dataTable       = nullptr;   // LAST floating table popped for this window by
 	                                         // gmtvtk_set_table (show_table). Kept only so
 	                                         // gmtvtk_scene_state can report its row count; the dialog
 	                                         // itself is parentless and self-deleting (nulls this).
@@ -3648,6 +3665,34 @@ static void dockToggleFloat(QMainWindow *mw, QDockWidget *d) {
 		return;
 	}
 	d->setFloating(false);      // the topLevelChanged handler restores the snapshot
+}
+
+// THE fold of a 3-D window's side dock (Scene Objects, Workspace): replace the dock's title bar with a
+// FoldTitleBar whose click hides `body` and shrinks the dock to the bar's thin vertical strip
+// (resizeDocks), the title rotated down the window edge; un-folding restores the body and the open
+// width remembered at fold time (or objDockOpenWidthPx when there is none).
+static FoldTitleBar *makeDockFoldable(QMainWindow *win, QDockWidget *d, QWidget *body, const QString &titleText) {
+	FoldTitleBar *bar = new FoldTitleBar(titleText, d);  // GRAPHICAL ELEMENT: dock title bar = fold toggle
+	d->setTitleBarWidget(bar);                        // swap Qt's default title bar for our fold strip
+	bar->onClick = [win, d, body, bar]() {
+		const bool fold = body->isVisible();          // visible now -> fold it away
+		// Remember the open width only from a DOCKED dock: a floating one is a free-resized
+		// top-level window, and storing its width here would hand that size to the dock area
+		// the panel is put back into.
+		if (fold && !d->isFloating()) bar->openWidth = d->width();
+		body->setVisible(!fold);                      // hide body -> dock can shrink to the strip
+		bar->folded = fold;
+		bar->updateGeometry();                        // sizeHint flips orientation
+		bar->update();
+		const int w = fold ? bar->sizeHint().width()
+						   : (bar->openWidth > 0 ? bar->openWidth : objDockOpenWidthPx(d));
+		// resizeDocks only moves docks INSIDE the main window; a floating dock is a top-level
+		// window and must be resized as one, or folding it leaves a thin strip rattling around
+		// inside a full-width window that never shrank.
+		if (d->isFloating()) d->resize(w, d->height());
+		else                 win->resizeDocks({d}, {w}, Qt::Horizontal);  // collapse to / expand from the strip width
+	};
+	return bar;
 }
 
 // Profile-track helpers (defined after ProfilePanel, below). DragCB drives these on Ctrl+drag.

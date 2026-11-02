@@ -280,6 +280,25 @@ static QIcon makeMessagesIcon(bool unread) {
 	p.end(); return QIcon(pm);
 }
 
+// Workspace-panel icon (status corner, beside the Messages bubble): a small table, its header row
+// filled -- the variables list, in the same grey as the bubble.
+static QIcon makeWorkspaceIcon() {
+	QPixmap pm = iconCanvas();
+	QPainter p(&pm);
+	p.setRenderHint(QPainter::Antialiasing, true);
+	const QColor ink(70, 70, 75);
+	const QRectF box(3.0, 4.5, 18.0, 15.0);
+	p.setPen(Qt::NoPen);
+	p.setBrush(ink);
+	p.drawRect(QRectF(box.left(), box.top(), box.width(), 4.0));          // header row
+	p.setPen(QPen(ink, 1.4));
+	p.setBrush(Qt::NoBrush);
+	p.drawRect(box);
+	p.drawLine(QPointF(box.left() + 6.5, box.top()), QPointF(box.left() + 6.5, box.bottom()));
+	p.drawLine(QPointF(box.left(), box.top() + 9.0), QPointF(box.right(), box.top() + 9.0));
+	p.end(); return QIcon(pm);
+}
+
 // Swipe-tool icon: a framed tile split down the middle — dark raster left, light raster right —
 // with the divider line and its round grab handle drawn exactly as the live overlay draws them, so
 // the button reads as a miniature of what the tool puts on the scene.

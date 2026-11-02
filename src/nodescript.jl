@@ -573,7 +573,10 @@ end
 # data, or what it drapes) is an RGB picture (`mod` holds the variables it names).
 function _ng_reads_cpt(ex, mod::Module)::Bool
 	_, pos, kws = _ng_call_parts(_ng_unconst(ex))
-	isrgb(v) = v isa Symbol && isdefined(mod, v) && (I = getfield(mod, v); I isa GMTimage) &&
+	# In the LATEST world: the script's variables were made by Core.eval during this very run, and since
+	# Julia 1.12 a caller in an older world does not see them (isdefined says false).
+	isrgb(v) = v isa Symbol && Base.invokelatest(isdefined, mod, v) &&
+	           (I = Base.invokelatest(getfield, mod, v); I isa GMTimage) &&
 	           length(I.image) >= 3 * prod(GMT.getsize(I))
 	!isempty(pos) && isrgb(pos[1]) && return false
 	for (k, v) in kws

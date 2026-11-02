@@ -62,6 +62,9 @@ end
 # exactly the case dup2 is for.
 # `fd(::IOStream)` is an Int on some Julia versions and a RawFD on others; dup wants a RawFD.
 _rawfd(x) = x isa RawFD ? x : RawFD(x)
+# ...and the plain number a C call wants (`Int(::RawFD)` has no method: on Julia 1.14 it threw inside
+# _ucrt_capture_begin's try, so ucrt's descriptor was never bound and MB-System's report escaped).
+_fdnum(x)::Int = x isa RawFD ? Int(reinterpret(Cint, x)) : Int(x)   # (1.14's RawFD has no `fd` field)
 
 # `target` is the descriptor: 1 (stdout) or 2 (stderr). STDERR TOO: GMT writes its usage text, its
 # warnings and its errors (GMT_Message, GMT_Report) to stderr, so a console that read only fd 1 showed
@@ -98,7 +101,7 @@ function _ucrt_capture_begin(target::Int, io::IOStream)::Cint
 	Sys.iswindows() || return Cint(-1)
 	try
 		usaved = ccall((:_dup, _UCRT), Cint, (Cint,), Cint(target))      # -1 when ucrt has none
-		hf = ccall((:_get_osfhandle, "msvcrt"), Int, (Cint,), Cint(Int(fd(io))))
+		hf = ccall((:_get_osfhandle, "msvcrt"), Int, (Cint,), Cint(_fdnum(fd(io))))
 		proc = ccall((:GetCurrentProcess, "kernel32"), Int, ())
 		hdup = Ref{Int}(0)
 		ccall((:DuplicateHandle, "kernel32"), Cint, (Int, Int, Int, Ref{Int}, UInt32, Cint, UInt32),
@@ -155,7 +158,7 @@ function _console_capture_file_end(st)
 	_ucrt_capture_end(st.target, st.usaved)
 	if st.saved !== nothing
 		try Base.Libc.dup(st.saved, RawFD(st.target)) catch end
-		try ccall(:close, Cint, (Cint,), Cint(st.saved.fd)) catch end
+		try ccall(:close, Cint, (Cint,), Cint(_fdnum(st.saved))) catch end
 	else
 		# There was no fd 1 to put back (the GUI case this exists for). Point it at the null device
 		# rather than at a temp file that is about to be deleted, so the next command starts from a

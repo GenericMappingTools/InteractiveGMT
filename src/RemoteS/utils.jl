@@ -865,7 +865,10 @@ function train_raster(cube::GMT.GItype, train::Union{Vector{<:GMTdataset}, Strin
 	end
 
 	model = fit_tree(features, labels; max_depth=max_depth)
-	classes = join(unique(GMT.make_attrtbl(samples, false)[1][:,1]), ",")
+	# The names straight from each polygon's "class", in first-seen order -- the order add_class_id!
+	# numbers them. Not column 1 of make_attrtbl: that table follows the attrib Dict's key order, and
+	# once "id" is added column 1 can be "id", which named the classes "1,2".
+	classes = join(unique(String[(v = d.attrib["class"]; string(v isa Vector ? first(v) : v)) for d in samples]), ",")
 	return model, classes
 end
 
