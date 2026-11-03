@@ -90,17 +90,43 @@ function _table_text(D::AbstractVector{<:GMTdataset})
 	return join((replace(t, '\n' => ' ') for d in D for t in d.text), '\n')
 end
 
+# A DataFrame, recognised by GMT.jl's own `isdataframe` (no DataFrames dependency, even indirect) and read
+# as GMT.jl's `df2ds` reads one: `names(df)`, `df[!, name]`. Its columns are of any type, side by side, so
+# every cell travels as TEXT (gmtvtk_set_text_table), written as the REPL writes it -- a number compact
+# (6 significant digits), `missing` as `missing`, anything else printed.
+_table_cell(x)::String = x === missing ? "missing" : x isa AbstractString ? String(x) :
+                         x isa Real ? sprint(show, x; context = :compact => true) : sprint(print, x)
+
+function _show_dataframe(fig, df; name::AbstractString = "")
+	cols = String.(names(df))
+	nrows = length(cols) == 0 ? 0 : length(df[!, cols[1]])
+	io = IOBuffer()
+	for c in cols, x in df[!, c]
+		write(io, replace(_table_cell(x), '\0' => ' '))   # each cell NUL-terminated, column by column
+		write(io, 0x00)
+	end
+	buf = take!(io)
+	hdr = join(replace.(cols, '\t' => ' '), '\t')
+	ok = GC.@preserve buf ccall(_fn(:gmtvtk_set_text_table), Cint,
+		(Ptr{Cvoid}, Cstring, Ptr{UInt8}, Int64, Cint, Cint, Cstring),
+		_fig_handle(fig), String(isempty(name) ? "DataFrame" : name), buf, Int64(length(buf)),
+		Cint(nrows), Cint(length(cols)), hdr)
+	ok == 0 && @warn "figure window is closed; table not shown"
+	return fig
+end
+
 """
 	show_table(fig, data; name="")
 
 Show `data` in the window's **Data Viewer** spreadsheet tab and bring that tab forward.
 `fig` is any viewer handle (`QtFigure`/`QtPoints`/`QtFV`); `data` is a `GMTdataset` (single
-or multi-segment `Vector{GMTdataset}`), a plain matrix, a vector, a `GMTgrid` or a `GMTimage` (its
+or multi-segment `Vector{GMTdataset}`), a DataFrame, a plain matrix, a vector, a `GMTgrid` or a `GMTimage` (its
 first band; north on top, the x of each column in its header and the y of each row in the first
 column). `name` labels the tab (defaults to the dataset's header / "matrix" / "vector" / "grid" /
 "image"). Returns `fig`.
 """
 function show_table(fig, data; name::AbstractString="")
+	GMT.isdataframe(data) && return _show_dataframe(fig, data; name)
 	M, headers, nm = _table_matrix(data)
 	Mc = Matrix{Float64}(M)                 # contiguous column-major Float64 for the ccall
 	nrows, ncols = size(Mc)

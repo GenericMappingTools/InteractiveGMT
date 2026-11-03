@@ -7,13 +7,9 @@
 //  NOT a vtkCutter/polyplane, which spills onto the whole surface).
 // ============================================================================
 
-// Forward decl: the standalone X,Y plot tool (65_xyplot.cpp, #included later). The Profile panel's
-// right-click "Open in X,Y plot tool" hands its current (x,y) series to this to spawn a full plotter.
-struct XYPlot;
-class ProfilePanel;
-static XYPlot *openSeriesInXYTool(const std::vector<double> &x, const std::vector<double> &y,
-                                  const char *title, const char *xlabel, const char *ylabel,
-                                  ProfilePanel *markFrom = nullptr);
+// openSeriesInXYTool (65_xyplot.cpp, #included later) is declared, with its defaults, in
+// 55_lineprops.cpp: the Profile panel's right-click "Open in X,Y plot tool" hands its current (x,y)
+// series to it to spawn a full plotter, and so does the shared table dialog's "Plot X,Y".
 
 // 2D profile plot. Pure QPainter (VTK has no working context-2D GL backend in this
 // build); a plain QWidget paints axes + the (s,z) polyline.
@@ -581,6 +577,7 @@ static void profileClear(Scene *s) {
 	s->profPD = nullptr; s->profStripe = nullptr; s->profStyle = 0;
 	s->profS.clear(); s->profZ.clear();
 	if (s->prof) s->prof->setProfile({}, {});
+	sceneShowProfile(s, false);                // no profile -> no Profile dock, no button for it
 	setActorTopLayer(s, s->profLine, false);   // it left the pile -> back to the main 3-D layer
 	applyStacking(s);                          // and re-rank what is left
 	rebuildSceneObjects(s);   // drop the Profile row from the Scene Objects list
@@ -750,11 +747,7 @@ static bool profilerBegin(Scene *s, int dx, int dy) {
 		return false;
 	if (s->profEdit) polyExitEdit(s);              // a new track replaces the one whose ends were under edit
 	s->track0[0] = tx; s->track0[1] = ty; s->profiling = true;
-	if (s->bottomDock) {                       // surface the Profile tab in the bottom dock
-		s->bottomDock->setVisible(true);
-		setBottomCollapsed(s, false);
-		if (s->bottomTabs && s->prof) s->bottomTabs->setCurrentWidget(s->prof);
-	}
+	sceneShowProfile(s, true);                 // surface the Profile dock (and its status-bar button)
 	return true;
 }
 

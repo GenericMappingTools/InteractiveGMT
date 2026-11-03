@@ -299,6 +299,26 @@ static QIcon makeWorkspaceIcon() {
 	p.end(); return QIcon(pm);
 }
 
+// Julia Console icon (status bar centre, beside the Workspace table): a terminal window -- frame,
+// title strip and a ">>" prompt -- MATLAB's Command Window mark, in the same grey as the bubble.
+static QIcon makeConsoleIcon() {
+	QPixmap pm = iconCanvas();
+	QPainter p(&pm);
+	p.setRenderHint(QPainter::Antialiasing, true);
+	const QColor ink(70, 70, 75);
+	const QRectF box(3.0, 4.0, 18.0, 16.0);
+	p.setPen(QPen(ink, 1.4));
+	p.setBrush(Qt::NoBrush);
+	p.drawRoundedRect(box, 2.0, 2.0);
+	p.drawLine(QPointF(box.left(), box.top() + 3.5), QPointF(box.right(), box.top() + 3.5));   // title strip
+	for (double x0 : { 6.5, 10.5 }) {                                                         // ">>"
+		QPolygonF chev;
+		chev << QPointF(x0, 10.0) << QPointF(x0 + 3.0, 12.75) << QPointF(x0, 15.5);
+		p.drawPolyline(chev);
+	}
+	p.end(); return QIcon(pm);
+}
+
 // Swipe-tool icon: a framed tile split down the middle — dark raster left, light raster right —
 // with the divider line and its round grab handle drawn exactly as the live overlay draws them, so
 // the button reads as a miniature of what the tool puts on the scene.

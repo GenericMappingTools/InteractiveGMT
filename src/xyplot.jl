@@ -331,11 +331,11 @@ function _on_xy_seed(plot::Ptr{Cvoid}, cx::Ptr{Float64}, cy::Ptr{Float64}, n::Ci
 		x = copy(unsafe_wrap(Array, cx, N))
 		y = copy(unsafe_wrap(Array, cy, N))
 		nm = unsafe_string(cname)
-		p = get(_FIGREG, plot, nothing)
-		if !(p isa QtXYPlot)
-			p = _register_fig!(QtXYPlot(plot))
-			_start_pump()
-		end
+		# ALWAYS a fresh mirror, as _on_xy_new below: this fires only when C++ has just BUILT the window
+		# (openSeriesInXYTool), so a `_FIGREG` entry at this address is a destroyed window's whose pointer
+		# the allocator recycled -- reusing it handed the new window the dead one's series list.
+		p = _register_fig!(QtXYPlot(plot))
+		_start_pump()
 		_XY_CURRENT[] = plot   # Profile -> X,Y is an explicit "open a window" gesture; it still
 		                       # becomes the target for whatever _xyplot() call comes next
 		_xyadd!(p, x, y; name=nm)

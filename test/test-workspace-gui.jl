@@ -120,6 +120,43 @@
 		@test occursin("ws_nope", GC.@preserve ERRB unsafe_string(pointer(ERRB)))
 		@test any(e -> occursin("ws_nope", e), IG._take_tool_errors!())   # claimed: it was meant to fail
 
+		# a DataFrame (GMT.isdataframe's shape: first field `columns`, last `allnotemetadata`, read with
+		# names(df) / df[!, name]): any column type, opened as a table of text cells
+		Core.eval(Main, quote
+			struct WsFakeDF; columns::Vector{Any}; colnames::Vector{String}; allnotemetadata::Bool; end
+			Base.names(d::WsFakeDF) = d.colnames
+			Base.getindex(d::WsFakeDF, ::typeof(!), n::AbstractString) = d.columns[findfirst(==(n), d.colnames)]
+			ws_DF = WsFakeDF(Any[[1.5, 2.25, 3.0], ["a", "b\tc", "d"], [1, missing, 3]], ["x", "name", "n"], true)
+		end)
+		# (read in the latest world: the type and its methods were defined just above, inside this item)
+		@test Base.invokelatest(IG.GMT.isdataframe, Base.invokelatest(getglobal, Main, :ws_DF))
+		L = Base.invokelatest(IG._ws_listing, true)
+		@test occursin("ws_DF\t\t3×3\t", L) && occursin("\tdataframe\t", L)
+		@test ask(fig.h, "table\tws_DF") == 0
+		pump()
+		@test IG._scene_state(fig.h)["n_table"] == 3
+		@test IG._table_cell(missing) == "missing" && IG._table_cell(2.25) == "2.25" && IG._table_cell("b") == "b"
+
+		# PLOT X,Y from a table: header clicks pick the columns (Ctrl for the second), the button plots them
+		IG.show_table(fig, [1.0 2.0 4.0; 2.0 4.0 8.0; 3.0 6.0 12.0]; name = "ZZplotT")
+		pump()
+		tplot(a, b) = ccall(_test_fn(:gmtvtk_table_plot_test), Cint, (Cstring, Cint, Cint), "ZZplotT", a, b)
+		for (a, b) in ((1, 3), (2, 0))                   # X = C1, Y = C3; then C2 against the row number
+			IG._XY_CURRENT[] = C_NULL
+			@test tplot(a, b) == 1
+			pump()
+			xh = IG._XY_CURRENT[]
+			@test xh != C_NULL && ccall(IG._fn(:gmtvtk_xyplot_is_alive), Cint, (Ptr{Cvoid},), xh) != 0
+			xh != C_NULL && ccall(IG._fn(:gmtvtk_xyplot_close), Cvoid, (Ptr{Cvoid},), xh)
+			pump()
+		end
+		# a table with many columns opens wider than a narrow one, up to the iGMT window's width, never more
+		twidth(t) = ccall(_test_fn(:gmtvtk_toplevel_width_test), Cint, (Cstring,), t)
+		IG.show_table(fig, rand(3, 60); name = "ZZwideT")
+		pump()
+		@test twidth("ZZwideT") > twidth("ZZplotT") >= 360
+		@test twidth("ZZwideT") == twidth("ZZwsgrid")          # 60 columns need more than the window has
+
 		# a BIG grid: the read-only table is lazy, so 4 million cells open like 40
 		Core.eval(Main, :(ws_B = $(IG.GMT.mat2grid(rand(Float32, 2000, 2000)))))
 		t = @elapsed ask(fig.h, "table\tws_B")
@@ -127,7 +164,7 @@
 		@test IG._scene_state(fig.h)["n_table"] == 2000
 		println("workspace: 2000x2000 grid table opened in ", round(t; digits=2), " s")
 	finally
-		Core.eval(Main, :(ws_G = ws_I = ws_M = ws_x = ws_B = ws_hostglobal = ws_v = ws_D = nothing))
+		Core.eval(Main, :(ws_G = ws_I = ws_M = ws_x = ws_B = ws_hostglobal = ws_v = ws_D = ws_DF = nothing))
 		ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), fig.h)
 		pump()
 	end

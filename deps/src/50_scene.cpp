@@ -24,11 +24,12 @@ static void mecaGroupPropsDialog(Scene *s, const QString &groupName, const QPoin
 // THE shared "pop a floating table of this object's data" dialog (55_lineprops.cpp) — Save button
 // included. Every table in the app is this one function; a second one is the violation.
 // Read-only tables are lazy (cell() is kept and called while painting); editable ones come back as a
-// QTableWidget. `matrixLook` = a grid/image laid out as a matrix (MATLAB's variable editor).
+// QTableWidget. `matrixLook` = a grid/image laid out as a matrix (MATLAB's variable editor). `refWin` =
+// the window whose width a wide table may grow to.
 static QTableView *buildDataTableDialog(const QString &title, int nrows, const QStringList &hdr,
                                         const std::function<QString(int,int)> &cell,
                                         bool editable, std::function<void()> onSave,
-                                        bool matrixLook = false);
+                                        bool matrixLook = false, QWidget *refWin = nullptr);
 static int  addSymbols(Scene *s, const double *xyz, int npts, const std::string &sym,   // defined below:
                        double sizePx, int filled, double fr, double fg, double fb,      // THE symbol-layer
                        double er, double eg, double eb, double edgeWidth,               // builder
@@ -5429,7 +5430,7 @@ static void showSymbolDataTable(Scene *s, vtkActor *act, const QString &name) {
 			return QString::number(col == 0 ? p[0] * xfacInv : p[col], 'g', 10);
 		},
 		/*editable=*/!haveData,                   // a catalog is a record, not a form
-		[s, si0]() { symbolSaveData(s, s->symbols[(size_t)si0]); }));
+		[s, si0]() { symbolSaveData(s, s->symbols[(size_t)si0]); }, false, s->win));
 	if (!tbl) return;                             // read-only catalog: nothing to write back
 
 	std::shared_ptr<bool> guard = std::make_shared<bool>(false);

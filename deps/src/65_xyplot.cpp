@@ -1421,7 +1421,7 @@ static void xyShowDataTable(XYPlot *s, int idx) {
 			                          : t->GetValue(row, col - ns).ToDouble();
 			return QString::number(v, 'g', 10);
 		},
-		/*editable=*/false, [s, idx]() { xySaveSeries(s, idx); });
+		/*editable=*/false, [s, idx]() { xySaveSeries(s, idx); }, false, s->win);
 }
 
 // The bar width a series' abscissa asks for: 0.9 of the MEDIAN |dx| (not the mean, and not the full
@@ -8064,7 +8064,7 @@ static XYPlot *xyOpenBlankFromHost() {
 // series — lands in the full plotter. Returns the new window (null on <2 points / mismatch).
 static XYPlot *openSeriesInXYTool(const std::vector<double> &x, const std::vector<double> &y,
                                   const char *title, const char *xlabel, const char *ylabel,
-                                  ProfilePanel *markFrom) {
+                                  ProfilePanel *markFrom, const char *seriesName) {
 	if (x.size() < 2 || y.size() != x.size())
 		return nullptr;
 	XYPlot *p = buildXYPlot(title);
@@ -8072,10 +8072,11 @@ static XYPlot *openSeriesInXYTool(const std::vector<double> &x, const std::vecto
 		return nullptr;
 	if (xlabel && xlabel[0]) xyCur(p).chart->GetAxis(vtkAxis::BOTTOM)->SetTitle(xlabel);
 	if (ylabel && ylabel[0]) xyCur(p).chart->GetAxis(vtkAxis::LEFT)->SetTitle(ylabel);
+	if (!seriesName || !seriesName[0]) seriesName = "Profile";
 	if (g_juliaXYSeed)                                 // let Julia register a mirror + add the series
-		g_juliaXYSeed(p, x.data(), y.data(), (int)x.size(), "Profile");
+		g_juliaXYSeed(p, x.data(), y.data(), (int)x.size(), seriesName);
 	else                                               // no host (demo exe) -> add directly
-		xyAddSeries(p, x.data(), y.data(), (int)x.size(), "Profile", -1.0, 0.0, 0.0, 0.0, -1, -1, -1.0);
+		xyAddSeries(p, x.data(), y.data(), (int)x.size(), seriesName, -1.0, 0.0, 0.0, 0.0, -1, -1, -1.0);
 	// The curve just added is the panel's: share its marker (it may already have one).
 	if (markFrom && xyAlive(p) && !xyCur(p).series.empty()) {
 		p->markPanel = markFrom;

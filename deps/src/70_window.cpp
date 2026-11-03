@@ -27112,17 +27112,21 @@ static QIcon makeRulerIcon();               // graduated ruler glyph (85_polygon
 static QIcon makeGlobeIcon();               // graticule globe for the status-corner CRS chip (85_polygon.cpp)
 static QIcon makeCubeViewIcon();            // wireframe cube glyph for the CUBE view mode (85_polygon.cpp)
 static QIcon makeMessagesIcon(bool unread); // speech bubble for the status-corner Messages button (ditto)
-static QIcon makeWorkspaceIcon();           // small table for the status-corner Workspace button (ditto)
+static QIcon makeWorkspaceIcon();           // small table for the status-bar Workspace button (ditto)
+static QIcon makeConsoleIcon();             // terminal window ">>" for the status-bar console button (ditto)
 
 // ============================================================================
-//  Bottom-RIGHT status corner (QGIS-style): the CRS chip + the Messages button.
+//  The status bar: [readout ............ | console workspace profile | ...... CRS bubble]
 //
-//  They are PERMANENT status-bar widgets, which is what keeps them on screen:
-//  Qt hides ordinary (non-permanent) status-bar widgets while a temporary
-//  showMessage() is up and paints that message over them — and this window keeps
-//  a temporary message up nearly all the time (the hover coordinate readout).
-//  Permanent widgets are never hidden and the message text stops at their left
-//  edge, so the readout and the corner coexist with no custom painting at all.
+//  Three PERMANENT status-bar widgets, which is what keeps them on screen: Qt hides
+//  ordinary (non-permanent) status-bar widgets while a temporary showMessage() is up
+//  — and this window keeps a temporary message up nearly all the time (the hover
+//  coordinate readout). The temporary message itself is shown by the LEFT widget, a
+//  label fed by QStatusBar::messageChanged: Qt's own painting of it stops at the
+//  first permanent widget's left edge, which is now the bar's left edge, so it paints
+//  nothing and every showMessage() caller is unchanged. The left and right widgets
+//  share the width equally, which puts the centre buttons in the middle of the bar
+//  (MATLAB's layout).
 // ============================================================================
 
 // THE one place the CRS chip's text + tooltip are derived from the window's stored CRS
@@ -27176,16 +27180,77 @@ static void sceneShowMessages(Scene *s, bool show) {
 	sceneMessagesUnread(s, false);
 }
 
-// Build the status bar's right-hand corner: [globe EPSG:xxxx] [bubble], pinned there as ONE
-// permanent widget so the temporary-message readout keeps the rest of the bar to itself. The CRS
-// chip opens the CRS selector (73_crsselect.cpp).
+// Build the status bar: the readout on the left, the panel buttons in the middle (Julia Console,
+// Workspace, Profile) and the [globe EPSG:xxxx] [bubble] corner on the right. The CRS chip opens the
+// CRS selector (73_crsselect.cpp).
 static void buildIGStatusBar(Scene *s, QMainWindow *win) {
 	QStatusBar *sb = win->statusBar();
 
-	QWidget     *corner = new QWidget(sb);
+	// LEFT: the temporary message (hover readout, progress notes), mirrored into a label.
+	QLabel *readout = new QLabel(sb);
+	readout->setTextFormat(Qt::PlainText);
+	readout->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);   // half the bar, whatever the text
+	readout->setContentsMargins(4, 0, 0, 0);
+	QObject::connect(sb, &QStatusBar::messageChanged, readout, [readout](const QString &m) { readout->setText(m); });
+	sb->addPermanentWidget(readout, 1);
+
+	// MIDDLE: one checkable button per panel, pressed while that panel is on screen.
+	QWidget     *mid = new QWidget(sb);
+	QHBoxLayout *ml  = new QHBoxLayout(mid);
+	ml->setContentsMargins(0, 0, 0, 0);
+	ml->setSpacing(2);
+	auto panelBtn = [mid, ml](const char *name, const QIcon &icon, const char *tip) {
+		QToolButton *b = new QToolButton(mid);
+		b->setObjectName(name);
+		b->setIcon(icon);
+		b->setToolTip(QString::fromUtf8(tip));
+		b->setAutoRaise(true);
+		b->setCursor(Qt::PointingHandCursor);
+		b->setFocusPolicy(Qt::NoFocus);
+		b->setCheckable(true);
+		ml->addWidget(b);
+		return b;
+	};
+	QToolButton *conb = panelBtn("igConsoleBtn", makeConsoleIcon(),
+		"Julia Console — type commands; `fig` is this window");
+	QObject::connect(conb, &QToolButton::clicked, conb, [s]() {
+		sceneToggleConsole(s);
+		if (s->conBtn && s->conDock) s->conBtn->setChecked(!s->conDock->isHidden());
+	});
+	s->conBtn = conb;
+
+	// The Workspace panel's door (77_workspace.cpp): the session's variables, as MATLAB's workspace.
+	QToolButton *wsb = panelBtn("igWorkspaceBtn", makeWorkspaceIcon(),
+		"Workspace — the variables of this Julia session");
+	QObject::connect(wsb, &QToolButton::clicked, wsb, [s]() { workspaceToggle(s); });   // show <-> hide
+
+	// Only once a profile exists (sceneShowProfile shows / hides it with the Profile dock).
+	QToolButton *pfb = panelBtn("igProfileBtn", QIcon(makeObjectIcon(IC_Profile)),
+		"Profile — the (distance, elevation) graph of the track");
+	QObject::connect(pfb, &QToolButton::clicked, pfb, [s]() {
+		if (!s->profDock) return;
+		if (s->profDock->isHidden()) {
+			s->profDock->show();
+			s->profDock->raise();
+		}
+		else
+			s->profDock->hide();
+		if (s->profBtn) s->profBtn->setChecked(!s->profDock->isHidden());
+	});
+	pfb->setVisible(false);
+	s->profBtn = pfb;
+	sb->addPermanentWidget(mid, 0);
+
+	// RIGHT: the CRS chip + Messages bubble, pushed to the right edge of the other half.
+	QWidget     *right  = new QWidget(sb);
+	QHBoxLayout *rl     = new QHBoxLayout(right);
+	rl->setContentsMargins(0, 0, 0, 0);
+	rl->addStretch(1);
+	QWidget     *corner = new QWidget(right);
 	QHBoxLayout *cl     = new QHBoxLayout(corner);
 	cl->setContentsMargins(2, 0, 8, 0);
 	cl->setSpacing(4);
+	rl->addWidget(corner);
 
 	QToolButton *crs = new QToolButton(corner);
 	crs->setAutoRaise(true);
@@ -27195,17 +27260,6 @@ static void buildIGStatusBar(Scene *s, QMainWindow *win) {
 	cl->addWidget(crs);
 	s->crsChip = crs;
 
-	// The Workspace panel's door (77_workspace.cpp): the session's variables, as MATLAB's workspace.
-	QToolButton *wsb = new QToolButton(corner);
-	wsb->setObjectName("igWorkspaceBtn");
-	wsb->setIcon(makeWorkspaceIcon());
-	wsb->setToolTip("Workspace — the variables of this Julia session");
-	wsb->setCursor(Qt::PointingHandCursor);
-	wsb->setFocusPolicy(Qt::NoFocus);
-	wsb->setCheckable(true);                          // pressed while the panel is on screen
-	cl->addWidget(wsb);
-	QObject::connect(wsb, &QToolButton::clicked, wsb, [s]() { workspaceToggle(s); });   // show <-> hide
-
 	QToolButton *msg = new QToolButton(corner);
 	msg->setIcon(makeMessagesIcon(false));
 	msg->setToolTip("Messages");
@@ -27213,7 +27267,11 @@ static void buildIGStatusBar(Scene *s, QMainWindow *win) {
 	cl->addWidget(msg);
 	s->msgBtn = msg;
 
-	sb->addPermanentWidget(corner, 0);    // RIGHT corner, never hidden by a temporary message
+	// Same half-width as the readout, but never narrower than the corner with the widest EPSG code.
+	right->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+	crs->setText("EPSG:000000");
+	right->setMinimumWidth(corner->sizeHint().width());
+	sb->addPermanentWidget(right, 1);
 
 	// QGIS's corner button: the CRS selector, opened on the window's own system; a different pick
 	// reprojects the window (crsReprojectWindow, 73_crsselect.cpp) when that can be done.
@@ -30487,7 +30545,6 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	win->resize(1100, 800);
 	win->setCentralWidget(widget);
 	buildIGStatusBar(s, win);               // status corner: CRS chip + Messages button (QGIS-style)
-	win->statusBar()->showMessage("ready");
 	enableFileDrops(win, widget, s);        // drop a grid/image/table file onto any window to add it
 	s->win = win;
 	++g_openWindows;
@@ -30558,11 +30615,6 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		sceneAxesSetShown(s, !sceneAxesShown(s));   // window-wide view command: EVERY raster's own set
 		rebuildAxisLabels(s);
 		rebuildSceneObjects(s);                     // the per-raster Axes rows re-read their own intent
-		s->widget->renderWindow()->Render();
-	};
-	auto actToggleBar = [s]() {
-		if (!s->bar) return;                 // bare image has no colorbar
-		setColorbarVisible(s, !colorbarVisible(s));
 		s->widget->renderWindow()->Render();
 	};
 	auto actVE = [s]() {
@@ -30990,10 +31042,15 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	mView->addAction("&Reset Camera", actReset, QKeySequence("R"));
 	QAction *aAxes = mView->addAction("Show Cube &Axes", actToggleAxes);
 	aAxes->setCheckable(true); aAxes->setChecked(true);
-	QAction *aBar = mView->addAction("Show Color &Bar", actToggleBar);
-	aBar->setCheckable(true); aBar->setChecked(true);
+	// (No "Show Color Bar" row, removed by request: each grid's colour bar is its own Scene Objects row.)
 	QAction *aGiz = mView->addAction("Show &Gizmo", actToggleGizmo);  // 'x' also toggles (VTK)
 	aGiz->setCheckable(true); aGiz->setChecked(true);
+	// The gizmo is a 3-D control: no row for it in flat 2-D. Its tick is read off the gizmo itself
+	// each time the menu opens — 'x' and the view-mode switch show/hide it without passing here.
+	QObject::connect(mView, &QMenu::aboutToShow, aGiz, [s, aGiz]() {
+		aGiz->setVisible(!s->flat2d && s->giz);
+		aGiz->setChecked(s->giz && s->giz->visible);
+	});
 	// The shared checkable "Flat 2D (map)" action. It is NOT a View-menu row any more (removed by
 	// request) — but the ACTION stays, because it is where the flat/3-D state lives: the toolbar's
 	// view-mode button tracks `act2D::toggled`, and every other switch source (the context menu, the
@@ -33127,22 +33184,31 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	s->objFoldBar->onFloat = [win, objDock]() { dockToggleFloat(win, objDock); };
 	s->objFoldBar->updateGeometry();                         // sizeHint now reserves the glyph's width
 
-	// --- Bottom tabbed panel: Profile / Julia Console / Errors ---------------
-	// ONE dock holds a QTabWidget. A "Hide" button in the tab-bar corner collapses the panel
-	// BODY down to just the tab strip (so the central 3-D view extends) and toggles to "Show".
-	QDockWidget *bottomDock = new QDockWidget("Panels", win);
-	bottomDock->setAllowedAreas(Qt::BottomDockWidgetArea | Qt::TopDockWidgetArea);
-	QTabWidget *tabs = new QTabWidget(bottomDock);
-	tabs->setDocumentMode(true);
-	bottomDock->setWidget(tabs);
-	win->addDockWidget(Qt::BottomDockWidgetArea, bottomDock);
-	installDockGeometryMemory(win, bottomDock, "panelsDock");   // undock -> re-dock puts it back exactly
-	s->bottomDock = bottomDock;
-	s->bottomTabs = tabs;
+	// --- Bottom docks: Julia Console / Profile ------------------------------
+	// Two plain docks, both hidden at start, each opened and closed by its own button in the centre
+	// of the status bar (buildIGStatusBar) — MATLAB's Command Window door. The button shows pressed
+	// while its dock is on screen, whichever way the dock got there or went away (its own close
+	// glyph included).
+	auto bottomPanel = [win](const char *title, const char *name, QToolButton *btn) {
+		QDockWidget *d = new QDockWidget(QString::fromUtf8(title), win);
+		d->setAllowedAreas(Qt::BottomDockWidgetArea | Qt::TopDockWidgetArea);
+		win->addDockWidget(Qt::BottomDockWidgetArea, d);
+		installDockGeometryMemory(win, d, name);   // undock -> re-dock puts it back exactly
+		d->hide();
+		if (btn)
+			QObject::connect(d, &QDockWidget::visibilityChanged, btn, [btn, d](bool) {
+				btn->setChecked(!d->isHidden());
+			});
+		return d;
+	};
+	QDockWidget *profDock = bottomPanel("Profile", "profileDock", s->profBtn);
+	QDockWidget *conDock  = bottomPanel("Julia Console", "consoleDock", s->conBtn);
+	s->profDock = profDock;
+	s->conDock  = conDock;
 
-	// Tab 0 — Profile: 2D (distance, elevation) graph. Ctrl+left-drag a line on the surface
-	// fills it (the 3D drape line + this panel update live; GMTF3D / Fledermaus profile track).
-	s->prof = new ProfilePanel(tabs);
+	// Profile: 2D (distance, elevation) graph. Ctrl+left-drag a line on the surface fills it (the 3D
+	// drape line + this panel update live; GMTF3D / Fledermaus profile track).
+	s->prof = new ProfilePanel(profDock);
 	s->prof->onMarker = [s](double x) { profMarkSync(s, x); };   // panel marker -> its twin on the 3-D track
 	// …and the track under it, one (x, y) per sample (profPD's points are pushed with profS), for the
 	// X,Y windows opened from it (their magnetic model reads the track's azimuth and bathymetry).
@@ -33160,21 +33226,21 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		geog = activeGridGeog(s) ? 1 : 0;
 		return true;
 	};
-	tabs->addTab(s->prof, "Profile");
+	profDock->setWidget(s->prof);
 
-	// Tab 1 — Julia console: the viewer runs in-process in Julia, so a typed command is handed
-	// straight back to Julia (g_juliaEval) and eval'd in Main. The callback binds `fig` to THIS
-	// window, so `add!(fig, D)`, `view_points(...)`, etc. reach the figure with no handle typing.
+	// Julia console: the viewer runs in-process in Julia, so a typed command is handed straight back
+	// to Julia (g_juliaEval) and eval'd in Main. The callback binds `fig` to THIS window, so
+	// `add!(fig, D)`, `view_points(...)`, etc. reach the figure with no handle typing.
 	// ReplConsole (30_app.cpp): prompt, input and output in ONE pane, as in a terminal REPL; the X,Y
 	// plot tool's console is the same widget.
-	ReplConsole *con = new ReplConsole(s, "`fig` is this window.  e.g.  add!(fig, [x y z]; mode=:points)", 10, tabs);
-	tabs->addTab(con, "Julia Console");
+	ReplConsole *con = new ReplConsole(s, "`fig` is this window.  e.g.  add!(fig, [x y z]; mode=:points)", 10, conDock);
+	conDock->setWidget(con);
 	s->console = con;
 
 	// The MESSAGE LOG: a READ-ONLY sink for execution errors from background callbacks (drop, coastlines,
 	// basemap, tides, recolour, …). Those used to vanish into the REPL's stderr; Julia ccalls
 	// gmtvtk_log_error -> here, so a failure can't pass unseen. Typed-command errors stay inline in the
-	// Julia Console tab; THIS is the program-side error log. It is NOT a Panels tab any more: it has its
+	// Julia Console; THIS is the program-side error log. It is NOT a bottom-panel tab any more: it has its
 	// own "Messages" dock, opened by the speech-bubble button in the bottom-left status corner (QGIS's
 	// Log Messages panel), and starts HIDDEN — a new line lights that button's red dot.
 	QPlainTextEdit *errOut = new QPlainTextEdit(win);
@@ -33246,57 +33312,8 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// buildDataTableDialog, popped by gmtvtk_set_table / show_table — not by a second spreadsheet
 	// living here. Two implementations of one operation is exactly what SACRED_LAW forbids.)
 
-	// Custom dock title bar: a fold triangle sitting RIGHT BESIDE the "Panels" word (matching the
-	// Scene Objects / Shading docks), instead of the old hide button lost in the tab-strip corner.
-	// The triangle collapses the panel body (extend the 3-D view) / restores it; glyph swapped by
-	// setBottomCollapsed (▸ collapsed, ▾ open).
-	QWidget *titleBar = new QWidget(bottomDock);
-	QHBoxLayout *titleLay = new QHBoxLayout(titleBar);
-	titleLay->setContentsMargins(6, 2, 6, 2);
-	titleLay->setSpacing(4);
-	QToolButton *hideBtn = new QToolButton(titleBar);
-	hideBtn->setText(QString::fromUtf8("\xE2\x96\xBE"));   // ▾ open
-	hideBtn->setAutoRaise(true);
-	hideBtn->setCursor(Qt::PointingHandCursor);
-	hideBtn->setToolTip("Collapse this panel to extend the 3-D view");
-	titleLay->addWidget(hideBtn);
-	titleLay->addWidget(new QLabel("Panels", titleBar));
-	titleLay->addStretch(1);
-	// Float/dock button: a custom titleBarWidget suppresses Qt's native drag-to-undock, so we
-	// restore undocking explicitly — toggles the dock between floating and docked (DockWidgetFloatable
-	// is on by default). Once floating, the OS window frame lets the user move it / drag it back to dock.
-	QToolButton *floatBtn = new QToolButton(titleBar);
-	floatBtn->setText(QString::fromUtf8("\xE2\x9D\x90"));   // ❐ float / re-dock
-	floatBtn->setAutoRaise(true);
-	floatBtn->setCursor(Qt::PointingHandCursor);
-	floatBtn->setToolTip("Undock this panel to a floating window / dock it back");
-	titleLay->addWidget(floatBtn);
-	bottomDock->setTitleBarWidget(titleBar);
-	s->bottomHideBtn = hideBtn;
-	QObject::connect(hideBtn,  &QToolButton::clicked, [s]() { setBottomCollapsed(s, !s->bottomCollapsed); });
-	QObject::connect(floatBtn, &QToolButton::clicked, [win, bottomDock]() { dockToggleFloat(win, bottomDock); });
-	// Collapsed + floating is a dead end: the collapse CLAMPS the tab widget's maximum height to the
-	// tab strip, so the torn-off window cannot be resized at all. Tearing off therefore expands the
-	// body (the clamp is lifted, the floating panel resizes freely) and putting it back restores the
-	// collapsed state it had, together with the docked height dockRestoreGeometry brings back.
-	QObject::connect(bottomDock, &QDockWidget::topLevelChanged, bottomDock, [s, bottomDock](bool floating) {
-		if (floating) {
-			bottomDock->setProperty("igWasCollapsed", s->bottomCollapsed);
-			if (s->bottomCollapsed) setBottomCollapsed(s, false);
-		}
-		else if (bottomDock->property("igWasCollapsed").toBool())
-			setBottomCollapsed(s, true);
-	});
-
-	// View-menu items: show the dock, un-collapse it, and bring the matching tab forward.
-	auto showTab = [s](QWidget *page) {
-		if (s->bottomDock) s->bottomDock->setVisible(true);
-		setBottomCollapsed(s, false);
-		if (s->bottomTabs) s->bottomTabs->setCurrentWidget(page);
-	};
-	mView->addAction("&Profile Panel",       [showTab, s]()        { showTab(s->prof); });
-	mView->addAction("Julia &Console Panel", [showTab, con]()      { showTab(con); con->setFocus(Qt::OtherFocusReason); });
-	// (No "Workspace Panel" row: the Workspace opens from its own status-corner button, buildIGStatusBar.)
+	// (No "Profile Panel" / "Julia Console Panel" / "Workspace Panel" rows: each opens from its own
+	// button in the centre of the status bar, buildIGStatusBar.)
 	// No "Messages Panel" row (removed by request). The log is still reachable: the status corner's
 	// message bubble opens the same dock through the same sceneShowMessages.
 	// No "Data Viewer Panel" entry: there is no such tab any more. A table of numbers pops up in THE
@@ -33327,12 +33344,6 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// three lines above, and was left with the placeholder's bar (default ramp -> a RED strip) painted
 	// over a window with nothing in it. refreshGridColorbar resolves "no visible grid" and clears it.
 	refreshGridColorbar(s);
-
-	// Start the "Panels" dock minimized to its tab strip BEFORE the first paint, so it never
-	// flashes full-height then collapses (setBottomCollapsed clamps maxHeight from the tab-bar
-	// sizeHint, no post-show geometry needed). show_table / profile track / View-menu actions
-	// un-collapse it on demand (setBottomCollapsed(s,false)).
-	setBottomCollapsed(s, true);
 
 	// Default window large enough that the LEFT (Scene Objects) and RIGHT (Shading) side docks
 	// both get real width. Without this the window opens at its minimum and the central VTK view

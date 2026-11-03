@@ -1852,15 +1852,17 @@ struct Scene {
 	bool         msgUnread = false;     // log grew since the dock was last opened
 	QToolButton *crsChip   = nullptr;   // status-corner CRS chip ("EPSG:4326" / "EPSG:000")
 
-	// --- bottom tabbed panel (Profile / Julia Console) ----------------------
-	QDockWidget *bottomDock    = nullptr;   // the single bottom dock holding the tab widget
-	QTabWidget *bottomTabs    = nullptr;   // its QTabWidget; the corner "Hide" collapses the body
+	// --- bottom docks: Julia Console / Profile (MATLAB-style) ---------------
+	// Each opened and closed by its own button in the centre of the status bar (buildIGStatusBar,
+	// 70_window.cpp). The Profile button exists on screen only while there is a profile to show.
+	QDockWidget *conDock  = nullptr;   // "Julia Console" dock (starts hidden)
+	QDockWidget *profDock = nullptr;   // "Profile" dock (starts hidden)
+	QToolButton *conBtn   = nullptr;   // status-bar centre: console toggle
+	QToolButton *profBtn  = nullptr;   // status-bar centre: profile toggle (hidden until a profile exists)
 	QTableView *dataTable       = nullptr;   // LAST floating table popped for this window by
 	                                         // gmtvtk_set_table (show_table). Kept only so
 	                                         // gmtvtk_scene_state can report its row count; the dialog
 	                                         // itself is parentless and self-deleting (nulls this).
-	QToolButton *bottomHideBtn = nullptr;   // tab-bar corner Hide/Show toggle
-	bool          bottomCollapsed = false;   // panel body collapsed to the tab strip?
 
 	// --- point-cloud rubber-band selection (Ctrl+right-drag) ----------------
 	// Ported from GMTF3D f3d_ext_interactor.cxx: drag a box to (de)select points; the
@@ -3535,24 +3537,32 @@ struct QuadNode {
 	size_t   bytes = 0;
 };
 
-// Collapse / restore the bottom tabbed panel's BODY, leaving the tab strip (+ the Hide
-// button) visible. Collapsing hides the QTabWidget's page stack and clamps the widget to
-// the tab-bar height, so the dock shrinks and the 3-D view extends; restore reverses it.
-static void setBottomCollapsed(Scene *s, bool collapse) {
-	if (!s || !s->bottomTabs)
-		return;
-	if (QStackedWidget *body = s->bottomTabs->findChild<QStackedWidget*>("qt_tabwidget_stackedwidget"))
-		body->setVisible(!collapse);
-	s->bottomTabs->setMaximumHeight(collapse ? s->bottomTabs->tabBar()->sizeHint().height() + 6
-											  : QWIDGETSIZE_MAX);
-	s->bottomCollapsed = collapse;
-	if (s->bottomHideBtn) {
-		// Triangle fold affordance, matching the Scene Objects dock:▸ collapsed, ▾ open.
-		s->bottomHideBtn->setText(collapse ? QString::fromUtf8("\xE2\x96\xB8")   // ▸
-										   : QString::fromUtf8("\xE2\x96\xBE"));  // ▾
-		s->bottomHideBtn->setToolTip(collapse ? "Expand this panel"
-											  : "Collapse this panel to extend the 3-D view");
+// Show / hide the Profile dock — THE door every path that fills the Profile panel goes through
+// (Ctrl+drag track, a plotted series, Delete profile). Its status-bar button comes and goes with it:
+// there is nothing to open while no profile exists. The button's pressed state follows the dock's
+// own visibility (wired where the dock is built, 70_window.cpp).
+static void sceneShowProfile(Scene *s, bool show) {
+	if (!s || !s->profDock) return;
+	if (s->profBtn) s->profBtn->setVisible(show);
+	if (show) {
+		s->profDock->show();
+		s->profDock->raise();
 	}
+	else
+		s->profDock->hide();
+}
+
+// The status bar's console button: the Julia Console dock on screen -> hidden, otherwise shown with
+// the cursor in its input line.
+static void sceneToggleConsole(Scene *s) {
+	if (!s || !s->conDock) return;
+	if (!s->conDock->isHidden()) {
+		s->conDock->hide();
+		return;
+	}
+	s->conDock->show();
+	s->conDock->raise();
+	if (QWidget *w = s->conDock->widget()) w->setFocus(Qt::OtherFocusReason);
 }
 
 // ---- dock undock / re-dock geometry memory ---------------------------------
@@ -6769,7 +6779,7 @@ static void onMouseMove(vtkObject*, unsigned long, void *clientData, void* /*cd*
 	// Over a grid but the ray hit a NaN hole (no surface there) — the march above found no crossing.
 	// Coordinates must NEVER go blank: intersect the ray with the base map plane (z=0) to recover x,y
 	// (z is then sampled as NaN below and printed literally). Accept only inside the grid footprint so
-	// pointing at empty sky still reads "ready".
+	// pointing at empty sky still leaves the readout blank.
 	// (Not on the globe: "the base map plane" is z=0, which on a sphere is the equatorial plane cutting
 	// straight through it — recovering x,y from it would report a point on the far side. A miss there
 	// stays a miss; the march above is what answers, or nothing does.)
@@ -6857,7 +6867,7 @@ static void onMouseMove(vtkObject*, unsigned long, void *clientData, void* /*cd*
 					.arg(zstr).arg(activeVE(s), 0, 'f', 2));
 		}
 	} else {
-		s->win->statusBar()->showMessage("ready");
+		s->win->statusBar()->clearMessage();
 	}
 }
 

@@ -1262,7 +1262,7 @@ static int setDataTable(void *handle, const char *name, const double *data, int 
 			if (col >= ncols) return (*txtp)[row];
 			return QString::number((*valsp)[(size_t)col * nrows + row], 'g', !matrix ? 10 : col > 0 ? 5 : ydig);
 		},
-		/*editable=*/false, onSave, matrix);
+		/*editable=*/false, onSave, matrix, s->win);
 	// Remember the last table popped for this window, ONLY so gmtvtk_scene_state can report its row
 	// count (n_table). It is parentless and self-deleting, so drop the pointer when it goes.
 	s->dataTable = tbl;
@@ -1278,6 +1278,60 @@ GMTVTK_API int gmtvtk_set_table(void *handle, const char *name, const double *da
 GMTVTK_API int gmtvtk_set_matrix_table(void *handle, const char *name, const double *data,
                                        int nrows, int ncols, const char *headers) {
 	return setDataTable(handle, name, data, nrows, ncols, headers, nullptr, true);
+}
+
+// A table whose every cell is TEXT, already written by the host (a DataFrame: numbers, strings, dates,
+// `missing`, side by side). `cells` holds nrows*ncols NUL-terminated UTF-8 strings, column by column,
+// `nbytes` long in all; `headers` is TAB-separated. Shown in THE shared table dialog, lazily: the bytes
+// are kept once and a cell is decoded only when it is painted. Returns 0 on a dead window or when the
+// buffer does not hold exactly nrows*ncols cells.
+GMTVTK_API int gmtvtk_set_text_table(void *handle, const char *name, const char *cells, int64_t nbytes,
+                                     int nrows, int ncols, const char *headers) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || nrows < 0 || ncols < 0 || nbytes < 0 || (nbytes > 0 && !cells))
+		return 0;
+	const size_t n = (size_t)nrows * (size_t)ncols;
+	auto buf = std::make_shared<const std::string>(cells ? cells : "", (size_t)nbytes);
+	auto off = std::make_shared<std::vector<size_t>>();
+	off->reserve(n + 1);
+	off->push_back(0);
+	for (size_t i = 0; i < (size_t)nbytes; ++i)
+		if ((*buf)[i] == '\0') off->push_back(i + 1);
+	if (off->size() != n + 1)
+		return 0;
+	QStringList cols;
+	if (headers && headers[0])
+		cols = QString::fromUtf8(headers).split('\t');
+	QStringList hdr;  hdr << "#";
+	for (int c = 0; c < ncols; ++c)
+		hdr << ((c < cols.size() && !cols[c].isEmpty()) ? cols[c] : QString("C%1").arg(c + 1));
+	auto text = [buf, off, nrows](int row, int col) {
+		const size_t k = (size_t)col * nrows + row;
+		return QString::fromUtf8(buf->data() + (*off)[k], (qsizetype)((*off)[k + 1] - (*off)[k] - 1));
+	};
+	const QString title = (name && name[0]) ? QString::fromUtf8(name) : QString("Data");
+	// Save…: tab-separated, its header line first, every cell as it is shown.
+	auto onSave = [text, hdr, nrows, ncols]() {
+		QString fn = QFileDialog::getSaveFileName(nullptr, "Save table", prefStartDir("table.txt"),
+		                                          "Text (*.txt *.dat *.csv);;All files (*)");
+		if (fn.isEmpty()) return;
+		rememberStartDir(fn);
+		QFile f(fn);
+		if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) return;
+		QTextStream out(&f);
+		out << "#";
+		for (int c = 0; c < ncols; ++c) out << '\t' << hdr[c + 1];
+		out << '\n';
+		for (int r = 0; r < nrows; ++r) {
+			for (int c = 0; c < ncols; ++c) out << (c ? "\t" : "") << text(r, c);
+			out << '\n';
+		}
+		f.close();
+	};
+	QTableView *tbl = buildDataTableDialog(title, nrows, hdr, text, /*editable=*/false, onSave, false, s->win);
+	s->dataTable = tbl;
+	if (tbl) QObject::connect(tbl, &QObject::destroyed, tbl, [s]() { if (sceneAlive(s)) s->dataTable = nullptr; });
+	return 1;
 }
 
 // Plot a generic (x,y) series in the bottom-dock "Profile" panel and surface it. Used by the tide
@@ -1296,9 +1350,7 @@ GMTVTK_API int gmtvtk_show_profile_xy(void *handle, const double *x, const doubl
 		QString::fromUtf8((xlabel && xlabel[0]) ? xlabel : "x"),
 		QString::fromUtf8((ylabel && ylabel[0]) ? ylabel : "y"),
 		isDate != 0);
-	if (s->bottomDock) s->bottomDock->setVisible(true);
-	setBottomCollapsed(s, false);
-	if (s->bottomTabs) s->bottomTabs->setCurrentWidget(s->prof);
+	sceneShowProfile(s, true);
 	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 	return 1;
 }
@@ -8580,7 +8632,7 @@ GMTVTK_API int gmtvtk_vector_ground_gap_test(void *scene, const char *name, doub
 
 // test hook: drive and read back one dock's undock / re-dock, so the dock geometry memory
 // (installDockGeometryMemory, 10_geometry.cpp) is PROVED rather than eyeballed. `name` is the dock's
-// objectName ("panelsDock", "sceneObjectsDock", "messagesDock").
+// objectName ("consoleDock", "profileDock", "sceneObjectsDock", "messagesDock").
 //   action 0 = report only
 //          1 = undock (float)      -- through dockToggleFloat, the title-bar buttons' own path
 //          2 = re-dock             -- likewise
@@ -12590,6 +12642,47 @@ GMTVTK_API int gmtvtk_paint_count_test(void *handle, int start, int *resizes, in
 	return 1;
 }
 
+// The table dialog's "Plot X,Y", by the real gestures: a mouse press on column `colA`'s header, then a
+// Ctrl+press on `colB`'s (0 = none), then a click on the button. Columns count as the table shows them
+// ("#" is 0). 1 = pressed, -1 = the button was disabled, 0 = no such table.
+GMTVTK_API int gmtvtk_table_plot_test(const char *title, int colA, int colB) {
+	if (!title) return 0;
+	const QString want = QString::fromUtf8(title);
+	for (QWidget *w : QApplication::topLevelWidgets()) {
+		if (!w->isVisible() || !w->windowTitle().contains(want, Qt::CaseInsensitive)) continue;
+		auto *tbl = w->findChild<QTableView*>();
+		QPushButton *btn = nullptr;
+		for (QPushButton *b : w->findChildren<QPushButton*>()) if (b->text() == "Plot X,Y") btn = b;
+		if (!tbl || !btn) return 0;
+		QHeaderView *hh = tbl->horizontalHeader();
+		auto press = [hh](int col, Qt::KeyboardModifiers mod) {
+			const QPointF p(hh->sectionViewportPosition(col) + hh->sectionSize(col) / 2.0, hh->height() / 2.0);
+			const QPointF g(hh->viewport()->mapToGlobal(p.toPoint()));
+			QMouseEvent dn(QEvent::MouseButtonPress, p, g, Qt::LeftButton, Qt::LeftButton, mod);
+			QMouseEvent up(QEvent::MouseButtonRelease, p, g, Qt::LeftButton, Qt::NoButton, mod);
+			QApplication::sendEvent(hh->viewport(), &dn);
+			QApplication::sendEvent(hh->viewport(), &up);
+		};
+		press(colA, Qt::NoModifier);
+		if (colB > 0) press(colB, Qt::ControlModifier);
+		QApplication::processEvents();
+		if (!btn->isEnabled()) return -1;
+		btn->click();
+		QApplication::processEvents();
+		return 1;
+	}
+	return 0;
+}
+
+// Width of the first visible top-level window whose title contains `title`; 0 = none.
+GMTVTK_API int gmtvtk_toplevel_width_test(const char *title) {
+	if (!title) return 0;
+	const QString want = QString::fromUtf8(title);
+	for (QWidget *w : QApplication::topLevelWidgets())
+		if (w->isVisible() && w->windowTitle().contains(want, Qt::CaseInsensitive)) return w->width();
+	return 0;
+}
+
 GMTVTK_API int gmtvtk_toplevel_grab_test(const char *title, const char *path) {
 	if (!title || !path) return 0;
 	const QString want = QString::fromUtf8(title);
@@ -15460,7 +15553,6 @@ GMTVTK_API int gmtvtk_make_photo_window_h(void *handle, int w, int h) {
 		d->hide();
 	if (QMenuBar *mb = s->win->menuBar())       mb->hide();
 	if (QStatusBar *sb = s->win->statusBar())   sb->hide();
-	if (s->bottomTabs)                          s->bottomTabs->hide();
 	if (QToolBar *tb = s->win->findChild<QToolBar*>()) tb->hide();
 	for (QToolBar *tb : s->win->findChildren<QToolBar*>()) tb->hide();
 	// A MAXIMIZED WINDOW CANNOT BE RESIZED. `resize()` on one is ignored by the window manager, so the

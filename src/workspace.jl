@@ -30,12 +30,14 @@ function _ws_vars()
 	return sort!(out; by=first)
 end
 
-# What the panel can do with a value: "grid", "image", "dataset", "matrix", "vector", "fv" or "other".
+# What the panel can do with a value: "grid", "image", "dataset", "dataframe", "matrix", "vector", "fv"
+# or "other".
 function _ws_kind(v)::String
 	v isa GMTgrid  && return ndims(v.z) == 2 ? "grid" : "other"     # a cube has no single table
 	v isa GMTimage && return "image"
 	v isa GMTfv    && return "fv"
 	(v isa GMTdataset || v isa AbstractVector{<:GMTdataset}) && return "dataset"
+	GMT.isdataframe(v) && return "dataframe"                        # a table (show_table reads it)
 	v isa AbstractMatrix{<:Real} && return "matrix"
 	v isa AbstractVector{<:Real} && return "vector"
 	return "other"
@@ -53,6 +55,7 @@ function _ws_size(v)::String
 		return nb > 1 ? "$(nx)×$(ny)×$(nb)" : "$(nx)×$(ny)"
 	end
 	v isa GMTdataset && return join(size(v.data), '×')
+	GMT.isdataframe(v) && return "$(length(names(v)) == 0 ? 0 : length(v[!, names(v)[1]]))×$(length(names(v)))"
 	v isa AbstractVector{<:GMTdataset} && return "$(length(v)) segment" * (length(v) == 1 ? "" : "s")
 	v isa AbstractArray && return join(size(v), '×')
 	v isa AbstractString && return "$(length(v)) char" * (length(v) == 1 ? "" : "s")

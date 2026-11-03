@@ -271,6 +271,8 @@ static QString lineTableText(Scene *s, const std::vector<std::vector<std::array<
 							 bool threeD) {
 	QString txt;
 	QTextStream out(&txt);
+	out.setRealNumberPrecision(15);   // QTextStream's default is 6 digits: a re-read track (the profile's
+	                                  // distances) would be measured on rounded coordinates
 	const bool haveGrid = !s->gridZ.empty();
 	double spacing = 0.0;                                // grid node spacing for the 3-D subdivision
 	if (haveGrid) {
@@ -439,6 +441,15 @@ static int polyIndexOfActor(Scene *s, vtkActor *a) {
 // shared_ptr), never a reference to a caller's local or a pointer into an element that can be
 // deleted while the table is open. An editable table is still built whole (small by nature -- the
 // vertices of a drawn shape, hand-placed symbols), because its cellChanged handlers edit its items.
+// THE "open an X,Y plot window with one series" door (65_xyplot.cpp, #included later). The Profile
+// panel's "Open in X,Y plot tool" and this table's "Plot X,Y" both go through it. `seriesName` names
+// the curve (the Profile panel's is "Profile").
+struct XYPlot;
+class ProfilePanel;
+static XYPlot *openSeriesInXYTool(const std::vector<double> &x, const std::vector<double> &y,
+                                  const char *title, const char *xlabel, const char *ylabel,
+                                  ProfilePanel *markFrom = nullptr, const char *seriesName = "Profile");
+
 class DataTableModel : public QAbstractTableModel {
 public:
 	DataTableModel(int nrows, const QStringList &hdr, std::function<QString(int,int)> cell, bool alignRight,
@@ -470,7 +481,14 @@ private:
 static QTableView *buildDataTableDialog(const QString &title, int nrows, const QStringList &hdr,
                                         const std::function<QString(int,int)> &cell,
                                         bool editable, std::function<void()> onSave,
-                                        bool matrixLook) {
+                                        bool matrixLook, QWidget *refWin) {
+	// The window the table belongs to (the iGMT window, the X,Y tool): a wide table opens up to ITS
+	// width, never wider. `refWin` when the caller knows it; else the active MAIN window -- never another
+	// dialog (the last table popped would cap the next one at its own width).
+	QWidget *from = refWin ? refWin : qobject_cast<QMainWindow*>(QApplication::activeWindow());
+	if (!from)                                            // never the SCREEN: the iGMT window on display
+		for (QWidget *w : QApplication::topLevelWidgets())
+			if (qobject_cast<QMainWindow*>(w) && w->isVisible()) { from = w; break; }
 	QDialog *dlg = new QDialog(nullptr);                  // top-level, parentless -> truly floating
 	dlg->setAttribute(Qt::WA_DeleteOnClose);
 	dlg->setWindowTitle(title);
@@ -520,29 +538,100 @@ static QTableView *buildDataTableDialog(const QString &title, int nrows, const Q
 		if (ncoord > 0) tbl->resizeColumnToContents(1);
 	}
 	else {
-		tbl->setSelectionBehavior(QAbstractItemView::SelectRows);
+		// Cells, not rows: a click on a column's header selects that COLUMN (Plot X,Y below), which
+		// row selection would turn into a no-op.
+		tbl->setSelectionBehavior(QAbstractItemView::SelectItems);
 		hh->setResizeContentsPrecision(200);   // size columns from the first rows, not all
 		tbl->resizeColumnsToContents();
 	}
 	lay->addWidget(tbl);
 
+	// PLOT X,Y: the data columns picked by their headers (Ctrl+click for the second) go to the X,Y plot
+	// tool -- the first one clicked is X, the second Y; a single column is plotted against the row
+	// number. Read from what the table SHOWS (an edited cell included); a cell that is not a number
+	// (text, a date, "missing") leaves its row out.
+	auto order = std::make_shared<std::vector<int>>();    // data columns in the order they were clicked
+	QObject::connect(hh, &QHeaderView::sectionClicked, tbl, [order](int sec) {
+		if (sec < 1) return;                              // the "#" column is not data
+		order->erase(std::remove(order->begin(), order->end(), sec), order->end());
+		order->push_back(sec);
+	});
+	QPushButton *plotBtn = new QPushButton("Plot X,Y", dlg);
+	plotBtn->setToolTip("Plot columns in the X,Y plot tool: click a column's header for Y against the row "
+	                    "number, or Ctrl+click a second one -- the first clicked is X, the second Y.");
+	auto selectedCols = [tbl, order]() {
+		std::vector<int> sel;
+		for (const QModelIndex &ix : tbl->selectionModel()->selectedColumns())
+			if (ix.column() >= 1) sel.push_back(ix.column());
+		std::sort(sel.begin(), sel.end());
+		std::vector<int> out;
+		for (int c : *order) if (std::binary_search(sel.begin(), sel.end(), c)) out.push_back(c);
+		for (int c : sel) if (std::find(out.begin(), out.end(), c) == out.end()) out.push_back(c);
+		return out;
+	};
+	auto syncPlot = [plotBtn, selectedCols]() {
+		const size_t n = selectedCols().size();
+		plotBtn->setEnabled(n == 1 || n == 2);
+	};
+	syncPlot();
+	QObject::connect(tbl->selectionModel(), &QItemSelectionModel::selectionChanged, plotBtn,
+	                 [syncPlot](const QItemSelection &, const QItemSelection &) { syncPlot(); });
+	QObject::connect(plotBtn, &QPushButton::clicked, tbl, [tbl, hdr, title, selectedCols]() {
+		const std::vector<int> cols = selectedCols();
+		if (cols.empty() || cols.size() > 2) return;
+		QAbstractItemModel *m = tbl->model();
+		const int nr = m->rowCount();
+		auto num = [m](int r, int c, bool &ok) { return m->data(m->index(r, c)).toString().trimmed().toDouble(&ok); };
+		std::vector<double> x, y;
+		x.reserve(nr);
+		y.reserve(nr);
+		for (int r = 0; r < nr; ++r) {
+			bool okx = true, oky = false;
+			const double xv = cols.size() == 2 ? num(r, cols[0], okx) : (double)(r + 1);
+			const double yv = num(r, cols.back(), oky);
+			if (okx && oky && std::isfinite(xv) && std::isfinite(yv)) {
+				x.push_back(xv);
+				y.push_back(yv);
+			}
+		}
+		const QString xl = cols.size() == 2 ? hdr.value(cols[0]) : QString("row"), yl = hdr.value(cols.back());
+		if (x.size() < 2) {
+			QMessageBox::warning(tbl->window(), "Plot X,Y",
+				QString("\"%1\" against \"%2\" has fewer than two rows where both are numbers.").arg(yl, xl));
+			return;
+		}
+		const QByteArray t = (title + " — " + yl + " vs " + xl).toUtf8(), xb = xl.toUtf8(), yb = yl.toUtf8();
+		openSeriesInXYTool(x, y, t.constData(), xb.constData(), yb.constData(), nullptr, yb.constData());
+	});
+
+	QHBoxLayout *btnRow = new QHBoxLayout();
+	btnRow->addWidget(plotBtn);
+	btnRow->addStretch(1);
 	if (onSave) {
-		QHBoxLayout *btnRow = new QHBoxLayout();
-		btnRow->addStretch(1);
 		QPushButton *saveBtn = new QPushButton("Save…", dlg);
 		btnRow->addWidget(saveBtn);
-		lay->addLayout(btnRow);
 		QObject::connect(saveBtn, &QPushButton::clicked, tbl, onSave);
 	}
+	lay->addLayout(btnRow);
+
+	// As wide as the columns need, up to the width of the iGMT window the table belongs to -- the WINDOW,
+	// never the screen; a matrix is as tall as its rows need too, up to that window's height. It opens
+	// over that window, its left edge on the window's, so a full-width table covers exactly the window.
+	const int maxW = from ? from->width() : 360;
+	const int maxH = from ? from->height() : 450;
+	int wneed = 40 + tbl->verticalScrollBar()->sizeHint().width();
+	for (int c = 0; c < std::min((int)hdr.size(), 400); ++c) wneed += tbl->columnWidth(c);
+	const int wdlg = std::max(360, std::min(wneed, maxW));
+	int hdlg = 450;
 	if (matrixLook && !editable) {                        // a matrix wants room: as many cells as fit
-		const QRect av = QGuiApplication::primaryScreen()->availableGeometry();
-		int wneed = 40;
-		for (int c = 0; c < std::min((int)hdr.size(), 400); ++c) wneed += tbl->columnWidth(c);
 		const int hneed = 90 + std::min(nrows, 400) * tbl->verticalHeader()->defaultSectionSize();
-		dlg->resize(std::clamp(wneed, 360, av.width() * 3 / 4), std::clamp(hneed, 200, av.height() * 3 / 4));
+		hdlg = std::clamp(hneed, 200, std::max(200, maxH));
 	}
-	else
-		dlg->resize(360, 450);
+	dlg->resize(wdlg, hdlg);
+	if (from) {
+		const QRect g = from->geometry();                 // client area of the iGMT window, in screen coords
+		dlg->move(g.left() + (g.width() - wdlg) / 2, g.top() + std::max(0, (g.height() - hdlg) / 2));
+	}
 	dlg->show();                                          // non-modal: REPL + viewer stay live
 	return tbl;
 }
@@ -613,7 +702,7 @@ static void showLineDataTable(Scene *s, const LineRef &lr, const QString &name) 
 			}
 			return QString::number((*plv)[row][col], 'g', 10);
 		},
-		editable && !haveSrc, [s, lr]() { lineSavePoints(s, lr); }));
+		editable && !haveSrc, [s, lr]() { lineSavePoints(s, lr); }, false, s->win));
 
 	// Live write-back: a committed X/Y/Z cell updates pg.v and rebuilds the outline. Connected only
 	// for editable (LK_Polygon) tables. cellChanged also fires when we programmatically fix a cell,

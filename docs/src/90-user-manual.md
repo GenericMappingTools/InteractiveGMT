@@ -55,12 +55,14 @@ The window opens immediately. The REPL stays usable.
 │ Dock     │                    (VTK Canvas)                             │
 │          │                                                             │
 ├──────────┴─────────────────────────────────────────────────────────────┤
-│ ▸ Panels:  Profile │ Julia Console                                     │
+│ x = … y = … z = …        [>>] [▦] [~]              EPSG:4326  [💬]  │
 └────────────────────────────────────────────────────────────────────────┘
 ```
 
 **Left panel:** Scene Objects (all elements in your scene) — it can be dragged to the right edge
-**Bottom panel ("Panels"):** Profile, Julia Console (type commands)
+**Status bar, middle:** three buttons, each opening/closing its panel (pressed while open) — Julia
+Console (type commands; `fig` is this window), Workspace (the session's variables) and Profile
+(shown only once a profile exists)
 **Status corner (bottom-right):** CRS chip (`EPSG:4326`, `EPSG:000` = unreferenced) + Messages
 button — the speech bubble opens the Messages dock (execution messages); a red dot = unread
 
