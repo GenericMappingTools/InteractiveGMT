@@ -7,7 +7,9 @@
 # rest of their file ahead of them. Files are dealt out by their duration in the previous run
 # (longest first, each to the least loaded shard), read off the time stamps in test/last_run.log.
 # Every shard writes its own run log (test/last_run_shard<k>.log) and runs in its own scratch
-# directory, so GMT's gmt.history / gmt.conf never collide.
+# directory, so GMT's gmt.history / gmt.conf never collide. It also draws into its own PostScript
+# file: GMT.jl's classic-mode figure is ONE file per user in tempdir() (GMTjl_<user>.ps) unless
+# JULIA_GMT_MULTIFILE is set, and six shards drawing into the same file read back each other's plots.
 #
 # The files that press the REAL mouse run ALONE, after the shards: another process raising a window
 # while the OS cursor is held down would take the press.
@@ -84,6 +86,7 @@ function launch(id, fs)
 	env["INTERACTIVEGMT_TEST_GUI"]   = "1"
 	env["INTERACTIVEGMT_TEST_FILES"] = join(fs, ';')
 	env["INTERACTIVEGMT_TEST_LOG"]   = log
+	env["JULIA_GMT_MULTIFILE"]       = "1"     # GMTjl_<user>_<pid>.ps: this shard's own figure file
 	cmd = setenv(`$(Base.julia_cmd()) $(joinpath(TESTDIR, "runtests.jl")) gui`, env; dir = mktempdir())
 	p = run(pipeline(cmd; stdout = out, stderr = out); wait = false)
 	return Shard(id, fs, log, out, p, 0, 0, 0)

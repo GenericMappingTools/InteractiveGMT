@@ -138,6 +138,7 @@ const _TEST_SYMBOLS = (
 	:gmtvtk_dialog_tab_test,          # a dialog tab brought to the front, as a click on it does
 	:gmtvtk_nodegraph_test,           # the script graph: its box count, a field double-clicked and edited
 	:gmtvtk_set_remotes_callback,     # NOT test-only -- mirrored: this dll's Remote sensing dialogs call Julia too
+	:gmtvtk_colorbar_labels_test,     # a Color Bar row clicked, "Labels…" picked, its dialog filled
 )
 
 function _load_test_library()

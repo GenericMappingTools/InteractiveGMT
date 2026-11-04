@@ -27114,6 +27114,8 @@ static QIcon makeCubeViewIcon();            // wireframe cube glyph for the CUBE
 static QIcon makeMessagesIcon(bool unread); // speech bubble for the status-corner Messages button (ditto)
 static QIcon makeWorkspaceIcon();           // small table for the status-bar Workspace button (ditto)
 static QIcon makeConsoleIcon();             // terminal window ">>" for the status-bar console button (ditto)
+static QIcon makeCubeAxesIcon();            // ticked box for the status-bar Cube Axes button (ditto)
+static QIcon makeGizmoIcon();               // two orbiting arrows for the status-bar Gizmo button (ditto)
 
 // ============================================================================
 //  The status bar: [readout ............ | console workspace profile | ...... CRS bubble]
@@ -27180,6 +27182,29 @@ static void sceneShowMessages(Scene *s, bool show) {
 	sceneMessagesUnread(s, false);
 }
 
+// The Vertical exaggeration dialog, opened by the status bar's VE chip. The ACTIVE layer's own VE, in
+// and out -- same resolver as the gizmo, the readout and the colour bar, so this dialog can never edit
+// a layer other than the one on screen. LIVE (user order, 2026-09-22): every change of the box is
+// applied at once, through the same two lines OK used to run. OK keeps the value; Cancel puts the
+// layer's own VE back.
+static void sceneVEDialog(Scene *s) {
+	if (!sceneAlive(s) || !s->win) return;
+	const double v0 = activeVE(s);
+	QInputDialog dlg(s->win);
+	dlg.setWindowTitle("Vertical exaggeration");
+	dlg.setLabelText("VE factor:");
+	dlg.setInputMode(QInputDialog::DoubleInput);
+	dlg.setDoubleRange(1.0e-6, 1.0e6);   // bounds are arithmetic guards, not a look limit
+	dlg.setDoubleDecimals(3);
+	dlg.setDoubleValue(v0);
+	auto apply = [s](double v) {
+		if (double *vp = activeVEPtr(s)) { *vp = v; applyVE(s); }
+		if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+	};
+	QObject::connect(&dlg, &QInputDialog::doubleValueChanged, &dlg, apply);
+	if (dlg.exec() != QDialog::Accepted) apply(v0);
+}
+
 // Build the status bar: the readout on the left, the panel buttons in the middle (Julia Console,
 // Workspace, Profile) and the [globe EPSG:xxxx] [bubble] corner on the right. The CRS chip opens the
 // CRS selector (73_crsselect.cpp).
@@ -27239,6 +27264,45 @@ static void buildIGStatusBar(Scene *s, QMainWindow *win) {
 	});
 	pfb->setVisible(false);
 	s->profBtn = pfb;
+
+	// Cube Axes and Gizmo: 3-D controls, so no buttons for them in flat 2-D.
+	QToolButton *axb = panelBtn("igAxesBtn", makeCubeAxesIcon(), "Cube axes — show / hide the axes frame");
+	QObject::connect(axb, &QToolButton::clicked, axb, [s]() {
+		sceneAxesSetShown(s, !sceneAxesShown(s));   // window-wide view command: EVERY raster's own set
+		rebuildAxisLabels(s);
+		rebuildSceneObjects(s);                     // the per-raster Axes rows re-read their own intent
+		s->widget->renderWindow()->Render();
+		s->axesBtn->setChecked(sceneAxesShown(s));
+	});
+	s->axesBtn = axb;
+	QToolButton *gzb = panelBtn("igGizmoBtn", makeGizmoIcon(), "Gizmo — show / hide the view handles ('x')");
+	QObject::connect(gzb, &QToolButton::clicked, gzb, [s]() {
+		if (!s->giz) return;
+		setGizmoVisible(*s->giz, !s->giz->visible);
+		s->widget->renderWindow()->Render();
+		s->gizBtn->setChecked(s->giz->visible);
+	});
+	s->gizBtn = gzb;
+	// Their state changes from many places — the view-mode switch, 'x', a raster's own Axes row, an
+	// empty window being filled — so the buttons read it off the scene rather than being told: a
+	// light poll that touches a button only when what it shows is out of date.
+	QTimer *viewSync = new QTimer(mid);
+	viewSync->setInterval(250);
+	QObject::connect(viewSync, &QTimer::timeout, mid, [s]() {
+		if (!sceneAlive(s)) return;
+		const bool in3D = !s->flat2d;
+		const bool axOn = sceneAxesShown(s), gzOn = s->giz && s->giz->visible;
+		if (s->axesBtn->isVisibleTo(s->axesBtn->parentWidget()) != in3D) s->axesBtn->setVisible(in3D);
+		if (s->gizBtn->isVisibleTo(s->gizBtn->parentWidget()) != (in3D && s->giz)) s->gizBtn->setVisible(in3D && s->giz);
+		if (s->axesBtn->isChecked() != axOn) s->axesBtn->setChecked(axOn);
+		if (s->gizBtn->isChecked() != gzOn) s->gizBtn->setChecked(gzOn);
+		if (s->veChip) {                            // the active layer's VE, as the readout prints it
+			if (s->veChip->isVisibleTo(s->veChip->parentWidget()) != in3D) s->veChip->setVisible(in3D);
+			const QString t = QString::fromUtf8("VE \xC3\x97%1").arg(activeVE(s), 0, 'f', 2);
+			if (s->veChip->text() != t) s->veChip->setText(t);
+		}
+	});
+	viewSync->start();
 	sb->addPermanentWidget(mid, 0);
 
 	// RIGHT: the CRS chip + Messages bubble, pushed to the right edge of the other half.
@@ -27251,6 +27315,19 @@ static void buildIGStatusBar(Scene *s, QMainWindow *win) {
 	cl->setContentsMargins(2, 0, 8, 0);
 	cl->setSpacing(4);
 	rl->addWidget(corner);
+
+	// The VE chip: the active layer's vertical exaggeration, a click opens its dialog. 3-D views only
+	// (kept up to date by the centre group's poll above).
+	QToolButton *ve = new QToolButton(corner);
+	ve->setObjectName("igVEChip");
+	ve->setAutoRaise(true);
+	ve->setCursor(Qt::PointingHandCursor);
+	ve->setFocusPolicy(Qt::NoFocus);
+	ve->setToolTip("Vertical exaggeration of the layer on display (click to change)");
+	ve->setText(QString::fromUtf8("VE \xC3\x97" "100.00"));   // widest common value, for the corner's minimum width
+	QObject::connect(ve, &QToolButton::clicked, ve, [s]() { sceneVEDialog(s); });
+	cl->addWidget(ve);
+	s->veChip = ve;
 
 	QToolButton *crs = new QToolButton(corner);
 	crs->setAutoRaise(true);
@@ -27661,7 +27738,7 @@ static void buildSceneContent(Scene *s, vtkSmartPointer<vtkPolyData> pd,
 	// --- scalar bar ---------------------------------------------------------
 	// Coloured strip (vtkScalarBarActor) + our own tick marks / numbers, all positioned from
 	// s->barX0/barY0 so the assembly toggles and DRAGS as one unit. Bare images get no colorbar.
-	buildColorbar(s, lut, s->zmin, s->zmax);
+	buildColorbar(s, lut, s->zmin, s->zmax, 0, &s->surfBarLab);
 	s->actZ = &s->gridZ; s->actNx = s->gnx; s->actNy = s->gny;   // base relief is the initial active grid
 	s->actX0 = s->gx0; s->actX1 = s->gx1; s->actY0 = s->gy0; s->actY1 = s->gy1;
 
@@ -30611,32 +30688,6 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		s->ren->ResetCamera();
 		s->widget->renderWindow()->Render();
 	};
-	auto actToggleAxes = [s]() {
-		sceneAxesSetShown(s, !sceneAxesShown(s));   // window-wide view command: EVERY raster's own set
-		rebuildAxisLabels(s);
-		rebuildSceneObjects(s);                     // the per-raster Axes rows re-read their own intent
-		s->widget->renderWindow()->Render();
-	};
-	auto actVE = [s]() {
-		// The ACTIVE layer's own VE, in and out -- same resolver as the gizmo, the readout and the
-		// colour bar, so this dialog can never edit a layer other than the one on screen.
-		// LIVE (user order, 2026-09-22): every change of the box is applied at once, through the same
-		// two lines OK used to run. OK keeps the value; Cancel puts the layer's own VE back.
-		const double v0 = activeVE(s);
-		QInputDialog dlg(s->win);
-		dlg.setWindowTitle("Vertical exaggeration");
-		dlg.setLabelText("VE factor:");
-		dlg.setInputMode(QInputDialog::DoubleInput);
-		dlg.setDoubleRange(1.0e-6, 1.0e6);   // bounds are arithmetic guards, not a look limit
-		dlg.setDoubleDecimals(3);
-		dlg.setDoubleValue(v0);
-		auto apply = [s](double v) {
-			if (double *vp = activeVEPtr(s)) { *vp = v; applyVE(s); }
-			if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
-		};
-		QObject::connect(&dlg, &QInputDialog::doubleValueChanged, &dlg, apply);
-		if (dlg.exec() != QDialog::Accepted) apply(v0);
-	};
 	// Save Screenshot img: the PNG carries the view WITHOUT the window background, through the SAME
 	// captureViewRGBA (50_scene.cpp) the clipboard copy and the GMT.jl script export use — the
 	// backdrop is chrome, and a screenshot that drags this window's wall colour into a slide or a
@@ -30749,9 +30800,6 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		g_juliaSaveGeoTiff(s, rgb.data(), w, h, fn.toUtf8().constData(),
 						   s->x0, s->x1, s->y0, s->y1,
 						   s->crsProj4.c_str(), s->crsWkt.c_str());
-	};
-	auto actToggleGizmo = [s]() {
-		if (s->giz) { setGizmoVisible(*s->giz, !s->giz->visible); s->widget->renderWindow()->Render(); }
 	};
 	// Flat-2D <-> 3D switch — the camera math lives in the file-scope sceneSetFlat2D (the SINGLE
 	// source of truth, shared with the grid/image init in 90_c_api). These are just the UI handles.
@@ -31038,29 +31086,20 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		aEnh1->setEnabled(sceneHasImage(s));   // it rewrites an image's pixels, so it needs a real one
 	});
 
-	QMenu *mView = win->menuBar()->addMenu("&View");
-	mView->addAction("&Reset Camera", actReset, QKeySequence("R"));
-	QAction *aAxes = mView->addAction("Show Cube &Axes", actToggleAxes);
-	aAxes->setCheckable(true); aAxes->setChecked(true);
-	// (No "Show Color Bar" row, removed by request: each grid's colour bar is its own Scene Objects row.)
-	QAction *aGiz = mView->addAction("Show &Gizmo", actToggleGizmo);  // 'x' also toggles (VTK)
-	aGiz->setCheckable(true); aGiz->setChecked(true);
-	// The gizmo is a 3-D control: no row for it in flat 2-D. Its tick is read off the gizmo itself
-	// each time the menu opens — 'x' and the view-mode switch show/hide it without passing here.
-	QObject::connect(mView, &QMenu::aboutToShow, aGiz, [s, aGiz]() {
-		aGiz->setVisible(!s->flat2d && s->giz);
-		aGiz->setChecked(s->giz && s->giz->visible);
-	});
-	// The shared checkable "Flat 2D (map)" action. It is NOT a View-menu row any more (removed by
-	// request) — but the ACTION stays, because it is where the flat/3-D state lives: the toolbar's
-	// view-mode button tracks `act2D::toggled`, and every other switch source (the context menu, the
-	// 2-D bare-image / grid init in 90_c_api, sceneSetViewMode) writes its checked state. It is now
-	// owned by the window and shown by nothing; the toolbar's 2D/3D flyout is the visible control.
+	// No View menu (removed by request). Its controls live on: Cube Axes, Gizmo, Julia Console,
+	// Workspace and Profile are buttons in the centre of the status bar, the vertical exaggeration is
+	// the status bar's VE chip, each colour bar is its own Scene Objects row, and Reset Camera is the
+	// R key, kept as a window shortcut.
+	QShortcut *resetKey = new QShortcut(QKeySequence("R"), win);
+	QObject::connect(resetKey, &QShortcut::activated, win, actReset);
+	// The shared checkable "Flat 2D (map)" action. It is NOT a menu row — but the ACTION stays,
+	// because it is where the flat/3-D state lives: the toolbar's view-mode button tracks
+	// `act2D::toggled`, and every other switch source (the context menu, the 2-D bare-image / grid
+	// init in 90_c_api, sceneSetViewMode) writes its checked state. It is owned by the window and
+	// shown by nothing; the toolbar's 2D/3D flyout is the visible control.
 	s->act2D = new QAction("Flat &2D (map)", win);
 	QObject::connect(s->act2D, &QAction::triggered, win, actToggle2D);
 	s->act2D->setCheckable(true); s->act2D->setChecked(false);
-	mView->addSeparator();
-	mView->addAction("Vertical &Exaggeration…", actVE);
 
 	// --- Geography menu (mirrors Mirone's Geography menu, mirone_uis.m lines 459-575) ----------
 	// Plots GMT/GSHHG geographic data (coastlines, borders, rivers) + point datasets (seismicity,

@@ -1695,6 +1695,21 @@ GMTVTK_API void gmtvtk_unfold_scene_objects_h(void *handle) {
 //       and a generation-17 library reads garbage off the missing argument.
 GMTVTK_API int gmtvtk_abi_version(void) { return 17; }
 
+// The axis labels of the colour bar ON SCREEN (the window's one bar, `bar`): "x\x1fy", either part
+// possibly empty. Two-pass like every string getter here: returns the length (without the NUL),
+// writing into `buf` when `cap` is large enough. 0 = no bar, or a bar with no labels.
+GMTVTK_API int gmtvtk_colorbar_labels_h(void *handle, char *buf, int cap) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !s->bar) return 0;
+	if (s->barLabShown.x.empty() && s->barLabShown.y.empty()) return 0;
+	const std::string o = s->barLabShown.x + '\x1f' + s->barLabShown.y;
+	if (buf && cap > (int)o.size()) {
+		memcpy(buf, o.data(), o.size());
+		buf[o.size()] = '\0';
+	}
+	return (int)o.size();
+}
+
 GMTVTK_API int gmtvtk_scene_state(void *handle, char *buf, int cap) {
 	Scene *s = static_cast<Scene*>(handle);
 	std::string o;
@@ -8262,6 +8277,72 @@ GMTVTK_API int gmtvtk_crs_select(void *handle, const char *initial, char *out, i
 // Compiled ONLY into gmtvtk_test.dll (GMTVTK_TEST_API, set by the gmtvtk_test CMake target).
 // The production gmtvtk.dll never sees these symbols at all — not hidden, not exported.
 #ifdef GMTVTK_TEST_API
+
+// test hook: set a colour bar's labels THE USER'S WAY — a left click on the "Color Bar" row (the
+// first one at all when `group` is empty, else the one inside the group row called `group`), then
+// "Labels…" from the menu that opens, then the two boxes of the dialog filled with `xl` / `yl` and
+// OK. Every step is the real widget getting the real event; the menu and the dialog run their own
+// modal loops, so the next step is queued from inside the previous one. Returns 1 when the dialog
+// was reached and accepted, 0 when a step found nothing (-1 no row, -2 no menu item, -3 no dialog).
+GMTVTK_API int gmtvtk_colorbar_labels_test(void *handle, const char *group, const char *xl, const char *yl) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!s || !s->objPanel) return 0;
+	QTreeWidget *tree = s->objPanel->findChild<QTreeWidget*>();
+	if (!tree) return 0;
+	const QString wantGroup = QString::fromUtf8(group ? group : "");
+	auto labelOf = [tree](QTreeWidgetItem *it, const QString &text) -> ClickableLabel * {
+		QWidget *w = tree->itemWidget(it, 0);
+		if (!w) return nullptr;
+		for (QLabel *l : w->findChildren<QLabel*>())   // (ClickableLabel has no Q_OBJECT of its own)
+			if (l->text() == text)
+				if (auto *c = dynamic_cast<ClickableLabel *>(l)) return c;
+		return nullptr;
+	};
+	ClickableLabel *row = nullptr;
+	for (QTreeWidgetItemIterator it(tree); *it && !row; ++it) {
+		if (!wantGroup.isEmpty()) {
+			if (!labelOf(*it, wantGroup)) continue;
+			std::function<ClickableLabel *(QTreeWidgetItem *)> findIn = [&](QTreeWidgetItem *p) -> ClickableLabel * {
+				for (int i = 0; i < p->childCount(); ++i) {
+					if (ClickableLabel *l = labelOf(p->child(i), "Color Bar")) return l;
+					if (ClickableLabel *l = findIn(p->child(i))) return l;
+				}
+				return nullptr;
+			};
+			row = findIn(*it);
+		}
+		else
+			row = labelOf(*it, "Color Bar");
+	}
+	if (!row) return -1;
+	int result = -2;
+	const QString x = QString::fromUtf8(xl ? xl : ""), y = QString::fromUtf8(yl ? yl : "");
+	QTimer::singleShot(50, [&result, x, y]() {                 // inside the menu's exec
+		auto *m = qobject_cast<QMenu *>(QApplication::activePopupWidget());
+		QAction *pick = nullptr;
+		if (m) for (QAction *a : m->actions()) if (a->text() == "Labels…") pick = a;
+		if (!pick) { if (m) m->close(); return; }
+		result = -3;
+		QTimer::singleShot(50, [&result, x, y]() {             // inside the dialog's exec
+			auto *d = qobject_cast<QDialog *>(QApplication::activeModalWidget());
+			if (!d) return;
+			const QList<QLineEdit *> e = d->findChildren<QLineEdit *>();
+			if (e.size() < 2) { d->reject(); return; }
+			e[0]->setText(x);
+			e[1]->setText(y);
+			result = 1;
+			d->accept();
+		});
+		m->close();
+		pick->trigger();
+	});
+	const QPoint c = row->rect().center();
+	QMouseEvent press(QEvent::MouseButtonPress, QPointF(c), row->mapToGlobal(QPointF(c)),
+	                  Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+	QApplication::sendEvent(row, &press);
+	QApplication::processEvents();
+	return result;
+}
 
 // test hook: a button (push or tool), by objectName, inside a top-level dialog, by window title -- searched over
 // QApplication::topLevelWidgets(), which both dlls share, so it reaches a dialog the PRODUCTION dll built
@@ -15002,7 +15083,7 @@ static int showLayerImageTail(Scene *s, const unsigned char *rgba, int txW, int 
 			// (fireSlice fires right after the radio toggle) unconditionally redrew the water bar and
 			// undid whatever refreshGridColorbar had just done to switch to the land bar.
 			if (s->surfShowBar && (!s->customLayerTexture || s->aquaShowWater))
-				buildColorbar(s, s->surfLut, s->zmin, s->zmax);
+				buildColorbar(s, s->surfLut, s->zmin, s->zmax, 0, &s->surfBarLab);
 
 			sceneRedrapeImages(s);      // this slice's z is a new relief -> re-lay every draped image
 			invalidateLayerDetail(s);   // the zoom detail tile is for the OLD layer -> refresh on settle

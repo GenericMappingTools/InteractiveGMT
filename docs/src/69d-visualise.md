@@ -99,7 +99,7 @@ add_curtain!(fig, [0 44.9; 18 44.9]; image=imglat, zrange=(-1001000, -1000))
 ```
 
 The model is 1000 km deep under an 18° wide map, so it needs a small vertical exaggeration.
-*View → Vertical Exaggeration…* sets it on the topmost grid on display, the depth slice: set 0.05.
+The status bar's *VE* chip sets it on the topmost grid on display, the depth slice: set 0.05.
 Untick *dVp at 511 km*, set 0.05 again (now for the topography), and tick it back on. Switch to
 **3D** and look at the model from the south-west:
 

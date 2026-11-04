@@ -44,7 +44,7 @@ scatter!(fig, EQ[:, 1], EQ[:, 2]; z=EQ[:, 3], marker=:sphere, ms=(2 .+ EQ[:, 4])
 setopacity!(fig, 0.5)
 ```
 
-Switch to **3D** on the toolbar, set *View → Vertical Exaggeration…* to 0.4, and look from the
+Switch to **3D** on the toolbar, set the status bar's *VE* chip to 0.4, and look from the
 south-south-west:
 
 ![The 2021 La Palma earthquakes under the island](assets/lapalma_eq.jpg)
@@ -126,7 +126,7 @@ setvisible!(fig, "Axes", false; layer="Lower crust")
 setvisible!(fig, "Axes", false; layer="Magma")
 ```
 
-*View → Vertical Exaggeration…* sets 0.3 on the topmost layer on display. Set it on *Magma*, untick
+The status bar's *VE* chip sets 0.3 on the topmost layer on display. Set it on *Magma*, untick
 it, set it on *Lower crust*, untick that, set it on the topography, and tick both back on. Switch
 to **3D** and look into the cut from the south-east:
 

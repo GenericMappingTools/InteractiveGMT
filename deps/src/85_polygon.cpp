@@ -299,6 +299,64 @@ static QIcon makeWorkspaceIcon() {
 	p.end(); return QIcon(pm);
 }
 
+// Cube Axes icon (status bar centre): a box seen in perspective with tick marks along its front
+// bottom and left edges -- the annotated frame the button shows and hides.
+static QIcon makeCubeAxesIcon() {
+	QPixmap pm = iconCanvas();
+	QPainter p(&pm);
+	p.setRenderHint(QPainter::Antialiasing, true);
+	const QColor ink(70, 70, 75);
+	const QRectF f(3.0, 8.0, 13.0, 12.0);                       // front face
+	const double dx = 5.0, dy = -5.0;                           // depth offset
+	p.setBrush(Qt::NoBrush);
+	p.setPen(QPen(ink, 1.0));
+	p.drawLine(f.topLeft(), f.topLeft() + QPointF(dx, dy));       // receding edges
+	p.drawLine(f.topRight(), f.topRight() + QPointF(dx, dy));
+	p.drawLine(f.bottomRight(), f.bottomRight() + QPointF(dx, dy));
+	p.drawLine(f.topLeft() + QPointF(dx, dy), f.topRight() + QPointF(dx, dy));
+	p.drawLine(f.topRight() + QPointF(dx, dy), f.bottomRight() + QPointF(dx, dy));
+	p.setPen(QPen(ink, 1.4));
+	p.drawRect(f);
+	for (int i = 1; i <= 3; ++i) {                              // ticks: bottom edge and left edge
+		const double tx = f.left() + i * f.width() / 4.0, ty = f.bottom() - i * f.height() / 4.0;
+		p.drawLine(QPointF(tx, f.bottom()), QPointF(tx, f.bottom() + 2.5));
+		p.drawLine(QPointF(f.left() - 2.5, ty), QPointF(f.left(), ty));
+	}
+	p.end(); return QIcon(pm);
+}
+
+// Gizmo icon (status bar centre): two curved arrows chasing each other round a flattened orbit --
+// the "rotate the view" mark, in the same grey as the bubble.
+static QIcon makeGizmoIcon() {
+	QPixmap pm = iconCanvas();
+	QPainter p(&pm);
+	p.setRenderHint(QPainter::Antialiasing, true);
+	const QColor ink(70, 70, 75);
+	const QPointF c(12.0, 12.0);
+	const double rx = 8.5, ry = 6.0;
+	const QRectF orbit(c.x() - rx, c.y() - ry, 2 * rx, 2 * ry);
+	p.setBrush(Qt::NoBrush);
+	p.setPen(QPen(ink, 2.2, Qt::SolidLine, Qt::FlatCap));
+	for (double a0 : { 25.0, 205.0 }) {                    // each arc runs 125 deg counter-clockwise
+		const double a1 = a0 + 125.0;
+		p.drawArc(orbit, int(a0 * 16), int(125.0 * 16));
+		const double t = a1 * M_PI / 180.0;                  // arrowhead at the arc's end, along its motion
+		const QPointF e(c.x() + rx * std::cos(t), c.y() - ry * std::sin(t));
+		QPointF d(-rx * std::sin(t), -ry * std::cos(t));
+		const double len = std::hypot(d.x(), d.y());
+		d /= len;
+		const QPointF n(-d.y(), d.x());
+		QPolygonF head;
+		head << e + d * 3.6 << e + n * 3.0 << e - n * 3.0;
+		p.setPen(Qt::NoPen);
+		p.setBrush(ink);
+		p.drawPolygon(head);
+		p.setBrush(Qt::NoBrush);
+		p.setPen(QPen(ink, 2.2, Qt::SolidLine, Qt::FlatCap));
+	}
+	p.end(); return QIcon(pm);
+}
+
 // Julia Console icon (status bar centre, beside the Workspace table): a terminal window -- frame,
 // title strip and a ">>" prompt -- MATLAB's Command Window mark, in the same grey as the bubble.
 static QIcon makeConsoleIcon() {

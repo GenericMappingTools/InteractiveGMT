@@ -53,7 +53,7 @@ viz([Moho1, Moho2, Moho3]; cmap=:roma, geographic=true)
 ```
 
 Tilt the view with the mouse and raise the vertical exaggeration with the gizmo's blue ring
-(or *View → Vertical Exaggeration…*). This view is at ×3:
+(or the status bar's *VE* chip). This view is at ×3:
 
 ![The European, Adriatic and Tyrrhenian Mohos](assets/moho_points_3d.png)
 

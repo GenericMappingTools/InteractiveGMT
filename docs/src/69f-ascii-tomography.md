@@ -88,8 +88,8 @@ add_curtain!(fig, [18 38; 18 51.95];   image=east,  zrange=(-1001000, -1000))
 setvisible!(fig, "Surface", false)
 ```
 
-Pick **Globe (orthographic)** from the arrow of the toolbar's 2D/3D button, set *View → Vertical
-Exaggeration…* to 0.063, close to true scale for this topography, and turn the globe to look at the
+Pick **Globe (orthographic)** from the arrow of the toolbar's 2D/3D button, set the status
+bar's *VE* chip to 0.063, close to true scale for this topography, and turn the globe to look at the
 block from the south:
 
 ![The Zhao et al. (2016) model as a block on the sphere](assets/zhao_block.jpg)

@@ -696,14 +696,17 @@ static void nodeGraphFieldDialog(NodeGraph *g, QGraphicsItem *row) {
 		}
 	}
 	else if (type == "frame") {
-		// which sides, numbers / ticks / grid, and a title; each change applies at once
+		// which sides, numbers / ticks / grid, a title and the X / Y labels; each change applies at once.
+		// A COLOUR BAR's frame (bar=1) has no sides, grid or title of its own: its form is the numbers,
+		// the ticks and the two labels — X along the bar, Y at its top (GMT colorbar -Bx+l / -By+l).
+		const bool bar = nodeGraphPair(extra, "bar") == "1";
 		static const char *codes[] = { "WSen", "WSEN", "WS", "wsen", "none" };
 		QComboBox *sides = new QComboBox(p);
 		sides->addItems({ "Numbers left and bottom, box all round", "Numbers on all four sides",
 		                  "Left and bottom only", "Box only, no numbers", "No frame at all" });
 		const QString a0 = nodeGraphPair(extra, "axes");
 		for (int i = 0; i < 5; i++) if (a0 == codes[i]) sides->setCurrentIndex(i);
-		QCheckBox *an = new QCheckBox("Numbers along the axes", p);
+		QCheckBox *an = new QCheckBox(bar ? "Numbers along the bar" : "Numbers along the axes", p);
 		an->setChecked(nodeGraphPair(extra, "annot") == "1");
 		QCheckBox *tk = new QCheckBox("Tick marks", p);
 		tk->setChecked(nodeGraphPair(extra, "ticks") == "1");
@@ -711,25 +714,41 @@ static void nodeGraphFieldDialog(NodeGraph *g, QGraphicsItem *row) {
 		gr->setChecked(nodeGraphPair(extra, "grid") == "1");
 		QLineEdit *title = new QLineEdit(nodeGraphPair(extra, "title"), p);
 		title->setPlaceholderText("no title");
-		auto apply = [sides, an, tk, gr, title, commit]() {
-			if (sides->currentIndex() == 4) { commit(":none"); return; }
+		QLineEdit *xl = new QLineEdit(nodeGraphPair(extra, "xlabel"), p);
+		xl->setPlaceholderText(bar ? "none (written along the bar)" : "none");
+		QLineEdit *yl = new QLineEdit(nodeGraphPair(extra, "ylabel"), p);
+		yl->setPlaceholderText(bar ? "none (written over its top)" : "none");
+		auto apply = [bar, sides, an, tk, gr, title, xl, yl, commit]() {
+			if (!bar && sides->currentIndex() == 4) { commit(":none"); return; }
 			QStringList v;
 			if (an->isChecked()) v << "annot=:auto";
 			if (tk->isChecked()) v << "ticks=:auto";
-			if (gr->isChecked()) v << "grid=:auto";
-			v << QString("axes=:%1").arg(codes[sides->currentIndex()]);
-			if (!title->text().trimmed().isEmpty()) v << "title=" + nodeGraphJlStr(title->text().trimmed());
+			if (!bar && gr->isChecked()) v << "grid=:auto";
+			if (!bar) v << QString("axes=:%1").arg(codes[sides->currentIndex()]);
+			if (!bar && !title->text().trimmed().isEmpty()) v << "title=" + nodeGraphJlStr(title->text().trimmed());
+			if (!xl->text().trimmed().isEmpty()) v << "xlabel=" + nodeGraphJlStr(xl->text().trimmed());
+			if (!yl->text().trimmed().isEmpty()) v << "ylabel=" + nodeGraphJlStr(yl->text().trimmed());
+			if (v.isEmpty()) v << "annot=:auto";                   // a bar with nothing asked still numbers itself
 			commit("(" + v.join(", ") + (v.size() == 1 ? "," : "") + ")");
 		};
 		QObject::connect(sides, &QComboBox::activated, p, apply);
 		for (QCheckBox *c : { an, tk, gr }) QObject::connect(c, &QCheckBox::clicked, p, apply);
-		QObject::connect(title, &QLineEdit::returnPressed, p, apply);
-		form->addRow("Sides:", sides);
+		for (QLineEdit *e : { title, xl, yl }) QObject::connect(e, &QLineEdit::returnPressed, p, apply);
+		if (!bar) form->addRow("Sides:", sides);
 		form->addRow(an);
 		form->addRow(tk);
-		form->addRow(gr);
-		form->addRow("Title:", title);
-		focus = sides;
+		if (!bar) {
+			form->addRow(gr);
+			form->addRow("Title:", title);
+		}
+		else {
+			sides->hide();
+			gr->hide();
+			title->hide();
+		}
+		form->addRow("X label:", xl);
+		form->addRow("Y label:", yl);
+		focus = bar ? static_cast<QWidget *>(xl) : static_cast<QWidget *>(sides);
 	}
 	// placed right under the row, kept inside the view
 	p->adjustSize();

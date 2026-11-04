@@ -91,6 +91,15 @@ end
 	# the frame is offered as its parts, in words
 	fr = only(f for n in M._nodegraph_parse(src)[1] for f in n.fields if f.label == "frame")
 	@test fr.type == "frame" && fr.shown == "numbers" && occursin("WSen", fr.extra)
+	# a colour bar's frame: its two labels are offered (and it is flagged as a bar's, for its own form)
+	cb = "colorbar!(C1, pos=(anchor=:MR, offset=(1, 0)), frame=(annot=:auto, xlabel=\"Elevation\", ylabel=\"m\"))\n"
+	fb = only(f for n in M._nodegraph_parse(cb)[1] for f in n.fields if f.label == "frame")
+	@test fb.type == "frame" && fb.shown == "numbers, X label \"Elevation\", Y label \"m\""
+	@test occursin("xlabel\x1fElevation", fb.extra) && occursin("ylabel\x1fm", fb.extra) && occursin("bar\x1f1", fb.extra)
+	@test occursin("bar\x1f0", fr.extra)                       # a map frame is not a bar's
+	# what the form writes back for new labels lands in the call
+	@test occursin("frame=(annot=:auto, xlabel=\"Depth\", ylabel=\"km\")",
+	               M._nodegraph_rewrite(cb, 1, "frame", "(annot=:auto, xlabel=\"Depth\", ylabel=\"km\")"))
 	# a Yes/No flag switched off is written `nothing` (GMT.jl asserts on `false`), stays a Yes/No field,
 	# runs, and switches back on
 	s1 = "C = makecpt(cmap=:turbo, range=(-6183.9604, 2245.5295), continuous=true)\n"

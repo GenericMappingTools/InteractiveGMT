@@ -644,10 +644,19 @@ struct Curtain {
 // bar is DISCRETE and its labels are the pixel VALUES, not interpolated tick numbers. Carried by
 // whichever object holds the image: `Scene::palette` for a window's primary image, `ExtraObj::palette`
 // for a dropped/derived one. `n == 0` = this object is not an indexed image and has no legend.
+// A colour bar's two axis labels, as GMT's colorbar names them: `x` runs ALONG the bar (-Bx+l, the
+// quantity), `y` sits at its top end (-By+l, the unit). Owned by whatever owns the bar — every grid
+// layer, an indexed image's legend, each Aquamoto side — set from its Color Bar row's "Labels…",
+// drawn by buildColorbar and handed to the GMT.jl script's colorbar call.
+struct BarLabels {
+	std::string x, y;
+};
+
 struct PaletteLegend {
 	vtkSmartPointer<vtkLookupTable> lut;
 	int  n = 0;
 	bool show = true;                        // the Color Bar row's per-object "want it shown" intent
+	BarLabels lab;                           // its axis labels
 };
 
 // ============================ AxesSet =======================================
@@ -879,6 +888,7 @@ struct ExtraObj {
 	// out on any window whose displayed grid was not the base one.
 	std::vector<double> cz, crgb;
 	bool   showBar = true;                   // user wants this grid's colorbar shown (when it is active)
+	BarLabels barLab;                        // its colorbar's axis labels
 	LayerShade look;                         // THIS grid's own lighting + shading set (see LayerShade)
 	// THIS GRID'S OWN VERTICAL EXAGGERATION (SACRED_LAW.md: every grid carries its own parameter set,
 	// and the VE is one of them). Dimensionless, same meaning as Scene::ve -- which is now the BASE
@@ -1382,6 +1392,8 @@ struct Scene {
 	// them so ticks place correctly when the bar is retargeted to a dropped grid.
 	double barLo = 0, barHi = 1;
 	bool   surfShowBar = true;              // base relief: user wants its colorbar shown (when active)
+	BarLabels surfBarLab;                   // base relief's colorbar axis labels (Aquamoto: the water bar's)
+	BarLabels barLabShown;                  // the labels the window's one bar (`bar`) is drawn with now
 	// gridZ holds the FLAT 2x2 PLACEHOLDER an image plane rides on, not a data layer. A bare image is
 	// promoted with a 2x2 all-zero z (there is no elevation), and that z is still copied into gridZ so
 	// the hover readout has a footprint to test against — but it is NOT a quantity, so it must never
@@ -1410,6 +1422,7 @@ struct Scene {
 	vtkSmartPointer<vtkPoints>            aquaLandBarTickPts;
 	double aquaLandBarLo = 0, aquaLandBarHi = 1;
 	bool   aquaLandShowBar = true;           // Scene-Objects "Color Bar Land" checkbox intent
+	BarLabels aquaLandBarLab;                // the Land bar's axis labels
 	bool   aquaShowWater = true;             // which side is ACTIVE; default water (per spec)
 	std::string aquaVarLabel;                // Scene Objects label for the composited surface's OWN
 	                                          // group = the active variable's real name, whatever the
@@ -1859,6 +1872,9 @@ struct Scene {
 	QDockWidget *profDock = nullptr;   // "Profile" dock (starts hidden)
 	QToolButton *conBtn   = nullptr;   // status-bar centre: console toggle
 	QToolButton *profBtn  = nullptr;   // status-bar centre: profile toggle (hidden until a profile exists)
+	QToolButton *axesBtn  = nullptr;   // status-bar centre: cube axes on/off (3-D views only)
+	QToolButton *gizBtn   = nullptr;   // status-bar centre: gizmo on/off (3-D views only)
+	QToolButton *veChip   = nullptr;   // status-bar corner: "VE ×n" of the active layer, opens its dialog (3-D only)
 	QTableView *dataTable       = nullptr;   // LAST floating table popped for this window by
 	                                         // gmtvtk_set_table (show_table). Kept only so
 	                                         // gmtvtk_scene_state can report its row count; the dialog

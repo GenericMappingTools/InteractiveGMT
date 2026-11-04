@@ -242,7 +242,7 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_set_cube_layer_callback, :gmtvtk_set_cube_loadall_callback, :gmtvtk_set_cube_axes_zrange, :gmtvtk_show_cube_layer_dialog,
 	:gmtvtk_cube_flat_mode, :gmtvtk_mark_cube, :gmtvtk_pick_netcdf_var,
 	:gmtvtk_set_cube_slider_callback, :gmtvtk_mark_element_cube, :gmtvtk_set_cube_save_callback, :gmtvtk_set_cube_cpt_callback,
-	:gmtvtk_scene_state,
+	:gmtvtk_scene_state, :gmtvtk_colorbar_labels_h,
 	:gmtvtk_frame_for_image_h, :gmtvtk_fit2d, :gmtvtk_hide_surface,
 	:gmtvtk_hide_other_grids, :gmtvtk_hide_other_images,
 	:gmtvtk_capture_rect_rgb, :gmtvtk_capture_rect_databaked, :gmtvtk_free_rgb, :gmtvtk_get_crs, :gmtvtk_reframe_h,

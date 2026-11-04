@@ -744,9 +744,23 @@ end
 # is unreliable under -p, and the window's own bar coordinates are VTK viewport fractions, not a
 # GMT anchor — so this is a sane fixed placement, flagged in the fidelity notes rather than
 # pretended to be exact.
-function _script_emit_colorbar(ctx::ScriptCtx, cptvar::ScriptVar)
-	kw = Pair{Symbol,Any}[:pos => (anchor=:MR, offset=(1.0, 0.0)), :frame => (annot=:auto,)]
+function _script_emit_colorbar(ctx::ScriptCtx, cptvar::ScriptVar, h::Ptr{Cvoid}=C_NULL)
+	# The bar's own axis labels (its Color Bar row's "Labels…"): X along it, Y at its top — GMT's
+	# colorbar -Bx+l / -By+l, which GMT.jl spells frame=(xlabel=, ylabel=).
+	xl, yl = h == C_NULL ? ("", "") : _script_colorbar_labels(h)
+	frame = (annot=:auto,)
+	isempty(xl) || (frame = merge(frame, (xlabel=xl,)))
+	isempty(yl) || (frame = merge(frame, (ylabel=yl,)))
+	kw = Pair{Symbol,Any}[:pos => (anchor=:MR, offset=(1.0, 0.0)), :frame => frame]
 	return ScriptStep("colour bar", DataBind[], :colorbar, cptvar, kw, true)
+end
+
+# The labels of the colour bar on screen, ("", "") when it has none.
+function _script_colorbar_labels(h::Ptr{Cvoid})::Tuple{String,String}
+	t = _script_blob(:gmtvtk_colorbar_labels_h, h)
+	isempty(t) && return ("", "")
+	p = split(t, '\x1f'; limit = 2)
+	return (String(p[1]), length(p) > 1 ? String(p[2]) : "")
 end
 
 # ── vector layers (P2) ───────────────────────────────────────────────────────────────────────
@@ -1739,7 +1753,7 @@ function _script_emit(h::Ptr{Cvoid}; figsize::Real=15.0, recompute::Bool=false, 
 	# Vectors always follow every raster (they are drawn ON TOP of them), then the colour bar last so
 	# nothing paints over it.
 	append!(steps, _script_vector_steps!(ctx, h, recipes))
-	(get(st, "bar", 0) == 1 && lastcpt !== nothing) && push!(steps, _script_emit_colorbar(ctx, lastcpt))
+	(get(st, "bar", 0) == 1 && lastcpt !== nothing) && push!(steps, _script_emit_colorbar(ctx, lastcpt, h))
 	return steps, ctx
 end
 

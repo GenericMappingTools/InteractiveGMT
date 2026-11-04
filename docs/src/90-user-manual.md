@@ -62,7 +62,7 @@ The window opens immediately. The REPL stays usable.
 **Left panel:** Scene Objects (all elements in your scene) — it can be dragged to the right edge
 **Status bar, middle:** three buttons, each opening/closing its panel (pressed while open) — Julia
 Console (type commands; `fig` is this window), Workspace (the session's variables) and Profile
-(shown only once a profile exists)
+(shown only once a profile exists); in the 3-D views also Cube Axes and Gizmo
 **Status corner (bottom-right):** CRS chip (`EPSG:4326`, `EPSG:000` = unreferenced) + Messages
 button — the speech bubble opens the Messages dock (execution messages); a red dot = unread
 
@@ -99,13 +99,13 @@ fig = viz(G;
 **Keyboard shortcuts:**
 - `e` — Toggle mesh edges
 - `1` – `6` — Snap the camera to a preset view (`2` = straight down from the top)
-- `R` — Reset camera (also **View → Reset Camera**)
+- `R` — Reset camera
 
 ### Vertical Exaggeration
 
 Adjust relief vertical scale:
 
-1. Menu: **View → Vertical Exaggeration…**
+1. Click the **VE ×…** chip in the status bar (bottom right, 3-D views), type the factor
 2. Or drag the gizmo's vertical **amber cone** (its two grey rings set tilt and azimuth)
 
 ### Flat 2-D View
@@ -126,6 +126,10 @@ Change the colour scheme:
 2. Pick a colormap (GMT masters)
 3. Or choose **Custom…** and type the name of any GMT CPT
 4. **Color Palettes…** (also a toolbar button) opens the full palette editor
+5. **Labels…** sets the bar's **X label** (written along it, the quantity) and **Y label** (over its
+   top, the unit). Every colour bar has it — each grid's, an indexed image's legend, Aquamoto's
+   water and land bars — and **File → Plot with GMT.jl** writes them into the script's `colorbar`
+   call (`frame=(xlabel=…, ylabel=…)`).
 
 **Drag the colour bar** to move it.
 

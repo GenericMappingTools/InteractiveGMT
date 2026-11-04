@@ -137,6 +137,44 @@ namespace cbar {
 	constexpr double LABELGAP = 0.004;       // gap between a tick's outer end and its number
 }
 
+// A bar's two axis labels (BarLabels) ride at the END of its label list, after the tick numbers —
+// which own the first nTicks entries and are laid out against them: entry nTicks is the x label,
+// nTicks+1 the y label. Living in the same list, they are removed, shown / hidden and grabbed for a
+// drag together with the numbers by every loop that already handles those.
+static void barAddTitles(Scene *s, std::vector<vtkSmartPointer<vtkTextActor>> &labels, const BarLabels &lab) {
+	for (int k = 0; k < 2; ++k) {
+		vtkSmartPointer<vtkTextActor> ta = vtkSmartPointer<vtkTextActor>::New();
+		ta->SetInput((k == 0 ? lab.x : lab.y).c_str());
+		vtkTextProperty *tp = ta->GetTextProperty();
+		tp->SetColor(0.9, 0.9, 0.9);
+		tp->SetFontSize(12);
+		tp->SetJustificationToCentered();
+		tp->SetVerticalJustificationToBottom();   // rotated, "above the anchor" is to its left
+		if (k == 0) tp->SetOrientation(90.0);     // x: reads up the bar
+		ta->GetPositionCoordinate()->SetCoordinateSystemToNormalizedViewport();
+		s->ren->AddViewProp(ta);
+		labels.push_back(ta);
+	}
+}
+
+// Place them: the x label up the bar's left side, clear of its numbers; the y label over its top end.
+static void barLayoutTitles(Scene *s, std::vector<vtkSmartPointer<vtkTextActor>> &labels, size_t nTicks,
+                            double X0, double Y0) {
+	if (labels.size() < nTicks + 2) return;
+	const double barLeft = X0 + cbar::W * (1.0 - cbar::BARRATIO);
+	size_t nch = 0;                                  // the widest tick number, in characters
+	for (size_t i = 0; i < nTicks; ++i)
+		if (labels[i] && labels[i]->GetInput()) nch = std::max(nch, strlen(labels[i]->GetInput()));
+	const int *sz = s->ren->GetSize();
+	const double vw = (sz && sz[0] > 0) ? sz[0] : 1000.0;
+	const double dpi = s->ren->GetRenderWindow() ? s->ren->GetRenderWindow()->GetDPI() : 72.0;
+	const double numW = nch * 7.0 * dpi / 72.0 / vw;                // ~7 pt a digit
+	if (labels[nTicks])
+		labels[nTicks]->SetPosition(barLeft - cbar::TICKLEN - cbar::LABELGAP - numW - 0.004, Y0 + cbar::H / 2);
+	if (labels[nTicks + 1])
+		labels[nTicks + 1]->SetPosition(barLeft + cbar::W * cbar::BARRATIO / 2, Y0 + cbar::H + 0.01);
+}
+
 // Reposition the existing colorbar actors from s->barX0/barY0 — called on build and each drag
 // step. Rewrites coords in place; never recreates actors.
 static void layoutColorbar(Scene *s) {
@@ -158,6 +196,7 @@ static void layoutColorbar(Scene *s) {
 			s->barLabels[i]->SetPosition(barLeft - cbar::TICKLEN - cbar::LABELGAP, y);
 	}
 	if (s->barTickPts) s->barTickPts->Modified();
+	barLayoutTitles(s, s->barLabels, s->barValues.size(), X0, Y0);
 }
 
 // Build the colorbar actors and add them to the renderer, for the colour map `lut` over [lo,hi]
@@ -168,8 +207,10 @@ static void layoutColorbar(Scene *s) {
 // per class, and the labels are the class VALUES centred in their block instead of nice-number ticks
 // along a continuous ramp. Same actors, same layout, same drag — ONE colour bar in this viewer, with
 // the discrete case as an argument rather than a second bar that could drift from it.
-static void buildColorbar(Scene *s, vtkScalarsToColors *lut, double lo, double hi, int discreteN = 0) {
+static void buildColorbar(Scene *s, vtkScalarsToColors *lut, double lo, double hi, int discreteN = 0,
+                          const BarLabels *lab = nullptr) {
 	if (!s) return;
+	s->barLabShown = lab ? *lab : BarLabels{};   // the owner's axis labels, drawn after the numbers
 	// NO imageOnly test here. Whether a z bar is wanted is decided ONCE, by refreshGridColorbar, which
 	// resolves the active grid and only reaches this function when one is displayed and wants a bar. A
 	// second opinion at this depth could only ever contradict the first — and did: on a window built
@@ -223,6 +264,7 @@ static void buildColorbar(Scene *s, vtkScalarsToColors *lut, double lo, double h
 		s->barTicks->GetProperty()->SetColor(0.9, 0.9, 0.9);
 		s->barTicks->GetProperty()->SetLineWidth(1.5);
 		s->ren->AddViewProp(s->barTicks);
+		barAddTitles(s, s->barLabels, s->barLabShown);
 		layoutColorbar(s);
 		return;
 	}
@@ -266,6 +308,7 @@ static void buildColorbar(Scene *s, vtkScalarsToColors *lut, double lo, double h
 	s->barTicks->GetProperty()->SetColor(0.9, 0.9, 0.9);
 	s->barTicks->GetProperty()->SetLineWidth(1.5);
 	s->ren->AddViewProp(s->barTicks);
+	barAddTitles(s, s->barLabels, s->barLabShown);
 
 	layoutColorbar(s);
 }
@@ -296,6 +339,7 @@ static void layoutAquaLandColorbar(Scene *s) {
 			s->aquaLandBarLabels[i]->SetPosition(barLeft - cbar::TICKLEN - cbar::LABELGAP, y);
 	}
 	if (s->aquaLandBarTickPts) s->aquaLandBarTickPts->Modified();
+	barLayoutTitles(s, s->aquaLandBarLabels, s->aquaLandBarValues.size(), X0, Y0);
 }
 
 // Built ONCE when an Aquamoto file opens (bathymetry range is static -- never re-scanned per
@@ -363,6 +407,9 @@ static void buildAquaLandColorbar(Scene *s, vtkScalarsToColors *lut, double lo, 
 	s->aquaLandBarTicks->GetProperty()->SetLineWidth(1.5);
 	s->aquaLandBarTicks->SetVisibility(0);
 	s->ren->AddViewProp(s->aquaLandBarTicks);
+	barAddTitles(s, s->aquaLandBarLabels, s->aquaLandBarLab);
+	for (size_t i = s->aquaLandBarValues.size(); i < s->aquaLandBarLabels.size(); ++i)
+		s->aquaLandBarLabels[i]->SetVisibility(0);   // hidden with the rest of the Land bar
 
 	layoutAquaLandColorbar(s);
 }
@@ -469,7 +516,7 @@ static void aquaSideEditorRange(Scene *s, int side, double &lo, double &hi) {
 // take an ARBITRARY palette pass it: a grid's Color Bar row can, Aquamoto's water/land rows cannot
 // (their colour comes from a host-composited texture built from a named cmap, see g_aquamotoSetCmap).
 static void chooseColormap(Scene *s, const QPoint &gp, std::function<void(const QString&)> apply,
-                           std::function<void()> more = nullptr) {
+                           std::function<void()> more = nullptr, std::function<void()> labels = nullptr) {
 	if (!s || !apply) return;
 	static const char *kMaps[] = {
 		"viridis", "turbo", "jet", "hot", "haxby", "geo", "relief", "rainbow",
@@ -491,7 +538,40 @@ static void chooseColormap(Scene *s, const QPoint &gp, std::function<void(const 
 		m.addSeparator();
 		m.addAction("Color Palettes…", [more]() { more(); });
 	}
+	if (labels) {
+		m.addSeparator();
+		m.addAction("Labels…", [labels]() { labels(); });
+	}
 	m.exec(gp);
+}
+
+// "Labels…" on a Color Bar row: the bar's two axis labels — X along the bar (the quantity), Y at its
+// top (the unit), GMT colorbar's -Bx+l / -By+l. `owner` finds the labels at the moment they are
+// written (by tag, never a pointer held across a menu that could outlive a deleted layer); `redraw`
+// rebuilds the bar that owns them.
+static void colorbarLabelsDialog(Scene *s, std::function<BarLabels*()> owner, std::function<void()> redraw) {
+	if (!s || !s->win || !owner) return;
+	BarLabels *lab = owner();
+	if (!lab) return;
+	QDialog d(s->win);
+	d.setWindowTitle("Color bar labels");
+	QFormLayout *f = new QFormLayout(&d);
+	QLineEdit *ex = new QLineEdit(QString::fromStdString(lab->x), &d);
+	QLineEdit *ey = new QLineEdit(QString::fromStdString(lab->y), &d);
+	ex->setToolTip("Written along the bar: the quantity it colours (e.g. Elevation)");
+	ey->setToolTip("Written over the bar's top: the unit (e.g. m)");
+	ex->setMinimumWidth(260);
+	f->addRow("X label (along the bar):", ex);
+	f->addRow("Y label (at its top):", ey);
+	QDialogButtonBox *bb = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &d);
+	QObject::connect(bb, &QDialogButtonBox::accepted, &d, &QDialog::accept);
+	QObject::connect(bb, &QDialogButtonBox::rejected, &d, &QDialog::reject);
+	f->addRow(bb);
+	if (d.exec() != QDialog::Accepted) return;
+	if (!(lab = owner())) return;                   // the layer went while the dialog was up
+	lab->x = ex->text().trimmed().toStdString();
+	lab->y = ey->text().trimmed().toStdString();
+	if (redraw) redraw();
 }
 
 // Shared string/font/colour editor for a text label — the ONE dialog both the Text tool's
@@ -1598,7 +1678,7 @@ static PaletteLegend *resolveActivePalette(Scene *s) {
 static bool buildPaletteColorbar(Scene *s) {
 	PaletteLegend *pl = resolveActivePalette(s);
 	if (!pl || !pl->show) return false;
-	buildColorbar(s, pl->lut, 0.0, (double)pl->n, pl->n);
+	buildColorbar(s, pl->lut, 0.0, (double)pl->n, pl->n, &pl->lab);
 	return true;
 }
 
@@ -1688,15 +1768,16 @@ static void refreshGridColorbar(Scene *s) {
 	// ex.cz, by gmtvtk_set_cpt / gmtvtk_set_cpt_grid — the only two ways a layer's colours change), so
 	// the range is read from THEM, and falls back to the data range for a layer that has none.
 	double bz0 = ag.zmin, bz1 = ag.zmax;
+	const BarLabels *lab = &s->surfBarLab;     // the layer's own axis labels, resolved by the same tag
 	{
 		const std::vector<double> *nodes = nullptr;
 		if (ag.tag < 0) nodes = &s->baseCz;
-		else for (auto &ex : s->extras) if (!ex.isImage && ex.tag == ag.tag) { nodes = &ex.cz; break; }
+		else for (auto &ex : s->extras) if (!ex.isImage && ex.tag == ag.tag) { nodes = &ex.cz; lab = &ex.barLab; break; }
 		if (nodes && nodes->size() >= 2 && nodes->back() > nodes->front()) {
 			bz0 = nodes->front();  bz1 = nodes->back();
 		}
 	}
-	if (showWaterBar) buildColorbar(s, ag.lut, bz0, bz1);
+	if (showWaterBar) buildColorbar(s, ag.lut, bz0, bz1, 0, lab);
 	if (isAqua) setAquaLandColorbarVisible(s, s->aquaLandShowBar && !s->aquaShowWater);
 	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 }
@@ -3083,17 +3164,32 @@ static void rebuildSceneObjects(Scene *s) {
 		                for (auto &ex : s->extras)
 		                    if (!ex.isImage && ex.tag == gridSel) { zmn = ex.zmin; zmx = ex.zmax; break; }
 		            chooseColormap(s, g, [s, gridSel](const QString &nm) { applyColormap(s, nm, gridSel); },
-		                           [s, gridSel, zmn, zmx]() { showColorPalettes(s, gridSel, zmn, zmx); });
+		                           [s, gridSel, zmn, zmx]() { showColorPalettes(s, gridSel, zmn, zmx); },
+		                           [s, gridSel]() {
+		                               colorbarLabelsDialog(s, [s, gridSel]() -> BarLabels* {
+		                                   if (gridSel < 0) return &s->surfBarLab;
+		                                   for (auto &ex : s->extras)
+		                                       if (!ex.isImage && ex.tag == gridSel) return &ex.barLab;
+		                                   return nullptr;
+		                               }, [s]() { refreshGridColorbar(s); });
+		                           });
 		        },
-		        "Show / hide this grid's colorbar · left-click the label to choose a colormap");
+		        "Show / hide this grid's colorbar · left-click the label to choose a colormap or set its labels");
 	};
 	// An INDEXED image's palette legend row. The same Color Bar row a grid group gets — same flag
 	// semantics, same refreshGridColorbar — minus the colormap chooser: this palette IS the image's
-	// data (its class colours), not a ramp to be swapped for another.
+	// data (its class colours), not a ramp to be swapped for another. Its labels are set the same way.
 	auto paletteRow = [&](PaletteLegend *pl) {
 		makeRow("Color Bar", IC_ColorBar, pl->show,
-		        [s, pl](bool on) { pl->show = on; refreshGridColorbar(s); }, nullptr,
-		        "Show / hide this indexed image's class legend");
+		        [s, pl](bool on) { pl->show = on; refreshGridColorbar(s); },
+		        [s, pl](const QPoint &g) {
+		            QMenu m(s->win);
+		            m.addAction("Labels…", [s, pl]() {
+		                colorbarLabelsDialog(s, [pl]() { return &pl->lab; }, [s]() { refreshGridColorbar(s); });
+		            });
+		            m.exec(g);
+		        },
+		        "Show / hide this indexed image's class legend · left-click the label to set its labels");
 	};
 	// Aquamoto's two colorbar rows. Unlike the generic colorbarRow above (checkbox = a separate
 	// "want this shown" intent flag, meaningful because there's only ever ONE active grid to be
@@ -3129,7 +3225,10 @@ static void rebuildSceneObjects(Scene *s) {
 		            // g_aquamotoSetCPT, the door this layer's colours are painted behind.
 		            // …OPENED ON WHAT IS ALREADY ACTIVE — see aquaSideEditorRange.
 		            [s]() { double lo, hi; aquaSideEditorRange(s, 0, lo, hi);
-		                    showColorPalettesAquaSide(s, 0, lo, hi); });
+		                    showColorPalettesAquaSide(s, 0, lo, hi); },
+		            // the water bar is the base layer's: its labels are the base's
+		            [s]() { colorbarLabelsDialog(s, [s]() { return &s->surfBarLab; },
+		                                         [s]() { refreshGridColorbar(s); }); });
 		        },
 		        "Show / hide the Water colorbar · checking it switches to Shade Water · left-click the label to choose a colormap");
 	};
@@ -3143,7 +3242,14 @@ static void rebuildSceneObjects(Scene *s) {
 		            },
 		            // The LAND side's own span, through the same resolver the water side uses.
 		            [s]() { double lo, hi; aquaSideEditorRange(s, 1, lo, hi);
-		                    showColorPalettesAquaSide(s, 1, lo, hi); });
+		                    showColorPalettesAquaSide(s, 1, lo, hi); },
+		            // the Land bar is built once per file: rebuilt here, with its new labels
+		            [s]() { colorbarLabelsDialog(s, [s]() { return &s->aquaLandBarLab; }, [s]() {
+		                        if (!s->aquaLandBar) return;
+		                        vtkSmartPointer<vtkScalarsToColors> lut = s->aquaLandBar->GetLookupTable();
+		                        buildAquaLandColorbar(s, lut, s->aquaLandBarLo, s->aquaLandBarHi);
+		                        refreshGridColorbar(s);
+		                    }); });
 		        },
 		        "Show / hide the Land colorbar · checking it switches to Shade Land · left-click the label to choose a colormap");
 	};

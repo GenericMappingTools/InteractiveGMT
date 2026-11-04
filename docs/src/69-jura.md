@@ -164,7 +164,7 @@ add_curtain!(fig, [51.8 26.9; 57.3 69.97]; image=Section, zrange=(-2000, 2000))
 ```
 
 GMG shows the block at twice its true height. Here x and y are in km and z in metres, and that is
-a vertical exaggeration of **0.16**. *View → Vertical Exaggeration…* sets it on the topmost grid on
+a vertical exaggeration of **0.16**. The status bar's *VE* chip sets it on the topmost grid on
 display, the basement: set 0.16. Untick *Basement*, set 0.16 again (now for the topography), and
 tick *Basement* back on. Switch to **3D** and look at the block from the south-west:
 

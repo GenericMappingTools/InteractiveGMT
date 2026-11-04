@@ -335,12 +335,16 @@ function _ng_field(stmt::Int, key::String, label::String, ex, fn::String, region
 		d = _ng_named(ex)
 		if d !== nothing
 			on(k) = haskey(d, k) && d[k] !== false && _ng_sym(d[k]) != "none" ? "1" : "0"
+			txt(k) = get(d, k, "") isa String ? get(d, k, "") : ""
 			axes = something(_ng_sym(get(d, "axes", nothing)), "WSen")
-			title = get(d, "title", "") isa String ? get(d, "title", "") : ""
+			title, xl, yl = txt("title"), txt("xlabel"), txt("ylabel")
+			# a colour bar's frame has no sides and no grid: its form offers numbers, ticks and the two labels
+			bar = base == "colorbar" ? "1" : "0"
 			parts = (("annot", on("annot")), ("ticks", on("ticks")), ("grid", on("grid")), ("axes", axes),
-			         ("title", title))
+			         ("title", title), ("xlabel", xl), ("ylabel", yl), ("bar", bar))
 			shown = join(filter(!isempty, [on("annot") == "1" ? "numbers" : "", on("ticks") == "1" ? "ticks" : "",
-			                               on("grid") == "1" ? "grid" : "", isempty(title) ? "" : "title \"$title\""]), ", ")
+			                               on("grid") == "1" ? "grid" : "", isempty(title) ? "" : "title \"$title\"",
+			                               isempty(xl) ? "" : "X label \"$xl\"", isempty(yl) ? "" : "Y label \"$yl\""]), ", ")
 			return F("frame", isempty(shown) ? "plain box" : shown, _ng_pairs(parts))
 		end
 		_ng_sym(ex) == "none" && return F("frame", "no frame", _ng_pairs((("axes", "none"),)))

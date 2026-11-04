@@ -67,7 +67,7 @@ Illuminate relief like a shaded map:
 
 ## Vertical Exaggeration
 
-Drag the blue ring on the gizmo, or use **View → Vertical Scale…**
+Drag the blue ring on the gizmo, or click the **VE ×…** chip in the status bar
 
 ## Adding Overlays
 

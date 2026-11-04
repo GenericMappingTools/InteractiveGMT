@@ -95,8 +95,8 @@ GMG's figure shows the model alone, so the topography is switched off:
 setvisible!(fig, "Surface", false)
 ```
 
-Pick **Globe (orthographic)** from the arrow of the toolbar's 2D/3D button. *View → Vertical
-Exaggeration…* set 0.063, close to true scale for this topography, on *Vs at 50 km* and on the
+Pick **Globe (orthographic)** from the arrow of the toolbar's 2D/3D button. The status
+bar's *VE* chip set 0.063, close to true scale for this topography, on *Vs at 50 km* and on the
 topography. Turn the globe to look at the block from the south:
 
 ![The MeRE2020 model as a block, coloured by shear-wave velocity](assets/mere_block.jpg)

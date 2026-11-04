@@ -68,8 +68,8 @@ setvisible!(fig, "Axes", false; layer="Moho AD")
 setvisible!(fig, "Axes", false; layer="Moho PA")
 ```
 
-The Moho lies 30 to 150 km deep, so lower the vertical exaggeration (*View → Vertical
-Exaggeration…*, 0.1) and look from below the sea surface. The coastline makes the map readable
+The Moho lies 30 to 150 km deep, so lower the vertical exaggeration (the status bar's
+*VE* chip, 0.1) and look from below the sea surface. The coastline makes the map readable
 without the topography:
 
 ```julia
