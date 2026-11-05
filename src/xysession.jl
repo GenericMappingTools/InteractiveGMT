@@ -73,7 +73,7 @@ function _xy_save_session(h::Ptr{Cvoid}, path::AbstractString)
 		      (Ptr{Cvoid}, Cint, Cint, Ptr{Float64}, Ptr{Float64}, Cint), h, pg, i, x, y, n)
 		push!(files, (_xy_series_file(pg, i), Vector{UInt8}(reinterpret(UInt8, htol.(vcat(x, y))))))
 	end
-	_zip_write(String(path), files)
+	_zip_write_safe(String(path), files)          # never an empty or half-written file (session.jl)
 	ccall(_fn(:gmtvtk_add_recent), Cvoid, (Cstring, Cint), abspath(String(path)), Cint(3))
 	return path
 end

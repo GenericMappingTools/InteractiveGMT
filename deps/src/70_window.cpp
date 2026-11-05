@@ -26032,9 +26032,12 @@ public:
 			});
 			QObject::connect(bRun, &QPushButton::clicked, &sub, [this, &sub, proceed]() {
 				bool ok = false;
-				proceed("_on_nswing_save_run", ok);
+				QString out = proceed("_on_nswing_save_run", ok);
 				if (!ok) return;
 				sub.accept();   // closes the small picker only; the NSWING dialog itself stays open
+				// The run is launched; anything printed is _gmtjl_problem's warning (nswing.jl).
+				if (!out.trimmed().isEmpty())
+					QMessageBox::warning(this, "NSWING — gmtjl", out.trimmed());
 			});
 			sub.exec();
 		});
@@ -30970,7 +30973,9 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 			f = withExtIfNone(f, ".igmtz");
 			rememberStartDir(f);
 			const QByteArray utf8 = f.toUtf8();
+			showBusyDialog("Saving session...");        // writing every grid/image can take seconds
 			g_juliaSaveSession(s, utf8.constData());
+			closeBusyDialog();
 		});
 		mFile->addAction("&Load Session…", [win, s]() {
 			if (!g_juliaLoadSession) {

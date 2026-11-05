@@ -209,6 +209,35 @@ end
 "Write `files` (Vector of (name, bytes)) to a standard store-only zip at `path`."
 _zip_write(path::String, files) = (open(f -> write(f, _zip_bytes(files)), path, "w"); path)
 
+"""
+The session writer: `_zip_write`, but never leaves `path` empty or half written. The bytes are built
+first, written to a temporary file beside `path`, read back and checked (every entry there, sizes
+equal), and only then moved over `path`. Any failure leaves the previous file as it was.
+"""
+function _zip_write_safe(path::String, files)
+	isempty(files) && error("zip: nothing to write to '$path'")
+	length(files) > 0xffff && error("zip: $(length(files)) entries, more than a zip file can hold")
+	total = sum(length(d) + 128 + 2 * ncodeunits(String(n)) for (n, d) in files)
+	total >= typemax(UInt32) &&
+		error("zip: $(round(total / 2^30; digits=2)) GB is beyond the 4 GB a zip file can hold")
+	bytes = _zip_bytes(files)
+	tmp = path * ".part"
+	try
+		open(f -> write(f, bytes), tmp, "w")
+		back = _zip_read(tmp)
+		length(back) == length(files) || error("zip: '$tmp' has $(length(back)) entries, $(length(files)) were written")
+		for (n, d) in files
+			b = get(back, String(n), nothing)
+			(b === nothing || length(b) != length(d)) && error("zip: entry '$n' did not survive the write")
+		end
+		mv(tmp, path; force=true)
+	catch
+		rm(tmp; force=true)
+		rethrow()
+	end
+	return path
+end
+
 "Parse store-only zip bytes -> Dict(name => bytes)."
 function _zip_parse(d::Vector{UInt8})
 	# locate EOCD: scan backwards for its signature (comment length is 0, so it is near the end)
@@ -218,7 +247,7 @@ function _zip_parse(d::Vector{UInt8})
 			eocd = i - 1; break                     # 0-based offset of EOCD
 		end
 	end
-	eocd < 0 && error("zip: no end-of-central-directory record in '$path'")
+	eocd < 0 && error("zip: no end-of-central-directory record (empty or truncated file)")
 	total = Int(_r16(d, eocd + 10)); cdoff = Int(_r32(d, eocd + 16))
 	out = Dict{String,Vector{UInt8}}(); p = cdoff
 	for _ in 1:total
@@ -274,11 +303,34 @@ function _session_pack_generated(scene::Ptr{Cvoid}, r::ElementRecipe, used::Set{
 	obj = isempty(r.name) ? _find_object(scene, objkind, "") : _find_object_exact(scene, objkind, r.name)
 	obj === nothing && error("session: no live $(objkind) named '$(r.name)' to serialize")
 	ext = objkind === :grid ? ".nc" : ".tif"
-	id = _session_sidecar_id(r.name, ext, used)
 	tmp = tempname() * ext
-	_serialize_object(obj, tmp)
-	bytes = read(tmp); rm(tmp; force=true)
+	bytes = try
+		_serialize_object(obj, tmp)
+		read(tmp)
+	finally
+		rm(tmp; force=true)
+	end
+	isempty(bytes) && error("session: writing '$(r.name)' produced an empty file")
+	id = _session_sidecar_id(r.name, ext, used)        # taken only once the data really exists
 	return (id, bytes)
+end
+
+# Is the element a recipe describes still in the window? A session is saved from what is ON SCREEN:
+# a layer loaded from an earlier session and deleted since must not come back, and must not make the
+# save fail. Asked of the live scene (`gmtvtk_has_element_h`, every row container), with the Julia
+# registry as second witness for a base relabelled after it was opened (`_find_base_named`). Only the
+# kinds that ARE one Scene Objects row are asked; a state (illumination) or an unnamed curtain is kept.
+function _session_present(scene::Ptr{Cvoid}, r::ElementRecipe)
+	has(n) = ccall(_fn(:gmtvtk_has_element_h), Cint, (Ptr{Cvoid}, Cstring), scene, n) != 0
+	if r.kind in (:basegrid, :dropgrid, :image, :dropimage)
+		isempty(r.name) && return ccall(_fn(:gmtvtk_has_surface), Cint, (Ptr{Cvoid},), scene) != 0
+		return has(r.name) || _find_object_exact(scene, _session_obj_kind(r), r.name) !== nothing
+	elseif r.kind in (:basemap, :geography)
+		return isempty(r.name) || has(r.name)
+	elseif r.kind === :elastic                         # the Okada field it recomputes (deform.jl)
+		return has(haskey(r.params, "model_slip") ? "Okada z (model)" : "Okada z")
+	end
+	return true
 end
 
 # THE writer for "put this live scene object on disk as a sidecar": grids -> netCDF (GMT.gmtwrite),
@@ -878,27 +930,38 @@ end
 
 "File > Save Session: write the `scene` window's recipes + generated data to a `.igmtz` zip at `path`."
 function _on_save_session(scene::Ptr{Cvoid}, path::String)
-	recipes = get(_SESSION_LOG, scene, ElementRecipe[])
+	isempty(strip(path)) && error("session: no file name given")
+	recipes = copy(get(_SESSION_LOG, scene, ElementRecipe[]))   # a snapshot: nothing below may edit the log
 	files = Tuple{String,Vector{UInt8}}[]
 	out = ElementRecipe[]; used = Set{String}(); seen = Set{Tuple{Symbol,String}}()
+	gone = String[]; failed = String[]
+	label(r) = isempty(r.name) ? string(r.kind) : r.name
 	skipnest = _session_dup_nest_handles(recipes)
 	for r in recipes
 		r.name in skipnest && continue         # this level is already in the session as its .grd file
-		if r.origin === :generated
-			# Dedup: an element can get logged more than once (e.g. a nested layer re-materialized); a
-			# given (kind,name) is one Scene Objects element, so serialize + replay it exactly once.
-			(r.kind, r.name) in seen && continue
-			push!(seen, (r.kind, r.name))
-			id, bytes = _session_pack_generated(scene, r, used)
-			push!(files, ("data/" * id, bytes))
-			push!(out, ElementRecipe(r.kind, :generated, id; name=r.name, params=copy(r.params)))
-		else
-			# Menu vector layers (coastlines/borders/rivers) replay with the default pen; capture the
-			# live overlay's current pen so Line-properties edits (colour/width/style/opacity) survive.
-			r.kind === :geography && !isempty(r.name) && (r = _session_capture_overlay_pen(scene, r))
-			# Contours: the request plus each level's pen and checkbox; dropped when they are gone.
-			r.kind === :contour && (r = _contour_session_capture(scene, r);  r === nothing && continue)
-			push!(out, r)
+		# Deleted since it was added (or since the session it came from was loaded): not saved, and
+		# never a reason for the save to fail.
+		_session_present(scene, r) || (push!(gone, label(r)); continue)
+		# ONE element that cannot be written costs that element, never the whole session.
+		try
+			if r.origin === :generated
+				# Dedup: an element can get logged more than once (e.g. a nested layer re-materialized); a
+				# given (kind,name) is one Scene Objects element, so serialize + replay it exactly once.
+				(r.kind, r.name) in seen && continue
+				push!(seen, (r.kind, r.name))
+				id, bytes = _session_pack_generated(scene, r, used)
+				push!(files, ("data/" * id, bytes))
+				push!(out, ElementRecipe(r.kind, :generated, id; name=r.name, params=copy(r.params)))
+			else
+				# Menu vector layers (coastlines/borders/rivers) replay with the default pen; capture the
+				# live overlay's current pen so Line-properties edits (colour/width/style/opacity) survive.
+				r.kind === :geography && !isempty(r.name) && (r = _session_capture_overlay_pen(scene, r))
+				# Contours: the request plus each level's pen and checkbox; dropped when they are gone.
+				r.kind === :contour && (r = _contour_session_capture(scene, r);  r === nothing && continue)
+				push!(out, r)
+			end
+		catch e
+			push!(failed, "$(label(r)): $(sprint(showerror, e))")
 		end
 	end
 	# Curtains built from in-memory GMTimages: write their stashed PNG textures as sidecars (file-path
@@ -918,16 +981,24 @@ function _on_save_session(scene::Ptr{Cvoid}, path::String)
 	# family the Scene holds is in this list — an element with no recipe and no snapshot is an element
 	# the session loses, which is what "several graphics elements missing" was.
 	owned = Set{String}(r.name for r in out if r.origin === :menu && !isempty(r.name))
-	for (entry, blob) in (("drawn/polys.txt",    _serialize_polys_raw(scene)),
-	                      ("drawn/faults.txt",   _serialize_faults_raw(scene)),
-	                      ("drawn/texts.txt",    _session_strip_recipe_rows(_serialize_texts_raw(scene), _parse_texts_blob, owned)),
-	                      ("drawn/overlays.txt", _session_strip_recipe_rows(_serialize_overlays_raw(scene), _parse_overlays_blob, owned)),
-	                      ("drawn/symbols.txt",  _session_strip_recipe_rows(_serialize_symbols_raw(scene), _parse_symbols_blob, owned)),
-	                      ("drawn/rulers.txt",   _serialize_rulers_raw(scene)),
-	                      ("drawn/arrows.txt",   _serialize_arrow_styles(scene)))
-		isempty(blob) || push!(files, (entry, Vector{UInt8}(codeunits(blob))))
+	for (entry, blob) in (("drawn/polys.txt",    () -> _serialize_polys_raw(scene)),
+	                      ("drawn/faults.txt",   () -> _serialize_faults_raw(scene)),
+	                      ("drawn/texts.txt",    () -> _session_strip_recipe_rows(_serialize_texts_raw(scene), _parse_texts_blob, owned)),
+	                      ("drawn/overlays.txt", () -> _session_strip_recipe_rows(_serialize_overlays_raw(scene), _parse_overlays_blob, owned)),
+	                      ("drawn/symbols.txt",  () -> _session_strip_recipe_rows(_serialize_symbols_raw(scene), _parse_symbols_blob, owned)),
+	                      ("drawn/rulers.txt",   () -> _serialize_rulers_raw(scene)),
+	                      ("drawn/arrows.txt",   () -> _serialize_arrow_styles(scene)))
+		b = try
+			blob()
+		catch e
+			push!(failed, "$(entry): $(sprint(showerror, e))");  ""
+		end
+		isempty(b) || push!(files, (entry, Vector{UInt8}(codeunits(b))))
 	end
-	_zip_write(path, files)
+	_zip_write_safe(path, files)
+	isempty(gone) || _viewer_log_info(scene, "Save session: not saved, no longer in the window: " * join(gone, ", "))
+	# Saved, but WITHOUT these: the user must know, the file is not the window.
+	isempty(failed) || _viewer_log_error(scene, "Session saved to $path WITHOUT these elements:\n  " * join(failed, "\n  "))
 	_SESSION_FILE[scene] = abspath(String(path))
 	# A saved session is a file the user opens again — it goes in Recent Files (cat 3 = Sessions),
 	# exactly like every successful open does. Saved AND loaded sessions both register, so a session

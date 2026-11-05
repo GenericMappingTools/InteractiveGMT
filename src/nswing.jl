@@ -1059,7 +1059,8 @@ end
 # noise and the longest thing on the line.
 function _nswing_show_cli(scene::Ptr{Cvoid}, cparams::AbstractString)
 	args, dir, saved = _nswing_prepare_cli(scene, cparams)
-	cmd = "gmt nswing " * join(args, " ")
+	cmd = "gmtjl nswing " * join(args, " ")     # GMT.jl's own GMT (gmtcli.jl), never a system `gmt`
+	problem = _gmtjl_problem()
 
 	commfile = joinpath(dir, "comm.txt")
 	wrote_comm = true
@@ -1071,6 +1072,11 @@ function _nswing_show_cli(scene::Ptr{Cvoid}, cparams::AbstractString)
 	end
 
 	io = IOBuffer()
+	if !isempty(problem)
+		println(io, "WARNING: the command below will not run from a command line on this computer.")
+		println(io, problem)
+		println(io)
+	end
 	if isempty(saved)
 		println(io, "Nothing had to be saved — every grid this run needs was already on disk.")
 	else
@@ -1097,7 +1103,11 @@ function _on_nswing_save_run(scene::Ptr{Cvoid}, cparams::AbstractString)
 	end
 	args, dir, saved = _nswing_prepare_cli(scene, cparams)
 	isempty(saved) || _viewer_log_info(scene, "NSWING saved to $dir: " * join(saved, "; "))
-	_viewer_log_info(scene, "NSWING command (run in $dir): gmt nswing " * join(args, " "))
+	_viewer_log_info(scene, "NSWING command (run in $dir): gmtjl nswing " * join(args, " "))
+	# The run below needs no launcher, but the command just logged does: say now if it cannot run.
+	# Printed, the C++ side pops whatever this prints.
+	problem = _gmtjl_problem()
+	isempty(problem) || print("The NSWING command logged for this run (gmtjl nswing …) will not run from a command line on this computer.\n\n", problem)
 	_NSWING_RUNNING[] = true
 	_progress_show_async(100, "NSWING running…")
 	# Same checkbox, same door: "Auto load simulation" belongs to the RUN, not to one of the two ways

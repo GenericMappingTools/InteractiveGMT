@@ -208,7 +208,7 @@ static JuliaCompleteFn g_juliaComplete = nullptr;
 // (repl_history.jl; the host hands its path over, see gmtvtk_set_console_history_path), so the
 // console and the terminal REPL recall each other's commands. Its format: a "# time:" / "# mode:"
 // header, then each line of the command tab-indented, so a multi-line command comes back as one
-// entry; only "julia" mode entries are recalled (not shell/help/pkg). ONE list for the whole
+// entry; "julia", "pkg" and "help" mode entries are recalled (not shell). ONE list for the whole
 // process: every console (each 3-D window's, each X,Y tool's) reads and adds to it. Each command is
 // APPENDED the moment it runs, so a crash loses nothing. The file is the REPL's: it is NEVER
 // rewritten or trimmed here; only the newest kConsoleHistMax entries are kept in memory.
@@ -217,10 +217,15 @@ static QString              g_consoleHistPath;    // "" = no saved history; set 
 static std::vector<QString> g_consoleHist;        // the one list (oldest first)
 static bool                 g_consoleHistLoaded = false;
 
+// In memory a Pkg-mode command carries a leading ']' and a help-mode one a leading '?' (ReplConsole
+// recalls each into its own prompt by it -- neither can start Julia code); on disk each is the REPL's
+// own "# mode: pkg" / "# mode: help" entry, without the mark.
 static void consoleHistoryWriteEntry(QTextStream &ts, const QString &cmd) {
 	const QDateTime now = QDateTime::currentDateTime();
-	ts << "# time: " << now.toString("yyyy-MM-dd HH:mm:ss") << ' ' << now.timeZoneAbbreviation() << "\n# mode: julia\n";
-	for (const QString &ln : cmd.split('\n'))
+	const bool pkg = cmd.startsWith(']'), help = cmd.startsWith('?');
+	ts << "# time: " << now.toString("yyyy-MM-dd HH:mm:ss") << ' ' << now.timeZoneAbbreviation()
+	   << (pkg ? "\n# mode: pkg\n" : help ? "\n# mode: help\n" : "\n# mode: julia\n");
+	for (const QString &ln : (pkg || help ? cmd.mid(1) : cmd).split('\n'))
 		ts << '\t' << ln << '\n';
 }
 
@@ -235,18 +240,27 @@ static std::vector<QString> &consoleHistory() {
 	QTextStream in(&f);
 	in.setEncoding(QStringConverter::Utf8);
 	QString cur;
-	bool inEntry = false, isJulia = true;
+	bool inEntry = false, isJulia = true, isPkg = false, isHelp = false;
 	auto flush = [&]() {
-		if (inEntry && isJulia && !cur.trimmed().isEmpty() && (hist.empty() || hist.back() != cur))
+		if (isPkg) cur.prepend(']');
+		if (isHelp) cur.prepend('?');
+		if (inEntry && (isJulia || isPkg || isHelp) && !cur.trimmed().isEmpty() && (hist.empty() || hist.back() != cur))
 			hist.push_back(cur);
 		cur.clear();
 		inEntry = false;
 		isJulia = true;
+		isPkg = isHelp = false;
 	};
 	while (!in.atEnd()) {
 		const QString ln = in.readLine();
 		if (ln.startsWith("# time:")) { flush(); continue; }
-		if (ln.startsWith("# mode:")) { isJulia = ln.mid(7).trimmed() == "julia"; continue; }
+		if (ln.startsWith("# mode:")) {
+			const QString m = ln.mid(7).trimmed();
+			isJulia = m == "julia";
+			isPkg = m == "pkg";
+			isHelp = m == "help";
+			continue;
+		}
 		if (ln.startsWith('\t')) {
 			if (inEntry) cur += '\n';
 			cur += ln.mid(1);
@@ -282,6 +296,10 @@ static void consoleHistoryAppend(const QString &cmd) {
 //    ran, forward again, and past the newest the half-typed draft comes back). The history is the
 //    process-wide, saved one (consoleHistory), so it holds the previous sessions' commands too.
 //  - Esc clears the input, Ctrl+L clears the pane.
+//  - ']' on an empty input switches to the Pkg prompt ("pkg> "), '?' to the help prompt ("help?> "),
+//    Backspace on an empty one goes back to "julia> ", as in the REPL. A "pkg> " command runs through
+//    Pkg.REPLMode.pkgstr, a "help?> " one through REPL.helpmode (the REPL's own help lookup). "]add X"
+//    or "?sin" typed or pasted at "julia> " runs the same way. History recalls each into its prompt.
 //  - After a command the keys come back here, whatever the command did to the focus meanwhile.
 // One widget for BOTH consoles -- the 3-D viewer's Panels tab (70_window.cpp) and the X,Y plot tool's
 // Julia tab (65_xyplot.cpp) -- never a second implementation (SACRED_LAW: same operation, same
@@ -291,13 +309,16 @@ struct ReplConsole : QPlainTextEdit {
 	static constexpr const char *kPrompt = "julia> ";
 	static constexpr int kPromptLen = 7;
 	static constexpr int kContState = 1;         // block user state: a continuation line we indented
+	enum Mode { MJulia = 0, MPkg = 1, MHelp = 2 };   // the REPL's prompts; MPkg/MHelp mark history ']'/'?'
 	void   *owner = nullptr;
 	int     inStart = 0;                         // document position where the current input begins
 	bool    busy = false;                        // a command is running (re-entrancy guard)
+	Mode    mode = MJulia;                       // which prompt is showing (']' / '?' on an empty input)
 	std::vector<QString> &hist = consoleHistory();   // oldest first, as run; shared and saved
 	int     pos = -1;                           // history index being shown; -1 = editing a fresh input
 	QString draft;                               // the fresh input, stashed while walking the history
-	QTextCharFormat fmtPlain, fmtPrompt, fmtErr, fmtNote;
+	Mode    draftMode = MJulia;                  // ...and the mode it was typed in
+	QTextCharFormat fmtPlain, fmtPrompt, fmtPkgPrompt, fmtHelpPrompt, fmtErr, fmtNote;
 
 	ReplConsole(void *own, const QString &banner, int pointSize, QWidget *parent = nullptr)
 		: QPlainTextEdit(parent), owner(own) {
@@ -307,6 +328,10 @@ struct ReplConsole : QPlainTextEdit {
 		setFocusPolicy(Qt::StrongFocus);
 		fmtPrompt.setForeground(QColor(0, 140, 0));
 		fmtPrompt.setFontWeight(QFont::Bold);
+		fmtPkgPrompt.setForeground(QColor(0, 90, 200));   // the REPL's blue
+		fmtPkgPrompt.setFontWeight(QFont::Bold);
+		fmtHelpPrompt.setForeground(QColor(190, 140, 0));  // the REPL's yellow
+		fmtHelpPrompt.setFontWeight(QFont::Bold);
 		fmtErr.setForeground(QColor(200, 0, 0));
 		fmtNote.setForeground(QColor(120, 120, 120));
 		if (!banner.isEmpty()) {
@@ -361,9 +386,11 @@ struct ReplConsole : QPlainTextEdit {
 		ensureCursorVisible();
 	}
 
-	// Run the input in Julia and show what it printed under it, then a fresh prompt.
-	void submit(const QString &cmd) {
-		pushHistory(cmd);
+	// Run the input in Julia and show what it printed under it, then a fresh prompt. `m`: MPkg -> `cmd`
+	// is a Pkg REPL command ("add X", "st"), MHelp -> a help query ("sin", "GMT.coast"), each run as the
+	// REPL's own prompt for it runs it.
+	void submit(const QString &cmd, Mode m = MJulia) {
+		pushHistory(m == MPkg ? "]" + cmd.trimmed() : m == MHelp ? "?" + cmd.trimmed() : cmd);
 		QTextCursor c(document());
 		c.movePosition(QTextCursor::End);
 		int n = 0;
@@ -373,7 +400,14 @@ struct ReplConsole : QPlainTextEdit {
 			c.insertText("(no Julia eval callback registered)", fmtErr);
 		}
 		else {
-			const std::string s = cmd.toStdString();
+			QString code = cmd;
+			if (m != MJulia) {                       // a Julia string literal of the command
+				QString lit = cmd.trimmed();
+				lit.replace("\\", "\\\\").replace("\"", "\\\"").replace("$", "\\$");
+				code = m == MPkg ? "begin import Pkg; Pkg.REPLMode.pkgstr(\"" + lit + "\"); nothing end"
+				                 : "begin import REPL; Core.eval(Main, REPL.helpmode(\"" + lit + "\")) end";
+			}
+			const std::string s = code.toStdString();
 			busy = true;
 			QApplication::setOverrideCursor(Qt::WaitCursor);   // the UI thread is Julia's until it returns
 			// _console_eval returns the byte count; NEGATIVE flags a Julia error (still |n| bytes of text).
@@ -434,6 +468,9 @@ protected:
 				newPrompt();
 				return;
 			}
+			if (mode != MJulia) { submit(cmd, mode); return; }
+			if (cmd.trimmed().startsWith(']')) { submit(cmd.trimmed().mid(1), MPkg); return; }    // "]add X"
+			if (cmd.trimmed().startsWith('?')) { submit(cmd.trimmed().mid(1), MHelp); return; }   // "?sin"
 			const std::string s = cmd.toStdString();
 			if (g_juliaComplete && g_juliaComplete(s.c_str()) == 0) {   // open block: read on
 				c.movePosition(QTextCursor::End);
@@ -452,14 +489,14 @@ protected:
 			if (atEdge && !hist.empty()) {
 				if (pos >= (int)hist.size()) pos = (int)hist.size() - 1;   // shared list: another console may have trimmed it
 				if (k == Qt::Key_Up) {
-					if (pos == -1) { draft = input(); pos = (int)hist.size() - 1; }   // start the walk
+					if (pos == -1) { draft = input(); draftMode = mode; pos = (int)hist.size() - 1; }   // start the walk
 					else if (pos > 0) --pos;
-					setInput(hist[(size_t)pos]);
+					recall(hist[(size_t)pos]);
 					return;
 				}
 				if (pos != -1) {
-					if (pos + 1 < (int)hist.size()) setInput(hist[(size_t)++pos]);
-					else { pos = -1; setInput(draft); }                           // past the newest: the draft
+					if (pos + 1 < (int)hist.size()) recall(hist[(size_t)++pos]);
+					else { pos = -1; setMode(draftMode); setInput(draft); }    // past the newest: the draft
 					return;
 				}
 			}
@@ -473,6 +510,10 @@ protected:
 			return;
 		}
 		if (k == Qt::Key_Backspace || k == Qt::Key_Delete) {
+			if (k == Qt::Key_Backspace && mode != MJulia && !c.hasSelection() && input().isEmpty()) {
+				setMode(MJulia);                     // Backspace on an empty "pkg> "/"help?> " -> "julia> "
+				return;
+			}
 			if (c.hasSelection()) {
 				if (c.selectionStart() < inStart) {  // never delete into the history
 					if (c.selectionEnd() <= inStart) { toInput(c); setTextCursor(c); return; }
@@ -510,6 +551,10 @@ protected:
 			toInputIfBefore(c);
 			c.insertText("    ", fmtPlain);
 			setTextCursor(c);
+			return;
+		}
+		if (mode == MJulia && input().isEmpty() && (e->text() == QLatin1String("]") || e->text() == QLatin1String("?"))) {
+			setMode(e->text() == QLatin1String("]") ? MPkg : MHelp);   // on an empty "julia> ", as the REPL
 			return;
 		}
 		// Anything else that edits (typing, Ctrl+K, ...): into the input, never into the history.
@@ -563,12 +608,40 @@ private:
 		c.movePosition(QTextCursor::End);
 		if (!document()->isEmpty()) c.insertBlock();
 		c.block().setUserState(-1);
-		c.insertText(kPrompt, fmtPrompt);
+		insertPrompt(c);
 		c.setCharFormat(fmtPlain);
 		inStart = c.position();
 		setTextCursor(c);
 		setCurrentCharFormat(fmtPlain);
 		ensureCursorVisible();
+	}
+	// The current mode's prompt, in its colour, at `c`.
+	void insertPrompt(QTextCursor &c) {
+		if (mode == MPkg)       c.insertText("pkg> ", fmtPkgPrompt);
+		else if (mode == MHelp) c.insertText("help?> ", fmtHelpPrompt);
+		else                    c.insertText(kPrompt, fmtPrompt);
+	}
+	// Switch prompts in place: the current prompt is rewritten, the input kept.
+	void setMode(Mode m) {
+		if (mode == m) return;
+		const QString keep = input();
+		mode = m;
+		QTextCursor c(document());
+		c.setPosition(document()->findBlock(inStart).position());
+		c.movePosition(QTextCursor::End, QTextCursor::KeepAnchor);
+		c.removeSelectedText();
+		insertPrompt(c);
+		c.setCharFormat(fmtPlain);
+		inStart = c.position();
+		setTextCursor(c);
+		setCurrentCharFormat(fmtPlain);
+		if (!keep.isEmpty()) setInput(keep);
+	}
+	// A history entry into the input, in the mode it was run in (marked ']' Pkg, '?' help).
+	void recall(const QString &h) {
+		const Mode m = h.startsWith(']') ? MPkg : h.startsWith('?') ? MHelp : MJulia;
+		setMode(m);
+		setInput(m == MJulia ? h : h.mid(1));
 	}
 	// Bounded scrollback. Trimmed by hand, between commands, rather than with setMaximumBlockCount:
 	// that drops blocks under a typed input and would move it out from under `inStart`.

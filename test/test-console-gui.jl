@@ -61,3 +61,53 @@
 		ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), f.h)
 	end
 end
+
+@testitem "console: ']' opens pkg>, '?' opens help?>, Backspace goes back" tags=[:gui] setup=[GmtvtkTest] begin
+	IG = InteractiveGMT; GMT = IG.GMT; tf = GmtvtkTest._test_fn
+	f = viz(GMT.mat2grid(Float32[x + y for y in 1:20, x in 1:30]))
+	buf = zeros(UInt8, 1 << 16)
+	function con(cmd, ups = 0, downs = 0)
+		r = ccall(tf(:gmtvtk_console_history_test), Cint, (Ptr{Cvoid}, Cstring, Cint, Cint, Ptr{UInt8}, Cint),
+		          f.h, cmd, ups, downs, buf, length(buf))
+		r == 1 || error("no Julia console in the window")
+		return unsafe_string(pointer(buf))
+	end
+	pane() = con("", -1)
+	hfile = joinpath(tempdir(), "igmt_console_modes_$(getpid()).jl")
+	write(hfile, "")
+	sethist(p) = ccall(IG._fn(:gmtvtk_set_console_history_path), Cvoid, (Cstring,), p)
+	sethist(hfile)
+	try
+		IG._pump_once()
+		# '?' typed on an empty "julia> " is the help prompt, not a character: the query runs as help
+		con("?sin")
+		@test occursin("help?> sin\n", pane())
+		@test occursin("Compute sine", pane())
+		@test endswith(pane(), "help?> ")                # the mode stays, as in the REPL
+		# Backspace on the empty help prompt goes back to julia>
+		con("\b")
+		@test endswith(pane(), "julia> ")
+		# ']' is the Pkg prompt; its command runs through Pkg
+		con("]st")
+		@test occursin("pkg> st\n", pane())
+		@test occursin("Status", pane())
+		@test endswith(pane(), "pkg> ")
+		con("\b")
+		@test endswith(pane(), "julia> ")
+		# history: each entry comes back in the prompt it ran in...
+		@test con("", 1) == "st"
+		@test endswith(pane(), "pkg> st")
+		@test con("", 1) == "sin"
+		@test endswith(pane(), "help?> sin")
+		@test con("", 0, 2) == ""
+		@test endswith(pane(), "julia> ")
+		# ...and is saved with the REPL's own mode, without the mark
+		saved = read(hfile, String)
+		@test occursin("# mode: help\n\tsin\n", saved)
+		@test occursin("# mode: pkg\n\tst\n", saved)
+	finally
+		sethist(IG._repl_history_file())
+		rm(hfile; force = true)
+		ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), f.h)
+	end
+end

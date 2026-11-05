@@ -8783,8 +8783,8 @@ GMTVTK_API int gmtvtk_solar_test(void *handle, int action, char *buf, int cap) {
 }
 
 // test hook: drive the Julia console with REAL key presses. Types `cmd` one character at a time
-// ('\n' = an Enter press, so a multi-line input is typed exactly as a user would) and presses Enter
-// (when given), then sends `ups` Up presses and `downs` Down presses, and reports the console's
+// ('\n' = an Enter press, so a multi-line input is typed exactly as a user would; '\b' = Backspace)
+// and presses Enter (when given, and not ending in '\b'), then sends `ups` Up presses and `downs` Down presses, and reports the console's
 // current INPUT (prompt and continuation indents stripped) -- so REPL-style recall and continuation
 // lines are proved by the widget's own key handling, not by reading the code. With `ups` = -1 it
 // reports the WHOLE pane's text instead (what the user sees).
@@ -8804,10 +8804,11 @@ GMTVTK_API int gmtvtk_console_history_test(void *handle, const char *cmd, int up
 	};
 	if (cmd && cmd[0]) {
 		for (const QChar ch : QString::fromUtf8(cmd)) {
-			if (ch == '\n') key(Qt::Key_Return, "\r");
-			else            key(ch.toUpper().unicode(), QString(ch));
+			if (ch == '\n')      key(Qt::Key_Return, "\r");
+			else if (ch == '\b') key(Qt::Key_Backspace, "\b");   // '\b' = a Backspace press
+			else                 key(ch.toUpper().unicode(), QString(ch));
 		}
-		key(Qt::Key_Return, "\r");
+		if (!QString::fromUtf8(cmd).endsWith('\b')) key(Qt::Key_Return, "\r");   // a trailing '\b': no Enter
 	}
 	for (int i = 0; i < ups;   ++i) key(Qt::Key_Up);
 	for (int i = 0; i < downs; ++i) key(Qt::Key_Down);
