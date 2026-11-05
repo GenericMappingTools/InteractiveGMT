@@ -14636,7 +14636,9 @@ GMTVTK_API void *gmtvtk_open_empty_offscreen(const char *title) {
 // Add a grid/image dropped into an EXISTING window: build a CPT-coloured surface (or, with an
 // image buffer, additionally a flat textured drape) actor, register it in the Scene Objects
 // panel, and render. Aligns with the window's base scale (xfac/zfac/VE). `name` labels the row.
-// Returns 1 on success, 0 if the handle is dead / inputs invalid.
+// Returns 1 on success, 0 if the handle is dead / inputs invalid / memory ran out. Out of memory is a
+// std::bad_alloc: escaping this extern "C" export it would terminate the whole process, so it is
+// caught here and reported as the same 0 every caller already treats as "not added".
 // `geographic` (!=0 -> x,y are lon,lat) sits in the SAME argument slot as gmtvtk_promote_surface_h's,
 // so the two calls read identically at every call site. It is per-GRID, not per-window: a window
 // built around a geographic parent can perfectly well be showing a CARTESIAN derived grid (a
@@ -14646,7 +14648,7 @@ GMTVTK_API int gmtvtk_add_surface_h(void *handle, const float *z, int nx, int ny
 									double x0, double x1, double y0, double y1, int geographic,
 									const double *cz, const double *crgb, int ncolor,
 									const unsigned char *img, int iw, int ih, int ibands,
-									int image_only, const char *name, int zlayout) {   // zlayout: 0 = "BCB", !=0 = "TRB" (GridLay)
+									int image_only, const char *name, int zlayout) try {   // zlayout: 0 = "BCB", !=0 = "TRB" (GridLay)
 	Scene *s = static_cast<Scene*>(handle);
 	if (!sceneAlive(s) || !z || nx < 2 || ny < 2)
 		return 0;
@@ -14825,6 +14827,9 @@ GMTVTK_API int gmtvtk_add_surface_h(void *handle, const float *z, int nx, int ny
 	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 	return 1;
 }
+catch (const std::bad_alloc &) {
+	return 0;
+}
 
 // PROMOTE an empty launcher window into a real grid/image window IN PLACE: the SAME window is
 // reused (no new window, the old one is NOT destroyed). We recompute the scales from the dropped
@@ -14835,7 +14840,7 @@ GMTVTK_API int gmtvtk_promote_surface_h(void *handle, const float *z, int nx, in
 										double x0, double x1, double y0, double y1, int geographic,
 										const double *cz, const double *crgb, int ncolor,
 										const unsigned char *img, int iw, int ih, int ibands,
-										int image_only, const char *name, int zlayout) {   // zlayout: 0 = "BCB", !=0 = "TRB" (GridLay)
+										int image_only, const char *name, int zlayout) try {   // zlayout: 0 = "BCB", !=0 = "TRB" (GridLay)
 	Scene *s = static_cast<Scene*>(handle);
 	if (!sceneAlive(s) || !z || nx < 2 || ny < 2)
 		return 0;
@@ -14939,6 +14944,9 @@ GMTVTK_API int gmtvtk_promote_surface_h(void *handle, const float *z, int nx, in
 	s->ren->ResetCameraClippingRange();
 	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 	return 1;
+}
+catch (const std::bad_alloc &) {   // out of memory: 0, never a process abort (see gmtvtk_add_surface_h)
+	return 0;
 }
 
 // Replace the window's BASE grid data IN PLACE (Grid Tools > Transplant 2nd grid, and its undo).

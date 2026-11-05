@@ -12407,9 +12407,13 @@ public:
 		if (!ok)
 			QMessageBox::warning(d, "Tsunami travel times",
 				"Failed — see this window's Errors console for details.");
-		else if (!eta)
-			QMessageBox::information(d, "Tsunami travel times",
-				"Done — the travel-time grid (hours) is in Scene Objects as \"Travel time (h)\".");
+		else if (!eta) {
+			// A grid saved to a file is NOT displayed (tsunamittt.jl): say where it went instead.
+			const QString out = outEdit ? outEdit->text().trimmed() : QString();
+			QMessageBox::information(d, "Tsunami travel times", out.isEmpty() ?
+				QString("Done — the travel-time grid (hours) is in Scene Objects as \"Travel time (h)\".") :
+				"Done — the travel-time grid (hours) was saved to\n" + out);
+		}
 	}
 };
 

@@ -21,6 +21,42 @@ const _TTT_NODES = (8, 16, 32, 48, 64, 120)
 # The ONE name every travel-time result carries in Scene Objects (see the delivery below).
 const _TTT_NAME = "Travel time (h)"
 
+# Peak memory per grid node of each step, measured 2026-11-05 (Julia 1.14, Windows, growth of the
+# process's peak commit): the Huygens solver (GMT.ttt) 23.8-25.2 bytes (4M-36M nodes), the Mirone
+# expansion (GMT.wave_travel_time) 12.1 (4M-36M), the delivery into the window (_gm3d_deliver: the C++
+# surface, its z copy, its LOD tiles) ~22 (16M), plus a one-off ~450 MiB the first big surface of a
+# window cost; writing the result to disk instead (GMT.gmtwrite, .grd) 12.4 (16M). Rounded up.
+const _TTT_BYTES_PER_NODE = (ttt = 26, mirone = 13, deliver = 22, write = 13)
+const _TTT_FIXED_BYTES = 512 * 2^20
+
+# What the process can still allocate, in bytes. Windows refuses an allocation when the COMMIT limit
+# (RAM + page file) is reached, not when free RAM is, so that is the number asked for there
+# (GlobalMemoryStatusEx's ullAvailPageFile); elsewhere the OS's available memory.
+mutable struct _MemStatusEx
+	dwLength::UInt32; dwMemoryLoad::UInt32
+	ullTotalPhys::UInt64; ullAvailPhys::UInt64; ullTotalPageFile::UInt64; ullAvailPageFile::UInt64
+	ullTotalVirtual::UInt64; ullAvailVirtual::UInt64; ullAvailExtendedVirtual::UInt64
+end
+function _mem_available()::Int
+	Sys.iswindows() || return Int(Sys.free_memory())
+	m = _MemStatusEx(UInt32(sizeof(_MemStatusEx)), 0, 0, 0, 0, 0, 0, 0, 0)
+	ccall((:GlobalMemoryStatusEx, "kernel32"), Cint, (Ref{_MemStatusEx},), m) == 0 &&
+		return Int(Sys.free_memory())
+	return Int(m.ullAvailPageFile)
+end
+
+# Refuse a step that would not fit, BEFORE it allocates: running out half-way can abort the whole
+# process (a C++ std::bad_alloc, or Julia's own "fatal: out of memory" inside a GC) instead of
+# raising an error the dialog can report. GC first, so garbage Julia can free does not count as used.
+function _ttt_mem_check(need::Int, what::String)
+	GC.gc()
+	avail = _mem_available()
+	need <= avail && return
+	gb(b) = round(b / 2^30; digits = 1)
+	error("not enough free memory to $what: it needs about $(gb(need)) GB and $(gb(avail)) GB are free. " *
+	      "Close other programs or use a coarser grid.")
+end
+
 # The source the dialog placed (TttDialog::sourceXY): "x,y;x,y;…" — ONE point ("Plot point source"),
 # or the vertices of a fault line ("Draw Fault source"), each vertex a point source. Returned as an
 # Mx2 matrix, the shape `ttt` takes for a multi-point source. A fault line also gets a source at its
@@ -105,6 +141,19 @@ function _on_ttt(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		mirone = (_get(d, "method", "ttt") == "mirone")
 		M = _ttt_source(d, _isgeographic(G))
 		src = size(M, 1) == 1 ? (M[1, 1], M[1, 2]) : M
+		# A result the user asked to SAVE goes to disk only and is never displayed: building its surface
+		# is what costs the window the most memory, and a grid that big is the reason to ask for a file.
+		outfile = _get(d, "outfile")
+		tofile = !isempty(outfile)
+		# The run AND what follows it (the write, or the delivery) must fit: the result stays alive
+		# meanwhile. A Mirone fault source holds two wavefronts at once (R and Rk below); a non-Float32
+		# grid is first copied to Float32 (4 bytes a node).
+		nodes = length(G.z)
+		per = mirone ? _TTT_BYTES_PER_NODE.mirone * (size(M, 1) > 1 ? 2 : 1) + (eltype(G.z) == Float32 ? 0 : 4) :
+		               _TTT_BYTES_PER_NODE.ttt
+		_ttt_mem_check(tofile ? nodes * (per + _TTT_BYTES_PER_NODE.write) :
+		                        nodes * (per + _TTT_BYTES_PER_NODE.deliver) + _TTT_FIXED_BYTES,
+		               "compute the travel times on this $(round(nodes / 1e6; digits = 1)) M-node grid")
 		local R, recipe
 		if mirone
 			# `wave_travel_time`'s Mirone path is typed on GMTgrid{Float32,2}; a grid of any other
@@ -143,7 +192,14 @@ function _on_ttt(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		# ONE name for the quantity, whichever method produced it: recomputing REPLACES the previous
 		# result (that is what _gm3d_deliver's remove+forget does) instead of piling up near-identical
 		# layers the user then has to tell apart.
-		return _gm3d_deliver(scene, R, _TTT_NAME, _get(d, "outfile"), false, recipe)
+		tofile && (GMT.gmtwrite(outfile, R); return Cint(1))
+		_ttt_mem_check(nodes * _TTT_BYTES_PER_NODE.deliver + _TTT_FIXED_BYTES, "display the travel-time grid")
+		ok = _gm3d_deliver(scene, R, _TTT_NAME, "", false, recipe)
+		# 0 from a window that is still open: the viewer ran out of memory building the surface (its
+		# add/promote exports catch the std::bad_alloc and return 0 instead of aborting the process).
+		(ok == 0 && ccall(_fn(:gmtvtk_is_alive), Cint, (Ptr{Cvoid},), scene) != 0) &&
+			error("not enough memory to display the travel-time grid")
+		return ok
 	catch e
 		_tool_failed(scene, "Tsunami travel times", e)
 		return Cint(0)

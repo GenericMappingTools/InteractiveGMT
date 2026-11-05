@@ -56,6 +56,30 @@ end
 	end
 end
 
+# A run with a file to save to writes the grid there and does NOT display it (the memory a window's
+# surface costs is exactly what a user asking for a file wants to avoid).
+@testitem "travel times: a saved grid goes to disk only" tags=[:gui] setup=[TttTest, GmtvtkTest] begin
+	IG = InteractiveGMT
+	G = TttTest.bathy()
+	f = viz(G)
+	out = tempname() * ".grd"
+	try
+		for method in ("mirone", "ttt")
+			rm(out; force = true)
+			req = "what=grid\ngrid=\nmethod=$method\nsrcxy=-12,37.5\noutfile=$out" *
+			      (method == "mirone" ? "\nfillvoids=0" : "\nnodes=120\nsearch=0\nbias=1\nradius=0\nsrcdepth=0\nmindepth=0")
+			@test IG._on_ttt(f.h, Base.unsafe_convert(Cstring, Base.cconvert(Cstring, req))) == 1
+			@test isfile(out)
+			R = IG.GMT.gmtread(out)
+			@test maximum(filter(!isnan, R.z)) > 0.2
+			@test IG._find_object_exact(f.h, :grid, "Travel time (h)") === nothing
+		end
+	finally
+		rm(out; force = true)
+		ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), f.h)
+	end
+end
+
 @testitem "travel times dialog: X, minimise and Esc park it, Delete ends it" tags=[:gui] setup=[TttTest, GmtvtkTest] begin
 	IG = InteractiveGMT
 	_test_fn = GmtvtkTest._test_fn

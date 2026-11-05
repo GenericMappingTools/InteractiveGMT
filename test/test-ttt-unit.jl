@@ -22,6 +22,17 @@
 	@test_throws ErrorException IG._ttt_source(Dict{String,String}(), true)
 end
 
+# A run that cannot fit in memory is refused BEFORE it allocates, with an error the dialog shows;
+# one that fits goes through untouched.
+@testitem "travel times: memory check refuses what cannot fit" tags=[:unit, :fast] begin
+	IG = InteractiveGMT
+	avail = IG._mem_available()
+	@test avail > 0
+	@test IG._ttt_mem_check(1024, "probe") === nothing
+	err = try IG._ttt_mem_check(typemax(Int), "probe"); nothing catch e; e end
+	@test err isa ErrorException && occursin("not enough free memory to probe", err.msg)
+end
+
 # The arrival-times table carries tttimes' TEXT column (station name | arrival), both methods' grids
 # alike; a table with no text gets no text column at all.
 @testitem "travel times: arrival-times table keeps the station names" tags=[:unit] begin
