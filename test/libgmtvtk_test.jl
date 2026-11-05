@@ -137,6 +137,7 @@ const _TEST_SYMBOLS = (
 	:gmtvtk_xyplot_annot_props_test,  # an X,Y annotation's properties dialog, one control clicked
 	:gmtvtk_dialog_tab_test,          # a dialog tab brought to the front, as a click on it does
 	:gmtvtk_nodegraph_test,           # the script graph: its box count, a field double-clicked and edited
+	:gmtvtk_nodegraph_step_test,      # the script graph: a step added (Add step menu, a box's menu, a drop) or removed
 	:gmtvtk_set_remotes_callback,     # NOT test-only -- mirrored: this dll's Remote sensing dialogs call Julia too
 	:gmtvtk_colorbar_labels_test,     # a Color Bar row clicked, "Labels…" picked, its dialog filled
 )

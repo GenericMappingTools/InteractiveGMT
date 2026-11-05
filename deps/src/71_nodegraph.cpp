@@ -27,6 +27,10 @@
 #include <QFrame>
 #include <QToolButton>
 #include <QGridLayout>
+#include <QSplitter>
+#include <QListWidget>
+#include <QMimeData>
+#include <QPainterPathStroker>
 #include <memory>
 
 // The CRS selector (73_crsselect.cpp, included after this fragment): a picked system as a GMT.jl proj.
@@ -59,6 +63,7 @@ struct NGBox {
 	int id = 0;
 	QString kind, title, note;
 	int col = 0, anchor = 0;
+	int stmt = 0;                      // the statement that made it (a step is added after / removed by it)
 	std::vector<NGFieldRow> fields;
 	QGraphicsRectItem *item = nullptr;
 	double h = 0.0;
@@ -71,6 +76,20 @@ struct NGWire {
 	bool link = false;                 // a program-order link (top to bottom), not a data wire
 	QGraphicsPathItem *path = nullptr;
 };
+
+// A module the graph offers to add (nodescript.jl _NG_MODULES): its key, what it is in words, its menu
+// group, and the kinds of data box it draws from ("grid,image", "table"; empty = nothing).
+struct NGModuleDef {
+	QString key, plain, group, input;
+};
+
+// A data box a new step can draw from: its variable, what it holds ("?" = not known), its box title.
+struct NGVar {
+	QString var, kind, title;
+};
+
+// The drag payload of a module dragged out of the palette.
+static const char *NG_MIME = "application/x-igmt-ngmodule";
 
 struct NodeGraph {
 	void *key = nullptr;
@@ -88,6 +107,10 @@ struct NodeGraph {
 	QPointer<QLineEdit> inl;           // the in-place editor over a field row, while one is open
 	QObject *flt = nullptr;            // the window's event filter (NodeGraphFilter), also on that editor
 	QPointer<QFrame> panel;            // the control panel open under a field row (nodeGraphFieldDialog)
+	std::vector<NGModuleDef> modules;  // what can be added (sent with every graph)
+	std::vector<NGVar> vars;           // what a new step can draw from
+	QListWidget *palette = nullptr;    // the module palette: dragged onto the canvas, or double-clicked
+	int dropWire = -1;                 // the program link a dragged module would land on (highlighted)
 };
 
 static QHash<void *, NodeGraph *> &nodeGraphRegistry() {
@@ -114,6 +137,31 @@ static QString nodeGraphJlStr(const QString &s) {
 	QString o = s;
 	o.replace("\\", "\\\\").replace("\"", "\\\"").replace("$", "\\$");
 	return "\"" + o + "\"";
+}
+
+// The palette: the modules Julia offers, under their group headings. A module item is dragged onto the
+// canvas (or double-clicked); a heading is neither.
+static void nodeGraphFillPalette(NodeGraph *g) {
+	if (!g->palette) return;
+	g->palette->clear();
+	QString group;
+	for (const auto &m : g->modules) {
+		if (m.group != group) {
+			group = m.group;
+			// the group heading
+			auto *h = new QListWidgetItem(group, g->palette);
+			QFont f = h->font();
+			f.setBold(true);
+			h->setFont(f);
+			h->setFlags(Qt::ItemIsEnabled);
+		}
+		// one module: dragged onto the graph to add it
+		auto *it = new QListWidgetItem("   " + m.plain, g->palette);
+		it->setData(Qt::UserRole, m.key);
+		it->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsDragEnabled);
+		it->setToolTip("Drag onto the graph: dropped on the line between two steps it goes there, on a step it "
+		               "goes after it, anywhere else at the end. Double-click: add it at the end");
+	}
 }
 
 // Every wire's curve, from where its two boxes are NOW. Data wires leave a box's right edge at its title
@@ -152,14 +200,22 @@ static void nodeGraphBuild(NodeGraph *g, const QString &blob) {
 	g->scene->clear();                                             // every item, wire and socket goes
 	g->boxes.clear();
 	g->wires.clear();
+	g->modules.clear();
+	g->vars.clear();
+	g->dropWire = -1;
 	for (const QString &line : blob.split('\n', Qt::SkipEmptyParts)) {
 		const QStringList t = line.split('\t');
 		if (t[0] == "N" && t.size() >= 7) {
 			NGBox b;
 			b.id = t[1].toInt();  b.kind = t[2];  b.col = t[3].toInt();  b.anchor = t[4].toInt();
 			b.title = t[5];  b.note = t[6];
+			if (t.size() >= 8) b.stmt = t[7].toInt();
 			g->boxes.push_back(b);
 		}
+		else if (t[0] == "M" && t.size() >= 5)
+			g->modules.push_back({ t[1], t[2], t[3], t[4] });
+		else if (t[0] == "V" && t.size() >= 4)
+			g->vars.push_back({ t[1], t[2], t[3] });
 		else if (t[0] == "F" && t.size() >= 10) {
 			if (NGBox *b = nodeGraphBox(g, t[1].toInt()))
 				b->fields.push_back({ t[2].toInt(), t[3], t[4], t[5], t[6], t[7], t[8], t[9] });
@@ -329,6 +385,7 @@ static void nodeGraphBuild(NodeGraph *g, const QString &blob) {
 		for (auto &b : g->boxes) b.item->setPos(was.value(b.id).second);
 	nodeGraphRoute(g);
 	g->scene->setSceneRect(g->scene->itemsBoundingRect().adjusted(-200, -200, 200, 200));
+	nodeGraphFillPalette(g);
 }
 
 // Fit the whole graph in the view, never zooming in past 1:1 (a three-box script stays readable size).
@@ -435,12 +492,11 @@ static void nodeGraphPressEditor(NodeGraph *g, const QString &text) {
 	hit->click();
 }
 
-// A field's new value: let Julia rewrite that statement in the editor's text, which re-sends the graph.
-static void nodeGraphCommit(NodeGraph *g, int stmt, const QString &key, const QString &val) {
-	const QString cmd = QString("InteractiveGMT._nodegraph_edit(%1, %2, %3, %4)")
-	                    .arg(nodeGraphKeyLit(g->key)).arg(stmt).arg(nodeGraphJlStr(key), nodeGraphJlStr(val));
+// A change to the script (a field's value, a step added or removed): Julia rewrites the editor's text,
+// which re-sends the graph — built once we are out of the call that asked.
+static void nodeGraphApply(NodeGraph *g, const QString &cmd, const char *busy) {
 	g->editing = true;                                           // the re-sent graph waits until we are out
-	nodeGraphEval(g->key, g->win, cmd, "Updating the script...");
+	nodeGraphEval(g->key, g->win, cmd, busy);
 	g->editing = false;
 	if (!g->pending.isEmpty()) {
 		const QString blob = g->pending;
@@ -448,6 +504,164 @@ static void nodeGraphCommit(NodeGraph *g, int stmt, const QString &key, const QS
 		QTimer::singleShot(0, g->win, [g, blob]() { nodeGraphBuild(g, blob); });
 	}
 }
+
+// A field's new value: let Julia rewrite that statement in the editor's text, which re-sends the graph.
+static void nodeGraphCommit(NodeGraph *g, int stmt, const QString &key, const QString &val) {
+	const QString cmd = QString("InteractiveGMT._nodegraph_edit(%1, %2, %3, %4)")
+	                    .arg(nodeGraphKeyLit(g->key)).arg(stmt).arg(nodeGraphJlStr(key), nodeGraphJlStr(val));
+	nodeGraphApply(g, cmd, "Updating the script...");
+}
+
+// Add module `mkey` to the script, placed `where` ("after" / "before" statement `stmt`, or "end"). A module
+// that draws from data takes it from `var` when given; else from the one data box that holds the right
+// kind, or — several of them — the one picked in a menu at `gp`, or a file chosen in the file browser.
+static void nodeGraphAdd(NodeGraph *g, const QString &mkey, int stmt, const QString &where, const QPoint &gp,
+                         const QString &var = QString()) {
+	QString plain, input;
+	for (const auto &m : g->modules)
+		if (m.key == mkey) { plain = m.plain; input = m.input; }
+	if (plain.isEmpty()) return;
+	auto run = [g, mkey, stmt, where](const QString &v, const QString &file) {
+		const QString cmd = QString("InteractiveGMT._nodegraph_add(%1, %2, %3, %4, %5, %6)")
+		                    .arg(nodeGraphKeyLit(g->key)).arg(stmt)
+		                    .arg(nodeGraphJlStr(where), nodeGraphJlStr(mkey), nodeGraphJlStr(v), nodeGraphJlStr(file));
+		nodeGraphApply(g, cmd, "Adding the step to the script...");
+	};
+	if (input.isEmpty() || !var.isEmpty()) {
+		run(var, QString());
+		return;
+	}
+	auto openFile = [g, plain, run]() {
+		const QString f = QFileDialog::getOpenFileName(g->win, "Data for " + plain);
+		if (!f.isEmpty()) run(QString(), QDir::toNativeSeparators(f));
+	};
+	const QStringList kinds = input.split(',');
+	QList<NGVar> cand;
+	for (const auto &v : g->vars)
+		if (v.kind == "?" || kinds.contains(v.kind)) cand.append(v);
+	if (cand.isEmpty()) {
+		openFile();
+		return;
+	}
+	if (cand.size() == 1) {
+		run(cand[0].var, QString());
+		return;
+	}
+	// several boxes it could draw from: which one
+	QMenu m;
+	m.addSection(plain + " — draw from");
+	for (const auto &v : cand) {
+		const QString name = v.var;
+		m.addAction(v.title, [run, name]() { run(name, QString()); });
+	}
+	m.addSeparator();
+	m.addAction("Open a file…", openFile);
+	m.exec(gp);
+}
+
+// Remove the step of statement `stmt` (and every value only it used) from the script.
+static void nodeGraphRemove(NodeGraph *g, int stmt) {
+	const QString cmd = QString("InteractiveGMT._nodegraph_remove(%1, %2)").arg(nodeGraphKeyLit(g->key)).arg(stmt);
+	nodeGraphApply(g, cmd, "Removing the step from the script...");
+}
+
+// The modules, one submenu per group, into `menu`. Picking one adds it `where` statement `stmt` — after
+// the menu has closed, as its data may need a second menu or the file browser. `kind` non-empty: only the
+// modules that draw from that kind of data, drawing from `var`.
+static void nodeGraphModuleMenu(NodeGraph *g, QMenu *menu, int stmt, const QString &where, const QPoint &gp,
+                                const QString &kind = QString(), const QString &var = QString()) {
+	QHash<QString, QMenu *> groups;
+	for (const auto &m : g->modules) {
+		if (!kind.isEmpty() && !(kind == "?" ? !m.input.isEmpty() : m.input.split(',').contains(kind))) continue;
+		QMenu *sub = groups.value(m.group, nullptr);
+		if (!sub) groups.insert(m.group, sub = menu->addMenu(m.group));
+		const QString key = m.key;
+		sub->addAction(m.plain, [g, key, stmt, where, gp, var]() {
+			QTimer::singleShot(0, g->win, [g, key, stmt, where, gp, var]() { nodeGraphAdd(g, key, stmt, where, gp, var); });
+		});
+	}
+}
+
+// The box under view point `pos` (a click on its title, a row, its picture), or null.
+static NGBox *nodeGraphBoxAt(NodeGraph *g, const QPoint &pos) {
+	for (QGraphicsItem *it : g->view->items(pos)) {
+		QGraphicsItem *top = it->topLevelItem();
+		for (auto &b : g->boxes) if (b.item == top) return &b;
+	}
+	return nullptr;
+}
+
+// A right-click on a box: add a step after it (before the figure is shown, on the output box); on a data
+// box, draw it with a module; remove a drawing step, or a value nothing uses.
+static void nodeGraphBoxMenu(NodeGraph *g, NGBox *b, const QPoint &gp) {
+	QMenu m;
+	const int stmt = b->stmt, id = b->id;
+	if (b->kind == "data") {
+		for (const auto &v : g->vars)
+			if (v.title == b->title)
+				nodeGraphModuleMenu(g, m.addMenu("Draw this with"), 0, "end", gp, v.kind, v.var);
+	}
+	else if (b->kind == "output")
+		nodeGraphModuleMenu(g, m.addMenu("Add a step before"), stmt, "before", gp);
+	else if (b->kind != "palette")
+		nodeGraphModuleMenu(g, m.addMenu("Add a step after"), stmt, "after", gp);
+	bool used = false;
+	for (const auto &w : g->wires) used = used || (!w.link && w.from == id);
+	if (b->kind == "call" || ((b->kind == "data" || b->kind == "palette") && !used)) {
+		m.addSeparator();
+		m.addAction(b->kind == "call" ? "Remove this step" : "Remove this value", [g, stmt]() {
+			QTimer::singleShot(0, g->win, [g, stmt]() { nodeGraphRemove(g, stmt); });
+		});
+	}
+	if (!m.isEmpty()) m.exec(gp);
+}
+
+// Where a module dropped at view point `pos` goes: on a step, after it (before it, on the output box); on
+// the line between two steps, after the upper one; anywhere else, at the end. `wire` = the link it is on.
+static void nodeGraphDropPlace(NodeGraph *g, const QPoint &pos, int &stmt, QString &where, int &wire) {
+	stmt = 0;
+	where = "end";
+	wire = -1;
+	if (NGBox *b = nodeGraphBoxAt(g, pos)) {
+		if (b->kind == "output") { stmt = b->stmt; where = "before"; }
+		else if (b->kind != "data" && b->kind != "palette") { stmt = b->stmt; where = "after"; }
+		return;
+	}
+	const QPointF sp = g->view->mapToScene(pos);
+	QPainterPathStroker sk;
+	sk.setWidth(16.0 / std::max(0.05, g->view->transform().m11()));   // 16 px wide on screen at any zoom
+	for (int i = 0; i < (int)g->wires.size(); i++) {
+		const NGWire &w = g->wires[i];
+		if (!w.link || !w.path || !sk.createStroke(w.path->path()).contains(sp)) continue;
+		if (NGBox *a = nodeGraphBox(g, w.from)) {
+			stmt = a->stmt;
+			where = "after";
+			wire = i;
+		}
+		return;
+	}
+}
+
+// The link a dragged module would land on, highlighted (the others drawn as usual).
+static void nodeGraphDropHighlight(NodeGraph *g, int wire) {
+	if (wire == g->dropWire) return;
+	for (int i : { g->dropWire, wire })
+		if (i >= 0 && i < (int)g->wires.size() && g->wires[i].path)
+			g->wires[i].path->setPen(i == wire ? QPen(QColor(92, 143, 214), 5.0, Qt::SolidLine, Qt::RoundCap)
+			                                   : QPen(QColor(150, 150, 155), 3.0, Qt::SolidLine, Qt::RoundCap));
+	g->dropWire = wire;
+}
+
+// The palette: its items carry the module's key as the drag payload.
+struct NodeGraphPalette : QListWidget {
+	using QListWidget::QListWidget;
+	QStringList mimeTypes() const override { return { NG_MIME }; }
+	QMimeData *mimeData(const QList<QListWidgetItem *> &items) const override {
+		auto *md = new QMimeData();
+		if (!items.isEmpty()) md->setData(NG_MIME, items[0]->data(Qt::UserRole).toString().toUtf8());
+		return md;
+	}
+};
 
 // The in-place editor closes: Enter / clicking elsewhere keep the new value, Esc throws it away. Runs once
 // per editor (hiding it moves the focus, which reports "finished" a second time).
@@ -820,11 +1034,48 @@ struct NodeGraphFilter : QObject {
 			QGraphicsItem *row = nullptr;
 			for (QGraphicsItem *it : g->view->items(ce->pos()))
 				if (nodeGraphEditable(it)) { row = it; break; }
-			if (!row) return false;
+			if (!row) {
+				// anywhere else on a box: the box's own menu (add a step, remove it)
+				NGBox *b = nodeGraphBoxAt(g, ce->pos());
+				if (!b) return false;
+				nodeGraphBoxMenu(g, b, ce->globalPos());
+				return true;
+			}
 			QMenu m;
 			m.addAction("Change…", [this, row]() { nodeGraphFieldDialog(g, row); });
 			m.addAction("Edit as GMT.jl code", [this, row]() { nodeGraphInlineEdit(g, row); });
 			m.exec(ce->globalPos());
+			return true;
+		}
+		// a module dragged out of the palette: the link it would land on lights up; dropped, it is added there
+		if (o == port && (e->type() == QEvent::DragEnter || e->type() == QEvent::DragMove)) {
+			auto *de = static_cast<QDragMoveEvent *>(e);
+			if (!de->mimeData()->hasFormat(NG_MIME)) return false;
+			int stmt, wire;
+			QString where;
+			nodeGraphDropPlace(g, de->position().toPoint(), stmt, where, wire);
+			nodeGraphDropHighlight(g, wire);
+			de->acceptProposedAction();
+			return true;
+		}
+		if (o == port && e->type() == QEvent::DragLeave) {
+			nodeGraphDropHighlight(g, -1);
+			return false;
+		}
+		if (o == port && e->type() == QEvent::Drop) {
+			auto *de = static_cast<QDropEvent *>(e);
+			if (!de->mimeData()->hasFormat(NG_MIME)) return false;
+			int stmt, wire;
+			QString where;
+			const QPoint at = de->position().toPoint();
+			nodeGraphDropPlace(g, at, stmt, where, wire);
+			nodeGraphDropHighlight(g, -1);
+			de->acceptProposedAction();
+			const QString key = QString::fromUtf8(de->mimeData()->data(NG_MIME));
+			const QPoint gp = g->view->viewport()->mapToGlobal(at);
+			NodeGraph *ng = g;
+			// out of the drag before anything is asked or rebuilt
+			QTimer::singleShot(0, g->win, [ng, key, stmt, where, gp]() { nodeGraphAdd(ng, key, stmt, where, gp); });
 			return true;
 		}
 		if (e->type() == QEvent::KeyPress) {
@@ -865,17 +1116,31 @@ static NodeGraph *nodeGraphWindow(void *key, QWidget *parent) {
 	bRefresh->setToolTip("Rebuild the graph from the script editor's current text (after editing the text there)");
 	QPushButton *bFit = new QPushButton("Fi&t", g->win);
 	bFit->setToolTip("Show the whole graph (F)");
+	// add a module at the end of the script (before the figure is shown); its menu is built when opened,
+	// from the modules the last graph was sent with
+	QPushButton *bAdd = new QPushButton("&Add step", g->win);
+	bAdd->setToolTip("Add a module (contours, coastlines, text…) at the end of the script. To place it "
+	                 "elsewhere: right-click a step, or drag a module from the list on the left onto the graph");
+	QMenu *addMenu = new QMenu(bAdd);
+	bAdd->setMenu(addMenu);
+	QObject::connect(addMenu, &QMenu::aboutToShow, addMenu, [g, addMenu]() {
+		addMenu->clear();
+		nodeGraphModuleMenu(g, addMenu, 0, "end", QCursor::pos());
+	});
 	bRun->setObjectName("graphRun");
 	bSave->setObjectName("graphSave");
 	bRefresh->setObjectName("graphRefresh");
 	bFit->setObjectName("graphFit");
-	for (QPushButton *b : { bRun, bSave, bRefresh, bFit }) b->setAutoDefault(false);
+	bAdd->setObjectName("graphAdd");
+	for (QPushButton *b : { bRun, bSave, bRefresh, bFit, bAdd }) b->setAutoDefault(false);
 	// the hint: how the view is driven
-	QLabel *hint = new QLabel("Click a value to change it (right-click: edit as code) · wheel zooms · "
-	                          "drag the background to pan, a box to move it", g->win);
+	QLabel *hint = new QLabel("Click a value to change it (right-click: edit as code; on a step: add or remove "
+	                          "one) · wheel zooms · drag the background to pan, a box to move it", g->win);
 	hint->setStyleSheet("color: gray;");
 	row->addWidget(bRun);
 	row->addWidget(bSave);
+	row->addSpacing(12);
+	row->addWidget(bAdd);
 	row->addSpacing(12);
 	row->addWidget(bRefresh);
 	row->addWidget(bFit);
@@ -899,7 +1164,25 @@ static NodeGraph *nodeGraphWindow(void *key, QWidget *parent) {
 		p.drawLine(0, 0, 0, 23);
 		g->view->setBackgroundBrush(QBrush(tile));
 	}
-	lay->addWidget(g->view, 1);
+	g->view->viewport()->setAcceptDrops(true);                      // modules dropped from the palette
+	// the module palette, left of the canvas: drag a module onto the graph, or double-click it
+	g->palette = new NodeGraphPalette(g->win);
+	g->palette->setObjectName("graphPalette");
+	g->palette->setDragEnabled(true);
+	g->palette->setDragDropMode(QAbstractItemView::DragOnly);
+	g->palette->setSelectionMode(QAbstractItemView::SingleSelection);
+	g->palette->setToolTip("Modules to add: drag one onto the graph, or double-click it to add it at the end");
+	QObject::connect(g->palette, &QListWidget::itemDoubleClicked, g->win, [g](QListWidgetItem *it) {
+		const QString key = it->data(Qt::UserRole).toString();
+		if (key.isEmpty()) return;                                  // a group heading
+		QTimer::singleShot(0, g->win, [g, key]() { nodeGraphAdd(g, key, 0, "end", QCursor::pos()); });
+	});
+	QSplitter *split = new QSplitter(Qt::Horizontal, g->win);
+	split->addWidget(g->palette);
+	split->addWidget(g->view);
+	split->setStretchFactor(1, 1);
+	split->setSizes({ 160, 840 });
+	lay->addWidget(split, 1);
 	g->win->resize(1000, 700);
 	// a moved box drags its wires along: re-route whenever a box is not where it was routed from
 	QObject::connect(g->scene, &QGraphicsScene::changed, g->win, [g]() {

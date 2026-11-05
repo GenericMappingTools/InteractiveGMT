@@ -498,13 +498,13 @@ function _nodegraph_parse(src::String)
 end
 
 # The graph as the line blob the C++ side reads (`gmtvtk_nodegraph_show_h`), one record per line,
-# tab-separated: N id kind col anchor title note / F id stmt key label value / W from to label /
+# tab-separated: N id kind col anchor title note stmt / F id stmt key label value / W from to label /
 # L from to. Tabs and newlines inside a value are flattened to spaces.
 function _nodegraph_blob(nodes::Vector{NGNode}, wires::Vector{Tuple{Int,Int,String}},
                          links::Vector{Tuple{Int,Int}})::String
 	io = IOBuffer()
 	for nd in nodes
-		println(io, join(("N", nd.id, nd.kind, nd.col, nd.anchor, _ng_clean(nd.title), _ng_clean(nd.note)), '\t'))
+		println(io, join(("N", nd.id, nd.kind, nd.col, nd.anchor, _ng_clean(nd.title), _ng_clean(nd.note), nd.stmt), '\t'))
 		for f in nd.fields
 			println(io, join(("F", nd.id, f.stmt, f.key, f.label, f.value, f.type, f.plain, f.shown, f.extra), '\t'))
 		end
@@ -537,7 +537,8 @@ function _nodegraph_open(h::Ptr{Cvoid}; fresh::Bool = true)::Nothing
 		ccall(_fn(:gmtvtk_nodegraph_preview_h), Cint, (Ptr{Cvoid}, Cint, Cint, Cint, Ptr{UInt8}),
 		      h, id, size(rgb, 2), size(rgb, 3), rgb)
 	end
-	ccall(_fn(:gmtvtk_nodegraph_show_h), Cint, (Ptr{Cvoid}, Cstring), h, _nodegraph_blob(nodes, wires, links))
+	blob = _nodegraph_blob(nodes, wires, links) * _nodegraph_menu_blob(src, nodes, get(_NG_RUNS, h, nothing))
+	ccall(_fn(:gmtvtk_nodegraph_show_h), Cint, (Ptr{Cvoid}, Cstring), h, blob)
 	return nothing
 end
 
@@ -790,8 +791,280 @@ A field edited in a box: rewrite that part of the editor's text (`_nodegraph_rew
 back in the editor box, and redraw the graph from it.
 """
 function _nodegraph_edit(h::Ptr{Cvoid}, stmt::Int, key::String, val::String)::Nothing
-	out = _nodegraph_rewrite(_script_editor_text(h), stmt, key, val)
+	_nodegraph_settext(h, _nodegraph_rewrite(_script_editor_text(h), stmt, key, val))
+	return nothing
+end
+
+# The rewritten script into the editor box, and the graph redrawn from it.
+function _nodegraph_settext(h::Ptr{Cvoid}, out::String)::Nothing
 	ccall(_fn(:gmtvtk_script_editor_set_text_h), Cint, (Ptr{Cvoid}, Cstring), h, out)
 	_nodegraph_open(h; fresh = false)
+	return nothing
+end
+
+# ── adding and removing steps ────────────────────────────────────────────────────────────────────
+# A step is added or removed the only way the graph changes anything: by rewriting the editor's text
+# (one statement in, or one out), after which the graph is parsed again from it.
+
+# One module the graph offers to add: its GMT.jl function, what it is in words, the menu group it sits
+# in, what it draws from (comma-separated kinds of a data box: "grid", "image", "table"; "" = nothing),
+# and the keywords it starts with — plain GMT.jl, each one then a field of its box with its own dialog.
+# `{X}` / `{Y}` in them are the centre of the map limits.
+struct NGModule
+	key::String
+	fn::String
+	plain::String
+	group::String
+	input::String
+	kw::String
+end
+
+const _NG_MODULES = NGModule[
+	NGModule("grdimage",   "grdimage",   "Grid as image",    "Grids",       "grid,image", "cmap=:turbo"),
+	NGModule("grdcontour", "grdcontour", "Contours",         "Grids",       "grid",       "pen=\"0.5p,black\""),
+	NGModule("plot",       "plot",       "Lines",            "Tables",      "table",      "pen=\"1p,black\""),
+	NGModule("scatter",    "scatter",    "Symbols",          "Tables",      "table",      "marker=:circle, ms=0.2, fill=\"red\""),
+	NGModule("coast",      "coast",      "Coastlines",       "Map",         "",           "shore=\"0.5p,black\""),
+	NGModule("borders",    "coast",      "Country borders",  "Map",         "",           "borders=(type=1, pen=\"0.5p,gray\")"),
+	NGModule("gridlines",  "basemap",    "Grid lines",       "Map",         "",           "frame=(grid=:auto,)"),
+	NGModule("mapscale",   "basemap",    "Map scale",        "Map",         "",
+	         "map_scale=(anchor=:BL, length=\"100k\", offset=(0.5, 0.5))"),
+	NGModule("text",       "text",       "Text label",       "Annotations", "",           "text=\"Label\", x={X}, y={Y}, font=14"),
+	NGModule("colorbar",   "colorbar",   "Colour bar",       "Annotations", "",
+	         "pos=(anchor=:MR, offset=(1, 0)), frame=(annot=:auto,)"),
+]
+
+function _ng_module(key::String)::NGModule
+	i = findfirst(m -> m.key == key, _NG_MODULES)
+	i === nothing && error("no such module to add: '$key'")
+	return _NG_MODULES[i]
+end
+
+_ng_isoutput(ex) = _ng_iscall(ex) && _ng_callee(ex.args[1]) in ("showfig", "gmtend")
+# A call that paints on the figure (the previews' `isdraw`, less the opening of a modern-mode figure).
+_ng_isdraw(ex) = (x = _ng_unconst(ex); _ng_iscall(x) && !_is_showfig(x) && !(_ng_callee(x.args[1]) in ("gmtend", "gmtbegin")))
+_ng_isbang(ex) = endswith(string(_ng_unconst(ex).args[1]), "!")
+_ng_assigned(ex) = (x = _ng_unconst(ex); _ng_isassign(x) ? x.args[1] : nothing)
+
+# What a data box holds, as the run that pictured the graph left it ("" = nothing a module draws from,
+# "?" = not known: the run never reached it, so it is offered to every module).
+function _ng_var_kind(run, v::Symbol)::String
+	run === nothing && return "?"
+	mod = run.mod
+	Base.invokelatest(isdefined, mod, v) || return "?"
+	x = Base.invokelatest(getfield, mod, v)
+	x isa GMTgrid && return "grid"
+	x isa GMTimage && return "image"
+	(x isa GMTdataset || x isa Vector{<:GMTdataset} || x isa Matrix{<:Real}) && return "table"
+	return ""
+end
+
+# The modules the graph offers (M key plain group input) and the data boxes a new step can draw from
+# (V var kind title) — appended to the graph's blob.
+function _nodegraph_menu_blob(src::String, nodes::Vector{NGNode}, run)::String
+	io = IOBuffer()
+	for m in _NG_MODULES
+		println(io, join(("M", m.key, m.plain, m.group, m.input), '\t'))
+	end
+	stmts = _ng_statements(src)
+	for nd in nodes
+		nd.kind === :data && 1 <= nd.stmt <= length(stmts) || continue
+		v = _ng_assigned(stmts[nd.stmt].ex)
+		v === nothing && continue
+		kind = _ng_var_kind(run, v)
+		isempty(kind) || println(io, join(("V", v, kind, _ng_clean(nd.title)), '\t'))
+	end
+	return String(take!(io))
+end
+
+# The byte just past statement `k`'s line (its trailing comment included): where the next line begins.
+function _ng_line_end(src::String, st::NGStmt)::Int
+	j = findnext('\n', src, st.stop)
+	return j === nothing ? ncodeunits(src) + 1 : j + 1
+end
+
+# A free variable name `<prefix>n` in the script.
+function _ng_freevar(stmts::Vector{NGStmt}, prefix::String)::String
+	used = Set(String(v) for v in (_ng_assigned(st.ex) for st in stmts) if v !== nothing)
+	n = 1
+	while (prefix * string(n)) in used
+		n += 1
+	end
+	return prefix * string(n)
+end
+
+"""
+	_nodegraph_insert(src, stmt, where, mkey, var = "", file = "") -> String
+
+`src` with ONE new step added: the module `mkey` (`_NG_MODULES`), drawing from the data box variable
+`var`, or from `file` (then read into a new data box first, `X = gmtread(file)`). `where` places it:
+`"after"` / `"before"` statement `stmt`, or `"end"` (just before the figure is shown). Never in front
+of `using` or the Figure box's settings. The step is a `!` call when something already paints before
+it; when it becomes the FIRST call it opens the figure itself (the Figure box's limits, projection and
+width), and the call that used to open it gets its `!`. Every other byte of the text stays. Pure.
+"""
+function _nodegraph_insert(src::String, stmt::Int, where::String, mkey::String,
+                           var::String = "", file::String = "")::String
+	m = _ng_module(mkey)
+	stmts = _ng_statements(src)
+	n = length(stmts)
+	after = where == "end"    ? something(findfirst(k -> _ng_isoutput(_ng_unconst(stmts[k].ex)), 1:n), n + 1) - 1 :
+	        where == "before" ? stmt - 1 :
+	        where == "after"  ? stmt : error("where must be after, before or end, not '$where'")
+	0 <= after <= n || error("the script changed: statement $stmt is gone — press Refresh")
+	# never in front of the set-up: `using`, and the Figure box's REG / PROJ / FIGSIZE
+	figvars = Symbol[]
+	for (k, st) in enumerate(stmts)
+		ex = _ng_unconst(st.ex)
+		v = _ng_assigned(ex)
+		if ex isa Expr && ex.head in (:using, :import)
+			after = max(after, k)
+		elseif v !== nothing && v in _NG_FIGURE_VARS
+			after = max(after, k)
+			push!(figvars, v)
+		end
+	end
+	# the data it draws from
+	isempty(m.input) || !isempty(var) || !isempty(file) || error("$(m.plain) needs data to draw from")
+	data = ""
+	if !isempty(m.input) && !isempty(file)
+		var = _ng_freevar(stmts, startswith(m.input, "table") ? "D" : "G")
+		data = var * " = gmtread(" * repr(file) * ")\n"
+	end
+	# the centre of the map limits, for what is placed at a point
+	reg = nothing
+	for st in stmts
+		ex = _ng_unconst(st.ex)
+		if _ng_assigned(ex) === :REG && (r = _ng_nums(ex.args[2])) !== nothing && length(r) == 4
+			reg = r; break
+		end
+	end
+	if reg === nothing
+		for st in stmts
+			ex = _ng_unconst(st.ex)
+			_ng_iscall(ex) || continue
+			for (k, v) in _ng_call_parts(ex)[3]
+				k in (:region, :R, :limits) && (r = _ng_nums(v)) !== nothing && length(r) == 4 && (reg = r; break)
+			end
+			reg === nothing || break
+		end
+	end
+	cx, cy = reg === nothing ? (0.0, 0.0) : ((reg[1] + reg[2]) / 2, (reg[3] + reg[4]) / 2)
+	kw = replace(m.kw, "{X}" => _ng_fmt(cx), "{Y}" => _ng_fmt(cy))
+	# first on the figure, or painting over what is already there
+	prior = any(k -> _ng_isdraw(stmts[k].ex), 1:after)
+	args = String[]
+	isempty(var) || push!(args, var)
+	isempty(kw) || push!(args, kw)
+	if !prior
+		for (v, k) in ((:REG, "region"), (:PROJ, "proj"), (:FIGSIZE, "figsize"))
+			v in figvars && push!(args, k * "=" * String(v))
+		end
+	end
+	call = m.fn * (prior ? "!" : "") * "(" * join(args, ", ") * ")"
+	block = "# ── " * m.plain * "\n" * data * call
+	out = src
+	# it opens the figure now: the call that used to gets its `!` (after the insertion point, so the
+	# insertion's byte position below is not moved)
+	if !prior
+		k2 = findfirst(k -> k > after && _ng_isdraw(stmts[k].ex), 1:n)
+		if k2 !== nothing && !_ng_isbang(stmts[k2].ex)
+			st = stmts[k2]
+			cs = string(_ng_unconst(st.ex).args[1])
+			at = st.start + ncodeunits(cs)
+			startswith(SubString(out, st.start), cs * "(") || error("cannot find the call '$cs' in its statement")
+			out = out[1:prevind(out, at)] * "!" * out[at:end]
+		end
+	end
+	if after == 0
+		out = block * "\n\n" * out
+	else
+		pos = _ng_line_end(out, stmts[after])
+		head = out[1:prevind(out, pos)]
+		endswith(head, "\n") || (head *= "\n")
+		out = head * "\n" * block * "\n" * out[pos:end]
+	end
+	Meta.parseall(out)                                  # never hand the editor a script that does not parse
+	return out
+end
+
+"""
+	_nodegraph_delete(src, stmt) -> String
+
+`src` with the step of statement `stmt` removed — a call, or a value no other step reads — together
+with the comments above it and every value only it used (its data box, its palette, its pen), so the
+removal undoes what adding it did. A removed call that opened the figure hands that job to the next
+call: it loses its `!` and takes over the limits, projection, size and view it had. Pure.
+"""
+function _nodegraph_delete(src::String, stmt::Int)::String
+	stmts = _ng_statements(src)
+	n = length(stmts)
+	1 <= stmt <= n || error("the script changed: statement $stmt is gone — press Refresh")
+	ex0 = _ng_unconst(stmts[stmt].ex)
+	reads(k) = (x = _ng_unconst(stmts[k].ex); Set(_ng_symbols!(Symbol[], _ng_isassign(x) ? x.args[2] : x)))
+	v0 = _ng_assigned(ex0)
+	if v0 !== nothing
+		v0 in _NG_FIGURE_VARS && error("the Figure box's settings cannot be removed")
+		users = [k for k in 1:n if k != stmt && v0 in reads(k)]
+		isempty(users) || error("$(v0) is used by other steps — remove those first")
+	else
+		_ng_isdraw(ex0) || error("only a drawing step or an unused value can be removed")
+	end
+	gone = Set{Int}([stmt])
+	grew = true
+	while grew                                          # what only the removed statements read goes too
+		grew = false
+		for k in 1:n
+			k in gone && continue
+			v = _ng_assigned(stmts[k].ex)
+			(v === nothing || v in _NG_FIGURE_VARS) && continue
+			any(g -> v in reads(g), gone) || continue
+			any(j -> !(j in gone) && j != k && v in reads(j), 1:n) && continue
+			push!(gone, k); grew = true
+		end
+	end
+	# the call that opened the figure is gone: the next one opens it, with the frame the gone one set
+	heir, heirsrc = 0, ""
+	if v0 === nothing && !_ng_isbang(ex0)
+		heir = something(findfirst(k -> k > stmt && !(k in gone) && _ng_isdraw(stmts[k].ex), 1:n), 0)
+		if heir > 0 && _ng_isbang(stmts[heir].ex)
+			ex = deepcopy(_ng_unconst(stmts[heir].ex))
+			f = ex.args[1]
+			unbang(s::Symbol) = Symbol(chop(String(s)))
+			ex.args[1] = f isa Symbol ? unbang(f) :
+			             (f isa Expr && f.head === :. && f.args[2] isa QuoteNode) ? Expr(:., f.args[1], QuoteNode(unbang(f.args[2].value))) : f
+			have = Set(k for (k, _) in _ng_call_parts(ex)[3])
+			for (k, v) in _ng_call_parts(ex0)[3]
+				k in _NG_STATE_KW && !(k in have) && push!(ex.args, Expr(:kw, k, v))
+			end
+			heirsrc = _ng_render(ex)
+		else
+			heir = 0
+		end
+	end
+	# cut from the back, so the byte ranges in front stay where they are
+	out = src
+	for k in n:-1:1
+		st = stmts[k]
+		if k in gone
+			a = k == 1 ? 1 : _ng_line_end(out, stmts[k-1])     # the comments above it go with it
+			b = _ng_line_end(out, st)
+			out = out[1:prevind(out, a)] * out[b:end]
+		elseif k == heir
+			out = out[1:prevind(out, st.start)] * heirsrc * out[nextind(out, st.stop):end]
+		end
+	end
+	Meta.parseall(out)
+	return out
+end
+
+# The graph's "Add" (its menu, its toolbar button, a module dropped from the palette) and "Remove".
+function _nodegraph_add(h::Ptr{Cvoid}, stmt::Int, where::String, mkey::String, var::String, file::String)::Nothing
+	_nodegraph_settext(h, _nodegraph_insert(_script_editor_text(h), stmt, where, mkey, var, file))
+	return nothing
+end
+
+function _nodegraph_remove(h::Ptr{Cvoid}, stmt::Int)::Nothing
+	_nodegraph_settext(h, _nodegraph_delete(_script_editor_text(h), stmt))
 	return nothing
 end

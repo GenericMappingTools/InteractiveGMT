@@ -114,6 +114,53 @@ end
 	@test [n.kind for n in nodes] == [:julia, :call]
 end
 
+@testitem "nodescript: a step is added and removed through the text" tags=[:unit, :fast, :gmtscript] begin
+	M = InteractiveGMT
+	src = "using GMT\n\nconst REG = (-10, 0, 35, 45)\nconst PROJ = :merc\nconst FIGSIZE = 12\n\n" *
+	      "# ── grid 'topo.nc'\nG1 = gmtread(\"topo.nc\")\nC1 = makecpt(cmap=:geo, range=(-5000, 3000))\n" *
+	      "grdimage(G1, cmap=C1, region=REG, proj=PROJ, figsize=FIGSIZE)\n\ncolorbar!(C1, pos=(anchor=:MR, offset=(1, 0)))\n\nshowfig()\n"
+	lines(s) = split(s, '\n')
+	added(a, b) = [l for l in lines(b) if !(l in lines(a))]
+	# after a call, from a grid box: a `!` call under its own heading, every old line still there
+	out = M._nodegraph_insert(src, 7, "after", "grdcontour", "G1", "")
+	@test added(src, out) == ["# ── Contours", "grdcontour!(G1, pen=\"0.5p,black\")"]
+	@test all(l -> l in lines(out), lines(src))
+	@test findfirst(==("grdcontour!(G1, pen=\"0.5p,black\")"), lines(out)) <
+	      findfirst(startswith("colorbar!"), lines(out))
+	nodes, _, links = M._nodegraph_parse(out)
+	@test count(n -> n.kind === :call, nodes) == 3 && length(links) == 4
+	# at the end: before showfig; text at the centre of the map limits; nothing needed to draw from
+	out = M._nodegraph_insert(src, 0, "end", "text")
+	@test lines(out)[end-1] == "showfig()" && occursin("text!(text=\"Label\", x=-5, y=40, font=14)", out)
+	# from a file: a new data box read first, then the call drawing from it
+	out = M._nodegraph_insert(src, 8, "before", "plot", "", "C:/data/track.txt")
+	@test added(src, out) == ["# ── Lines", "D1 = gmtread(\"C:/data/track.txt\")", "plot!(D1, pen=\"1p,black\")"]
+	# before the first call (never in front of the set-up): it opens the figure, the old opener gets its `!`
+	out = M._nodegraph_insert(src, 2, "after", "coast")
+	@test occursin("coast(shore=\"0.5p,black\", region=REG, proj=PROJ, figsize=FIGSIZE)", out)
+	@test occursin("grdimage!(G1, cmap=C1, region=REG", out)
+	@test findfirst(startswith("coast("), lines(out)) > findfirst(startswith("const FIGSIZE"), lines(out))
+	@test_throws ErrorException M._nodegraph_insert(src, 7, "after", "grdcontour")    # nothing to draw from
+	@test_throws ErrorException M._nodegraph_insert(src, 7, "after", "nosuch", "G1")
+	# removal undoes the add, byte for byte
+	out = M._nodegraph_insert(src, 7, "after", "grdcontour", "G1", "")
+	@test M._nodegraph_delete(out, 8) == src
+	out = M._nodegraph_insert(src, 8, "before", "plot", "", "C:/data/track.txt")
+	@test M._nodegraph_delete(out, 9) == src                         # its data box goes with it
+	# the opener removed: its grid goes (only it read it), the palette stays (the colour bar reads it), and
+	# the next call opens the figure with the frame the old one set
+	out = M._nodegraph_delete(src, 7)
+	@test !occursin("gmtread", out) && !occursin("grid 'topo.nc'", out) && occursin("C1 = makecpt", out)
+	@test occursin("colorbar(C1, pos=(anchor=:MR, offset=(1, 0)), region=REG, proj=PROJ, figsize=FIGSIZE)", out)
+	@test_throws ErrorException M._nodegraph_delete(src, 6)          # a palette still in use
+	@test_throws ErrorException M._nodegraph_delete(src, 2)          # the Figure box
+	# the menu: every module, and the data boxes with what they hold (not run: offered to every module)
+	nodes, _, _ = M._nodegraph_parse(src)
+	mb = M._nodegraph_menu_blob(src, nodes, nothing)
+	@test count(startswith("M\t"), lines(mb)) == length(M._NG_MODULES)
+	@test only(filter(startswith("V\t"), lines(mb))) == "V\tG1\t?\tG1 · Read file"
+end
+
 @testitem "nodescript: an edit redraws only what it reaches, same pictures as a full run" tags=[:unit, :gmtscript] begin
 	M = InteractiveGMT; GMT = M.GMT
 	G = GMT.grdmath("-R-10/-5/35/40 -I0.02 X Y MUL")
@@ -174,6 +221,33 @@ end
 		changed = [(a, b) for (a, b) in zip(split(src, '\n'), split(out, '\n')) if a != b]
 		@test length(changed) == 1 && occursin("cmap=:jet", changed[1][2])
 		@test graph("", "") == length(nodes)                         # the graph was rebuilt from the new text
+		# steps added and removed by the user's own gestures: each one changes the script text, and the graph
+		# is rebuilt from it
+		step(how, target, path) = ccall(GmtvtkTest._test_fn(:gmtvtk_nodegraph_step_test), Cint,
+		                                (Cstring, Cstring, Cstring), how, target, path)
+		pump() = for _ in 1:30; IG._pump_once(); end
+		lines() = split(IG._script_editor_text(f.h), '\n')
+		at(pre) = findfirst(startswith(pre), lines())
+		boxes_ok() = graph("", "") == length(IG._nodegraph_parse(IG._script_editor_text(f.h))[1])
+		# the Add step button: at the end, just before the figure is shown
+		@test step("button", "", "Annotations/Text label") == 1
+		pump()
+		@test at("text!(text=\"Label\"") !== nothing && at("text!(") < at("showfig(") && boxes_ok()
+		# a module dragged from the palette onto the link leaving the text step: right after it
+		@test step("drop", "Text labels", "gridlines") == 1
+		pump()
+		@test at("basemap!(frame=(grid=:auto,))") == at("text!(") + 3 && boxes_ok()   # a blank line and its heading between
+		# a step's own menu: add after it
+		@test step("box", "Map frame", "Add a step after/Annotations/Colour bar") == 1
+		pump()
+		@test at("colorbar!(pos=") !== nothing && at("colorbar!(pos=") > at("basemap!(frame=(grid") && boxes_ok()
+		# and remove one: its line and heading go, nothing else
+		before = lines()
+		@test step("box", "Text labels", "Remove this step") == 1
+		pump()
+		gone = setdiff(before, lines())
+		@test at("text!(") === nothing && length(gone) == 2 && gone[1] == "# ── Text label" &&
+		      startswith(gone[2], "text!(text=\"Label\"") && boxes_ok()
 	finally
 		ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), f.h)
 	end

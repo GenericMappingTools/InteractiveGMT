@@ -8431,6 +8431,102 @@ GMTVTK_API int gmtvtk_nodegraph_test(const char *label, const char *text) {
 	return 1;
 }
 
+// The menu that pops up next (polled until it is on screen): walk `path` through it and its submenus by
+// entry text, trigger the last entry, close the menu. `*ok` = 1 when the whole path was found.
+static void ngTestPickMenu(const QStringList &path, std::shared_ptr<int> ok, int tries = 80) {
+	QTimer::singleShot(25, [path, ok, tries]() {
+		QMenu *top = qobject_cast<QMenu *>(QApplication::activePopupWidget());
+		if (!top) {
+			if (tries > 0) ngTestPickMenu(path, ok, tries - 1);
+			return;
+		}
+		QMenu *cur = top;
+		QAction *hit = nullptr;
+		for (int i = 0; i < path.size() && cur; i++) {
+			hit = nullptr;
+			for (QAction *a : cur->actions())
+				if (a->text() == path[i]) { hit = a; break; }
+			if (!hit) break;
+			cur = QMenu::menuInAction(hit);
+		}
+		const bool found = hit && !QMenu::menuInAction(hit) && hit->text() == path.last();
+		top->close();
+		if (found) {
+			*ok = 1;
+			hit->trigger();
+		}
+	});
+}
+
+// test hook: A STEP ADDED TO / REMOVED FROM the visible script graph (71_nodegraph.cpp), by the user's own
+// gestures. `how`:
+//   "button" — click the graph's Add step button and pick `path` in the menu it opens ("Annotations/Text label");
+//   "box"    — right-click the title of the box whose title starts with `target`, pick `path` in its menu
+//              ("Add a step after/Map/Grid lines", "Remove this step");
+//   "drop"   — drop the module whose key is `path` from the palette onto the program link that leaves the box
+//              whose title starts with `target`.
+// Returns 1 when the menu entry / the link was found and the gesture made, 0 otherwise.
+GMTVTK_API int gmtvtk_nodegraph_step_test(const char *how, const char *target, const char *path) {
+	QWidget *win = nullptr;
+	for (QWidget *w : QApplication::topLevelWidgets())
+		if (w->objectName() == "nodeGraphWindow" && w->isVisible()) { win = w; break; }
+	QGraphicsView *v = win ? win->findChild<QGraphicsView *>() : nullptr;
+	if (!v || !v->scene()) return 0;
+	const QString h = QString::fromUtf8(how ? how : ""), want = QString::fromUtf8(target ? target : "");
+	const QString p = QString::fromUtf8(path ? path : "");
+	auto ok = std::make_shared<int>(0);
+	if (h == "button") {
+		QPushButton *b = win->findChild<QPushButton *>("graphAdd");
+		if (!b) return 0;
+		ngTestPickMenu(p.split('/'), ok);
+		b->click();                                                   // opens its menu (Qt 6: without waiting for it)
+		QElapsedTimer t;
+		t.start();
+		while (!*ok && t.elapsed() < 3000) QApplication::processEvents(QEventLoop::AllEvents, 50);
+		return *ok;
+	}
+	// the box (a movable top-level item) whose title starts with `target`
+	QGraphicsItem *box = nullptr;
+	for (QGraphicsItem *it : v->scene()->items())
+		if (!it->parentItem() && (it->flags() & QGraphicsItem::ItemIsMovable))
+			for (QGraphicsItem *c : it->childItems())
+				if (auto *t = dynamic_cast<QGraphicsSimpleTextItem *>(c))
+					if (t->text().startsWith(want)) { box = it; break; }
+	if (!box) return 0;
+	const QRectF br = box->sceneBoundingRect();
+	if (h == "box") {
+		v->ensureVisible(box);
+		QApplication::processEvents();
+		const QPoint at = v->mapFromScene(QPointF(br.center().x(), br.top() + 8));   // its title bar
+		ngTestPickMenu(p.split('/'), ok);
+		QContextMenuEvent ce(QContextMenuEvent::Mouse, at, v->viewport()->mapToGlobal(at));
+		QApplication::sendEvent(v->viewport(), &ce);                  // its menu: returns once it is closed
+		return *ok;
+	}
+	if (h == "drop") {
+		// the program link leaving that box: it starts at the middle of the box's bottom edge
+		const QPointF start(br.center().x(), br.bottom());
+		QGraphicsPathItem *link = nullptr;
+		for (QGraphicsItem *it : v->scene()->items())
+			if (auto *pi = dynamic_cast<QGraphicsPathItem *>(it))
+				if (!pi->parentItem() && pi->path().elementCount() > 0 &&
+				    QLineF(QPointF(pi->path().elementAt(0)), start).length() < 3.0) { link = pi; break; }
+		if (!link) return 0;
+		const QPointF mid = link->path().pointAtPercent(0.5);
+		v->centerOn(mid);
+		QApplication::processEvents();
+		const QPointF at(v->mapFromScene(mid));
+		QMimeData md;
+		md.setData(NG_MIME, p.toUtf8());
+		QDragEnterEvent de(at.toPoint(), Qt::CopyAction, &md, Qt::LeftButton, Qt::NoModifier);
+		QApplication::sendEvent(v->viewport(), &de);
+		QDropEvent dr(at, Qt::CopyAction, &md, Qt::LeftButton, Qt::NoModifier);
+		QApplication::sendEvent(v->viewport(), &dr);
+		return dr.isAccepted() ? 1 : 0;
+	}
+	return 0;
+}
+
 // test hook: in the top-level window titled `title`, bring its tab labelled `tab` to the front (as a
 // click on the tab does), so the fields on it are visible to the typing hooks. 1 = done, 0 = no such tab.
 GMTVTK_API int gmtvtk_dialog_tab_test(const char *title, const char *tab) {

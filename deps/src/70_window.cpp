@@ -30391,7 +30391,7 @@ static void buildScriptEditor(const ScriptHost &host, const QString &text) {
 	row->addWidget(bRun);
 	row->addWidget(bSave);
 	lay->addLayout(row);
-	dlg->resize(820, 600);
+	dlg->resize(1025, 750);
 
 	QObject::connect(bGraph, &QPushButton::clicked, [host, dlg]() {
 		if (host.alive()) nodeGraphOpen(host.key, dlg);
