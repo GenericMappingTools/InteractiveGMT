@@ -1,0 +1,945 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>RemoteSS1</class>
+ <widget class="QDialog" name="RemoteSS1">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>367</width>
+    <height>686</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>Sentinel-1 SAR products</string>
+  </property>
+  <widget class="QTabWidget" name="tabs">
+   <property name="geometry">
+    <rect>
+     <x>4</x>
+     <y>4</y>
+     <width>359</width>
+     <height>644</height>
+    </rect>
+   </property>
+   <property name="currentIndex">
+    <number>0</number>
+   </property>
+   <widget class="QWidget" name="tab_search">
+    <attribute name="title">
+     <string>Search</string>
+    </attribute>
+    <widget class="QGroupBox" name="gb_rg_region">
+     <property name="geometry">
+      <rect>
+       <x>5</x>
+       <y>7</y>
+       <width>345</width>
+       <height>142</height>
+      </rect>
+     </property>
+     <property name="title">
+      <string>Region</string>
+     </property>
+     <widget class="QLabel" name="lbl_rg_n">
+      <property name="geometry">
+       <rect>
+        <x>37</x>
+        <y>27</y>
+        <width>26</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="frameShape">
+       <enum>QFrame::Shape::Box</enum>
+      </property>
+      <property name="text">
+       <string>N</string>
+      </property>
+      <property name="alignment">
+       <set>Qt::AlignmentFlag::AlignCenter</set>
+      </property>
+     </widget>
+     <widget class="QLabel" name="lbl_rg_w">
+      <property name="geometry">
+       <rect>
+        <x>11</x>
+        <y>53</y>
+        <width>26</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="frameShape">
+       <enum>QFrame::Shape::Box</enum>
+      </property>
+      <property name="text">
+       <string>W</string>
+      </property>
+      <property name="alignment">
+       <set>Qt::AlignmentFlag::AlignCenter</set>
+      </property>
+     </widget>
+     <widget class="QLabel" name="lbl_rg_e">
+      <property name="geometry">
+       <rect>
+        <x>63</x>
+        <y>53</y>
+        <width>26</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="frameShape">
+       <enum>QFrame::Shape::Box</enum>
+      </property>
+      <property name="text">
+       <string>E</string>
+      </property>
+      <property name="alignment">
+       <set>Qt::AlignmentFlag::AlignCenter</set>
+      </property>
+     </widget>
+     <widget class="QLabel" name="lbl_rg_s">
+      <property name="geometry">
+       <rect>
+        <x>37</x>
+        <y>79</y>
+        <width>26</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="frameShape">
+       <enum>QFrame::Shape::Box</enum>
+      </property>
+      <property name="text">
+       <string>S</string>
+      </property>
+      <property name="alignment">
+       <set>Qt::AlignmentFlag::AlignCenter</set>
+      </property>
+     </widget>
+     <widget class="QLineEdit" name="p_rg_n">
+      <property name="geometry">
+       <rect>
+        <x>150</x>
+        <y>28</y>
+        <width>130</width>
+        <height>24</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string>40</string>
+      </property>
+      <property name="alignment">
+       <set>Qt::AlignmentFlag::AlignCenter</set>
+      </property>
+     </widget>
+     <widget class="QLineEdit" name="p_rg_w">
+      <property name="geometry">
+       <rect>
+        <x>100</x>
+        <y>54</y>
+        <width>114</width>
+        <height>24</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string>-10</string>
+      </property>
+      <property name="alignment">
+       <set>Qt::AlignmentFlag::AlignCenter</set>
+      </property>
+     </widget>
+     <widget class="QLineEdit" name="p_rg_e">
+      <property name="geometry">
+       <rect>
+        <x>220</x>
+        <y>54</y>
+        <width>114</width>
+        <height>24</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string>-8</string>
+      </property>
+      <property name="alignment">
+       <set>Qt::AlignmentFlag::AlignCenter</set>
+      </property>
+     </widget>
+     <widget class="QLineEdit" name="p_rg_s">
+      <property name="geometry">
+       <rect>
+        <x>150</x>
+        <y>80</y>
+        <width>130</width>
+        <height>24</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string>38</string>
+      </property>
+      <property name="alignment">
+       <set>Qt::AlignmentFlag::AlignCenter</set>
+      </property>
+     </widget>
+     <widget class="QPushButton" name="run_rgwindow">
+      <property name="geometry">
+       <rect>
+        <x>11</x>
+        <y>110</y>
+        <width>323</width>
+        <height>24</height>
+       </rect>
+      </property>
+      <property name="toolTip">
+       <string>Fill the four limits with the region the window is showing.</string>
+      </property>
+      <property name="text">
+       <string>Use the window's limits</string>
+      </property>
+     </widget>
+    </widget>
+    <widget class="QGroupBox" name="gb_query">
+     <property name="geometry">
+      <rect>
+       <x>5</x>
+       <y>155</y>
+       <width>345</width>
+       <height>186</height>
+      </rect>
+     </property>
+     <property name="title">
+      <string>Product and period</string>
+     </property>
+     <widget class="QLabel" name="lbl_product">
+      <property name="geometry">
+       <rect>
+        <x>11</x>
+        <y>27</y>
+        <width>55</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string>Product</string>
+      </property>
+     </widget>
+     <widget class="QComboBox" name="p_product">
+      <property name="geometry">
+       <rect>
+        <x>70</x>
+        <y>27</y>
+        <width>264</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="toolTip">
+       <string>GRD: radar backscatter on a ground-range grid, 10 m pixels (IW), about 1.7 GB a scene; the one this dialog can show. GRD COG: the same as cloud-optimised GeoTIFFs, about half the size. SLC: the complex signal with its phase, for interferometry (InSAR), 4 to 8 GB. OCN: ocean wind, waves and radial currents (Level-2, netCDF). RAW: the raw signal (Level-0).</string>
+      </property>
+      <property name="refresh" stdset="0">
+       <bool>true</bool>
+      </property>
+     </widget>
+     <widget class="QLabel" name="lbl_mode">
+      <property name="geometry">
+       <rect>
+        <x>11</x>
+        <y>59</y>
+        <width>55</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string>Mode</string>
+      </property>
+     </widget>
+     <widget class="QComboBox" name="p_mode">
+      <property name="geometry">
+       <rect>
+        <x>70</x>
+        <y>59</y>
+        <width>70</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="toolTip">
+       <string>The acquisition mode. IW (Interferometric Wide swath, 250 km): the usual mode over land and coastal seas. EW (Extra Wide, 400 km): polar seas and sea ice. SM (StripMap, 80 km): small islands and emergencies. WV (Wave): open-ocean vignettes for wave spectra.</string>
+      </property>
+      <item>
+       <property name="text">
+        <string>IW</string>
+       </property>
+      </item>
+      <item>
+       <property name="text">
+        <string>EW</string>
+       </property>
+      </item>
+      <item>
+       <property name="text">
+        <string>SM</string>
+       </property>
+      </item>
+      <item>
+       <property name="text">
+        <string>WV</string>
+       </property>
+      </item>
+     </widget>
+     <widget class="QLabel" name="lbl_orbit">
+      <property name="geometry">
+       <rect>
+        <x>150</x>
+        <y>59</y>
+        <width>40</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string>Pass</string>
+      </property>
+     </widget>
+     <widget class="QComboBox" name="p_orbit">
+      <property name="geometry">
+       <rect>
+        <x>194</x>
+        <y>59</y>
+        <width>140</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="toolTip">
+       <string>The direction of the orbit. For interferometry or change detection, compare scenes of the SAME direction and the same track: the radar looks at the ground from the same side.</string>
+      </property>
+      <item>
+       <property name="text">
+        <string>Any</string>
+       </property>
+      </item>
+      <item>
+       <property name="text">
+        <string>Ascending</string>
+       </property>
+      </item>
+      <item>
+       <property name="text">
+        <string>Descending</string>
+       </property>
+      </item>
+     </widget>
+     <widget class="QLabel" name="lbl_track">
+      <property name="geometry">
+       <rect>
+        <x>11</x>
+        <y>91</y>
+        <width>55</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string>Track</string>
+      </property>
+     </widget>
+     <widget class="QLineEdit" name="p_track">
+      <property name="geometry">
+       <rect>
+        <x>70</x>
+        <y>91</y>
+        <width>70</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="toolTip">
+       <string>The relative orbit number (1 to 175), the same for every pass over the same ground track. Empty: any track. The footprints Find the scenes draws are named by their track.</string>
+      </property>
+     </widget>
+     <widget class="QLabel" name="lbl_track_hint">
+      <property name="geometry">
+       <rect>
+        <x>150</x>
+        <y>91</y>
+        <width>184</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string>relative orbit, empty = any</string>
+      </property>
+     </widget>
+     <widget class="QLabel" name="lbl_from">
+      <property name="geometry">
+       <rect>
+        <x>11</x>
+        <y>123</y>
+        <width>50</width>
+        <height>22</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string>From</string>
+      </property>
+     </widget>
+     <widget class="QDateEdit" name="p_from">
+      <property name="geometry">
+       <rect>
+        <x>70</x>
+        <y>123</y>
+        <width>110</width>
+        <height>22</height>
+       </rect>
+      </property>
+      <property name="toolTip">
+       <string>First day of the period (UTC), included.</string>
+      </property>
+      <property name="displayFormat">
+       <string>yyyy-MM-dd</string>
+      </property>
+      <property name="calendarPopup">
+       <bool>true</bool>
+      </property>
+     </widget>
+     <widget class="QLabel" name="lbl_to">
+      <property name="geometry">
+       <rect>
+        <x>194</x>
+        <y>123</y>
+        <width>24</width>
+        <height>22</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string>To</string>
+      </property>
+     </widget>
+     <widget class="QDateEdit" name="p_to">
+      <property name="geometry">
+       <rect>
+        <x>224</x>
+        <y>123</y>
+        <width>110</width>
+        <height>22</height>
+       </rect>
+      </property>
+      <property name="toolTip">
+       <string>Last day of the period (UTC), included.</string>
+      </property>
+      <property name="displayFormat">
+       <string>yyyy-MM-dd</string>
+      </property>
+      <property name="calendarPopup">
+       <bool>true</bool>
+      </property>
+     </widget>
+     <widget class="QPushButton" name="run_search">
+      <property name="geometry">
+       <rect>
+        <x>11</x>
+        <y>153</y>
+        <width>156</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="toolTip">
+       <string>Ask the Copernicus Data Space catalogue (no login needed) for the scenes of the product over the region in the period, newest first, and draw their footprints (on an empty window, over a map with coastlines made for them). One footprint per frame: the same piece of the same track repeats every 6 or 12 days. A new search replaces the previous footprints.</string>
+      </property>
+      <property name="text">
+       <string>Find the scenes</string>
+      </property>
+      <property name="busy" stdset="0">
+       <string>Finding the Sentinel-1 scenes over the region…</string>
+      </property>
+     </widget>
+     <widget class="QPushButton" name="pickline_pickscene">
+      <property name="geometry">
+       <rect>
+        <x>178</x>
+        <y>153</y>
+        <width>156</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="toolTip">
+       <string>Then click one of the footprints Find the scenes drew: the newest scene of that frame is chosen in the Scene list below (the list has the older ones). Press again to cancel. The footprint's own menu item "Choose this scene (Sentinel-1)" does the same.</string>
+      </property>
+      <property name="text">
+       <string>Pick a frame</string>
+      </property>
+      <property name="busy" stdset="0">
+       <string>Choosing the scene…</string>
+      </property>
+     </widget>
+    </widget>
+    <widget class="QGroupBox" name="gb_scene">
+     <property name="geometry">
+      <rect>
+       <x>5</x>
+       <y>347</y>
+       <width>345</width>
+       <height>124</height>
+      </rect>
+     </property>
+     <property name="title">
+      <string>Scene</string>
+     </property>
+     <widget class="QLabel" name="lbl_granule">
+      <property name="geometry">
+       <rect>
+        <x>11</x>
+        <y>27</y>
+        <width>55</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string>Scene</string>
+      </property>
+     </widget>
+     <widget class="QComboBox" name="p_granule">
+      <property name="geometry">
+       <rect>
+        <x>70</x>
+        <y>27</y>
+        <width>264</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="toolTip">
+       <string>The scenes found, newest first: start time (UTC), satellite (S1A, S1B, S1C, S1D), orbit direction, track and size. "(on disk)": already in the folder below, not downloaded again.</string>
+      </property>
+     </widget>
+     <widget class="QLabel" name="lbl_folder">
+      <property name="geometry">
+       <rect>
+        <x>11</x>
+        <y>59</y>
+        <width>55</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string>Folder</string>
+      </property>
+     </widget>
+     <widget class="QLineEdit" name="p_folder">
+      <property name="geometry">
+       <rect>
+        <x>70</x>
+        <y>59</y>
+        <width>264</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="toolTip">
+       <string>Where the products are downloaded to (made if it does not exist), each as the zip ESA distributes (the .SAFE folder inside). A product already there is not downloaded again.</string>
+      </property>
+     </widget>
+     <widget class="QPushButton" name="run_download">
+      <property name="geometry">
+       <rect>
+        <x>11</x>
+        <y>91</y>
+        <width>323</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="toolTip">
+       <string>Download the chosen scene into the folder, with the Copernicus Data Space login of the Account tab. Any product type.</string>
+      </property>
+      <property name="text">
+       <string>Download</string>
+      </property>
+      <property name="busy" stdset="0">
+       <string>Downloading the Sentinel-1 product…</string>
+      </property>
+     </widget>
+    </widget>
+    <widget class="QGroupBox" name="gb_show">
+     <property name="geometry">
+      <rect>
+       <x>5</x>
+       <y>477</y>
+       <width>345</width>
+       <height>124</height>
+      </rect>
+     </property>
+     <property name="title">
+      <string>Show a GRD</string>
+     </property>
+     <widget class="QLabel" name="lbl_pol">
+      <property name="geometry">
+       <rect>
+        <x>11</x>
+        <y>27</y>
+        <width>55</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string>Polar.</string>
+      </property>
+     </widget>
+     <widget class="QComboBox" name="p_pol">
+      <property name="geometry">
+       <rect>
+        <x>70</x>
+        <y>27</y>
+        <width>70</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="toolTip">
+       <string>The polarisation (transmit, receive). Over land IW scenes are VV+VH (1SDV in the name); over polar seas and some regions HH+HV (1SDH).</string>
+      </property>
+      <item>
+       <property name="text">
+        <string>VV</string>
+       </property>
+      </item>
+      <item>
+       <property name="text">
+        <string>VH</string>
+       </property>
+      </item>
+      <item>
+       <property name="text">
+        <string>HH</string>
+       </property>
+      </item>
+      <item>
+       <property name="text">
+        <string>HV</string>
+       </property>
+      </item>
+     </widget>
+     <widget class="QLabel" name="lbl_scale">
+      <property name="geometry">
+       <rect>
+        <x>150</x>
+        <y>27</y>
+        <width>40</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string>Values</string>
+      </property>
+     </widget>
+     <widget class="QComboBox" name="p_scale">
+      <property name="geometry">
+       <rect>
+        <x>194</x>
+        <y>27</y>
+        <width>140</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="toolTip">
+       <string>sigma0 in dB: the backscatter coefficient, calibrated with the product's own calibration tables (GDAL's SAFE driver), in decibels. Raw amplitude: the digital numbers as stored, uncalibrated.</string>
+      </property>
+      <item>
+       <property name="text">
+        <string>sigma0, dB</string>
+       </property>
+      </item>
+      <item>
+       <property name="text">
+        <string>Raw amplitude (DN)</string>
+       </property>
+      </item>
+     </widget>
+     <widget class="QLabel" name="lbl_res">
+      <property name="geometry">
+       <rect>
+        <x>11</x>
+        <y>59</y>
+        <width>55</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string>Spacing</string>
+      </property>
+     </widget>
+     <widget class="QLineEdit" name="p_res">
+      <property name="geometry">
+       <rect>
+        <x>70</x>
+        <y>59</y>
+        <width>70</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="toolTip">
+       <string>Grid spacing in degrees. The 10 m pixels are averaged into it: 0.001 is about 100 m, 0.0002 about 20 m (and a much bigger grid). A whole IW scene at 0.001 is about 3000 x 2000 nodes.</string>
+      </property>
+      <property name="text">
+       <string>0.001</string>
+      </property>
+     </widget>
+     <widget class="QLabel" name="lbl_resunit">
+      <property name="geometry">
+       <rect>
+        <x>146</x>
+        <y>59</y>
+        <width>30</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string>deg</string>
+      </property>
+     </widget>
+     <widget class="QCheckBox" name="p_cut">
+      <property name="geometry">
+       <rect>
+        <x>190</x>
+        <y>59</y>
+        <width>144</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="toolTip">
+       <string>Show only the part of the scene inside the region above. Unticked: the whole scene.</string>
+      </property>
+      <property name="text">
+       <string>Cut to the region</string>
+      </property>
+      <property name="checked">
+       <bool>true</bool>
+      </property>
+     </widget>
+     <widget class="QPushButton" name="run_open">
+      <property name="geometry">
+       <rect>
+        <x>11</x>
+        <y>91</y>
+        <width>323</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="toolTip">
+       <string>Download the chosen GRD if it is not on disk yet, then show its band in this window as a longitude/latitude grid: the radar geometry resampled through the product's own geolocation points.</string>
+      </property>
+      <property name="text">
+       <string>Download and show</string>
+      </property>
+      <property name="busy" stdset="0">
+       <string>Getting the Sentinel-1 scene…</string>
+      </property>
+     </widget>
+    </widget>
+   </widget>
+   <widget class="QWidget" name="tab_account">
+    <attribute name="title">
+     <string>Account</string>
+    </attribute>
+    <widget class="QGroupBox" name="gb_cd">
+     <property name="geometry">
+      <rect>
+       <x>5</x>
+       <y>7</y>
+       <width>345</width>
+       <height>304</height>
+      </rect>
+     </property>
+     <property name="title">
+      <string>Copernicus Data Space login</string>
+     </property>
+     <widget class="QLabel" name="lbl_cd_info">
+      <property name="geometry">
+       <rect>
+        <x>11</x>
+        <y>24</y>
+        <width>323</width>
+        <height>66</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string>Searching needs no account. Downloading needs a free Copernicus Data Space account: the e-mail and password you log in with on the web site (not the OAuth client of Sentinel Hub imagery). No account yet? &lt;a href=&quot;https://dataspace.copernicus.eu&quot;&gt;Register here&lt;/a&gt;.</string>
+      </property>
+      <property name="textFormat">
+       <enum>Qt::TextFormat::RichText</enum>
+      </property>
+      <property name="alignment">
+       <set>Qt::AlignmentFlag::AlignLeading|Qt::AlignmentFlag::AlignLeft|Qt::AlignmentFlag::AlignTop</set>
+      </property>
+      <property name="wordWrap">
+       <bool>true</bool>
+      </property>
+      <property name="openExternalLinks">
+       <bool>true</bool>
+      </property>
+     </widget>
+     <widget class="QLabel" name="lbl_cd_user">
+      <property name="geometry">
+       <rect>
+        <x>11</x>
+        <y>96</y>
+        <width>60</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string>E-mail</string>
+      </property>
+     </widget>
+     <widget class="QLineEdit" name="p_cd_user">
+      <property name="geometry">
+       <rect>
+        <x>77</x>
+        <y>96</y>
+        <width>257</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="toolTip">
+       <string>The e-mail address of your Copernicus Data Space account.</string>
+      </property>
+     </widget>
+     <widget class="QLabel" name="lbl_cd_pass">
+      <property name="geometry">
+       <rect>
+        <x>11</x>
+        <y>128</y>
+        <width>60</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string>Password</string>
+      </property>
+     </widget>
+     <widget class="QLineEdit" name="p_cd_pass">
+      <property name="geometry">
+       <rect>
+        <x>77</x>
+        <y>128</y>
+        <width>257</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="echoMode">
+       <enum>QLineEdit::EchoMode::Password</enum>
+      </property>
+     </widget>
+     <widget class="QCheckBox" name="show_p_cd_pass">
+      <property name="geometry">
+       <rect>
+        <x>77</x>
+        <y>158</y>
+        <width>257</width>
+        <height>22</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string>Show the password</string>
+      </property>
+     </widget>
+     <widget class="QLabel" name="lbl_cd_totp">
+      <property name="geometry">
+       <rect>
+        <x>11</x>
+        <y>186</y>
+        <width>60</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string>2FA code</string>
+      </property>
+     </widget>
+     <widget class="QLineEdit" name="p_cd_totp">
+      <property name="geometry">
+       <rect>
+        <x>77</x>
+        <y>186</y>
+        <width>100</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="toolTip">
+       <string>Only for an account with two-factor login: the code your authenticator app shows NOW, typed just before Download. It is used once and never saved; the login it opens is kept for the session.</string>
+      </property>
+     </widget>
+     <widget class="QPushButton" name="run_savelogin">
+      <property name="geometry">
+       <rect>
+        <x>11</x>
+        <y>220</y>
+        <width>323</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="toolTip">
+       <string>Write the e-mail and password to the machine identity.dataspace.copernicus.eu entry of .netrc in your home folder. Every other entry of the file is kept. Without saving, the two boxes are used for this session only.</string>
+      </property>
+      <property name="text">
+       <string>Save login</string>
+      </property>
+      <property name="busy" stdset="0">
+       <string>Saving the Copernicus Data Space login…</string>
+      </property>
+     </widget>
+     <widget class="QLabel" name="lbl_cd_where">
+      <property name="geometry">
+       <rect>
+        <x>11</x>
+        <y>252</y>
+        <width>323</width>
+        <height>44</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string/>
+      </property>
+      <property name="alignment">
+       <set>Qt::AlignmentFlag::AlignLeading|Qt::AlignmentFlag::AlignLeft|Qt::AlignmentFlag::AlignTop</set>
+      </property>
+      <property name="wordWrap">
+       <bool>true</bool>
+      </property>
+     </widget>
+    </widget>
+   </widget>
+  </widget>
+  <widget class="QToolButton" name="tutorial">
+   <property name="geometry">
+    <rect>
+     <x>9</x>
+     <y>654</y>
+     <width>24</width>
+     <height>24</height>
+    </rect>
+   </property>
+   <property name="toolTip">
+    <string>Open the Sentinel-1 products page of the manual.</string>
+   </property>
+   <property name="text">
+    <string>?</string>
+   </property>
+   <property name="page" stdset="0">
+    <string>73b-sentinel1</string>
+   </property>
+  </widget>
+  <widget class="QLabel" name="lbl_status">
+   <property name="geometry">
+    <rect>
+     <x>37</x>
+     <y>652</y>
+     <width>319</width>
+     <height>30</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string/>
+   </property>
+   <property name="alignment">
+    <set>Qt::AlignmentFlag::AlignLeading|Qt::AlignmentFlag::AlignLeft|Qt::AlignmentFlag::AlignTop</set>
+   </property>
+   <property name="wordWrap">
+    <bool>true</bool>
+   </property>
+  </widget>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

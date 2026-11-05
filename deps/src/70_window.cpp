@@ -32145,6 +32145,11 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		else        QMessageBox::warning(win, "Sentinel Hub",
 		                QString("Could not load %1/sentinelhub_dialog.ui").arg(gmtvtkUiDir()));
 	});
+	// Sentinel-1 SAR products — the product FILES (GRD/SLC/OCN/RAW .SAFE zips) from the Copernicus Data
+	// Space catalogue, with the user's own CDSE login: a different door and a different login from the
+	// Process API above, so its own entry. One more tool of the Remote sensing dialog family
+	// (src/s1products.jl over deps/ui/remotes_s1.ui and the generic RemoteSDialog).
+	mCoper->addAction("Sentinel-1 SAR products…", [win, s]() { openRemoteSDialog(win, s, "s1"); });
 	// Ocean Color — likewise moved from Geophysics: MODIS/VIIRS/SeaWiFS ocean-colour products.
 	mSat->addAction("Oceancolor…", [win, s]() {
 		// Already open or parked in this window? Bring THAT one back — never a second browser.

@@ -225,6 +225,51 @@ end
 # the LEVEL itself for every vertex (a contour of value L sits at z = L on the 3-D surface, so it
 # drapes exactly, with no grid resampling). Segments with fewer than `minpts` vertices are dropped
 # (contouring.m's "Min pts").
+# ── the memory guard ─────────────────────────────────────────────────────────────────────────
+# A dense set of levels over a big grid can trace more vertices than the machine can hold, and running
+# out half-way aborts the whole process instead of raising an error the dialog can report. The total is
+# unknown until GDAL has traced it, so the check runs WHILE it traces: GDAL's progress callback looks at
+# the free memory (the same `_mem_available` the travel-time guard uses) and stops the trace when what
+# has been traced so far, carried through the rest of the Apply, would not fit. No extra pass over the
+# grid; the callback asks the OS at most every 0.1 s.
+#
+# Peak memory per traced vertex, measured 2026-11-05 (Julia 1.14, Windows, growth of the process's peak
+# commit, test/gmtmodules/_contour_mem.jl, 4.4M-17.7M vertices): GDAL's own layer of traced lines
+# 30-34 bytes; the trace with its copy into the overlay buffers 68-76; the whole Apply (trace + the
+# viewer's overlays) 126-129. Rounded up.
+const _CONTOUR_BYTES_PER_VERTEX = (gdal = 36, trace = 80, apply = 135)
+const _CONTOUR_RESERVE = 256 * 2^20          # left free on top of what the contours need
+const _CONTOUR_MEM = (avail0 = Ref(0), next = Ref(0.0), need = Ref(0), avail = Ref(0))
+
+_contour_gb(b::Int)::Float64 = round(b / 2^30; digits = 1)
+
+# GDALContourGenerateEx's progress callback: 1 = go on, 0 = stop (GDAL then fails with "User terminated").
+# The memory GDAL has taken since the trace began, over its bytes per vertex, is the vertices traced so
+# far; each still has the rest of the Apply ahead of it.
+function _contour_progress(::Cdouble, ::Cstring, ::Ptr{Cvoid})::Cint
+	t = time()
+	t < _CONTOUR_MEM.next[] && return Cint(1)
+	_CONTOUR_MEM.next[] = t + 0.1
+	avail = _mem_available()
+	verts = max(_CONTOUR_MEM.avail0[] - avail, 0) ÷ _CONTOUR_BYTES_PER_VERTEX.gdal
+	need = verts * (_CONTOUR_BYTES_PER_VERTEX.apply - _CONTOUR_BYTES_PER_VERTEX.gdal) + _CONTOUR_RESERVE
+	need <= avail && return Cint(1)
+	_CONTOUR_MEM.need[] = need;  _CONTOUR_MEM.avail[] = avail
+	return Cint(0)
+end
+
+# Refuse a step whose size IS known (the traced contours going to the viewer). A GC first only when it
+# does not fit: the GDAL layer just traced is released by its finalizer.
+function _contour_mem_check(need::Int, what::String)
+	avail = _mem_available()
+	need <= avail && return
+	GC.gc()
+	avail = _mem_available()
+	need <= avail && return
+	error("Contours: not enough free memory to $what: it needs about $(_contour_gb(need)) GB and " *
+	      "$(_contour_gb(avail)) GB are free. Use fewer levels, a coarser grid, or close other programs.")
+end
+
 function _contour_gdal(G::GMTgrid, levels::Vector{Float64}, minpts::Int)
 	out = Tuple{Float64,Vector{Float64},Vector{Cint},Int,Int}[]
 	isempty(levels) && return out
@@ -246,10 +291,18 @@ function _contour_gdal(G::GMTgrid, levels::Vector{Float64}, minpts::Int)
 	for o in opts
 		copts = ccall((:CSLAddString, GMT.libgdal), Ptr{Ptr{UInt8}}, (Ptr{Ptr{UInt8}}, Cstring), copts, o)
 	end
+	# The memory guard rides on GDAL's progress callback (see _contour_progress).
+	_CONTOUR_MEM.avail0[] = _mem_available();  _CONTOUR_MEM.next[] = 0.0;  _CONTOUR_MEM.need[] = 0
+	prog = @cfunction(_contour_progress, Cint, (Cdouble, Cstring, Ptr{Cvoid}))
 	err = GC.@preserve dsr ds ccall((:GDALContourGenerateEx, GMT.libgdal), Cint,
 	          (Ptr{Cvoid}, Ptr{Cvoid}, Ptr{Ptr{UInt8}}, Ptr{Cvoid}, Ptr{Cvoid}),
-	          band, lyr.ptr, copts, C_NULL, C_NULL)
+	          band, lyr.ptr, copts, prog, C_NULL)
 	ccall((:CSLDestroy, GMT.libgdal), Cvoid, (Ptr{Ptr{UInt8}},), copts)
+	if err != 0 && _CONTOUR_MEM.need[] > 0
+		error("Contours: not enough free memory for these contours: tracing was stopped when they needed about " *
+		      "$(_contour_gb(_CONTOUR_MEM.need[])) GB and $(_contour_gb(_CONTOUR_MEM.avail[])) GB were free. " *
+		      "Use fewer levels, a coarser grid, or close other programs.")
+	end
 	if err != 0
 		msg = unsafe_string(ccall((:CPLGetLastErrorMsg, GMT.libgdal), Cstring, ()))
 		error("Contours: GDALContourGenerateEx failed" * (isempty(msg) ? "" : " ($msg)"))
@@ -383,6 +436,9 @@ function _on_contours(scene::Ptr{Cvoid}, params::AbstractString;
 	G = _contour_grid(scene, gridname)
 	sets = _contour_gdal(G, levels, max(minpts, 0))
 	isempty(sets) && error("No contour crossed the grid at any of those elevations")
+	# The vertex count is known now: the viewer's share of the Apply must fit before it is asked for.
+	_contour_mem_check(sum(s[5] for s in sets) * (_CONTOUR_BYTES_PER_VERTEX.apply - _CONTOUR_BYTES_PER_VERTEX.trace) +
+	                   _CONTOUR_RESERVE, "draw the contours")
 
 	cr, cg, cb = _ovl_color(nothing, :lines)       # black — contour lines AND their annotations
 	xfac = ccall(_fn(:gmtvtk_get_xfac), Cdouble, (Ptr{Cvoid},), scene)

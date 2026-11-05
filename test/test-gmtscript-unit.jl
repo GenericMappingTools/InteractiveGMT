@@ -226,6 +226,28 @@ end
 	@test startswith(ls[i - 1], "pen3 = ")
 end
 
+@testitem "gmtscript: a grid loaded from disk goes to its modules by FILE NAME" tags=[:unit, :fast, :gmtscript] begin
+	M = InteractiveGMT
+	ctx = M.ScriptCtx(C_NULL, (-3.0, 3.0, -3.0, 3.0), false, :X, 15.0, nothing, nothing,
+	                  false, Dict{String,Int}(), String[], false, 0, 96.0)
+	f = "C:\\v\\tsu\\layer0.grd"
+	G = M.ScriptVar(:G1, nothing)
+	gb = M.DataBind(G, :file, M._lit(f))
+	cb = M.DataBind(M.ScriptVar(:C1, nothing), :cpt, "makecpt(cmap=:geo, range=(0, 1), continuous=true)")
+	st1 = M.ScriptStep("layer0.grd", M.DataBind[gb, cb], :grdimage, G, Pair{Symbol,Any}[:cmap => cb.var], false)
+	# Two grdcontour pens: the first step carries the bind, the second reuses the variable.
+	st2 = M.ScriptStep("contours 1", M.DataBind[gb], :grdcontour, G, Pair{Symbol,Any}[:cont => "1,"], true)
+	st3 = M.ScriptStep("contours 2", M.DataBind[], :grdcontour, G, Pair{Symbol,Any}[:cont => "2,"], true)
+	txt = M._script_render_text([st1, st2, st3], ctx)
+	@test !occursin("gmtread", txt) && !occursin("G1", txt)
+	@test occursin("grdimage(\"C:\\\\v\\\\tsu\\\\layer0.grd\", cmap=C1)", txt)
+	@test occursin("grdcontour!(\"C:\\\\v\\\\tsu\\\\layer0.grd\", cont=\"1,\"", txt)
+	@test occursin("grdcontour!(\"C:\\\\v\\\\tsu\\\\layer0.grd\", cont=\"2,\"", txt)
+	@test occursin("C1 = makecpt(", txt)                    # other binds are still declared
+	# Inside a tuple / NamedTuple kwarg too.
+	@test M._script_subst((a = G, b = (1, G)), Dict(:G1 => f)) == (a = f, b = (1, f))
+end
+
 @testitem "gmtscript: text blob parser (one function, groups included)" tags=[:unit, :fast, :gmtscript] begin
 	M = InteractiveGMT
 	blob = "0;0;0;0;0;24;;Single\n-2;-2;1;0;0;12;cityLabels;Batch1\n1.5;2;1;0;0;12;cityLabels;Batch2\n"

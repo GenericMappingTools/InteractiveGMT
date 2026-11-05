@@ -12,14 +12,17 @@
 # JULIA_GMT_MULTIFILE is set, and six shards drawing into the same file read back each other's plots.
 #
 # The files that press the REAL mouse run ALONE, after the shards: another process raising a window
-# while the OS cursor is held down would take the press.
+# while the OS cursor is held down would take the press. So does the fault demo, whose 'c' key reads
+# the REAL cursor it has just placed over the model: a window another shard puts under that point
+# took the pick and the focal point never moved (failed in the parallel run 2026-11-05, passed alone).
 #
 # Progress is printed as it happens ("[done/total] s<k> elapsed  item", plus every FAIL/ERROR line),
 # and the merged result goes to test/last_run.log, ending in the same "FAILED ITEMS" / "NO FAILED
 # ITEMS" verdict a single-process run writes. Exit code 1 when anything failed or a shard died.
 
 const TESTDIR = @__DIR__
-const SERIAL  = ["test-aquamoto-transport-gui.jl"]          # real OS mouse input: run alone
+const SERIAL  = ["test-aquamoto-transport-gui.jl",          # real OS mouse input: run alone
+                 "test-fault-demo.jl"]                      # real OS cursor position
 const NJOBS   = max(1, parse(Int, strip(get(ENV, "INTERACTIVEGMT_TEST_JOBS", "6"))))
 const T0      = time()
 

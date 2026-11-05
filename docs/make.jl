@@ -70,6 +70,7 @@ const titles = Dict(
     "71b-emodnet.md" => "EMODNET",
     "72-ecmwf.md" => "Copernicus / ECMWF",
     "73-sentinelhub.md" => "Sentinel Hub",
+    "73b-sentinel1.md" => "Sentinel-1 SAR products",
     "74-modis-scenes.md" => "MODIS Scenes (Terra / Aqua)",
     "74b-swot.md" => "SWOT",
     "74c-swot-tutorial.md" => "Tutorial: SWOT",

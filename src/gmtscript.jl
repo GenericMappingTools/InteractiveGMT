@@ -265,9 +265,11 @@ function _script_bind!(ctx::ScriptCtx, r::ElementRecipe, obj)
 	prefix = kind === :image ? "I" : "G"
 	if r.origin === :file && !isempty(r.source) && isfile(r.source)
 		var = _script_var!(ctx, prefix, obj)
-		# The FULL path of the file the window loaded, so the script (and its standalone copy, which
-		# keeps this line as it is) reads that very file from wherever it is run.
-		return DataBind(var, :file, "gmtread($(_lit(abspath(r.source))))")
+		# The FULL path of the file the window loaded. The script never reads it into a variable: every
+		# module that takes this layer is given the FILE NAME itself (`grdcontour!("…/layer0.grd", …)`,
+		# what a GMT user writes), so `expr` is that path's literal and the text sink puts it in place of
+		# the variable (`_script_subst`). The live sink keeps handing over the object already in memory.
+		return DataBind(var, :file, _lit(abspath(r.source)))
 	end
 	if ctx.recompute
 		cmd = _script_command(obj)
@@ -1873,10 +1875,16 @@ exists only in memory is fetched by the script from the live window, never from 
 function _script_render_text(steps::Vector{ScriptStep}, ctx::ScriptCtx)
 	io = IOBuffer()
 	print(io, _script_header(ctx))
+	# Layers that came off disk: variable -> the file's path. Collected over ALL steps first, because a
+	# grid bound in one step is used again by later ones (every grdcontour pen after the first).
+	files = Dict{Symbol,String}(b.var.name => Meta.parse(b.expr)::String for s in steps for b in s.binds if b.tier === :file)
 	npen = 0
 	for s in steps
 		println(io, "# ── ", s.comment)
+		s = ScriptStep(s.comment, s.binds, s.mod, _script_subst(s.pos, files),
+		               Pair{Symbol,Any}[k => _script_subst(v, files) for (k, v) in s.kw], s.bang)
 		for b in s.binds
+			b.tier === :file && continue              # no `G1 = gmtread(…)`: the call takes the file name
 			b.tier === :capture &&
 				println(io, "# ", b.var.name, ": the window's displayed pixels, taken from the live ",
 				        "window as a GMTimage — nothing embedded, nothing written to disk")
@@ -1896,6 +1904,13 @@ function _script_render_text(steps::Vector{ScriptStep}, ctx::ScriptCtx)
 	println(io, "showfig()")
 	return _script_space_comments(String(take!(io)))
 end
+
+# A file-backed layer's variable -> its file name, wherever the call holds it (positional, kwarg, or
+# inside a tuple / NamedTuple kwarg).
+_script_subst(v, files::Dict{Symbol,String}) = v
+_script_subst(v::ScriptVar, files::Dict{Symbol,String}) = get(files, v.name, v)
+_script_subst(t::Tuple, files::Dict{Symbol,String}) = map(x -> _script_subst(x, files), t)
+_script_subst(nt::NamedTuple, files::Dict{Symbol,String}) = map(x -> _script_subst(x, files), nt)
 
 # Every comment that opens a block starts after an empty line, so the script reads as groups of
 # commands, each under its own heading. Done once, on the finished text, so no emitter has to
@@ -2149,7 +2164,10 @@ function _script_save_standalone(scene::Ptr{Cvoid}, dest::String)::String
 			error("Plot with GMT.jl: line $l0 fetches a $(typeof(obj)), which cannot be saved as data")
 		end
 		push!(files, ("data/" * id, bytes))
-		lines[l0] = "$(var) = gmtread(joinpath(@__DIR__, \"data\", $(repr(id))))"
+		# A grid is handed to its modules by FILE NAME, as a GMT user writes it (same rule as a grid the
+		# window loaded from disk, _script_subst); images and tables are still read into a variable.
+		lines[l0] = obj isa GMTgrid ? "$(var) = joinpath(@__DIR__, \"data\", $(repr(id)))" :
+		                              "$(var) = gmtread(joinpath(@__DIR__, \"data\", $(repr(id))))"
 		# The generated note above it said "fetched from the live window" — no longer true here.
 		(l0 > 1 && startswith(lines[l0 - 1], "# $(var):")) &&
 			(lines[l0 - 1] = "# $(var): saved with this script (data/$(id)) — it existed only in the iGMT window")

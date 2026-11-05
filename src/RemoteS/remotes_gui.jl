@@ -5,7 +5,7 @@
 # directives this file answers with. So each tool's behaviour lives HERE, in one function per tool,
 # and its .ui is only its face. Wire format, newline-separated both ways:
 #
-#   request:  tool=<indices|truecolor|calibration|classify|cutcube|modisl2|modisscenes|swot (swot.jl)>
+#   request:  tool=<indices|truecolor|calibration|classify|cutcube|modisl2|modisscenes|swot (swot.jl)|s1 (s1products.jl)>
 #             what=init|refresh|<the run_ button's suffix>
 #             <p_widget>=<value>        (combos also send <p_widget>_idx=<0-based index>)
 #   answer:   items:<widget>=a\tb\tc    (fill a combo / list)
@@ -935,7 +935,7 @@ end
 const _RS_TOOLS = Dict{String,Function}(
 	"indices" => _rs_indices, "truecolor" => _rs_truecolor, "calibration" => _rs_calibration,
 	"classify" => _rs_classify, "cutcube" => _rs_cutcube, "modisl2" => _rs_modisl2,
-	"modisscenes" => _rs_modisscenes, "swot" => _rs_swot)
+	"modisscenes" => _rs_modisscenes, "swot" => _rs_swot, "s1" => _rs_s1)
 
 function _on_remotes(scene::Ptr{Cvoid}, params::Cstring, out::Ptr{UInt8}, cap::Cint)::Cint
 	tool = ""
