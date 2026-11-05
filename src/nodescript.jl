@@ -821,6 +821,7 @@ end
 
 const _NG_MODULES = NGModule[
 	NGModule("grdimage",   "grdimage",   "Grid as image",    "Grids",       "grid,image", "cmap=:turbo"),
+	NGModule("grdview",    "grdview",    "Grid as 3-D surface", "Grids",    "grid",       "cmap=:turbo, surftype=:image, view=(200, 30)"),
 	NGModule("grdcontour", "grdcontour", "Contours",         "Grids",       "grid",       "pen=\"0.5p,black\""),
 	NGModule("plot",       "plot",       "Lines",            "Tables",      "table",      "pen=\"1p,black\""),
 	NGModule("scatter",    "scatter",    "Symbols",          "Tables",      "table",      "marker=:circle, ms=0.2, fill=\"red\""),

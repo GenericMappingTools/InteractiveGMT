@@ -140,6 +140,9 @@ end
 	@test occursin("coast(shore=\"0.5p,black\", region=REG, proj=PROJ, figsize=FIGSIZE)", out)
 	@test occursin("grdimage!(G1, cmap=C1, region=REG", out)
 	@test findfirst(startswith("coast("), lines(out)) > findfirst(startswith("const FIGSIZE"), lines(out))
+	# a grid as a 3-D surface: drawn from the grid box, with its own viewpoint
+	out = M._nodegraph_insert(src, 7, "after", "grdview", "G1", "")
+	@test added(src, out) == ["# ── Grid as 3-D surface", "grdview!(G1, cmap=:turbo, surftype=:image, view=(200, 30))"]
 	@test_throws ErrorException M._nodegraph_insert(src, 7, "after", "grdcontour")    # nothing to draw from
 	@test_throws ErrorException M._nodegraph_insert(src, 7, "after", "nosuch", "G1")
 	# removal undoes the add, byte for byte
