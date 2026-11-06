@@ -170,6 +170,7 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_set_solid_callback, :gmtvtk_set_grdsample_callback, :gmtvtk_set_gridmeta_callback,
 	:gmtvtk_set_dimfun_callback, :gmtvtk_set_nswing_callback,
 	:gmtvtk_set_save_session_callback, :gmtvtk_set_load_session_callback, :gmtvtk_load_session_h,
+	:gmtvtk_set_save_portable_session_callback,
 	:gmtvtk_serialize_overlays, :gmtvtk_serialize_symbols, :gmtvtk_layer_display,
 	:gmtvtk_symbol_set_flags_h,         # session rebuild: a symbol layer's oneShot + tideGauge flags
 	:gmtvtk_window_screenshot,

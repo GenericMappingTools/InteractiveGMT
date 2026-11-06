@@ -441,6 +441,15 @@ Drop a file onto the window — auto-opens.
 
 **Whole window:** **File → Save Session… / Load Session…**
 
+A normal session remembers where your data files are on disk, so it only opens on a computer that
+has them in the same place. To take a session to another computer, use
+**File → Save Session (portable)…** instead. It puts a copy of every data file the window uses
+inside the session file: grids, images (with their georeferencing files), curtain images and
+focal-mechanism catalogs. When you load it, those files are unpacked into a folder next to
+the session file, named after it (`mysession_files` for `mysession.igmtz`). Data that iGMT or GMT
+supply themselves (coastlines, borders, rivers, Base Map images, GMT remote datasets such as
+`@earth_relief`, iGMT's own data files) is not copied. Every installation already has it.
+
 ### Recent Files
 
 **File → Recent Files** — Quick-reopen (21 items, grouped by type).

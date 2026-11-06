@@ -30963,20 +30963,28 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// Save / Load Session (.igmtz): Save writes THIS window's state (recipes + generated data) to a
 		// single zip; Load rebuilds a window from one. Julia does the work (session.jl); a missing
 		// callback reports in the status bar rather than doing nothing.
-		mFile->addAction("Save &Session…", [win, s]() {
-			if (!g_juliaSaveSession) {
-				if (s->win) s->win->statusBar()->showMessage("Save Session: callback not registered", 3000);
+		// ONE save door for both entries; "portable" only picks the Julia callback that also packs
+		// every file the layers read into the zip, so the session opens on another computer.
+		auto saveSession = [win, s](bool portable) {
+			JuliaSaveSessionFn fn = portable ? g_juliaSavePortableSession : g_juliaSaveSession;
+			const char *title = portable ? "Save Session (portable)" : "Save Session";
+			if (!fn) {
+				if (s->win) s->win->statusBar()->showMessage(QString("%1: callback not registered").arg(title), 3000);
 				return;
 			}
-			QString f = QFileDialog::getSaveFileName(win, "Save Session", prefStartDir(), "iGMT Session (*.igmtz)");
+			QString f = QFileDialog::getSaveFileName(win, title, prefStartDir(), "iGMT Session (*.igmtz)");
 			if (f.isEmpty()) return;
 			f = withExtIfNone(f, ".igmtz");
 			rememberStartDir(f);
 			const QByteArray utf8 = f.toUtf8();
-			showBusyDialog("Saving session...");        // writing every grid/image can take seconds
-			g_juliaSaveSession(s, utf8.constData());
+			// writing every grid/image (and, portable, every source file) can take seconds
+			showBusyDialog(portable ? "Saving portable session..." : "Saving session...");
+			fn(s, utf8.constData());
 			closeBusyDialog();
-		});
+		};
+		mFile->addAction("Save &Session…", [saveSession]() { saveSession(false); });
+		QAction *aPortable = mFile->addAction("Save Session (&portable)…", [saveSession]() { saveSession(true); });
+		aPortable->setToolTip("Save the session with every data file it uses inside it, so it opens on another computer");
 		mFile->addAction("&Load Session…", [win, s]() {
 			if (!g_juliaLoadSession) {
 				if (s->win) s->win->statusBar()->showMessage("Load Session: callback not registered", 3000);

@@ -4322,6 +4322,11 @@ GMTVTK_API void gmtvtk_set_save_session_callback(JuliaSaveSessionFn fn) {
 GMTVTK_API void gmtvtk_set_load_session_callback(JuliaLoadSessionFn fn) {
 	g_juliaLoadSession = fn;
 }
+// File > Save Session (portable): fn(scene, path) as Save, plus every file the window's layers read
+// put inside the zip (session.jl _on_save_session, portable=true). nullptr to detach.
+GMTVTK_API void gmtvtk_set_save_portable_session_callback(JuliaSaveSessionFn fn) {
+	g_juliaSavePortableSession = fn;
+}
 
 // Load a .igmtz session into `scene` -- the SAME path (loadSessionIntoWindow, 70_window.cpp) the
 // File > Load Session menu action uses. Called from drop.jl's _on_drop for a dropped/opened .igmtz

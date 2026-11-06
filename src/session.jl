@@ -928,13 +928,134 @@ function _session_strip_recipe_rows(blob::String, parse, owned::Set{String})::St
 	return isempty(keep) ? "" : join(keep, '\n') * '\n'
 end
 
-"File > Save Session: write the `scene` window's recipes + generated data to a `.igmtz` zip at `path`."
-function _on_save_session(scene::Ptr{Cvoid}, path::String)
+# ── portable sessions: every file a recipe reads travels INSIDE the zip ───────────────────────
+# A plain session stores a disk PATH for a file-backed layer, so it reopens only where that path
+# exists. A portable one also writes each such file, verbatim, as a `files/` entry and notes which
+# recipe field it stands for (`param.embed.<field>=files/<name>`). Load unpacks them into a
+# "<session>_files" folder beside the .igmtz and points the recipes there, so every reader, every
+# replay and a later plain re-save see an ordinary file on disk — nothing downstream knows.
+
+# The disk files a recipe READS on replay, as field => path: "source" a file-backed grid/image,
+# "image" a curtain's texture file, "file" a focal-mechanism request's catalog.
+function _session_file_refs(r::ElementRecipe)
+	refs = Pair{String,String}[]
+	r.origin === :file && !isempty(r.source) && push!(refs, "source" => r.source)
+	r.kind === :curtain && get(r.params, "image_origin", "") == "file" &&
+		push!(refs, "image" => string(get(r.params, "image", "")))
+	if r.kind === :focal
+		f = _get(_nswing_parse(replace(string(get(r.params, "cparams", "")), '\x1e' => '\n')), "file")
+		isempty(f) || push!(refs, "file" => f)
+	end
+	return refs
+end
+
+# Data iGMT or GMT supply themselves (GMT remote "@" datasets and their cache in GMT's user dir,
+# iGMT's own data folder): present on every installation, so a portable session never packs it.
+function _session_self_supported(path::AbstractString)
+	startswith(path, "@") && return true
+	p = lowercase(normpath(abspath(path)))
+	under(d) = (dd = lowercase(normpath(abspath(d))); startswith(p, rstrip(dd, ['\\', '/']) * Base.Filesystem.path_separator))
+	return under(joinpath(_PKGROOT, "data")) || (!isempty(GMT.GMTuserdir[1]) && under(GMT.GMTuserdir[1]))
+end
+
+# Point one of those fields at `path`.
+function _session_set_file_ref!(r::ElementRecipe, field::AbstractString, path::String)
+	if field == "source"
+		r.source = path
+	elseif field == "image"
+		r.params["image"] = path
+	elseif field == "file"
+		lines = split(string(r.params["cparams"]), '\x1e')
+		r.params["cparams"] = join([startswith(l, "file=") ? "file=" * path : l for l in lines], '\x1e')
+	end
+	return r
+end
+
+# Files GDAL reads TOGETHER with a raster (georeferencing, ENVI header, statistics): they travel with
+# it, or the raster reopens without its coordinates.
+const _SESSION_SIDECAR_EXT = (".aux.xml", ".hdr", ".prj", ".tfw", ".tifw", ".wld", ".pgw", ".jgw", ".aux")
+function _session_sidecars(path::String)
+	stem = splitext(path)[1]
+	out = String[]
+	for e in _SESSION_SIDECAR_EXT, p in (path * e, stem * e)
+		(p != path && isfile(p) && !(p in out)) && push!(out, p)
+	end
+	return out
+end
+
+# Pack the file at `src` (and its sidecars) into `files` ONCE per session; returns its entry name.
+# Names are unique by stem, case-blind (the set is unpacked on Windows too): two different "dem.nc"
+# become dem.nc and dem_2.nc, each sidecar renamed with its raster.
+function _session_embed_file!(files, embedded::Dict{String,String}, stems::Set{String}, src::String)
+	key = abspath(src)
+	haskey(embedded, key) && return embedded[key]
+	isfile(key) || error("file '$src' not found, so it cannot be put in the portable session")
+	stem, ext = splitext(basename(key))
+	nstem = stem; n = 1
+	while lowercase(nstem) in stems
+		n += 1; nstem = "$(stem)_$(n)"
+	end
+	push!(stems, lowercase(nstem))
+	entry = "files/" * nstem * ext
+	push!(files, (entry, read(key)))
+	kstem = splitext(key)[1]
+	for sc in _session_sidecars(key)          # every sidecar starts with the raster's own stem
+		push!(files, ("files/" * nstem * sc[ncodeunits(kstem)+1:end], read(sc)))
+	end
+	embedded[key] = entry
+	return entry
+end
+
+# Save side: a copy of `r` with every file it reads packed and noted as `embed.<field>`.
+function _session_embed_refs(r::ElementRecipe, files, embedded::Dict{String,String}, stems::Set{String})
+	refs = _session_file_refs(r)
+	isempty(refs) && return r
+	r2 = ElementRecipe(r.kind, r.origin, r.source; name=r.name, params=copy(r.params))
+	for (field, p) in refs
+		_session_self_supported(p) && continue
+		r2.params["embed." * field] = _session_embed_file!(files, embedded, stems, p)
+	end
+	return r2
+end
+
+# Load side: unpack `files/` into "<session>_files" beside the session and point every recipe that
+# embedded a file at its unpacked copy. A file already there with the same bytes is reused (the
+# session opened a second time); a DIFFERENT file of that name is never overwritten — the next free
+# "<session>_files_2", "_3", … folder is used instead.
+function _session_unpack_files!(recipes::Vector{ElementRecipe}, entries::Dict{String,Vector{UInt8}}, path::String)
+	packed = [k for k in keys(entries) if startswith(k, "files/")]
+	isempty(packed) && return
+	base = joinpath(dirname(abspath(path)), splitext(basename(path))[1] * "_files")
+	differs(f, b) = isfile(f) && (filesize(f) != length(b) || read(f) != b)
+	dir = base; n = 1
+	while any(k -> differs(joinpath(dir, k[7:end]), entries[k]), packed)
+		n += 1; dir = "$(base)_$(n)"
+	end
+	mkpath(dir)
+	for k in packed
+		f = joinpath(dir, k[7:end])
+		isfile(f) || write(f, entries[k])
+	end
+	for r in recipes, k in collect(keys(r.params))
+		startswith(k, "embed.") || continue
+		_session_set_file_ref!(r, k[7:end], joinpath(dir, string(r.params[k])[7:end]))
+		delete!(r.params, k)                 # the replay re-records the unpacked path, nothing else
+	end
+	return
+end
+
+"""
+File > Save Session: write the `scene` window's recipes + generated data to a `.igmtz` zip at `path`.
+`portable=true` (File > Save Session (portable)) also puts every file the recipes read inside the zip,
+so the session opens on a computer that does not have them (see `_session_embed_refs`).
+"""
+function _on_save_session(scene::Ptr{Cvoid}, path::String; portable::Bool=false)
 	isempty(strip(path)) && error("session: no file name given")
 	recipes = copy(get(_SESSION_LOG, scene, ElementRecipe[]))   # a snapshot: nothing below may edit the log
 	files = Tuple{String,Vector{UInt8}}[]
 	out = ElementRecipe[]; used = Set{String}(); seen = Set{Tuple{Symbol,String}}()
 	gone = String[]; failed = String[]
+	embedded = Dict{String,String}(); stems = Set{String}()        # portable: files already packed
 	label(r) = isempty(r.name) ? string(r.kind) : r.name
 	skipnest = _session_dup_nest_handles(recipes)
 	for r in recipes
@@ -944,7 +1065,28 @@ function _on_save_session(scene::Ptr{Cvoid}, path::String)
 		_session_present(scene, r) || (push!(gone, label(r)); continue)
 		# ONE element that cannot be written costs that element, never the whole session.
 		try
-			if r.origin === :generated
+			# Portable, and the file a grid/image was opened from is no longer on disk: the layer is still
+			# in the window, so it travels as its live data, exactly like a generated one.
+			lost = portable && r.origin === :file && !isfile(r.source) && !_session_self_supported(r.source) &&
+			       r.kind in (:basegrid, :dropgrid, :image, :dropimage)
+			# A Base Map tile is NOT here: it is cut from iGMT's own etopo4.jpg (built-in data), so even a
+			# portable session keeps it as the :menu request that re-crops it.
+			if lost
+				# Packed as a FILE of the session (files/), unpacked beside it on load and opened from
+				# there like any file-backed layer -- the same door as every other portable file.
+				(r.kind, r.name) in seen && continue
+				push!(seen, (r.kind, r.name))
+				id, bytes = _session_pack_generated(scene, ElementRecipe(r.kind, :generated, ""; name=r.name), used)
+				stem, ext = splitext(id)
+				nstem = stem; n = 1
+				while lowercase(nstem) in stems
+					n += 1; nstem = "$(stem)_$(n)"
+				end
+				push!(stems, lowercase(nstem))
+				push!(files, ("files/" * nstem * ext, bytes))
+				p = copy(r.params); p["embed.source"] = "files/" * nstem * ext
+				push!(out, ElementRecipe(r.kind, :file, nstem * ext; name=r.name, params=p))
+			elseif r.origin === :generated
 				# Dedup: an element can get logged more than once (e.g. a nested layer re-materialized); a
 				# given (kind,name) is one Scene Objects element, so serialize + replay it exactly once.
 				(r.kind, r.name) in seen && continue
@@ -958,6 +1100,7 @@ function _on_save_session(scene::Ptr{Cvoid}, path::String)
 				r.kind === :geography && !isempty(r.name) && (r = _session_capture_overlay_pen(scene, r))
 				# Contours: the request plus each level's pen and checkbox; dropped when they are gone.
 				r.kind === :contour && (r = _contour_session_capture(scene, r);  r === nothing && continue)
+				portable && (r = _session_embed_refs(r, files, embedded, stems))
 				push!(out, r)
 			end
 		catch e
@@ -974,6 +1117,7 @@ function _on_save_session(scene::Ptr{Cvoid}, path::String)
 		end
 	end
 	meta = Dict("schema" => "1", "saved" => Libc.strftime("%Y-%m-%dT%H:%M:%S", time()))
+	portable && (meta["portable"] = "1")
 	manifest = _session_write_manifest(meta, _session_display(scene), out)
 	push!(files, ("session.manifest", Vector{UInt8}(codeunits(manifest))))
 	# C++-drawn elements (no add-time recipe) are snapshotted here and rebuilt on load: polygons,
@@ -1175,12 +1319,12 @@ end
 # C callback wrappers: unwrap the Cstring path, run the orchestration, report failures in the Errors
 # console (save) or a warning (load, which has no scene to log to). Never let an exception cross back
 # into C.
-function _on_save_session_cb(scene::Ptr{Cvoid}, cpath::Cstring)::Cvoid
+function _on_save_session_cb(scene::Ptr{Cvoid}, cpath::Cstring, portable::Bool=false)::Cvoid
 	path = ""
 	try
 		path = unsafe_string(cpath)
-		_on_save_session(scene, path)
-		_viewer_log_info(scene, "Saved session -> $path")
+		_on_save_session(scene, path; portable=portable)
+		_viewer_log_info(scene, (portable ? "Saved portable session -> " : "Saved session -> ") * path)
 	catch e
 		_tool_failed(scene, "Save session", e)
 	end
@@ -1200,6 +1344,8 @@ end
 function _register_session()
 	sptr = @cfunction((s, c) -> Base.invokelatest(_on_save_session_cb, s, c), Cvoid, (Ptr{Cvoid}, Cstring))
 	ccall(_fn(:gmtvtk_set_save_session_callback), Cvoid, (Ptr{Cvoid},), sptr)
+	pptr = @cfunction((s, c) -> Base.invokelatest(_on_save_session_cb, s, c, true), Cvoid, (Ptr{Cvoid}, Cstring))
+	ccall(_fn(:gmtvtk_set_save_portable_session_callback), Cvoid, (Ptr{Cvoid},), pptr)
 	lptr = @cfunction((s, c) -> Base.invokelatest(_on_load_session_cb, s, c), Cvoid, (Ptr{Cvoid}, Cstring))
 	ccall(_fn(:gmtvtk_set_load_session_callback), Cvoid, (Ptr{Cvoid},), lptr)
 	return
@@ -1218,6 +1364,7 @@ function _on_load_session(scene::Ptr{Cvoid}, path::String)
 		meta, display, recipes = _session_read_manifest(String(copy(entries["session.manifest"])))
 		# An X,Y tool session (its File > Session > Save, xysession.jl): same container, its own window.
 		get(meta, "kind", "") == "xyplot" && return _xy_load_session(path, entries)
+		_session_unpack_files!(recipes, entries, path)   # a portable session's files, unpacked beside it
 		fig = nothing
 		# Replay RASTERS first (grids/images/basemap), then vector/menu layers — vectors are always drawn on
 		# top of grids/images, and the shared draw-order pile ranks by add order, so vectors must be added

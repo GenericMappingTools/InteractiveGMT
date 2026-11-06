@@ -822,6 +822,9 @@ typedef void (*JuliaSaveSessionFn)(void *scene, const char *path);
 typedef void (*JuliaLoadSessionFn)(void *scene, const char *path);
 static JuliaSaveSessionFn g_juliaSaveSession = nullptr;
 static JuliaLoadSessionFn g_juliaLoadSession = nullptr;
+// File > Save Session (portable): the same save, with every file a layer reads written INSIDE the
+// .igmtz, so it opens on another computer (session.jl _on_save_session, portable=true).
+static JuliaSaveSessionFn g_juliaSavePortableSession = nullptr;
 
 // Color Palettes (Image > Color Palettes, port of Mirone's color_palettes.m). ONE callback serves
 // the whole dialog; `req` says what is wanted and the two buffers carry the payload both ways:
