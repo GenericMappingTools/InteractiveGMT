@@ -40,9 +40,11 @@ just before the first download. One code opens a login that lasts the session.
   interferometry or change detection, compare scenes of the same pass and track.
 * **Find the scenes** lists the scenes newest first and draws their footprints. There is one
   footprint per *frame*, the same piece of the same track, because a frame comes back every 6 or 12
-  days. In an empty window the footprints are drawn over a coastline map. **Pick a frame**, then a
-  click on a footprint, chooses that frame's newest scene in the list. The footprint's own menu item
-  *Choose this scene (Sentinel-1)* does the same.
+  days. In an empty window the footprints are drawn over a coastline map. The footprint of the
+  scene chosen in the list is drawn in red. **Pick a scene**, then a click anywhere inside a
+  footprint, chooses a scene that covers that point; clicking the same place again steps to the next
+  scene covering it (older dates, overlapping frames). The footprint's own menu item *Choose this
+  scene (Sentinel-1)* chooses that frame's newest scene.
 
 The catalogue returns at most 1000 scenes per search. If more match, the status line says so;
 shorten the period to see them.
@@ -56,10 +58,24 @@ A progress bar shows the megabytes received.
 ## Show a GRD
 
 **Download and show** downloads the scene if needed. It then reads the chosen **polarisation**
-straight out of the zip with GDAL's SAFE driver and resamples it to longitude/latitude, following
-the product's own geolocation points (thin-plate spline). The 10 m pixels are averaged into the
-**Spacing** you ask for, 0.001° (about 100 m) by default. **Cut to the region** keeps only the
-part inside the region boxes.
+straight out of the zip with GDAL's SAFE driver and shows it as it is stored: radar geometry, its
+own pixel size, nothing resampled. x is the pixel column and y minus the line number, so the image
+keeps its first line on top.
+
+Tick **Lon/lat at** to resample it to longitude/latitude instead, following the product's own
+geolocation points (thin-plate spline). The spacing you give is the latitude step; the longitude
+step is set to the same distance in metres at the scene's middle latitude, so neither axis is finer
+than the data. Choosing a scene sets the spacing to the product's own pixel size (10 m = 0.00009°;
+25 m and 40 m for the EW and medium-resolution products), rounded up. A larger spacing averages the
+pixels.
+
+Before reading anything, **Download and show** checks that the grid fits in the memory still free.
+If it does not, nothing is read: a message gives the memory needed and free, and the smallest
+**Lon/lat at** spacing that fits (or says to cut to a smaller region).
+
+**Cut to the region** keeps only the part inside the region boxes. Without resampling, that is the
+block of pixel rows and columns whose geolocation points reach the region, cut out untouched. A
+scene that only touches the region's edge gives a thin piece.
 
 **Values**:
 

@@ -204,6 +204,18 @@ static double ephKepler(double M, double e) {
 	return E;
 }
 
+// Heliocentric position (AU, J2000 ECLIPTIC) from the six elements of the instant: a (AU), e, and the
+// angles I, w, O (radians) and M (deg). THE ellipse-to-XYZ of every body (the planets, Apophis).
+static void ephElemsHelio(double a, double e, double I, double M, double w, double O, double xyz[3]) {
+	const double E = ephKepler(std::remainder(M, 360.0) * kEphRad, e);
+	const double xp = a * (std::cos(E) - e), yp = a * std::sqrt(1.0 - e * e) * std::sin(E);
+	const double cw = std::cos(w), sw = std::sin(w), cO = std::cos(O), sO = std::sin(O);
+	const double cI = std::cos(I), sI = std::sin(I);
+	xyz[0] = (cw * cO - sw * sO * cI) * xp + (-sw * cO - cw * sO * cI) * yp;
+	xyz[1] = (cw * sO + sw * cO * cI) * xp + (-sw * sO + cw * cO * cI) * yp;
+	xyz[2] = (sw * sI) * xp + (cw * sI) * yp;
+}
+
 // Heliocentric position (AU, J2000 ECLIPTIC) of planet `p` at `jdTT`. `Mforce` (deg) replaces the
 // date's mean anomaly -- the orbit drawn through the date's elements; NaN = the planet's own.
 static void ephPlanetHelioM(int p, double jdTT, double Mforce, double xyz[3]) {
@@ -214,13 +226,7 @@ static void ephPlanetHelioM(int p, double jdTT, double Mforce, double xyz[3]) {
 	const double I = (e0.I + r.I * T) * kEphRad, w = (e0.w + r.w * T) * kEphRad, O = (e0.O + r.O * T) * kEphRad;
 	double M = e0.M + r.M * T + x.b * T * T + x.c * std::cos(x.f * T * kEphRad) + x.s * std::sin(x.f * T * kEphRad);
 	if (!std::isnan(Mforce)) M = Mforce;
-	const double E = ephKepler(std::remainder(M, 360.0) * kEphRad, e);
-	const double xp = a * (std::cos(E) - e), yp = a * std::sqrt(1.0 - e * e) * std::sin(E);
-	const double cw = std::cos(w), sw = std::sin(w), cO = std::cos(O), sO = std::sin(O);
-	const double cI = std::cos(I), sI = std::sin(I);
-	xyz[0] = (cw * cO - sw * sO * cI) * xp + (-sw * cO - cw * sO * cI) * yp;
-	xyz[1] = (cw * sO + sw * cO * cI) * xp + (-sw * sO + cw * cO * cI) * yp;
-	xyz[2] = (sw * sI) * xp + (cw * sI) * yp;
+	ephElemsHelio(a, e, I, M, w, O, xyz);
 }
 static void ephPlanetHelio(int p, double jdTT, double xyz[3]) {
 	ephPlanetHelioM(p, jdTT, std::nan(""), xyz);

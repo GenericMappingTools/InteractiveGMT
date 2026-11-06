@@ -49,6 +49,8 @@ end
 const _S1_FOUND  = Dict{Ptr{Cvoid},Vector{S1Product}}()           # window -> its last search
 const _S1_FRAMES = Dict{Ptr{Cvoid},Dict{String,Vector{Int}}}()    # window -> footprint label -> products
 const _S1_GROUP  = Dict{Ptr{Cvoid},String}()                      # window -> group tag of its footprints
+const _S1_PENS   = Dict{Ptr{Cvoid},Dict{String,Vector{Float64}}}() # window -> footprint label -> its own pen
+const _S1_LIT    = Dict{Ptr{Cvoid},String}()                      # window -> the highlighted footprint
 
 _s1_dir()::String = get(ENV, "IGMT_S1_DIR", joinpath(homedir(), "Downloads", "Sentinel-1"))
 _s1_file(p::S1Product, dir::String)::String = joinpath(dir, replace(p.name, r"\.SAFE$" => "") * ".zip")
@@ -265,32 +267,104 @@ function _s1_pick_sds(sds::Vector{String}, pol::String, sigma::Bool)::Tuple{Stri
 	return (c[k === nothing ? 1 : k], 0.0)
 end
 
-function _s1_grd_grid(f::String, p::S1Product, pol::String, sigma::Bool, inc::Float64,
-                      box::Union{Nothing,NTuple{4,Float64}})::Tuple{GMTgrid,Bool}
-	sds, fac = _s1_pick_sds(_s1_subdatasets(_s1_manifest(f, p)), pol, sigma)
-	opts = ["-t_srs", "EPSG:4326", "-tr", string(inc), string(inc), "-r", "average", "-tps",
-	        "-ot", "Float32", "-srcnodata", "0", "-dstnodata", "nan"]
-	if box !== nothing
-		W, E, S, N = box
-		fw = minimum(minimum(view(M, :, 1)) for M in p.rings; init = Inf)
-		fe = maximum(maximum(view(M, :, 1)) for M in p.rings; init = -Inf)
-		fs = minimum(minimum(view(M, :, 2)) for M in p.rings; init = Inf)
-		fn = maximum(maximum(view(M, :, 2)) for M in p.rings; init = -Inf)
-		w, e, s, n = isfinite(fw) ? (max(W, fw), min(E, fe), max(S, fs), min(N, fn)) : (W, E, S, N)
-		(w < e && s < n) || error("This scene does not reach the region.")
-		append!(opts, ["-te", string(w), string(s), string(e), string(n)])
+# The pixel window (col0, line0, ncols, nlines) whose geolocation points reach the lon/lat box: every
+# cell of the GCP mesh whose corners' bounding box meets the box contributes its whole pixel span.
+function _s1_size(sds::String, info::String = string(GMT.gdalinfo(sds)))::NTuple{2,Int}
+	m = match(r"Size is (\d+),\s*(\d+)", info)
+	m === nothing && error("GDAL gives no size for $(sds).")
+	return parse(Int, m[1]), parse(Int, m[2])
+end
+
+function _s1_srcwin(sds::String, box::NTuple{4,Float64})::NTuple{4,Int}
+	info = string(GMT.gdalinfo(sds))
+	nc, nl = _s1_size(sds, info)
+	gcp = Dict{Tuple{Int,Int},Tuple{Float64,Float64}}()
+	for g in eachmatch(r"\(([\d.]+),([\d.]+)\)\s*->\s*\(([-\d.eE+]+),([-\d.eE+]+)", info)
+		gcp[(round(Int, parse(Float64, g[1])), round(Int, parse(Float64, g[2])))] = (parse(Float64, g[3]), parse(Float64, g[4]))
 	end
-	G = GMT.gdalwarp(sds, opts)
+	isempty(gcp) && error("The product has no geolocation points: it cannot be cut to a region.")
+	ps = sort!(unique(first.(keys(gcp))));  ls = sort!(unique(last.(keys(gcp))))
+	W, E, S, N = box
+	c0, c1, l0, l1 = typemax(Int), -1, typemax(Int), -1
+	for j in 1:length(ls)-1, i in 1:length(ps)-1
+		q = [get(gcp, (ps[a], ls[b]), (NaN, NaN)) for a in (i, i + 1), b in (j, j + 1)]
+		lo, la = first.(q), last.(q)
+		any(isnan, lo) && continue
+		(maximum(lo) < W || minimum(lo) > E || maximum(la) < S || minimum(la) > N) && continue
+		c0 = min(c0, ps[i]);  c1 = max(c1, ps[i+1]);  l0 = min(l0, ls[j]);  l1 = max(l1, ls[j+1])
+	end
+	c1 < 0 && error("This scene does not reach the region.")
+	c0 = clamp(c0, 0, nc - 1);  c1 = clamp(c1, 0, nc - 1);  l0 = clamp(l0, 0, nl - 1);  l1 = clamp(l1, 0, nl - 1)
+	return c0, l0, c1 - c0 + 1, l1 - l0 + 1
+end
+
+# Refuse, BEFORE reading, a grid of `nodes` that would not fit in the memory still free: one Float32
+# per node. Name the spacing over the lon/lat extent `ext` that would fit. inc = 0: the scene as stored.
+function _s1_mem_check(nodes::Int, ext::NTuple{4,Float64}, inc::Float64)
+	bpn = 4
+	GC.gc()
+	avail = _mem_available()
+	need = nodes * bpn
+	need <= avail && return nothing
+	gb(b) = round(b / 2^30; digits = 1)
+	fit = avail ÷ bpn
+	w, e, s, n = ext
+	ok = fit <= 0 ? NaN : inc > 0 ? inc * sqrt(nodes / fit) : isfinite(w) ? sqrt((e - w) * (n - s) / fit) : NaN
+	isfinite(ok) && (ok = _s1_ceil2(ok))
+	what = inc > 0 ? "Resampling at $(_s1_deg_str(inc)) deg gives $(nodes) nodes" :
+	                 "The scene as stored is $(nodes) pixels"
+	advice = !isfinite(ok) ? "Close other programs, or cut to a smaller region." :
+	         inc > 0 ? "Set \"Lon/lat at\" to $(_s1_deg_str(ok)) deg or more, or cut to a smaller region." :
+	                   "Tick \"Lon/lat at\" with $(_s1_deg_str(ok)) deg or more, or cut to a smaller region."
+	error("Not enough free memory to show it. $(what): about $(gb(need)) GB, and $(gb(avail)) GB are free. $(advice)")
+end
+
+# Rounded UP to two significant digits: a spacing is never made finer than asked.
+_s1_ceil2(v::Float64)::Float64 = (q = 10.0^(floor(log10(v)) - 1); ceil(v / q * (1 - 1e-12)) * q)
+
+_s1_deg_str(v::Float64)::String = rstrip(rstrip(GMT.@sprintf("%.6f", v), '0'), '.')
+
+# warp = true: resampled to lon/lat at inc (thin-plate spline through the GCPs). warp = false: the
+# stored pixels, no resampling, x = pixel column and y = minus the line (row 0 stays on top).
+function _s1_grd_grid(f::String, p::S1Product, pol::String, sigma::Bool, inc::Float64,
+                      box::Union{Nothing,NTuple{4,Float64}}, warp::Bool)::Tuple{GMTgrid,Bool}
+	sds, fac = _s1_pick_sds(_s1_subdatasets(_s1_manifest(f, p)), pol, sigma)
+	# The lon/lat extent shown: the footprint's bounding box, cut to the region when asked.
+	fw = minimum(minimum(view(M, :, 1)) for M in p.rings; init = Inf)
+	fe = maximum(maximum(view(M, :, 1)) for M in p.rings; init = -Inf)
+	fs = minimum(minimum(view(M, :, 2)) for M in p.rings; init = Inf)
+	fn = maximum(maximum(view(M, :, 2)) for M in p.rings; init = -Inf)
+	w, e, s, n = box === nothing ? (fw, fe, fs, fn) :
+	             isfinite(fw) ? (max(box[1], fw), min(box[2], fe), max(box[3], fs), min(box[4], fn)) : box
+	box !== nothing && !(w < e && s < n) && error("This scene does not reach the region.")
+	if warp
+		# inc is the LATITUDE step; the longitude step spans the same metres at the scene's middle
+		# latitude, so neither axis is finer than the data (an equal degree step in x would be).
+		incx = isfinite(s) ? _s1_ceil2(inc / cosd((s + n) / 2)) : inc
+		isfinite(w) && _s1_mem_check(ceil(Int, (e - w) / incx) * ceil(Int, (n - s) / inc), (w, e, s, n), inc)
+		opts = ["-t_srs", "EPSG:4326", "-tr", _s1_deg_str(incx), string(inc), "-r", "average", "-tps",
+		        "-ot", "Float32", "-srcnodata", "0", "-dstnodata", "nan"]
+		box === nothing || append!(opts, ["-te", string(w), string(s), string(e), string(n)])
+		G = GMT.gdalwarp(sds, opts)
+	else
+		c0, l0, nc, nl = box === nothing ? (0, 0, _s1_size(sds)...) : _s1_srcwin(sds, box)
+		_s1_mem_check(nc * nl, (w, e, s, n), 0.0)
+		G = GMT.gdaltranslate(sds, box === nothing ? ["-ot", "Float32"] :
+		                      ["-srcwin", string(c0), string(l0), string(nc), string(nl), "-ot", "Float32"])
+	end
 	G isa GMTgrid || error("GDAL did not return a grid for $(sds).")
-	if fac > 0
-		@inbounds for k in eachindex(G.z)
-			v = G.z[k]
-			G.z[k] = v > 0 ? Float32(fac * log10(v)) : NaN32
-		end
+	@inbounds for k in eachindex(G.z)          # 0 is the products' no-data
+		v = G.z[k]
+		G.z[k] = v > 0 ? (fac > 0 ? Float32(fac * log10(v)) : v) : NaN32
 	end
 	any(!isnan, G.z) || error("The scene has no $(pol) value inside the region.")
+	if !warp                                   # GDAL numbers the cut 1..n: give it the scene's own pixels
+		nx, ny = length(G.x), length(G.y)
+		G.x = collect(Float64, c0:c0+nx-1);  G.y = collect(Float64, -(l0+ny-1):-l0)
+		G.range[1:4] = [G.x[1], G.x[end], G.y[1], G.y[end]]
+	end
 	G.range[5] = GMT.minimum_nan(G.z);  G.range[6] = GMT.maximum_nan(G.z)
-	isempty(G.proj4) && (G.proj4 = GMT.prj4WGS84)
+	warp && isempty(G.proj4) && (G.proj4 = GMT.prj4WGS84)
 	return G, fac > 0
 end
 
@@ -303,6 +377,24 @@ function _s1_box(d::Dict{String,String})::NTuple{4,Float64}
 	(-180 <= W && E <= 180 && -90 <= S && N <= 90) || error("The region must lie within -180/180/-90/90.")
 	return W, E, S, N
 end
+
+# The window's limits as a lon/lat box W, E, S, N: as they are on a geographic window (referenced, or an
+# unreferenced one whose numbers are longitudes and latitudes), converted on a window in a known
+# projected CRS. `nothing` when the window shows nothing, or is in a system nobody can name — there
+# its limits are not longitudes and latitudes, and "Use the window's limits" is locked.
+function _s1_window_box(scene::Ptr{Cvoid})::Union{Nothing,NTuple{4,Float64}}
+	_rs_empty(scene) && return nothing
+	st = _scene_state(scene)
+	(haskey(st, "x0") && st["x1"] > st["x0"] && st["y1"] > st["y0"]) || return nothing
+	x0, x1, y0, y1 = Float64(st["x0"]), Float64(st["x1"]), Float64(st["y0"]), Float64(st["y1"])
+	srs = _window_srs(scene)
+	isempty(srs) && return _lop_isgeog(scene, [x0 y0; x1 y1]) ? (x0, x1, y0, y1) : nothing
+	_project_is_geog(srs) && return (x0, x1, y0, y1)
+	return try _box_to(srs, _LONLAT, x0, x1, y0, y1) catch; nothing end
+end
+
+# "Use the window's limits" only where they can be turned into longitudes and latitudes.
+_s1_lock_rgwindow(io::IOBuffer, scene::Ptr{Cvoid}) = _rs_enable(io, "run_rgwindow", _s1_window_box(scene) !== nothing)
 
 function _s1_folder(d::Dict{String,String})::String
 	dir = _rs_get(d, "p_folder")
@@ -334,7 +426,7 @@ function _s1_plot_footprints!(scene::Ptr{Cvoid}, found::Vector{S1Product},
                               W::Float64, E::Float64, S::Float64, N::Float64)::Int
 	old = pop!(_S1_GROUP, scene, "")
 	isempty(old) || ccall(_fn(:gmtvtk_remove_overlay_group_h), Cint, (Ptr{Cvoid}, Cstring), scene, old)
-	delete!(_S1_FRAMES, scene)
+	delete!(_S1_FRAMES, scene);  delete!(_S1_PENS, scene);  delete!(_S1_LIT, scene)
 	isempty(found) && return 0
 	# Frames: same track, same direction, footprint centres less than half a degree apart in latitude.
 	# (the closing vertex repeats the first one and is not counted twice)
@@ -352,6 +444,7 @@ function _s1_plot_footprints!(scene::Ptr{Cvoid}, found::Vector{S1Product},
 	t0 = minimum(p.t0 for p in found);  t1 = maximum(p.t0 for p in found)
 	nm = "Sentinel-1 scenes $(GMT.Dates.format(t0, "yyyy-mm-dd")) to $(GMT.Dates.format(t1, "yyyy-mm-dd"))"
 	labels = Dict{String,Vector{Int}}()
+	pens = Dict{String,Vector{Float64}}()
 	for (trk, orb, c, ks) in frames
 		p = found[ks[1]]
 		lab = "Track $(trk) $(_s1_orb(p)) at $(round(abs(c), digits = 1))$(c < 0 ? "S" : "N") ($(length(ks)) scene$(length(ks) > 1 ? "s" : ""))"
@@ -371,10 +464,84 @@ function _s1_plot_footprints!(scene::Ptr{Cvoid}, found::Vector{S1Product},
 		ccall(_fn(:gmtvtk_overlay_set_tool_pick_h), Cint, (Ptr{Cvoid}, Cstring, Cstring, Cstring, Cstring),
 		      scene, lab, "s1", "pickscene", "Choose this scene (Sentinel-1)")
 		labels[lab] = ks
+		pen = zeros(6)
+		ccall(_fn(:gmtvtk_overlay_style_h), Cint, (Ptr{Cvoid}, Cstring, Ptr{Cdouble}), scene, lab, pen) != 0 &&
+			(pens[lab] = pen)
 	end
 	_S1_GROUP[scene] = nm
 	_S1_FRAMES[scene] = labels
+	_S1_PENS[scene] = pens
 	return length(labels)
+end
+
+# The footprint (frame) that holds scene `k` of the last search.
+function _s1_frame_of(scene::Ptr{Cvoid}, k::Int)::String
+	for (lab, ks) in get(_S1_FRAMES, scene, Dict{String,Vector{Int}}())
+		k in ks && return lab
+	end
+	return ""
+end
+
+# Highlight the footprint of the chosen scene (red, 3 px) and give the one lit before back its own pen.
+function _s1_highlight!(scene::Ptr{Cvoid}, k::Int)
+	pens = get(_S1_PENS, scene, Dict{String,Vector{Float64}}())
+	lab = _s1_frame_of(scene, k)
+	old = get(_S1_LIT, scene, "")
+	old == lab && return nothing
+	if !isempty(old) && haskey(pens, old)
+		p = pens[old]
+		ccall(_fn(:gmtvtk_set_overlay_style_h), Cint,
+		      (Ptr{Cvoid}, Cstring, Cdouble, Cdouble, Cdouble, Cdouble, Cint, Cdouble),
+		      scene, old, p[1], p[2], p[3], p[4], round(Int, p[5]), p[6])
+	end
+	delete!(_S1_LIT, scene)
+	(isempty(lab) || !haskey(pens, lab)) && return nothing
+	ccall(_fn(:gmtvtk_set_overlay_style_h), Cint,
+	      (Ptr{Cvoid}, Cstring, Cdouble, Cdouble, Cdouble, Cdouble, Cint, Cdouble),
+	      scene, lab, 1.0, 0.0, 0.0, 3.0, 0, 1.0)
+	_S1_LIT[scene] = lab
+	return nothing
+end
+
+# A GRD's pixel spacing in metres (ESA's product table): full resolution 10, high 10 (EW 25),
+# medium 40 (WV 25).
+function _s1_pixel_m(p::S1Product)::Float64
+	m = match(r"^S1[A-D]_([A-Z0-9]{2})_GRD([FHM])", p.name)
+	m === nothing && return 10.0
+	m[2] == "F" && return 10.0
+	m[2] == "H" && return m[1] == "EW" ? 25.0 : 10.0
+	return m[1] == "WV" ? 25.0 : 40.0
+end
+
+# Choose scene `k` in the list and light its footprint. A GRD also sets the lon/lat spacing to its own
+# pixel size in degrees of latitude, the spacing closest to the data's.
+function _s1_choose!(io::IOBuffer, scene::Ptr{Cvoid}, k::Int)
+	_rs_set(io, "p_granule", k - 1)
+	_s1_highlight!(scene, k)
+	found = get(_S1_FOUND, scene, S1Product[])
+	if 1 <= k <= length(found) && _s1_kind(found[k]) in (:grd, :cog)
+		_rs_set(io, "p_res", _s1_deg_str(_s1_ceil2(_s1_pixel_m(found[k]) / 111320)))
+	end
+	return nothing
+end
+
+# The scenes whose footprint covers the point (lon, lat), in list order (newest first).
+function _s1_covering(found::Vector{S1Product}, lon::Float64, lat::Float64)::Vector{Int}
+	out = Int[]
+	for (k, p) in enumerate(found)
+		for M in p.rings
+			L = copy(M)
+			for i in 2:size(L, 1)                       # the same continuous longitudes the footprints use
+				while L[i, 1] - L[i-1, 1] > 180  L[i, 1] -= 360  end
+				while L[i, 1] - L[i-1, 1] < -180 L[i, 1] += 360  end
+			end
+			if any(GMT.inpolygon(lon + t, lat, L) >= 0 for t in (-360.0, 0.0, 360.0))
+				push!(out, k)
+				break
+			end
+		end
+	end
+	return out
 end
 
 function _rs_s1(scene::Ptr{Cvoid}, d::Dict{String,String}, io::IOBuffer)::Bool
@@ -388,13 +555,14 @@ function _rs_s1(scene::Ptr{Cvoid}, d::Dict{String,String}, io::IOBuffer)::Bool
 		return true
 	end
 	if what == "rgwindow" || (what == "init" && !_rs_empty(scene))
-		st = _scene_state(scene)
-		if haskey(st, "x0") && st["x1"] > st["x0"] && st["y1"] > st["y0"]
-			for (w, k) in (("p_rg_w", "x0"), ("p_rg_e", "x1"), ("p_rg_s", "y0"), ("p_rg_n", "y1"))
-				_rs_set(io, w, string(round(Float64(st[k]), digits = 4)))
+		b = _s1_window_box(scene)
+		if b !== nothing
+			for (w, v) in zip(("p_rg_w", "p_rg_e", "p_rg_s", "p_rg_n"), b)
+				_rs_set(io, w, string(round(v, digits = 4)))
 			end
 		elseif what == "rgwindow"
-			error("The window shows nothing yet: type the limits.")
+			error(_rs_empty(scene) ? "The window shows nothing yet: type the limits." :
+			      "The window is neither geographic nor in a known coordinate system: type the limits.")
 		end
 		what == "rgwindow" && return true
 	end
@@ -402,6 +570,7 @@ function _rs_s1(scene::Ptr{Cvoid}, d::Dict{String,String}, io::IOBuffer)::Bool
 		_rs_items(io, "p_product", String[p[1] for p in _S1_PRODUCTS])
 		_rs_set(io, "p_product", 0)
 		_rs_enable(io, "gb_show", true)                 # the first product is a GRD
+		_s1_lock_rgwindow(io, scene)
 		today = GMT.Dates.Date(RS.now(RS.UTC))
 		_rs_set(io, "p_from", "$(today - GMT.Dates.Day(30))T00:00:00")
 		_rs_set(io, "p_to", "$(today)T00:00:00")
@@ -416,13 +585,15 @@ function _rs_s1(scene::Ptr{Cvoid}, d::Dict{String,String}, io::IOBuffer)::Bool
 		_rs_label(io, "lbl_cd_where", "Saved in $(f) as machine $(_S1_MACHINE)$(why)")
 		found = get(_S1_FOUND, scene, S1Product[])
 		_rs_items(io, "p_granule", String[_s1_label(x, _s1_dir()) for x in found])
-		isempty(found) || _rs_set(io, "p_granule", 0)
+		isempty(found) || _s1_choose!(io, scene, 1)
 		_rs_status(io, isempty(u) ? "Searching needs no account; downloading needs your Copernicus Data Space login (Account tab)." :
 		                            "Give the region and the period, then Find the scenes.")
 		return true
 	end
 	if what == "refresh"
 		_rs_enable(io, "gb_show", _S1_PRODUCTS[prod][3] in (:grd, :cog))
+		_s1_lock_rgwindow(io, scene)
+		isempty(get(_S1_FOUND, scene, S1Product[])) || _s1_highlight!(scene, _rs_idx(d, "p_granule") + 1)
 		return true
 	end
 	if what == "search"
@@ -444,12 +615,33 @@ function _rs_s1(scene::Ptr{Cvoid}, d::Dict{String,String}, io::IOBuffer)::Bool
 		_S1_FOUND[scene] = found
 		dir = _s1_folder(d)
 		_rs_items(io, "p_granule", String[_s1_label(x, dir) for x in found])
-		isempty(found) || _rs_set(io, "p_granule", 0)
 		nfr = _s1_plot_footprints!(scene, found, W, E, S, N)
+		_s1_lock_rgwindow(io, scene)                   # the search may have made a map in an empty window
+		isempty(found) || _s1_choose!(io, scene, 1)
 		_rs_status(io, isempty(found) ? "No $(mode) $(_S1_PRODUCTS[prod][1]) scene over the region in that period." :
 		               "$(length(found)) scene(s) in $(nfr) frame(s), newest first." *
 		               (total > length(found) ? " The catalogue has $(total): shorten the period to see the rest." : "") *
-		               " Choose one in the list, or Pick a frame and click its footprint.")
+		               " Choose one in the list, or Pick a scene and click inside its footprint.")
+		return true
+	end
+	if what == "pickscene" && !isempty(_rs_get(d, "px"))
+		found = get(_S1_FOUND, scene, S1Product[])
+		isempty(found) && error("Find the scenes first, then click inside one of the footprints it draws.")
+		x, y = _rs_num(d, "px", NaN), _rs_num(d, "py", NaN)
+		src = _window_srs(scene)
+		if !isempty(src) && !_project_is_geog(src)
+			Q = _srs_xy([x y], src, _LONLAT);  x, y = Q[1, 1], Q[1, 2]
+		end
+		ks = _s1_covering(found, x, y)
+		isempty(ks) && error("No scene found covers $(round(x, digits = 3)), $(round(y, digits = 3)): click inside a footprint.")
+		# Clicking the same place again steps to the next scene that covers it.
+		cur = _rs_idx(d, "p_granule") + 1
+		j = findfirst(==(cur), ks)
+		k = ks[j === nothing ? 1 : mod1(j + 1, length(ks))]
+		_s1_choose!(io, scene, k)
+		p = found[k]
+		_rs_status(io, "Chose $(GMT.Dates.format(p.t0, "yyyy-mm-dd HH:MM")) track $(p.track) $(_s1_orb(p))" *
+		               (length(ks) > 1 ? ": $(length(ks)) scenes cover that point, click it again for the next." : "."))
 		return true
 	end
 	if what == "pickscene"
@@ -457,7 +649,7 @@ function _rs_s1(scene::Ptr{Cvoid}, d::Dict{String,String}, io::IOBuffer)::Bool
 		ks = get(get(_S1_FRAMES, scene, Dict{String,Vector{Int}}()), line, Int[])
 		isempty(ks) && error("\"$(line)\" is not a Sentinel-1 footprint: Find the scenes, then click one of the footprints it draws.")
 		found = _S1_FOUND[scene]
-		_rs_set(io, "p_granule", ks[1] - 1)
+		_s1_choose!(io, scene, ks[1])
 		p = found[ks[1]]
 		_rs_status(io, "$(line): chose the newest, $(GMT.Dates.format(p.t0, "yyyy-mm-dd HH:MM"))" *
 		               (length(ks) > 1 ? " (the list has the other $(length(ks) - 1))." : "."))
@@ -469,7 +661,7 @@ function _rs_s1(scene::Ptr{Cvoid}, d::Dict{String,String}, io::IOBuffer)::Bool
 	f = _s1_fetch(p, dir, d)
 	found = _S1_FOUND[scene]
 	_rs_items(io, "p_granule", String[_s1_label(x, dir) for x in found])
-	_rs_set(io, "p_granule", findfirst(==(p), found) - 1)
+	_s1_choose!(io, scene, findfirst(==(p), found))
 	if what == "download"
 		_rs_status(io, "$(f) ($(round(filesize(f) / 2^20, digits = 1)) MB).")
 		return true
@@ -481,16 +673,21 @@ function _rs_s1(scene::Ptr{Cvoid}, d::Dict{String,String}, io::IOBuffer)::Bool
 	inc = _rs_num(d, "p_res", 0.001)
 	inc > 0 || error("The spacing must be positive.")
 	box = _rs_on(d, "p_cut") ? _s1_box(d) : nothing
-	_rs_prog_show("Resampling the $(pol) band of $(p.name) to longitude/latitude…")
+	warp = _rs_on(d, "p_warp")
+	_rs_prog_show(warp ? "Resampling the $(pol) band of $(p.name) to longitude/latitude…" :
+	                     "Reading the $(pol) band of $(p.name)…")
 	G, db = try
-		_s1_grd_grid(f, p, pol, sigma, inc, box)
+		_s1_grd_grid(f, p, pol, sigma, inc, box, warp)
 	finally
 		_rs_prog_close()
 	end
-	what_ = !sigma ? "amplitude $(pol) (DN)" : db ? "sigma0 $(pol) (dB)" : "sigma0 $(pol)"
+	# Only a SIGMA0 subdataset is calibrated (and gets the dB factor); anything else is the stored DN.
+	what_ = db ? "sigma0 $(pol) (dB)" : "amplitude $(pol) (DN)"
 	name = "$(what_) — $(_s1_sat(p)) $(GMT.Dates.format(p.t0, "yyyy-mm-dd HH:MM")) track $(p.track) $(_s1_orb(p))"
-	recipe = "Sentinel-1 $(basename(f)): $(what_) warped to $(inc) deg (gdalwarp -tps -r average)"
+	recipe = "Sentinel-1 $(basename(f)): $(what_) " * (warp ? "warped to $(inc) deg (gdalwarp -tps -r average)" :
+	                                                          "in its radar geometry, pixels as stored")
 	_rs_deliver(scene, G, name, recipe)
-	_rs_status(io, "$(name) added.")
+	_rs_status(io, "$(name) added." * (sigma && !db ?
+	           " GDAL offers no calibrated (SIGMA0) band for this product: these are the uncalibrated values." : ""))
 	return true
 end

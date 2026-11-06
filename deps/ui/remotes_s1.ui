@@ -448,7 +448,7 @@
        <string>Finding the Sentinel-1 scenes over the region…</string>
       </property>
      </widget>
-     <widget class="QPushButton" name="pickline_pickscene">
+     <widget class="QPushButton" name="pickpoint_pickscene">
       <property name="geometry">
        <rect>
         <x>178</x>
@@ -458,10 +458,10 @@
        </rect>
       </property>
       <property name="toolTip">
-       <string>Then click one of the footprints Find the scenes drew: the newest scene of that frame is chosen in the Scene list below (the list has the older ones). Press again to cancel. The footprint's own menu item "Choose this scene (Sentinel-1)" does the same.</string>
+       <string>Then click anywhere inside the footprints Find the scenes drew: a scene covering that point is chosen in the Scene list below and its footprint is highlighted. Clicking the same place again steps to the next scene covering it (older dates, overlapping frames). Press again to cancel. The footprint's own menu item "Choose this scene (Sentinel-1)" chooses the newest scene of that frame.</string>
       </property>
       <property name="text">
-       <string>Pick a frame</string>
+       <string>Pick a scene</string>
       </property>
       <property name="busy" stdset="0">
        <string>Choosing the scene…</string>
@@ -503,7 +503,10 @@
        </rect>
       </property>
       <property name="toolTip">
-       <string>The scenes found, newest first: start time (UTC), satellite (S1A, S1B, S1C, S1D), orbit direction, track and size. "(on disk)": already in the folder below, not downloaded again.</string>
+       <string>The scenes found, newest first: start time (UTC), satellite (S1A, S1B, S1C, S1D), orbit direction, track and size. "(on disk)": already in the folder below, not downloaded again. The chosen scene's footprint is highlighted in the view.</string>
+      </property>
+      <property name="refresh" stdset="0">
+       <bool>true</bool>
       </property>
      </widget>
      <widget class="QLabel" name="lbl_folder">
@@ -646,30 +649,33 @@
        </property>
       </item>
      </widget>
-     <widget class="QLabel" name="lbl_res">
+     <widget class="QCheckBox" name="p_warp">
       <property name="geometry">
        <rect>
         <x>11</x>
         <y>59</y>
-        <width>55</width>
+        <width>80</width>
         <height>26</height>
        </rect>
       </property>
+      <property name="toolTip">
+       <string>Resample the scene to a longitude/latitude grid at the spacing on the right, through the product's own geolocation points. Unticked: the scene as it is stored, in its radar geometry and at its own pixel size, with no resampling (x = pixel column, y = minus the line number).</string>
+      </property>
       <property name="text">
-       <string>Spacing</string>
+       <string>Lon/lat at</string>
       </property>
      </widget>
      <widget class="QLineEdit" name="p_res">
       <property name="geometry">
        <rect>
-        <x>70</x>
+        <x>94</x>
         <y>59</y>
-        <width>70</width>
+        <width>60</width>
         <height>26</height>
        </rect>
       </property>
       <property name="toolTip">
-       <string>Grid spacing in degrees. The 10 m pixels are averaged into it: 0.001 is about 100 m, 0.0002 about 20 m (and a much bigger grid). A whole IW scene at 0.001 is about 3000 x 2000 nodes.</string>
+       <string>Latitude step of the grid in degrees, used only when "Lon/lat at" is ticked. The longitude step is set to the same distance in metres at the scene's middle latitude. Choosing a scene sets it to the product's own pixel size, rounded up (10 m = 0.00009); a larger step averages the pixels.</string>
       </property>
       <property name="text">
        <string>0.001</string>
@@ -678,9 +684,9 @@
      <widget class="QLabel" name="lbl_resunit">
       <property name="geometry">
        <rect>
-        <x>146</x>
+        <x>158</x>
         <y>59</y>
-        <width>30</width>
+        <width>26</width>
         <height>26</height>
        </rect>
       </property>
@@ -698,7 +704,7 @@
        </rect>
       </property>
       <property name="toolTip">
-       <string>Show only the part of the scene inside the region above. Unticked: the whole scene.</string>
+       <string>Show only the part of the scene inside the region above. Without "Lon/lat at", the pixel rows and columns whose geolocation points reach the region, cut out as they are. Unticked: the whole scene.</string>
       </property>
       <property name="text">
        <string>Cut to the region</string>
@@ -717,7 +723,7 @@
        </rect>
       </property>
       <property name="toolTip">
-       <string>Download the chosen GRD if it is not on disk yet, then show its band in this window as a longitude/latitude grid: the radar geometry resampled through the product's own geolocation points.</string>
+       <string>Download the chosen GRD if it is not on disk yet, then show its band in this window: as stored (radar geometry, own pixel size), or resampled to longitude/latitude when "Lon/lat at" is ticked.</string>
       </property>
       <property name="text">
        <string>Download and show</string>

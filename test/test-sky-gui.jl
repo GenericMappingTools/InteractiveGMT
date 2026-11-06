@@ -49,6 +49,26 @@ end
 	end
 end
 
+# Apophis: Horizons osculating-element table (74_apophis.cpp), built to 1e-4 AU over 1900-2100. Reference:
+# Horizons heliocentric VECTORS (J2000 ecliptic, AU, TDB), including the 2029-04-13 21:46 closest approach.
+@testitem "ephemeris: Apophis against JPL Horizons, through the 2029 Earth pass" tags=[:gui] setup=[GmtvtkTest] begin
+	IG = InteractiveGMT
+	using LinearAlgebra
+	helio(jd) = (out = zeros(3);
+		ok = ccall(IG._fn(:gmtvtk_ephem_test), Cint, (Cstring, Cdouble, Ptr{Cdouble}), "helio:apophis", jd, out); (ok, out))
+	ref = [(2451545.0, [-1.037925696095382, -0.1457977684770640, -0.01749114057492798]),
+	       (2461041.5, [0.6337626700399294, -0.3921765622518124, 0.03591964281079789]),
+	       (2462240.406944444, [-0.9175077190175104, -0.4050855957678985, 6.983171695791036e-5]),
+	       (2462250.5, [-0.8039343531432555, -0.5490172448864571, 0.007044317892253287]),
+	       (2473000.5, [0.9540766176798963, 0.6977701826482935, -0.01038787015725944]),
+	       (2488069.5, [-1.021376131679670, -0.2029056978569125, -0.007966915741052339])]
+	for (jd, x) in ref
+		ok, v = helio(jd)
+		@test ok == 1 && norm(v - x) < 1.2e-4
+	end
+	@test helio(2415000.0)[1] == 0 && helio(2488100.0)[1] == 0    # no position outside 1900-2100
+end
+
 @testitem "solar system: menu opens the demo; time and the distance scale drive it" tags=[:gui] setup=[GmtvtkTest] begin
 	IG = InteractiveGMT
 	pump(n = 10) = for _ in 1:n; sleep(0.05); end
@@ -72,7 +92,7 @@ end
 		s = state(fig, "scale:3")                            # Titius-Bode: Neptune moved out to 38.8 AU's slot
 		@test isapprox(s[15], 10 * sqrt(s[16] * 38.8 / 30.06952752); atol=0.01)
 		@test isapprox(s[7], 10 * sqrt(hypot(s[4], s[5]) / 1.00000018); atol=0.01)  # ...the Earth stays at 1
-		@test s[11] == 12 && s[12] == 7                      # every name (11 bodies + the Sun); all dwarfs drawn
+		@test s[11] == 13 && s[12] == 15                     # every name (12 bodies + the Sun); dwarfs + Apophis drawn
 		s = state(fig, "names:0")
 		@test s[11] == 0                                     # names off...
 		s = state(fig, "hover:4")
@@ -80,7 +100,14 @@ end
 		s = state(fig, "hover:-1")
 		@test s[14] == -1 && s[11] == 0
 		s = state(fig, "dwarfs:0")
-		@test s[12] == 4                                     # Ceres and Eris hidden, Pluto stays
+		@test s[12] == 12                                    # Ceres and Eris hidden, Pluto and Apophis stay
+		s = state(fig, "apophis:0")
+		@test s[12] == 4                                     # Apophis hidden by its box
+		state(fig, "apophis:1")
+		s = state(fig, "jd:2415000.0")                       # 1899: outside Apophis' table
+		@test s[12] == 4                                     # ...no position, not drawn
+		s = state(fig, "jd:2451545.0")
+		@test s[12] == 12                                    # back inside: drawn again
 		s = state(fig, "panel:0")
 		@test s[13] == 0                                     # the right panel folds away...
 		s = state(fig, "panel:1")

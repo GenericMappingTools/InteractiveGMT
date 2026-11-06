@@ -920,17 +920,17 @@ static void splash_paint(HWND hw) {
 		const wchar_t *cap = L"Starting i'GMT\x2026";
 		wchar_t capbuf[512];
 		char st[512];
-		int longline = 0;
 		if (status_read(st, sizeof(st))) {   /* the phase line, when iview_app.jl wrote one */
 			MultiByteToWideChar(CP_UTF8, 0, st, -1, capbuf, 512);
 			cap = capbuf;
-			longline = (int)strlen(st) > 30;    /* a phase line is far longer than the caption */
 		}
+		/* ONE size for every caption, sized for the longest phase line: picking it from the text's
+		 * length made the font jump at every phase change. */
 		/* ANTIALIASED_QUALITY, not CLEARTYPE_QUALITY: ClearType needs an opaque background to
 		 * blend its subpixels against, and GDI silently drops to ALIASED glyphs when it is asked
 		 * to draw with a TRANSPARENT background over an image — which is what made the caption
 		 * look low-resolution. Greyscale antialiasing has no such requirement. */
-		HFONT f = CreateFontW(-(rc.bottom / (longline ? 26 : 16)), 0, 0, 0, FW_SEMIBOLD, 0, 0, 0, DEFAULT_CHARSET,
+		HFONT f = CreateFontW(-(rc.bottom / 26), 0, 0, 0, FW_SEMIBOLD, 0, 0, 0, DEFAULT_CHARSET,
 		                      OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY,
 		                      DEFAULT_PITCH, L"Segoe UI");
 		HFONT old = (HFONT)SelectObject(dc, f);

@@ -38,14 +38,14 @@ end
 		@test IG._swot_plot_swaths!(h, IG._SWOT_FOUND[h], -10.0, -6.0, 36.0, 42.0) == 2
 		IG._pump_once()
 		st = IG._scene_state(h)
-		# An empty window got a geographic map round the region, plus coastline + ONE line per pass.
+		# An empty window got a geographic map round the region, plus coastline + region rectangle + ONE line per pass.
 		@test st["has_surface"] == 1 && st["crs"] == 1
-		@test st["n_overlays"] == 3
+		@test st["n_overlays"] == 4
 		@test st["x0"] <= -12 && st["x1"] >= -4 && st["y0"] <= 34 && st["y1"] >= 44
-		# A new search REPLACES the previous swaths: still coastline + 2, not 2 more.
+		# A new search REPLACES the previous swaths and rectangle: still coastline + rectangle + 2, not more.
 		@test IG._swot_plot_swaths!(h, IG._SWOT_FOUND[h], -10.0, -6.0, 36.0, 42.0) == 2
 		IG._pump_once()
-		@test IG._scene_state(h)["n_overlays"] == 3
+		@test IG._scene_state(h)["n_overlays"] == 4
 		# Each pass line is a guide line of this dialog (its menu's pick item, no clamp/fill/names).
 		@test ccall(IG._fn(:gmtvtk_overlay_set_tool_pick_h), Cint, (Ptr{Cvoid}, Cstring, Cstring, Cstring, Cstring),
 		            h, "Pass 432 (cycles 55, 56)", "swot", "pickpass", "Show this pass (SWOT)") == 1
@@ -54,7 +54,7 @@ end
 		@test ok == 0 && occursin("is not a SWOT swath", r)
 		@test any(e -> occursin("is not a SWOT swath", e), IG._take_tool_errors!())   # the refusal, claimed
 	finally
-		delete!(IG._SWOT_FOUND, h);  delete!(IG._SWOT_SWATHS, h)
+		delete!(IG._SWOT_FOUND, h);  delete!(IG._SWOT_SWATHS, h);  delete!(IG._RS_REGION_BOX, h)
 		RemoteSGui.close_win(h)
 	end
 end
@@ -76,9 +76,9 @@ end
 		st = IG._scene_state(h)
 		# ...and comes BACK with the grid gone — picture, frame and axes — not left hidden for good.
 		@test st["surfvis"] == 1 && st["axes"] == 1
-		@test isempty(st["extras"]) && st["n_overlays"] == 2      # coastline + the swath line still there
+		@test isempty(st["extras"]) && st["n_overlays"] == 3      # coastline + rectangle + the swath line still there
 	finally
-		delete!(IG._SWOT_FOUND, h);  delete!(IG._SWOT_SWATHS, h)
+		delete!(IG._SWOT_FOUND, h);  delete!(IG._SWOT_SWATHS, h);  delete!(IG._RS_REGION_BOX, h)
 		RemoteSGui.close_win(h)
 	end
 end
@@ -115,7 +115,7 @@ end
 		@test picks == ["Pass 447 (cycle 55)", "Pass 432 (cycles 55, 56)"]
 		IG._RS_TOOLS["swot"] = real
 	finally
-		delete!(IG._SWOT_FOUND, h);  delete!(IG._SWOT_SWATHS, h)
+		delete!(IG._SWOT_FOUND, h);  delete!(IG._SWOT_SWATHS, h);  delete!(IG._RS_REGION_BOX, h)
 		RemoteSGui.close_win(h)
 	end
 end

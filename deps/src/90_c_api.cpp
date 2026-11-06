@@ -5721,8 +5721,9 @@ GMTVTK_API int gmtvtk_sunsync_test(void *handle, const char *action, double *out
 // The ephemeris of "Solar system" / "Sky viewer" (74_ephem.cpp; tests). `what`: "sun", "moon", "mercury"
 // .. "neptune" -> out[0..2] = RA, Dec (deg, mean equator and equinox OF DATE) and distance (AU) at the
 // Terrestrial-Time Julian Date `jd`; "moonecl" -> out[0..2] = the Moon's ecliptic longitude, latitude
-// (deg, of date) and distance (km); "helio:<body>" (mercury .. neptune, earth, pluto, ceres, eris) ->
-// out[0..2] = heliocentric x, y, z (AU, J2000 ecliptic) at the TT Julian Date `jd`; "gmst" -> out[0] = GMST (deg) at the UT Julian Date `jd`; "deltat"
+// (deg, of date) and distance (km); "helio:<body>" (mercury .. neptune, earth, pluto, ceres, eris,
+// apophis -- 0 outside its 1900-2100 table) -> out[0..2] = heliocentric x, y, z (AU, J2000 ecliptic) at
+// the TT Julian Date `jd`; "gmst" -> out[0] = GMST (deg) at the UT Julian Date `jd`; "deltat"
 // -> out[0] = TT - UT (s) for the decimal year `jd`; "stars" -> out[0..2] = catalogue stars, named stars,
 // constellations. Returns 1, or 0 for an unknown `what`.
 GMTVTK_API int gmtvtk_ephem_test(const char *what, double jd, double *out) {
@@ -5730,6 +5731,11 @@ GMTVTK_API int gmtvtk_ephem_test(const char *what, double jd, double *out) {
 	if (w == "gmst") { out[0] = ephGMST(jd); return 1; }
 	if (w == "deltat") { out[0] = ephDeltaT(jd); return 1; }
 	if (w == "moonecl") { ephMoon(jd, out[0], out[1], out[2]); return 1; }
+	if (w == "helio:apophis") {
+		if (!ephApophisSpan(jd)) return 0;
+		ephApophisHelio(jd, out);
+		return 1;
+	}
 	if (w.startsWith("helio:"))
 		for (int p = 0; p < EPH_NPLANETS; ++p)
 			if (w.mid(6) == QString(kEphPlanetName[p]).toLower()) {
@@ -5761,13 +5767,13 @@ GMTVTK_API int gmtvtk_ephem_test(const char *what, double jd, double *out) {
 
 // Drive / read the "Solar system" demo (74_solarsys.cpp; tests). `action`: "" = read only, "jd:J" = the
 // UT Julian Date J, "scale:N" = the "Distances" pick (3 = Titius-Bode), "names:0/1" = the "Names" box,
-// "dwarfs:0/1" = the "Ceres & Eris" box, "panel:0/1" = fold/unfold the right panel (by its button),
+// "dwarfs:0/1" = the "Ceres & Eris" box, "apophis:0/1" = the "Apophis" box, "panel:0/1" = fold/unfold the right panel (by its button),
 // "hover:N" = the cursor on body N's centre (-1 = off the view), "close:N" = a long-lens camera on body N
 // from outside its orbit, "png:path" = the view saved as a PNG, "play" = one Play frame, "close" =
 // close (= park). out[0..9] = dialog exists, visible, JD (UT), Earth's heliocentric x, y (AU, J2000
 // ecliptic), Mars' distance from the Sun (AU), Earth's drawn distance from the Sun (scene units), parked
 // row in window `handle`, the "Distances" pick, Earth's drawn x; out[10..15] = names on screen, 1 Ceres
-// + 2 Eris + 4 Pluto drawn, right panel shown, hovered body (-1 none), Neptune's drawn distance (scene
+// + 2 Eris + 4 Pluto + 8 Apophis drawn, right panel shown, hovered body (-1 none), Neptune's drawn distance (scene
 // units), Neptune's distance from the Sun (AU). Returns 1, or 0 with no dialog.
 GMTVTK_API int gmtvtk_solarsys_test(void *handle, const char *action, double *out) {
 	SolarSysDialog *m = g_solarSys;
@@ -5777,12 +5783,13 @@ GMTVTK_API int gmtvtk_solarsys_test(void *handle, const char *action, double *ou
 	else if (a.startsWith("scale:")) m->scaleBox->setCurrentIndex(a.mid(6).toInt());
 	else if (a.startsWith("names:")) m->labelsBox->setChecked(a.mid(6).toInt() != 0);
 	else if (a.startsWith("dwarfs:")) m->dwarfBox->setChecked(a.mid(7).toInt() != 0);
+	else if (a.startsWith("apophis:")) m->apoBox->setChecked(a.mid(8).toInt() != 0);
 	else if (a.startsWith("panel:")) {
 		if ((a.mid(6).toInt() != 0) != m->side->isVisible()) m->sideBtn->click();
 	}
 	else if (a.startsWith("close:")) {
 		// The camera on body N, from outside its orbit looking sunwards, slightly above the plane.
-		const int p = std::clamp(a.mid(6).toInt(), 0, EPH_NPLANETS - 1);
+		const int p = std::clamp(a.mid(6).toInt(), 0, kSolN - 1);
 		const double R = m->bodyR(p), *c = m->pos[p];
 		const double r = std::hypot(c[0], c[1]);
 		vtkCamera *cam = m->ren->GetActiveCamera();
@@ -5809,7 +5816,7 @@ GMTVTK_API int gmtvtk_solarsys_test(void *handle, const char *action, double *ou
 	else if (a.startsWith("hover:")) {
 		// The cursor put on body N's centre (widget coordinates), or off the view with "hover:-1".
 		const int p = a.mid(6).toInt();
-		if (p < 0 || p >= EPH_NPLANETS) m->hover(QPoint(), false);
+		if (p < 0 || p >= kSolN) m->hover(QPoint(), false);
 		else {
 			double d[3];
 			m->ren->SetWorldPoint(m->pos[p][0], m->pos[p][1], m->pos[p][2], 1.0);
@@ -5832,7 +5839,7 @@ GMTVTK_API int gmtvtk_solarsys_test(void *handle, const char *action, double *ou
 		for (auto &l : m->label) nLbl += l->GetVisibility() ? 1 : 0;
 		out[10] = nLbl;
 		out[11] = (m->planet[EPH_CERES]->GetVisibility() ? 1 : 0) + (m->planet[EPH_ERIS]->GetVisibility() ? 2 : 0) +
-		          (m->planet[EPH_PLUTO]->GetVisibility() ? 4 : 0);
+		          (m->planet[EPH_PLUTO]->GetVisibility() ? 4 : 0) + (m->planet[kSolApo]->GetVisibility() ? 8 : 0);
 		out[12] = m->side->isVisible() ? 1 : 0;
 		out[13] = m->hovered;
 		out[14] = std::sqrt(m->pos[EPH_NEPTUNE][0] * m->pos[EPH_NEPTUNE][0] +
@@ -13165,6 +13172,20 @@ GMTVTK_API int gmtvtk_crs_chip_pick_test(void *handle, const char *filter, const
 	const QByteArray b = warn.toUtf8();
 	if (out && cap > b.size()) { memcpy(out, b.constData(), b.size()); out[b.size()] = '\0'; }
 	return flags;
+}
+
+// A left click on the view at the TRUE point (x, y, z), through the viewer's own press handler — what
+// an armed pick (a tool's "Pick a scene" button) receives from the mouse. 1 = the press was consumed.
+GMTVTK_API int gmtvtk_view_press_test(void *scene, double x, double y, double z) {
+	Scene *s = static_cast<Scene *>(scene);
+	if (!s) return 0;
+	testBorrowScene(s);                  // the window belongs to the production library
+	if (!s->widget) return 0;
+	double d[2];
+	polyToDisplay(s, { x, y, z }, d);
+	const bool used = polygonHandlePress(s, 0, (int)std::lround(d[0]), (int)std::lround(d[1]), false);
+	QApplication::processEvents();
+	return used ? 1 : 0;
 }
 #endif // GMTVTK_TEST_API
 

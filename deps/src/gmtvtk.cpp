@@ -28,6 +28,7 @@
 //   74_daylength_gmt  T & L > Day length & axial tilt: GMT.jl base picture + per-day overlay list (src/daylength.jl)
 //   74_sunsync     T & L > Sun-synchronous orbit: J2 nodal precession vs the Sun's year (after 74_daylength, whose Sun/globe/view it uses)
 //   74_ephem       the ephemeris of the two below: JPL planet elements, Meeus Moon, BSC5 stars (data/bsc5*), after astroterm
+//   74_apophis     asteroid 99942 Apophis: Horizons osculating-element table 1900-2100 (after 74_ephem, whose Kepler it uses)
 //   74_solarsys    T & L > Solar system: the planets round the Sun at any instant (after 69_magfield, whose globe it uses)
 //   74_skyview     T & L > Sky viewer: stars, figures, Sun, Moon and planets from a place on the Earth
 //   74_eclipse     T & L > Earth-Moon system: both bodies to scale, day/night, shadows, eclipse list 1900-2100
@@ -75,6 +76,7 @@ static void workspaceToggle(Scene *s); // 77_workspace.cpp (that button: show <-
 #include "74_daylength_gmt.cpp"
 #include "74_sunsync.cpp"
 #include "74_ephem.cpp"
+#include "74_apophis.cpp"
 #include "74_solarsys.cpp"
 #include "74_skyview.cpp"
 #include "74_eclipse.cpp"

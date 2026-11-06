@@ -14364,6 +14364,7 @@ public:
 			vectorPickDisarm(scn);
 			scn->vectorPickCB = nullptr;
 		}
+		if (pointArmed) disarmPointPick();
 		forget();
 	}
 
@@ -14587,6 +14588,49 @@ public:
 		say("Click a line in the view (press the button again to cancel).");
 	}
 
+	// The pickpoint_<verb> button: arm the shared POINT pick (Scene::vectorPickMode 3, seedPickCB) for
+	// ONE click; its world x,y (the window's own units) go to Julia as what=<verb>, px=, py=.
+	bool pointArmed = false;
+	void disarmPointPick() {
+		if (!sceneAlive(scn)) return;
+		if (scn->vectorPickMode == 3) scn->vectorPickMode = 0;
+		scn->seedPickCB = nullptr;
+		scn->seedPickEndCB = nullptr;
+		if (scn->widget) scn->widget->unsetCursor();
+		pointArmed = false;
+	}
+	void armPointPick(QPushButton *pb, const QString &verb) {
+		if (!sceneAlive(scn)) return;
+		if (pointArmed) { disarmPointPick(); say("Pick cancelled."); return; }
+		QPointer<QPushButton> btn(pb);
+		const QString busy = pb->property("busy").toString();
+		scn->seedPickCB = [this, btn, verb, busy](double x, double y) {
+			disarmPointPick();
+			// Not from inside the callback (the answer may rebuild elements the pick machinery holds),
+			// and not before the button is UP: the request raises the modal busy notice, and a release
+			// swallowed by it never reaches the view, whose left-drag grab (the 2-D pan) then stays on
+			// and drags the map with the bare mouse.
+			auto step = std::make_shared<std::function<void()>>();
+			auto tries = std::make_shared<int>(0);
+			*step = [this, btn, verb, busy, x, y, step, tries]() {
+				if ((QApplication::mouseButtons() & Qt::LeftButton) && ++*tries < 250) {
+					QTimer::singleShot(20, dlg, *step);
+					return;
+				}
+				if (btn) btn->setDown(false);
+				if (dlg) dlg->raise();
+				request(verb, true, busy, QString("px=%1\npy=%2\n").arg(x, 0, 'g', 17).arg(y, 0, 'g', 17));
+			};
+			QTimer::singleShot(0, dlg, *step);
+		};
+		scn->seedPickEndCB = [this]() { disarmPointPick(); say("Pick cancelled."); };
+		scn->vectorPickMode = 3;
+		scn->vectorPickDbl = false;
+		pointArmed = true;
+		if (scn->widget) scn->widget->setCursor(Qt::CrossCursor);
+		say("Click a point in the view (press the button again, or right-click, to cancel).");
+	}
+
 	RemoteSDialog(QWidget *parent, Scene *scene, const std::string &toolName) {
 		scn = scene;
 		tool = toolName;
@@ -14695,6 +14739,14 @@ public:
 				if (!pb) continue;
 				const QString verb = n.mid(9);
 				QObject::connect(pb, &QPushButton::clicked, [this, pb, verb] { armLinePick(pb, verb); });
+			}
+			// pickpoint_<verb>: click a point in the view (Scene::vectorPickMode 3) — its world x,y are
+			// sent as what=<verb>, px=, py=. Pressing the button again or a right-click disarms it.
+			if (n.startsWith("pickpoint_")) {
+				auto *pb = qobject_cast<QPushButton *>(w);
+				if (!pb) continue;
+				const QString verb = n.mid(10);
+				QObject::connect(pb, &QPushButton::clicked, [this, pb, verb] { armPointPick(pb, verb); });
 			}
 		}
 
@@ -30627,7 +30679,15 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	s->titleBase = (title ? title : "i'GMT");
 	win->setWindowIcon(appIcon());          // per-window titlebar icon (matches the app-wide icon)
 	win->resize(1100, 800);
-	win->setCentralWidget(widget);
+	// A 2-px boundary on the display's right side, so it does not run straight into the window's edge.
+	// It is a margin, not a drawn line: the window's own background shows through it.
+	auto *displayFrame = new QFrame(win);
+	displayFrame->setObjectName("igDisplayFrame");
+	auto *displayLay = new QVBoxLayout(displayFrame);
+	displayLay->setContentsMargins(0, 0, 2, 0);
+	displayLay->setSpacing(0);
+	displayLay->addWidget(widget);
+	win->setCentralWidget(displayFrame);
 	buildIGStatusBar(s, win);               // status corner: CRS chip + Messages button (QGIS-style)
 	enableFileDrops(win, widget, s);        // drop a grid/image/table file onto any window to add it
 	s->win = win;

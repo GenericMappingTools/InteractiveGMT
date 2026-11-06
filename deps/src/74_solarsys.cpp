@@ -3,7 +3,8 @@
 // The Sun, the eight planets and the dwarf planets Pluto, Ceres and Eris where they are at any instant
 // from 100 AD to 2999 AD, the orbits they run on, and the Moon round the Earth. Positions come from
 // 74_ephem.cpp (JPL's Keplerian elements, the same numbers the "Sky viewer" uses), so a planet seen here
-// on a date is the one the sky shows that night. Everything is native: a step of time costs a re-render
+// on a date is the one the sky shows that night. The asteroid Apophis comes from its own table
+// (74_apophis.cpp, 1900-2100), through the same ellipse-to-XYZ (ephElemsHelio). Everything is native: a step of time costs a re-render
 // and nothing else.
 //
 // FRAME: the J2000 ecliptic -- the world XY plane is the ecliptic, +X the March equinox, +Z ecliptic
@@ -22,16 +23,30 @@
 
 static const double kSolUnit = 10.0;       // scene units per mapped AU
 static const double kSolSunR = 1.8;
-static const int kSolSun = EPH_NPLANETS;   // the Sun's label, after the bodies'
+static const int kSolApo = EPH_NPLANETS;   // the asteroid Apophis (74_apophis.cpp), after the ephemeris' bodies
+static const int kSolN = EPH_NPLANETS + 1; // the bodies drawn
+static const int kSolSun = kSolN;          // the Sun's label, after the bodies'
 
 static double solDot(const double a[3], const double b[3]) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
 static double solNorm(const double a[3]) { return std::sqrt(solDot(a, a)); }
 
-// Each body's drawn colour (the orbit gets the same, darker): the planets, then Pluto, Ceres, Eris.
-static const double kSolColor[EPH_NPLANETS][3] = {
+// Each body's drawn colour (the orbit gets the same, darker): the planets, then Pluto, Ceres, Eris, Apophis.
+static const double kSolColor[kSolN][3] = {
 	{0.62, 0.60, 0.58}, {0.95, 0.85, 0.60}, {0.35, 0.55, 0.95}, {0.85, 0.42, 0.25},
 	{0.86, 0.72, 0.52}, {0.92, 0.82, 0.56}, {0.60, 0.85, 0.90}, {0.38, 0.52, 0.96},
-	{0.82, 0.70, 0.58}, {0.70, 0.70, 0.66}, {0.88, 0.88, 0.92}};
+	{0.82, 0.70, 0.58}, {0.70, 0.70, 0.66}, {0.88, 0.88, 0.92}, {0.95, 0.45, 0.70}};
+
+// A body's name and mean radius (km): the ephemeris' bodies, then Apophis.
+static const char *solName(int p) { return p == kSolApo ? "Apophis" : kEphPlanetName[p]; }
+static double solRkm(int p) { return p == kSolApo ? kApophisRkm : kEphPlanetRkm[p]; }
+
+// Body p's heliocentric position (AU, J2000 ecliptic) at `tt`; `Mforce` (deg) puts it at that mean
+// anomaly on the instant's orbit (NaN = where it is).
+static void solHelio(int p, double tt, double Mforce, double xyz[3]) {
+	if (p != kSolApo) ephPlanetHelioM(p, tt, Mforce, xyz);
+	else if (std::isnan(Mforce)) ephApophisHelio(tt, xyz);
+	else ephApophisOrbit(tt, Mforce, xyz);
+}
 
 // The view: entering it takes the keyboard back from the spin boxes, as the other 3-D tool views do;
 // the bare cursor (no button down) reports where it is, so a hidden name can show under it.
@@ -66,7 +81,7 @@ struct SolarSysDialog {
 	QDoubleSpinBox *sizeBox = nullptr;
 	QPushButton *play = nullptr;
 	QCheckBox *backBox = nullptr, *orbitsBox = nullptr, *labelsBox = nullptr, *moonBox = nullptr,
-	          *dwarfBox = nullptr;
+	          *dwarfBox = nullptr, *apoBox = nullptr;
 	QLabel *info = nullptr;
 	QWidget *side = nullptr;
 	QToolButton *sideBtn = nullptr;
@@ -78,13 +93,14 @@ struct SolarSysDialog {
 	int hovered = -1;                        // the body whose name the cursor is showing, -1 = none
 
 	vtkSmartPointer<vtkRenderer> ren, labRen;
-	vtkSmartPointer<vtkActor> sun, planet[EPH_NPLANETS], orbit[EPH_NPLANETS], moon, ring, equinox;
-	vtkSmartPointer<vtkPolyData> orbitPD[EPH_NPLANETS];
-	vtkSmartPointer<vtkMatrix4x4> planetM[EPH_NPLANETS], moonM, ringM;
-	vtkSmartPointer<vtkBillboardTextActor3D> label[EPH_NPLANETS + 1], eqLbl;   // the bodies', then the Sun's
+	vtkSmartPointer<vtkActor> sun, planet[kSolN], orbit[kSolN], moon, ring, equinox;
+	vtkSmartPointer<vtkPolyData> orbitPD[kSolN];
+	vtkSmartPointer<vtkMatrix4x4> planetM[kSolN], moonM, ringM;
+	vtkSmartPointer<vtkBillboardTextActor3D> label[kSolN + 1], eqLbl;   // the bodies', then the Sun's
 	vtkSmartPointer<vtkLineSource> eqSrc;
-	double helio[EPH_NPLANETS][3];           // heliocentric, AU, J2000 ecliptic
-	double pos[EPH_NPLANETS][3];             // drawn, scene units
+	double helio[kSolN][3] = {};             // heliocentric, AU, J2000 ecliptic
+	double pos[kSolN][3] = {};               // drawn, scene units
+	bool apoSpan = true;                     // the instant is inside Apophis' table (1900-2100)
 
 	void unpark() {
 		if (!dlg) return;
@@ -129,8 +145,11 @@ struct SolarSysDialog {
 
 	bool titiusBode() const { return scaleBox && scaleBox->currentIndex() == 3; }
 
-	// Is body `p` drawn? (Ceres and Eris have their own box.)
-	bool shown(int p) const { return !(p == EPH_CERES || p == EPH_ERIS) || dwarfBox->isChecked(); }
+	// Is body `p` drawn? (Ceres and Eris have their own box; Apophis its own, and only inside its table.)
+	bool shown(int p) const {
+		if (p == kSolApo) return apoSpan && apoBox->isChecked();
+		return !(p == EPH_CERES || p == EPH_ERIS) || dwarfBox->isChecked();
+	}
 
 	// AU from the Sun -> scene units from the Sun, by the "Distances" pick (Titius-Bode draws as the
 	// square root, after its own per-body stretch, solFactor).
@@ -142,14 +161,14 @@ struct SolarSysDialog {
 		}
 	}
 	// The Titius-Bode stretch of body p's orbit: its law distance over its real semi-major axis (1 in
-	// every other mode).
+	// every other mode, and for Apophis, which has no slot in the law).
 	double solFactor(int p) const {
-		if (!titiusBode()) return 1.0;
+		if (!titiusBode() || p == kSolApo) return 1.0;
 		return ephTitiusBode(p) / (kEphEl[p].a + kEphRate[p].a * T);
 	}
 	double bodyR(int p) const {
-		// Square root of the real radius, never below a dot that can still be seen (Ceres).
-		return sizeBox->value() * std::max(0.12, 0.32 * std::sqrt(kEphPlanetRkm[p] / kEphPlanetRkm[EPH_EMB]));
+		// Square root of the real radius, never below a dot that can still be seen (Ceres, Apophis).
+		return sizeBox->value() * std::max(0.12, 0.32 * std::sqrt(solRkm(p) / kEphPlanetRkm[EPH_EMB]));
 	}
 	void mapPoint(int p, const double h[3], double out[3]) const {
 		const double r = solNorm(h), k = r > 0 ? mapR(r * solFactor(p)) / r : 0.0;
@@ -185,7 +204,7 @@ struct SolarSysDialog {
 		std::vector<vtkIdType> ids;
 		for (int i = 0; i <= 360; ++i) {
 			double h[3], q[3];
-			ephPlanetHelioM(p, tt, double(i), h);
+			solHelio(p, tt, double(i), h);
 			mapPoint(p, h, q);
 			ids.push_back(pts->InsertNextPoint(q));
 		}
@@ -219,7 +238,7 @@ struct SolarSysDialog {
 	// Who is drawn and whose name shows: every name with "Names" ticked, else only the hovered one.
 	void applyVisibility() {
 		const bool names = labelsBox->isChecked();
-		for (int p = 0; p < EPH_NPLANETS; ++p) {
+		for (int p = 0; p < kSolN; ++p) {
 			planet[p]->SetVisibility(shown(p));
 			orbit[p]->SetVisibility(shown(p) && orbitsBox->isChecked());
 			label[p]->SetVisibility(shown(p) && (names || hovered == p));
@@ -233,8 +252,10 @@ struct SolarSysDialog {
 	void update() {
 		const double tt = ephTT(jd);
 		T = (tt - 2451545.0) / 36525.0;
-		for (int p = 0; p < EPH_NPLANETS; ++p) {
-			ephPlanetHelio(p, tt, helio[p]);
+		apoSpan = ephApophisSpan(tt);
+		for (int p = 0; p < kSolN; ++p) {
+			if (p == kSolApo && !apoSpan) continue;   // no position: stays hidden (shown())
+			solHelio(p, tt, std::nan(""), helio[p]);
 			mapPoint(p, helio[p], pos[p]);
 			placePlanet(p);
 			buildOrbit(p, tt);
@@ -292,7 +313,7 @@ struct SolarSysDialog {
 					hit = id;
 				}
 			};
-			for (int b = 0; b < EPH_NPLANETS; ++b)
+			for (int b = 0; b < kSolN; ++b)
 				if (shown(b)) test(b, pos[b], bodyR(b));
 			const double o[3] = {0, 0, 0};
 			test(kSolSun, o, kSolSunR);
@@ -313,9 +334,17 @@ struct SolarSysDialog {
 		h += "<table cellspacing=0 cellpadding=2>"
 		     "<tr><th align=left></th><th align=right>Sun dist.<br>AU</th><th align=right>Earth dist.<br>AU</th>"
 		     "<th align=right>Helioc.<br>longitude</th><th align=right>Mag.</th></tr>";
-		for (int p = 0; p < EPH_NPLANETS; ++p) {
+		for (int p = 0; p < kSolN; ++p) {
 			if (p == kEphMajor)
 				h += "<tr><td colspan=5><i>dwarf planets</i></td></tr>";
+			if (p == kSolApo)
+				h += "<tr><td colspan=5><i>asteroid</i></td></tr>";
+			const QColor c = QColor::fromRgbF(kSolColor[p][0], kSolColor[p][1], kSolColor[p][2]);
+			if (p == kSolApo && !apoSpan) {
+				h += QString("<tr><td><span style='color:%1'>&#9679;</span> %2</td>"
+				             "<td colspan=4 align=right>no position outside 1900–2100</td></tr>").arg(c.name()).arg(solName(p));
+				continue;
+			}
 			const double r = solNorm(helio[p]);
 			double lon = std::atan2(helio[p][1], helio[p][0]) / kEphRad;
 			if (lon < 0) lon += 360.0;
@@ -325,13 +354,15 @@ struct SolarSysDialog {
 				for (int i = 0; i < 3; ++i) g[i] = helio[p][i] - E[i];
 				const double d = solNorm(g);
 				const double ci = std::clamp((r * r + d * d - rE * rE) / (2.0 * r * d), -1.0, 1.0);
-				dE = QString::number(d, 'f', 3);
-				mag = QString::number(ephPlanetMag(p, r, d, std::acos(ci) / kEphRad), 'f', 1);
+				const double ph = std::acos(ci) / kEphRad;
+				// A close pass (Apophis, 2029) reads in km: 0.000 AU says nothing.
+				dE = d < 0.01 ? QString("%1 km").arg(d * kEphAUkm, 0, 'f', 0) : QString::number(d, 'f', 3);
+				mag = QString::number(p == kSolApo ? ephAsteroidMag(kApophisH, kApophisG, r, d, ph)
+				                                   : ephPlanetMag(p, r, d, ph), 'f', 1);
 			}
-			const QColor c = QColor::fromRgbF(kSolColor[p][0], kSolColor[p][1], kSolColor[p][2]);
 			h += QString("<tr><td><span style='color:%1'>&#9679;</span> %2</td><td align=right>%3</td>"
 			             "<td align=right>%4</td><td align=right>%5°</td><td align=right>%6</td></tr>")
-				.arg(c.name()).arg(kEphPlanetName[p]).arg(r, 0, 'f', 3).arg(dE).arg(lon, 0, 'f', 1).arg(mag);
+				.arg(c.name()).arg(solName(p)).arg(r, 0, 'f', 3).arg(dE).arg(lon, 0, 'f', 1).arg(mag);
 		}
 		h += "</table>";
 		// The Moon: distance and phase (illuminated share, from the Sun-Moon elongation).
@@ -372,7 +403,7 @@ struct SolarSysDialog {
 	// The farthest drawn body from the Sun now, in mapped AU: what "All bodies" has to hold.
 	double outerAU() const {
 		double r = 0.0;
-		for (int p = 0; p < EPH_NPLANETS; ++p)
+		for (int p = 0; p < kSolN; ++p)
 			if (shown(p)) r = std::max(r, solNorm(helio[p]) * solFactor(p));
 		return r;
 	}
@@ -492,7 +523,7 @@ static bool solarSysOpen(QWidget *parent, Scene *scene) {
 		for (vtkIdType i = 0; i < globe->GetNumberOfPoints(); ++i) nrm->InsertNextTuple(globe->GetPoint(i));
 		globe->GetPointData()->SetNormals(nrm);
 	}
-	for (int p = 0; p < EPH_NPLANETS; ++p) {
+	for (int p = 0; p < kSolN; ++p) {
 		vtkNew<vtkPolyDataMapper> map;
 		if (p == EPH_EMB) {
 			map->SetInputData(globe);
@@ -527,7 +558,7 @@ static bool solarSysOpen(QWidget *parent, Scene *scene) {
 		m->orbit[p]->GetProperty()->SetLineWidth(1.5);
 		m->orbit[p]->GetProperty()->SetLighting(false);
 		m->ren->AddActor(m->orbit[p]);
-		m->label[p] = solLabel(kEphPlanetName[p], 13, kSolColor[p]);
+		m->label[p] = solLabel(solName(p), 13, kSolColor[p]);
 		m->labRen->AddActor(m->label[p]);
 	}
 	// Saturn's rings: an annulus 1.24..2.27 planet radii (C ring inner edge to A ring outer edge).
@@ -646,6 +677,11 @@ static bool solarSysOpen(QWidget *parent, Scene *scene) {
 	m->dwarfBox = new QCheckBox("Ceres && Eris", dlg);        // show/hide the dwarf planets Ceres and Eris
 	m->dwarfBox->setChecked(true);
 	m->dwarfBox->setToolTip("Show the dwarf planets Ceres and Eris, with their orbits.");
+	m->apoBox = new QCheckBox("Apophis", dlg);                // show/hide the asteroid 99942 Apophis
+	m->apoBox->setChecked(true);
+	m->apoBox->setToolTip("Show the near-Earth asteroid 99942 Apophis and its orbit of the instant (JPL Horizons, "
+	                      "1900-2100; no position outside). On 2029-04-13 21:46 UTC it passes 38 000 km from the "
+	                      "Earth's centre, and that pass changes its orbit: step through April 2029 to see it.");
 	QPushButton *innerBtn = new QPushButton("Inner planets", dlg);   // camera on Mercury..Mars
 	QPushButton *allBtn = new QPushButton("All bodies", dlg);        // camera on the whole system
 	QPushButton *topBtn = new QPushButton("From above", dlg);        // camera on the ecliptic pole
@@ -689,6 +725,7 @@ static bool solarSysOpen(QWidget *parent, Scene *scene) {
 	row2->addWidget(m->labelsBox);
 	row2->addWidget(m->moonBox);
 	row2->addWidget(m->dwarfBox);
+	row2->addWidget(m->apoBox);
 	row2->addStretch(1);
 	row2->addWidget(innerBtn);
 	row2->addWidget(allBtn);
@@ -747,7 +784,7 @@ static bool solarSysOpen(QWidget *parent, Scene *scene) {
 		m->frame(m->outerAU(), false);
 	});
 	QObject::connect(m->sizeBox, &QDoubleSpinBox::valueChanged, dlg, [m](double) { m->update(); });
-	for (QCheckBox *b : {m->orbitsBox, m->labelsBox, m->moonBox, m->dwarfBox})
+	for (QCheckBox *b : {m->orbitsBox, m->labelsBox, m->moonBox, m->dwarfBox, m->apoBox})
 		QObject::connect(b, &QCheckBox::toggled, dlg, [m](bool) {
 			m->hovered = -1;
 			m->applyVisibility();

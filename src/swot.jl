@@ -507,12 +507,28 @@ function _swot_label(g::SwotGranule, dir::String)::String
 end
 
 # An empty window gets a geographic map of the region (padded 2 degrees) with its coastline, through
-# the Geography menu's own door; a window with content keeps its frame.
+# the Geography menu's own door, and the region's rectangle; a window with content keeps its frame.
+# On a window whose map was made here, every search redraws the rectangle at the region it asked for.
+const _RS_REGION_BOX = Dict{Ptr{Cvoid},String}()    # window (map made here) -> its rectangle's name
+
 function _swot_map_if_empty(scene::Ptr{Cvoid}, W::Float64, E::Float64, S::Float64, N::Float64, title::String)
-	_rs_empty(scene) || return nothing
-	w, e, s, n = max(W - 2, -180.0), min(E + 2, 180.0), max(S - 2, -90.0), min(N + 2, 90.0)
-	_blank_canvas(scene, w, e, s, n, true, title)
-	_on_geography(scene, "coast/i/$(w)/$(e)/$(s)/$(n)")
+	if _rs_empty(scene)
+		w, e, s, n = max(W - 2, -180.0), min(E + 2, 180.0), max(S - 2, -90.0), min(N + 2, 90.0)
+		_blank_canvas(scene, w, e, s, n, true, title)
+		_on_geography(scene, "coast/i/$(w)/$(e)/$(s)/$(n)")
+		_RS_REGION_BOX[scene] = ""
+	end
+	haskey(_RS_REGION_BOX, scene) || return nothing
+	old = _RS_REGION_BOX[scene]
+	isempty(old) || ccall(_fn(:gmtvtk_remove_overlay_named_h), Cint, (Ptr{Cvoid}, Cstring), scene, old)
+	nm = "Region $(W)/$(E)/$(S)/$(N)"
+	D = GMT.mat2ds([W S; E S; E N; W N; W S]; hdr = nm)
+	D.proj4 = GMT.prj4WGS84
+	_RS_REGION_BOX[scene] = _add_dataset_to_scene(scene, D, nm; noConvertToPoints = true, forceMode = :lines) ? nm : ""
+	isempty(_RS_REGION_BOX[scene]) && return nothing
+	ccall(_fn(:gmtvtk_set_overlay_style_h), Cint,     # a heavy blue pen: it must stand out over the map
+	      (Ptr{Cvoid}, Cstring, Cdouble, Cdouble, Cdouble, Cdouble, Cint, Cdouble),
+	      scene, nm, 0.0, 0.45, 1.0, 4.0, 0, 1.0)
 	return nothing
 end
 
