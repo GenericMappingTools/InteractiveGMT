@@ -310,6 +310,31 @@ endif()
 set(CUBE_SRC src/cube/mb_cube.c)
 set_source_files_properties(${CUBE_SRC} PROPERTIES COMPILE_DEFINITIONS MB_CUBE_BUILD_DLL)
 
+# src/nswing/nswing.c — iGMT's copy of GMT's nswing supplement (the tsunami solver) carrying the
+# nested-grid start-up fix GMT_jll has not shipped yet; src/nswing/nswing_igmt.h says why it exists
+# and when it goes. Another second C translation unit: it links neither GMT nor netCDF — grids come
+# from the host in memory and nc_* is resolved at run time from the netCDF GMT already loaded — so no
+# MinGW library ever links into this MSVC one. Hidden visibility on ELF/Mach-O: its plain globals
+# (mass, update, deform, ...) share their names with GMT's own nswing in the same process and must
+# never interpose; gmtvtk_nswing_run is the only export (NSWING_IGMT_API). OpenMP is optional: the
+# solver's row loops run in parallel where the compiler has it (MSVC, GCC) and serially elsewhere.
+set(NSWING_SRC src/nswing/nswing.c)
+find_package(OpenMP COMPONENTS C)
+set(_nswing_opts)
+if(OpenMP_C_FOUND)
+  list(APPEND _nswing_opts ${OpenMP_C_FLAGS})
+endif()
+if(MSVC)
+  set_source_files_properties(${NSWING_SRC} PROPERTIES COMPILE_DEFINITIONS "_CRT_SECURE_NO_WARNINGS")
+else()
+  list(APPEND _nswing_opts -fvisibility=hidden)
+endif()
+set_source_files_properties(${NSWING_SRC} PROPERTIES COMPILE_OPTIONS "${_nswing_opts}")
+set(NSWING_LIBS)
+if(OpenMP_C_FOUND AND NOT MSVC)
+  set(NSWING_LIBS ${OpenMP_C_LIBRARIES})   # MSVC's /openmp pulls in vcomp by itself
+endif()
+
 # EXPERIMENTAL -- the navigation adjustment tool (MB-System's mbnavadjust, ported), in src/mbnavadjust/.
 # ON/OFF with this ONE line (Geophysics > MB-System entry and gmtvtk_mbnavadjust_* exports sit behind
 # #ifdef GMTVTK_MBNAVADJUST). MB-System's GUI-free core (mbnavadjust_io/_autopick/_invertnav.c) is
@@ -333,7 +358,7 @@ if(IGMT_WITH_MBNAVADJUST AND MBEDIT_SRC AND MBGRDVIZ_SRC AND EXISTS "${CMAKE_CUR
   message(STATUS "gmtvtk: building the EXPERIMENTAL navigation adjustment tool (src/mbnavadjust/)")
 endif()
 
-set(GMTVTK_SRC src/gmtvtk.cpp src/mbgrid.c ${CUBE_SRC} src/satellite.cpp ${SAT_CODE_SRC} ${MBEDIT_SRC} ${MBVELOCITY_SRC} ${MBNAVEDIT_SRC} ${MBEDITVIZ_SRC} ${MBGRDVIZ_SRC} ${PCE_SRC} ${WCDVIEWER_SRC} ${MBNAVADJUST_SRC})
+set(GMTVTK_SRC src/gmtvtk.cpp src/mbgrid.c ${CUBE_SRC} ${NSWING_SRC} src/satellite.cpp ${SAT_CODE_SRC} ${MBEDIT_SRC} ${MBVELOCITY_SRC} ${MBNAVEDIT_SRC} ${MBEDITVIZ_SRC} ${MBGRDVIZ_SRC} ${PCE_SRC} ${WCDVIEWER_SRC} ${MBNAVADJUST_SRC})
 
 # deps/ui/*.ui are loaded at RUNTIME (QUiLoader, see FocalMechanismsDialog in 70_window.cpp) for
 # dialogs where the .ui must stay the single source of truth — no hand-ported C++ to fall out of
@@ -357,7 +382,7 @@ endif()
 
 # Shared library — the Julia/host bridge (C API: gmtvtk_view_grid / gmtvtk_view_demo / ...).
 add_library(gmtvtk SHARED ${GMTVTK_SRC})
-target_link_libraries(gmtvtk PRIVATE Qt6::Widgets Qt6::UiTools TBB::tbb ${VTK_LIBRARIES} ${CMAKE_DL_LIBS})
+target_link_libraries(gmtvtk PRIVATE Qt6::Widgets Qt6::UiTools TBB::tbb ${VTK_LIBRARIES} ${CMAKE_DL_LIBS} ${NSWING_LIBS})
 vtk_module_autoinit(TARGETS gmtvtk MODULES ${VTK_LIBRARIES})
 
 # Dev-only numerics regressions, skipped for a package build.
@@ -425,7 +450,7 @@ if(WIN32)
   # a native crash in the GUI tier prints its whole stack (own TU: it needs <windows.h>)
   target_sources(gmtvtk_test PRIVATE src/test_crashstack.cpp)
 endif()
-target_link_libraries(gmtvtk_test PRIVATE Qt6::Widgets Qt6::UiTools TBB::tbb ${VTK_LIBRARIES} ${CMAKE_DL_LIBS})
+target_link_libraries(gmtvtk_test PRIVATE Qt6::Widgets Qt6::UiTools TBB::tbb ${VTK_LIBRARIES} ${CMAKE_DL_LIBS} ${NSWING_LIBS})
 vtk_module_autoinit(TARGETS gmtvtk_test MODULES ${VTK_LIBRARIES})
 
 # ELF ONLY, and it is what makes this library usable at all on Linux.

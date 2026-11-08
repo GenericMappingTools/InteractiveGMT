@@ -388,10 +388,13 @@ function _nswing_watch(scene::Ptr{Cvoid}, isdone, result, logf::String, io=nothi
 					last[] = (now, pct)
 				end
 				eta = (rate[] !== nothing && rate[] > 0 && pct - ap >= 3) ? (100 - pct) / rate[] : NaN
+				# Two clocks, never confused: the SIMULATED time (model seconds, which run hours ahead of the
+				# wall clock) is labelled as such; elapsed and remaining are real time.
 				lbl = "NSWING   $(pct)%"
 				if (cy = cycinfo[]) !== nothing
-					lbl *= "   cycle $(round(Int, cy[1]))/$(round(Int, cy[2]))   t = $(_hms(cy[3]))"
+					lbl *= "   step $(round(Int, cy[1]))/$(round(Int, cy[2]))   simulated $(round(Int, cy[3])) s"
 				end
+				lbl *= "   elapsed $(_hms(now - t0))"
 				lbl *= isnan(eta) ? "" : "   ~$(_hms(eta)) left"
 				if pct != shown[][1] || now - shown[][2] >= 1.0        # ≤1 Hz text refresh: no flicker
 					_progress_status(pct, lbl)
@@ -432,24 +435,133 @@ function _nswing_watch(scene::Ptr{Cvoid}, isdone, result, logf::String, io=nothi
 	end
 	return
 end
-# libgmtvtk.jl's _load_library() permanently prepends the VTK/Qt toolchain bin dirs (_VTK_BIN,
-# _QT_BIN) onto THIS Julia process's PATH, so gmtvtk.dll's own ccall'd VTK/Qt DLLs resolve. Any
-# child process we spawn afterward inherits that same PATH -- including the detached `gmt nswing`
-# process below. gmt.exe has its OWN dependencies (netcdf/hdf5/proj/gdal/...) that can share a
-# FILENAME with VTK's bundled copies at a different version/ABI; if gmt.exe finds VTK's copy first
-# it can crash on load (access violation, exit code 0xC0000005) even though the exact same command
-# works fine from a normal terminal with a clean PATH. Give the child process PATH with that prefix
-# stripped back off, so it resolves its own dependencies exactly as it would standalone.
-#
 
-# IN-PROCESS run: `GMT.gmt("nswing …", bathy, source, nest…)` with the grids as LIVE OBJECTS — the
-# whole reason this path exists is that nothing is written to disk, so nothing can be flipped on the
-# way there (see the comment in _on_nswing).
+# ── THE SOLVER: iGMT's own nswing, inside gmtvtk.dll (deps/src/nswing/nswing.c) ───────────────────
+# Not `GMT.gmt("nswing …")`. GMT's nswing writes ~1e9 into a nested grid's initial state at coastal
+# nodes: its start-up interpolation (GMT_get_bcr_z) skips the parent's land nodes and divides by what
+# is left of the bicubic weights, ~1e-10 where a child node sits on a land parent node. Whether that
+# blows up depends on the last bits of the grid coordinates, so a run with the grids in memory and the
+# same run from files blew up in DIFFERENT places. The copy in gmtvtk.dll is GMT's nswing with Mirone's
+# unmasked interpolation back; it stays until GMT_jll ships the fix (nswing_igmt.h says the rest).
+#
+# It links no GMT and reads no file: the grids and the tide gauges go over as buffers, named "@g<n>" /
+# "@d<n>" on its command line, and its netCDF output goes through the netCDF library GMT loaded.
+struct _NswGrid                         # igmt_nswing_grid (nswing_igmt.h), field for field
+	z::Ptr{Cfloat}
+	nx::Cint
+	ny::Cint
+	zlayout::Cint
+	registration::Cint
+	is_geog::Cint
+	wesn::NTuple{4,Cdouble}
+	inc::NTuple{2,Cdouble}
+	zmin::Cdouble
+	zmax::Cdouble
+end
+struct _NswPoints                       # igmt_nswing_points
+	x::Ptr{Cdouble}
+	y::Ptr{Cdouble}
+	text::Ptr{Ptr{UInt8}}
+	n::Cint
+end
+
+# THE netCDF IS THE ONE GMT LOADS — found by the function it exports, never by a file name of ours
+# (same as _mbio_from_gmt, mbedit.jl). The solver writes nothing else.
+function _nswing_netcdf_lib()::String
+	for lib in Libdl.dllist()
+		h = Libdl.dlopen(lib; throw_error = false)          # already in the process: only a refcount
+		h === nothing && continue
+		has = Libdl.dlsym(h, :nc_put_vara_float; throw_error = false) !== nothing
+		Libdl.dlclose(h)
+		has && return lib
+	end
+	error("NSWING: no netCDF library is loaded in this process (GMT loads one when it starts)")
+end
+
+# What the solver says. Printed as libgmt printed it (the console shows the run), and its errors kept:
+# they are the failure message, including a fatal check it stops on.
+const _NSWING_ERRORS = String[]
+const _NSWING_ERRORS_LOCK = ReentrantLock()
+function _nswing_msg_cb(level::Cint, msg::Cstring)::Cvoid
+	s = unsafe_string(msg)
+	print(stderr, s)
+	level <= 1 && lock(() -> push!(_NSWING_ERRORS, String(strip(s))), _NSWING_ERRORS_LOCK)
+	return nothing
+end
+
+# -T<src>[+o…][+t…] -> (src, "+o…+t…")
+function _nswing_T_split(o::AbstractString)
+	s = o[3:end]
+	i = findfirst('+', s)
+	return i === nothing ? (String(s), "") : (String(s[1:i-1]), String(s[i:end]))
+end
+
+# One run. `grids` = bathymetry, source, then the nest chain (-1, -2, …); `opts` = every other option,
+# a -T among them (its gauges are `gauges`, or the file it names). `dir` = where relative names live
+# (a -T positions file here; nswing's own outputs in the solver), "" = the current directory. Returns
+# "" on success, else what went wrong. Blocks for the whole run: call it off the main thread.
+function _nswing_run_c(opts::Vector{String}, grids::Vector{GMTgrid}, gauges; dir::String = "")::String
+	argv = String["@g0", "@g1"]
+	for k in 3:length(grids)
+		push!(argv, "-$(k - 2)@g$(k - 1)")
+	end
+	for o in opts
+		if startswith(o, "-T")
+			src, mods = _nswing_T_split(o)
+			if occursin(r"^[-+.\deE]+/[-+.\deE]+$", src)   # one gauge inline as x/y: nswing reads that itself
+				push!(argv, o)
+				continue
+			end
+			if gauges === nothing && !isempty(src)       # a positions FILE: read here, the solver reads none
+				gauges = GMT.gmtread((isempty(dir) || isabspath(src)) ? src : joinpath(dir, src), table = true)
+			end
+			o = "-T@d0" * mods
+		end
+		push!(argv, o)
+	end
+
+	keep = Any[argv]                                     # every buffer the C side points into
+	gs = _NswGrid[]
+	for G in grids
+		z, nx, ny, code = _grid_zbuf(G)                  # the buffer as it lies + its layout code
+		push!(keep, z)
+		r = G.range
+		push!(gs, _NswGrid(pointer(z), nx, ny, code, Cint(G.registration), Cint(_isgeographic(G)),
+		                   (r[1], r[2], r[3], r[4]), (G.inc[1], G.inc[2]), r[5], r[6]))
+	end
+	pts = _NswPoints[]
+	if gauges !== nothing
+		Ds = gauges isa AbstractVector ? gauges : [gauges]
+		x = Float64[];  y = Float64[];  names = String[]
+		for D in Ds
+			append!(x, D.data[:, 1]);  append!(y, D.data[:, 2])
+			append!(names, length(D.text) == size(D.data, 1) ? String.(D.text) : fill("", size(D.data, 1)))
+		end
+		any(isempty, names) && empty!(names)             # names for all of them, or for none
+		tp = Ptr{UInt8}[pointer(s) for s in names]
+		push!(keep, x, y, names, tp)
+		push!(pts, _NswPoints(pointer(x), pointer(y), isempty(tp) ? Ptr{Ptr{UInt8}}(C_NULL) : pointer(tp), Cint(length(x))))
+	end
+	av = Ptr{UInt8}[pointer(s) for s in argv]
+	push!(keep, av)
+
+	lock(() -> empty!(_NSWING_ERRORS), _NSWING_ERRORS_LOCK)
+	cb = @cfunction(_nswing_msg_cb, Cvoid, (Cint, Cstring))
+	st = GC.@preserve keep gs pts ccall(_fn(:gmtvtk_nswing_run), Cint,
+		(Cint, Ptr{Ptr{UInt8}}, Ptr{_NswGrid}, Cint, Ptr{_NswPoints}, Cint, Cstring, Cstring, Ptr{Cvoid}),
+		length(av), av, gs, length(gs), isempty(pts) ? Ptr{_NswPoints}(C_NULL) : pointer(pts), length(pts),
+		_nswing_netcdf_lib(), dir, cb)
+	errs = lock(() -> copy(_NSWING_ERRORS), _NSWING_ERRORS_LOCK)
+	isempty(errs) || return join(errs, "  ")
+	return st == 0 ? "" : "nswing stopped with status $st"
+end
+
+# IN-PROCESS run of the solver above, with the grids as LIVE OBJECTS — nothing is written to disk, so
+# nothing can be flipped on the way there (see the comment in _on_nswing).
 #
 # It runs on a spawned THREAD, because the call is one long `ccall` and the Qt pump is a Timer on the
-# main thread. Progress comes from nswing's own `-W<file>`, which the module rewrites in place each
-# tick and the main-thread watcher reads — that channel is a plain file, so it works the same
-# in-process as it did across a process boundary.
+# main thread. Progress comes from nswing's own `-W<file>`, which the solver rewrites in place each
+# tick and the main-thread watcher reads.
 #
 # MEASURED, not assumed: a 59 s GMT call on a spawned thread let a main-thread loop tick 1886 times,
 # worst stall 0.04 s, median 0.031 s — the pump never misses a beat. (The claim this path was dropped
@@ -458,23 +570,17 @@ end
 # there is always a thread to spawn onto; in a hand-started single-threaded REPL the task lands on the
 # main thread and the window does stall for the run.
 #
-# The PROGRESS BAR is driven by nswing's own `-W<file>`: the module rewrites one short line in it
-# each tick and the main-thread watcher reads it, a plain file that works the same in-process as it
-# did across a process boundary. nswing's `-v` text is simply PRINTED, as libgmt prints everything
-# else in this session — it is not captured, and nothing here redirects a file descriptor around a
-# GMT call (banned: it corrupts GMT's own downloads).
-function _nswing_run_inproc(scene::Ptr{Cvoid}, cmdstr::String, grids::Vector{Union{GMTgrid,GMTdataset}}; on_done=nothing)
+# The grids go over as they are, no copies: the solver reads them through const pointers and copies
+# them into its own arrays before it starts (GMT's module was seen to leave the grids it was handed
+# altered, which is why this path used to deep-copy them; nothing of GMT touches them any more).
+function _nswing_run_inproc(scene::Ptr{Cvoid}, opts::Vector{String}, grids::Vector{GMTgrid}, gauges;
+                            dir::String = "", on_done=nothing)
 	progf = _nswing_progress_file()                  # -W<file>: nswing rewrites it in place each tick
-	cmd   = cmdstr * " -W" * _gmt_quote_path(progf)
+	runopts = vcat(opts, "-W" * progf)
 	err   = Ref("")
-	# NSWING GETS COPIES, NEVER THE WINDOW'S OWN OBJECTS. A run has been seen to leave the grids it was
-	# handed altered (sometimes upside down), with no visible logic, from inside the module; the next
-	# run of the session then simulated over the damaged buffers. Defensive until that is found: every
-	# object goes in as a deep copy, so whatever nswing does to it dies with the run.
-	runobjs = Union{GMTgrid,GMTdataset}[deepcopy(g) for g in grids]
 	task  = Threads.@spawn begin
 		try
-			GMT.gmt(cmd, runobjs...)
+			err[] = _nswing_run_c(runopts, grids, gauges; dir)
 		catch ex
 			err[] = sprint(showerror, ex)
 		end
@@ -546,130 +652,34 @@ function _nswing_on_done(scene::Ptr{Cvoid}, d::Dict{String,String}; dir::String 
 	end
 end
 
-function _nswing_clean_env()
-	path = get(ENV, "PATH", "")
-	prefix = _VTK_BIN * ";" * _QT_BIN * ";"
-	if startswith(path, prefix)
-		path = path[length(prefix)+1:end]
-	end
-	env = copy(ENV)
-	env["PATH"] = path
-	return env
-end
-
-# File-path run: launch a detached `gmt nswing …` OS process, output → log the watcher tails. No thread /
-# redirect needed — a separate process never blocks the Julia runtime. `dir`, when given, becomes the
-# process's OWN working directory: nswing's output names (-G's stem, the -M-/-M+ mask files, a bare
-# maregraph out file, …) are relative-only with no directory override in the module itself, so without
-# this they land wherever the calling Julia process's cwd happens to be — never the save-files dir the
-# user picked, even though the bathymetry/Source grids we save there sit right next to them.
-function _nswing_run_external(scene::Ptr{Cvoid}, args::Vector{String}; dir::Union{String,Nothing} = nothing, on_done=nothing)
-	logf = tempname() * ".nswinglog"
-	io   = open(logf, "w")
-	progf = _nswing_progress_file()               # -W<file>: nswing rewrites it in place each tick
-	args  = vcat(args, "-W$(progf)")
-	# THE `gmt` TO RUN IS GMT.jl's OWN. `GMT.isJLL` says which build this session is on and
-	# `GMT.GMTbin` is that build's executable: the plain "gmt" of a system-wide install (resolved on
-	# PATH exactly as before — nothing changes on such a machine) or the artifact's absolute path
-	# under GMT_jll, where there is no `gmt` on PATH at all. That is why the launch died there with
-	# "could not spawn" while the same run worked from the REPL, which goes through in-process libgmt.
-	#
-	# THE TWO PLATFORMS BUILD THIS COMMAND APART, ON PURPOSE. Windows keeps the exact expression it
-	# has always run -- the toolchain-PATH reason above is a Windows problem and `_nswing_clean_env`
-	# is its answer; nothing below may alter it. Unix takes a different door because `GMT.GMTbin` is
-	# `GMT_jll.gmt()[1]`: the artifact's executable path with the wrapper's ENVIRONMENT DROPPED. That
-	# environment is what carries LD_LIBRARY_PATH to the artifacts `gmt` links against, so spawning
-	# the bare path dies in the dynamic loader before nswing's first line:
-	#     gmt: error while loading shared libraries: libnetcdf.so.22: cannot open shared object file
-	#     ProcessExited(127)
-	# Confirmed live on the reporting machine, both halves: `run(\`$(GMT_jll.gmt()) nswing\`)` runs,
-	# `run(\`$(GMT.GMTbin) nswing\`)` is the 127 above. The fix is to spawn the JLL's Cmd WHOLE.
-	local cmd::Cmd
-	if Sys.iswindows()
-		gmtexe = GMT.isJLL ? GMT.GMTbin : "gmt"
-		cmd   = Cmd(vcat(gmtexe, "nswing", args))
-		if dir !== nothing
-			cmd = Cmd(cmd; dir = dir)
-		end
-		cmd = Cmd(cmd; env = _nswing_clean_env())
-	else
-		# NOTHING HERE IS CONDITIONAL ON `GMT.isJLL` OR ON THE WRAPPER HANDING BACK AN ENVIRONMENT.
-		# The previous version asked for both and still spawned an env-less child on the reporting
-		# machine, which can only mean one of those two questions answered the wrong way. So the
-		# wrapper is asked for whatever it has, and the loader path is set from `LIBPATH[]` DIRECTLY
-		# as well -- the same value the wrapper would have put in its own env, applied even when it
-		# hands back none. A build with no GMT_jll at all falls through to the plain `gmt` on PATH,
-		# exactly as before.
-		base = try GMT.GMT_jll.gmt() catch; nothing end
-		exe  = base === nothing ? "gmt" : String(first(base.exec))
-		cmd  = Cmd(vcat(exe, "nswing", args))
-		if dir !== nothing
-			cmd = Cmd(cmd; dir = dir)
-		end
-		if base !== nothing
-			env = copy(ENV)
-			if base.env !== nothing
-				for kv in base.env                     # the wrapper's own "KEY=VALUE" strings
-					i = findfirst('=', kv)
-					i === nothing && continue
-					env[kv[1:prevind(kv, i)]] = kv[nextind(kv, i):end]
-				end
-			end
-			try                                        # ...and the loader path, set outright
-				lp  = GMT.GMT_jll.LIBPATH[]
-				key = GMT.GMT_jll.LIBPATH_env
-				if !isempty(lp)
-					old = get(env, key, "")
-					env[key] = isempty(old) ? lp : lp * ":" * old
-				end
-			catch
-			end
-			cmd = Cmd(cmd; env = env)
-		end
-		# WHAT WAS ACTUALLY SPAWNED, EVERY TIME, on the platform where this has been failing. One
-		# line per run; it is the only way to tell an env-less child from a child whose environment
-		# simply did not help.
-		try
-			ld = cmd.env === nothing ? "NO ENV" :
-			     (something(findfirst(s -> startswith(s, GMT.GMT_jll.LIBPATH_env * "="), cmd.env), 0) == 0 ?
-			      "env set, no " * GMT.GMT_jll.LIBPATH_env :
-			      string(count(==(':'), cmd.env[findfirst(s -> startswith(s, GMT.GMT_jll.LIBPATH_env * "="), cmd.env)]) + 1,
-			             " ", GMT.GMT_jll.LIBPATH_env, " entries"))
-			_viewer_log_info(scene, "NSWING: spawning $exe -- $ld")
-		catch
+# A run whose grids are FILES — "Save files and RUN", a run typed with file paths, the Aquamoto
+# benchmark. `args` is nswing's command line (`<bathy> <source> [-1<grd> -2<grd> …] <options…>`, the
+# one the Save-files run also writes to comm.txt). The grids are read here and the run goes through the
+# SAME solver and watcher as the in-memory run (_nswing_run_inproc): there is one NSWING run path.
+# `dir` is where relative names live — the grid names on `args` and nswing's own relative outputs
+# alike (-G's stem, the -M-/-M+ masks, a bare maregraph out file, …) — as if the run had been started
+# in that folder, which is what this used to do with a detached `gmt nswing` process.
+function _nswing_run_files(scene::Ptr{Cvoid}, args::Vector{String}; dir::Union{String,Nothing} = nothing, on_done=nothing)
+	wd = dir === nothing ? "" : String(dir)
+	inpath(p) = (isempty(wd) || isabspath(p)) ? p : joinpath(wd, p)
+	pos = String[]
+	nests = Dict{Int,String}()
+	opts = String[]
+	for a in args
+		if !startswith(a, "-")
+			push!(pos, a)                                # bathymetry, source
+		elseif length(a) > 2 && '1' <= a[2] <= '9'
+			nests[a[2] - '0'] = a[3:end]                 # -N<grd>: nest level N
+		else
+			push!(opts, a)
 		end
 	end
-	proc = try
-		run(pipeline(cmd; stdout=io, stderr=io); wait=false)
-	catch e
-		try; close(io) catch end
-		try rm(progf; force = true) catch end
-		_progress_close();  _NSWING_RUNNING[] = false
-		_viewer_log_error(scene, "NSWING: could not launch `gmt nswing` ($(sprint(showerror, e)))")
-		return
-	end
-	# The process's OWN exit code is the only reliable success/failure signal — nswing's "[ERROR]"
-	# stdout tag (_nswing_tail) is a bonus catch, not something every failure prints (a missing/wrong
-	# `gmt` on PATH, or a build without the nswing supplement, exits nonzero with its own unrelated
-	# message). Ignoring this (as before) reported "run finished" success no matter what actually
-	# happened — including a `gmt` that doesn't even have nswing, which just does nothing, fast.
-	function _nswing_external_result()
-		if success(proc)
-			return ""
-		end
-		logtext = ""
-		try
-			logtext = strip(read(logf, String))
-		catch
-			# log file already gone or unreadable — fall through with an empty logtext
-		end
-		msg = "gmt nswing exited with code $(proc.exitcode)"
-		if !isempty(logtext)
-			msg = msg * ":\n" * logtext
-		end
-		return msg
-	end
-	_nswing_watch(scene, () -> !process_running(proc), _nswing_external_result, logf, io; progf = progf, on_done = on_done)
+	length(pos) == 2 || error("NSWING: the run needs a bathymetry and a source grid, got $(length(pos)) grid name(s): $(join(pos, ", "))")
+	sort!(collect(keys(nests))) == collect(1:length(nests)) ||
+		error("NSWING: nested grid levels must be given as -1, -2, … without gaps")
+	grids = GMTgrid[_gmtread_trb(inpath(p)) for p in pos]
+	append!(grids, GMTgrid[_gmtread_trb(inpath(nests[k])) for k in 1:length(nests)])
+	_nswing_run_inproc(scene, opts, grids, nothing; dir = wd, on_done = on_done)
 	return
 end
 
@@ -1035,16 +1045,16 @@ end
 
 # Validate, save every grid this run needs, and assemble the CLI arg vector plus the save dir — shared
 # by both "Save files & RUN" sub-options (_nswing_show_cli just prints it; _on_nswing_save_run also
-# launches it, running the process IN that dir so its own relative-only outputs land there too — see
-# _nswing_run_external). CLI positional order confirmed against the LIVE `gmt nswing` usage: `nswing
+# launches it, running IN that dir so nswing's own relative-only outputs land there too — see
+# _nswing_run_files). CLI positional order confirmed against the LIVE `gmt nswing` usage: `nswing
 # <bathy> <source> [-1<grd> -2<grd> …] <options…>` (see _nswing_opts's mapping notes above).
 #
 # Grid paths go in RELATIVE to the save dir (`relpath`), not absolute: everything this dialog writes
 # lands in `dir`, so they come out as bare "bathy.grd"/"layer1.grd" names instead of a wall of repeated
 # directory. A grid that lives somewhere ELSE (a typed-in path, a bathymetry with its own file away
 # from `dir`) still gets whatever relpath needs to reach it, so the command stays correct either way.
-# Both consumers execute in `dir` — _nswing_run_external passes `dir` as the process's own working
-# directory, and the printed command is documented as being run from the grids folder.
+# Both consumers execute in `dir` — _nswing_run_files resolves every relative name against it, and the
+# printed command is documented as being run from the grids folder.
 function _nswing_prepare_cli(scene::Ptr{Cvoid}, cparams::AbstractString)
 	d = _nswing_parse(cparams)
 	opts, bathy_path, src_path, nestflags, dir, saved = _nswing_save_files(scene, d)
@@ -1099,9 +1109,9 @@ end
 
 # "Save files and RUN" sub-option (g_juliaEval, synchronous call — but the launch itself is
 # non-blocking, same as the rest of this file's async runs): save the grids, then hand the SAME
-# detached-OS-process path the typed-file-paths branch of _on_nswing already uses
-# (_nswing_run_external) — its own stdout (-v) feeds the live progress bar via _nswing_watch, run
-# INSIDE the save dir so nswing's own relative output names land there too.
+# file run the typed-file-paths branch of _on_nswing already uses (_nswing_run_files) — the live
+# progress bar via _nswing_watch, run INSIDE the save dir so nswing's own relative output names land
+# there too.
 function _on_nswing_save_run(scene::Ptr{Cvoid}, cparams::AbstractString)
 	if _NSWING_RUNNING[]
 		error("NSWING: a run is already in progress.")
@@ -1117,7 +1127,7 @@ function _on_nswing_save_run(scene::Ptr{Cvoid}, cparams::AbstractString)
 	_progress_show_async(100, "NSWING running…")
 	# Same checkbox, same door: "Auto load simulation" belongs to the RUN, not to one of the two ways
 	# of starting it.
-	_nswing_run_external(scene, args; dir, on_done = _nswing_on_done(scene, _nswing_parse(cparams); dir))
+	_nswing_run_files(scene, args; dir, on_done = _nswing_on_done(scene, _nswing_parse(cparams); dir))
 	return nothing
 end
 
@@ -1151,27 +1161,19 @@ function _on_nswing(scene::Ptr{Cvoid}, cparams::Cstring)::Cvoid
 			# nswing faithfully simulated over an upside-down bathymetry. No write, no flip.
 			grids = GMTgrid[base]                                               # positional #1: bathymetry
 			push!(grids, src isa GMTgrid ? src : _gmtread_trb(String(src)))     # #2: source (typed path -> load)
-			cmd = "nswing"
-			for (n, _) in nests                                                 # bare nesting flags: layerN -> -N
-				cmd *= " -$(n)"
-			end
-			# -G<stem>, -A<name> and -T<in>+o<out> carry paths; the external run hands them over as argv
-			# words, but here they travel in ONE string, so a token with a blank is quoted whole.
-			isempty(opts) || (cmd *= " " * join((occursin(' ', o) ? _gmt_quote_path(o) : o for o in opts), " "))
-			cmd *= " -v"
 			append!(grids, GMTgrid[(G isa GMTgrid ? G : _gmtread_trb(String(G))) for (_, G) in nests])
-			objs = Union{GMTgrid,GMTdataset}[grids...]
-			# Virtual tide gauges ride LAST, after the nest chain: that is where GMT binds the -T dataset
-			# (verified live: placed before the nests they are taken for a nest grid).
+			runopts = vcat(opts, "-v")
+			# Tide gauges: the dialog's virtual ones in memory, or the positions file a -T names (read by
+			# _nswing_run_c — the solver reads no file).
 			gauges = _on(d, "maregs") ? _nswing_gauges(d) : nothing
-			gauges === nothing || push!(objs, gauges)
-			_viewer_log_info(scene, "NSWING command: $cmd   [+ $(length(grids)) grid objects" *
+			cmd = "nswing " * join(vcat(String["-$(n)" for (n, _) in nests], runopts), " ")
+			_viewer_log_info(scene, "NSWING command: $cmd   [+ $(length(grids)) grids" *
 			                 (gauges === nothing ? "]" : ", $(size(gauges.data, 1)) tide gauges in memory]"))
 			_NSWING_RUNNING[] = true
 			_progress_show_async(100, "NSWING running…")
-			_nswing_run_inproc(scene, cmd, objs; on_done = _nswing_on_done(scene, d))
+			_nswing_run_inproc(scene, runopts, grids, gauges; on_done = _nswing_on_done(scene, d))
 		else
-			# ── file run: no scene base grid; Source/Nest are file paths -> detached `gmt nswing` (paths) ──
+			# ── file run: no scene base grid; Source/Nest are file paths -> _nswing_run_files reads them ──
 			srcpath = _get(d, "source")
 			nestpath = _get(d, "nest");  level = tryparse(Int, _get(d, "level", "0"))
 			args = String[srcpath]
@@ -1188,7 +1190,7 @@ function _on_nswing(scene::Ptr{Cvoid}, cparams::Cstring)::Cvoid
 			_viewer_log_info(scene, "NSWING command: gmt nswing " * join(args, " "))
 			_NSWING_RUNNING[] = true
 			_progress_show_async(100, "NSWING running…")
-			_nswing_run_external(scene, args; on_done = _nswing_on_done(scene, d))
+			_nswing_run_files(scene, args; on_done = _nswing_on_done(scene, d))
 		end
 	catch e
 		_progress_close();  _NSWING_RUNNING[] = false

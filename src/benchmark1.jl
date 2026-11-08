@@ -26,10 +26,8 @@
 # steps. The benchmark's analytic solution is tabulated to 220 s; the run goes past it so the wave's
 # return down the slope is on screen too.
 #
-# A RUN GOES THROUGH nswing.jl's OWN RUNNER (`_nswing_run_external`) — off-process, watched by a
-# main-thread Timer that drives the progress bar. NSWING is one long ccall, and running it in this
-# process freezes the window even on a worker thread (a thread inside a long ccall never reaches a GC
-# safepoint), which is precisely why that runner exists. There is no second run path here.
+# A RUN GOES THROUGH nswing.jl's OWN RUNNER (`_nswing_run_files`) — iGMT's nswing on a spawned thread,
+# watched by a main-thread Timer that drives the progress bar. There is no second run path here.
 
 # The .m `analytic()` table, byte-for-byte — THE BENCHMARK'S PUBLISHED REFERENCE PROFILES, and the
 # thing this demo is ultimately judged against. Columns in (x, eta, u) triples, one triple per
@@ -493,13 +491,11 @@ end
 
 # ── the Benchs tab (Aquamoto) ─────────────────────────────────────────────────────────────────
 # Start the benchmark and write it to `outfile`. THE RUN GOES THROUGH nswing.jl's OWN RUNNER
-# (`_nswing_run_external`) — off-process, watched by a main-thread Timer that drives the progress
-# bar. That is not a detail: NSWING is one long ccall, and running it in this process freezes the
-# window even on a worker thread (a thread inside a long ccall never reaches a GC safepoint), which
-# is exactly why that runner exists. A private `gmt("nswing …")` here would be a second run path and
-# a frozen iGMT (SACRED_LAW.md).
+# (`_nswing_run_files`), watched by a main-thread Timer that drives the progress bar. A private
+# `gmt("nswing …")` here would be a second run path — and GMT's nswing, not iGMT's fixed one
+# (SACRED_LAW.md).
 #
-# Off-process means the inputs must be FILES, so the two model grids are written beside the output.
+# The model grids are written beside the output, so the run can be repeated from those files.
 function _bm1_run_async(scene::Ptr{Cvoid}, outfile::String; ncycles::Int=5000, interval::Int=50,
                         dt::Float64=0.05, dx::Float64=25.0, xmin::Float64=-200.0,
                         xmax::Float64=20000.0, keepram::Bool=false, levels::Int=3)
@@ -549,21 +545,21 @@ function _bm1_run_async(scene::Ptr{Cvoid}, outfile::String; ncycles::Int=5000, i
 		(lev, out, flags) = stages[i]
 		_NSWING_RUNNING[] = true
 		_progress_show_async(100, "Benchmark 1: NSWING $(i)/$(length(stages)) (level $lev)…")
-		_nswing_run_external(scene, String[bat, src, flags..., "-v",
-		                                   "-G$(splitext(out)[1]),$(interval)",
-		                                   "-N$(ncycles)", "-t$(dt)"];
-		                     on_done = err -> begin
-		                         isempty(err) || return                 # the runner already logged it
-		                         isfile(out) || return _viewer_log_error(scene,
-		                             "Benchmark 1: the level-$lev run left no cube at '$out'")
-		                         if i < length(stages)
-		                             return runstage(i + 1)
-		                         end
-		                         disp = _bm1_open_result(scene, cube; xmin=xmin, xmax=xmax)
-		                         # The box was ticked before this file existed: honour it now, on a task,
-		                         # so the watcher timer this runs in is not held while the cube is read.
-		                         keepram && @async _bm1_keep_in_ram(scene; wait_for = disp)
-		                     end)
+		_nswing_run_files(scene, String[bat, src, flags..., "-v",
+		                                "-G$(splitext(out)[1]),$(interval)",
+		                                "-N$(ncycles)", "-t$(dt)"];
+		                  on_done = err -> begin
+		                      isempty(err) || return                 # the runner already logged it
+		                      isfile(out) || return _viewer_log_error(scene,
+		                          "Benchmark 1: the level-$lev run left no cube at '$out'")
+		                      if i < length(stages)
+		                          return runstage(i + 1)
+		                      end
+		                      disp = _bm1_open_result(scene, cube; xmin=xmin, xmax=xmax)
+		                      # The box was ticked before this file existed: honour it now, on a task,
+		                      # so the watcher timer this runs in is not held while the cube is read.
+		                      keepram && @async _bm1_keep_in_ram(scene; wait_for = disp)
+		                  end)
 	end
 	runstage(1)
 	return cube

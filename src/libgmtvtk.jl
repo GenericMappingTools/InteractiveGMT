@@ -369,6 +369,7 @@ const _LIB_OPTIONAL = (
 	:gmtvtk_freeze_scene_objects_h,   # hold the Scene Objects tree still while a run adds many elements
 	:gmtvtk_poly_globe_probe_h,       # probe: is a polygon really hooked onto the globe?
 	:gmtvtk_set_aqua_window_h,           # mark a tsunami window: its grid meshes keep the NaN-hole rim (aquamoto.jl)
+	:gmtvtk_nswing_run,                  # iGMT's nswing, the fixed copy of GMT's (deps/src/nswing/; nswing.jl)
 	# CUBE gridder (deps/src/cube/mb_cube.c, MB-System's engine copied verbatim; src/cube.jl).
 	# OPTIONAL only because the C side is new: it graduates once it is on master.
 	:mb_cube_params_default, :mb_cube_params_initialize, :mb_cube_params_read,
