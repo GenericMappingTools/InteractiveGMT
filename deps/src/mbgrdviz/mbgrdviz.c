@@ -3754,11 +3754,9 @@ int do_mbgrdviz_readnav(size_t instance, char *swathfile, int pathstatus, char *
      hands Windows paths over with '\' (mbio.dll rebuilt 2026-11-07), and cutting at '/' only left the
      whole path as the track's name. */
   lastslash = strrchr(swathfile, '/');
-  {
-    char *bs = strrchr(swathfile, '\\');
-    if (bs != NULL && (lastslash == NULL || bs > lastslash))
-      lastslash = bs;
-  }
+  char *backslash = strrchr(swathfile, '\\');
+  if (backslash != NULL && (lastslash == NULL || backslash > lastslash))
+    lastslash = backslash;
   if (lastslash != NULL)
     strcpy(name, &(lastslash[1]));
   else
