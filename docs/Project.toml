@@ -5,6 +5,7 @@ InteractiveGMT = "3c546f1b-5575-514c-865e-7c2fc24caa84"
 
 [compat]
 Documenter = "1"
+LiveServer = "1.5.0"
 
 [sources]
 InteractiveGMT = {path = ".."}
