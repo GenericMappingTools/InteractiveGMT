@@ -5714,14 +5714,15 @@ static inline void sceneLayerSetVisibleByProp(Scene *s, vtkProp3D *p, bool on) {
 // belongs — there is no second actor to keep in step with the frame any more.)
 
 // Every raster's axes, redrawn from ITS OWN frame. This is the whole of the window's axis work: a
-// loop over independent sets, with NO window-level box, NO shared frame and NO "active layer" — two
-// visible rasters draw two sets of axes, each fitted to and numbered in its own limits and units.
+// loop over independent sets, with NO window-level box and NO shared frame — each set fitted to and
+// numbered in its own raster's limits and units. Only ONE of them is drawn at a time (see the end).
 static void globeFrameUpdate(Scene *s, bool visible);   // 70_window.cpp: the graticule, the globe's frame
 static void sceneGlobeSync(Scene *s);                   // below: put the WHOLE scene on the sphere / take it off
 // Defined in 50_scene.cpp (it needs the image placement + actor rebuild); declared here because
 // applyVE drives it — see ExtraObj::zposAuto.
 static void sceneRefloatAutoImages(Scene *s);
 static void sceneRedrapeImages(Scene *s);      // re-lay every draped image on the relief's CURRENT z
+static AxesSet *axesForActive(Scene *s);       // 50_scene.cpp — the active raster's own frame
 
 static void rebuildAxisLabels(Scene *s) {
 	if (!s || !s->ren || !s->ren->GetActiveCamera()) return;
@@ -5773,9 +5774,21 @@ static void rebuildAxisLabels(Scene *s) {
 		return;
 	}
 	globeFrameUpdate(s, false);                 // off the globe the graticule is always down
-	rebuildAxesFor(s, s->baseAxes, s->baseAxes.shown);
+	// ONE SET OF AXES ON SCREEN, NEVER TWO (user order, 2026-11-07). Every raster still OWNS its set,
+	// framed to its own limits and units, and keeps its own `shown` intent -- but only ONE set is drawn:
+	// the one owned by the layer the window is showing (axesForActive: the same resolver the readout, the
+	// colour bar and the Z range follow). A swath cloud with the grid made from it both checked drew the
+	// cloud's box AND the grid's, two frames over one picture. If the active layer's own Axes row is
+	// unchecked, the first other set whose row is checked is drawn instead -- still one.
+	AxesSet *one = axesForActive(s);
+	if (one && !one->shown) one = nullptr;
+	if (!one) {
+		if (s->baseAxes.shown) one = &s->baseAxes;
+		else for (auto &ex : s->extras) if (ex.ax.shown) { one = &ex.ax; break; }
+	}
+	rebuildAxesFor(s, s->baseAxes, one == &s->baseAxes);
 	for (auto &ex : s->extras)
-		rebuildAxesFor(s, ex.ax, ex.ax.shown);
+		rebuildAxesFor(s, ex.ax, one == &ex.ax);
 }
 
 // Renderer StartEvent -> keep the axis labels on the camera-near edges as the view rotates.
@@ -6670,8 +6683,11 @@ static int mecaHitAt(Scene *s, int x, int y);   // beachball under cursor (defin
 // did not grab the drag (the gizmo's high-priority observer aborts the event then).
 static void onMouseMove(vtkObject*, unsigned long, void *clientData, void* /*cd*/) {
 	Scene *s = static_cast<Scene*>(clientData);
-	// Skip the readout while rubber-band selection is armed (Ctrl+right-drag owns the cursor).
-	if (s->rbEnabled)
+	// Skip the readout only WHILE a rubber-band box is being dragged (the drag owns the cursor).
+	// Not on rbEnabled: that is set once, for good, on every point-cloud window (enableRubberBand) --
+	// gating on it killed the readout there for ever, and on every grid later made in that window
+	// (an MB swath cloud gridded by the 3D Soundings pane).
+	if (s->rbSelecting)
 		return;
 	int *p = s->widget->interactor()->GetEventPosition();   // device px, bottom-up
 	const int mx = p[0], my = p[1];

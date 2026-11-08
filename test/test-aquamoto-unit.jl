@@ -241,3 +241,34 @@ end
 		@test g.layout[1:2] != G.layout[1:2]      # it did NOT keep the source's order
 	end
 end
+
+# 2026-11-07: a NSWING run that DIVERGED (C:\v\riskos\t\t\tsu.nc) carries ±Inf nodes and a few dozen
+# finite 1e6…1e38 nodes in its stage. The Infs reached `_aqua_colorize` as an Inf colour span and died
+# on `UInt8(NaN)`; the 1e38s stretched the colour span and the tank's Z frame until nothing showed.
+# `_aqua_sanitize!` is the door every layer read goes through: Inf -> NaN, out-of-fence -> held at the
+# layer's own extreme, a clean layer untouched; and a NaN node is painted, never thrown on.
+@testitem "aquamoto: a diverged run's layer is sanitised and painted, a clean one untouched" tags=[:unit, :fast] begin
+	IG = InteractiveGMT
+	x = collect(range(0.0, 1.0; length=4))
+	bat = IG.GMT.mat2grid(Float32[-50 -10 5 100; -50 -10 5 100; -50 -10 5 100; -50 -10 5 100]; x=x, y=x)
+	fence = IG._aqua_fence(bat)
+	@test fence == (-50.0 - 1500.0, 100.0 + 1500.0)
+
+	clean = IG.GMT.mat2grid(Float32[-3 0 1 2; -3 0 1 2; -3 0 1 2; -3 0 1 2]; x=x, y=x)
+	z0 = copy(clean.z);  tally = [0, 0, 0]
+	IG._aqua_sanitize!(clean, fence, tally)
+	@test clean.z == z0
+	@test tally == [0, 0, 0]
+
+	bad = IG.GMT.mat2grid(Float32[-3 0 1 2; Inf 0 1 2; -3 1f38 1 2; -3 0 -Inf 7]; x=x, y=x)
+	IG._aqua_sanitize!(bad, fence, tally)
+	@test tally == [2, 1, 1]
+	@test count(isnan, bad.z) == 2                 # the Infs are nodata now
+	@test all(v -> isnan(v) || -3 <= v <= 7, bad.z) # the 1e38 is held at the layer's own max
+	@test count(==(7f0), bad.z) == 2
+	@test (bad.range[5], bad.range[6]) == (-3.0, 7.0)
+
+	# a NaN node gets a colour (the NaN fill), it never kills the slice
+	rgb = IG._aqua_colorize(Matrix{Float32}(bad.z), -3.0, 7.0, :polar)
+	@test size(rgb) == (4, 4, 3)
+end

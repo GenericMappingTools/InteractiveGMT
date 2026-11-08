@@ -467,9 +467,14 @@ function _nswing_run_inproc(scene::Ptr{Cvoid}, cmdstr::String, grids::Vector{Uni
 	progf = _nswing_progress_file()                  # -W<file>: nswing rewrites it in place each tick
 	cmd   = cmdstr * " -W" * _gmt_quote_path(progf)
 	err   = Ref("")
+	# NSWING GETS COPIES, NEVER THE WINDOW'S OWN OBJECTS. A run has been seen to leave the grids it was
+	# handed altered (sometimes upside down), with no visible logic, from inside the module; the next
+	# run of the session then simulated over the damaged buffers. Defensive until that is found: every
+	# object goes in as a deep copy, so whatever nswing does to it dies with the run.
+	runobjs = Union{GMTgrid,GMTdataset}[deepcopy(g) for g in grids]
 	task  = Threads.@spawn begin
 		try
-			GMT.gmt(cmd, grids...)
+			GMT.gmt(cmd, runobjs...)
 		catch ex
 			err[] = sprint(showerror, ex)
 		end

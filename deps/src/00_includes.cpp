@@ -219,6 +219,8 @@
 #include <vtkArrowSource.h>
 #include <vtkAxesActor.h>
 #include <vtkOrientationMarkerWidget.h>
+#include <vtkCameraOrientationWidget.h>
+#include <vtkCameraOrientationRepresentation.h>
 #include <vtkOFFReader.h>
 #include <vtkBYUReader.h>
 #include <vtkGLTFReader.h>

@@ -69,6 +69,27 @@ end
 	@test helio(2415000.0)[1] == 0 && helio(2488100.0)[1] == 0    # no position outside 1900-2100
 end
 
+# Halley: same kind of table (74_halley.cpp, Horizons record 90000030 = JPL#75), built to 1e-4 AU over
+# 1900-2100. Reference: Horizons heliocentric VECTORS (J2000 ecliptic, AU, TDB), the three perihelia among them.
+@testitem "ephemeris: Halley against JPL Horizons, through its perihelia" tags=[:gui] setup=[GmtvtkTest] begin
+	IG = InteractiveGMT
+	using LinearAlgebra
+	helio(jd) = (out = zeros(3);
+		ok = ccall(IG._fn(:gmtvtk_ephem_test), Cint, (Cstring, Cdouble, Ptr{Cdouble}), "helio:halley", jd, out); (ok, out))
+	ref = [(2415100.5, [-8.338478172092175, 19.02542503672929, -5.459886838870164]),
+	       (2418781.5, [0.3341335455808441, -0.4530215647803934, 0.1672046425366221]),
+	       (2446470.5, [0.3423337950487022, -0.4465925417210364, 0.1677969814871451]),
+	       (2451545.0, [-17.38599346385816, 16.97917611082230, -7.577986613535686]),
+	       (2461351.5, [-19.33546098851591, 27.47269271480358, -9.849070571158840]),
+	       (2474034.5, [0.3294658268970470, -0.4629216774978387, 0.1690680985684523]),
+	       (2488000.5, [-19.09155096417895, 26.66263866973291, -9.666249373791478])]
+	for (jd, x) in ref
+		ok, v = helio(jd)
+		@test ok == 1 && norm(v - x) < 1.2e-4
+	end
+	@test helio(2415000.0)[1] == 0 && helio(2488100.0)[1] == 0    # no position outside 1900-2100
+end
+
 @testitem "solar system: menu opens the demo; time and the distance scale drive it" tags=[:gui] setup=[GmtvtkTest] begin
 	IG = InteractiveGMT
 	pump(n = 10) = for _ in 1:n; sleep(0.05); end
@@ -92,7 +113,11 @@ end
 		s = state(fig, "scale:3")                            # Titius-Bode: Neptune moved out to 38.8 AU's slot
 		@test isapprox(s[15], 10 * sqrt(s[16] * 38.8 / 30.06952752); atol=0.01)
 		@test isapprox(s[7], 10 * sqrt(hypot(s[4], s[5]) / 1.00000018); atol=0.01)  # ...the Earth stays at 1
-		@test s[11] == 13 && s[12] == 15                     # every name (12 bodies + the Sun); dwarfs + Apophis drawn
+		@test s[11] == 14 && s[12] == 31                     # every name (13 bodies + the Sun); dwarfs, Apophis, Halley drawn
+		s = state(fig, "halley:0")
+		@test s[12] == 15 && s[11] == 13                     # Halley and its name hidden by its box
+		s = state(fig, "halley:1")
+		@test s[12] == 31
 		s = state(fig, "names:0")
 		@test s[11] == 0                                     # names off...
 		s = state(fig, "hover:4")
@@ -100,14 +125,14 @@ end
 		s = state(fig, "hover:-1")
 		@test s[14] == -1 && s[11] == 0
 		s = state(fig, "dwarfs:0")
-		@test s[12] == 12                                    # Ceres and Eris hidden, Pluto and Apophis stay
+		@test s[12] == 28                                    # Ceres and Eris hidden, Pluto, Apophis and Halley stay
 		s = state(fig, "apophis:0")
-		@test s[12] == 4                                     # Apophis hidden by its box
+		@test s[12] == 20                                    # Apophis hidden by its box
 		state(fig, "apophis:1")
-		s = state(fig, "jd:2415000.0")                       # 1899: outside Apophis' table
+		s = state(fig, "jd:2415000.0")                       # 1899: outside Apophis' and Halley's tables
 		@test s[12] == 4                                     # ...no position, not drawn
 		s = state(fig, "jd:2451545.0")
-		@test s[12] == 12                                    # back inside: drawn again
+		@test s[12] == 28                                    # back inside: drawn again
 		s = state(fig, "panel:0")
 		@test s[13] == 0                                     # the right panel folds away...
 		s = state(fig, "panel:1")

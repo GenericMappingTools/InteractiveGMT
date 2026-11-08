@@ -190,6 +190,101 @@ function _aqua_clipx(G::GMTgrid, win::Tuple{Float64,Float64})::GMTgrid
 	                   x=xs, y=copy(G.y), z=Z, layout=lay, cpt=G.cpt)
 end
 
+"""
+    _aqua_sanitize!(G, fence) -> G
+
+THE LAYER OF A RUN THAT BLEW UP, MADE DISPLAYABLE — never refused. Such a run leaves two kinds of
+garbage in its layers (both seen in one NSWING `tsu.nc`, whose `actual_range` reads "-48, Infinity"):
+
+- ±Inf nodes. An Inf is not a value: it poisoned the wet-cell scan, the colour span went to Inf and
+  the colouriser died on `UInt8(NaN)`. It becomes NaN — nodata, painted the Preferences NaN colour.
+- a few dozen FINITE nodes at 1e6…1e38, the blow-up on its way. One of them in a slice's extrema
+  stretched the colour span and the tank's Z frame to 1e38, so nothing at all was visible. Such a
+  node is KEPT, held at the slice's own extreme (outside `fence`, it is clamped to the min/max of the
+  nodes inside it): its colour saturates at the palette's end and its surface stands at the frame.
+
+Done where the buffer lies (element-wise, any layout), with the grid's z range recomputed off the
+result. Every Aquamoto layer read calls it — the open-time scan, `_aqua_layer`, "Load all in RAM" —
+so every consumer downstream (colour, 3-D surface, the halves, illumination, colour bar, Z frame)
+sees the same layer. A clean grid is left untouched, byte for byte.
+"""
+function _aqua_sanitize!(G::GMTgrid, fence::Tuple{Float64,Float64}, tally::Vector{Int} = Int[])::GMTgrid
+	Z = G.z
+	eltype(Z) <: AbstractFloat || return G
+	flo, fhi = fence
+	lo, hi, nout, ninf = Inf, -Inf, 0, 0
+	@inbounds for i in eachindex(Z)
+		v = Z[i]
+		if isinf(v)
+			ninf += 1
+		elseif flo <= v <= fhi
+			v < lo && (lo = v);  v > hi && (hi = v)
+		elseif !isnan(v)
+			nout += 1
+		end
+	end
+	(ninf == 0 && nout == 0) && return G
+	# `tally` = [Inf nodes, out-of-fence nodes, layers hit], summed over every call that passes it:
+	# the open-time scan's evidence for `_aqua_warn_diverged`.
+	if length(tally) == 3
+		tally[1] += ninf;  tally[2] += nout;  tally[3] += 1
+	end
+	@inbounds for i in eachindex(Z)
+		v = Z[i]
+		if isinf(v)
+			Z[i] = NaN
+		elseif !isnan(v) && !(flo <= v <= fhi)
+			Z[i] = (lo <= hi) ? clamp(v, lo, hi) : NaN       # nothing sane in the layer to hold it at
+		end
+	end
+	G.range[5], G.range[6] = _finite_extrema(Z)
+	return G
+end
+_aqua_sanitize!(::Nothing, ::Tuple{Float64,Float64}, ::Vector{Int} = Int[]) = nothing
+
+"""
+    _aqua_warn_diverged(scene, path, varname, tally, nscan)
+
+THE USER IS TOLD. A file whose layers needed `_aqua_sanitize!` is the output of a numerical run that
+DIVERGED — it is still shown, but nobody should read it as a result. One warning box at open time,
+saying so, how much of the file is affected and what to look at, plus the same line in the window's
+log. Under the test suite the box (modal — nobody would click it) is replaced by the log line alone.
+"""
+function _aqua_warn_diverged(scene::Ptr{Cvoid}, path::String, varname::String, tally::Vector{Int}, nscan::Int)
+	(length(tally) == 3 && tally[3] > 0) || return nothing
+	msg = "The numerical simulation in\n$(basename(path))\nhas DIVERGED.\n\n" *
+	      "$(tally[3]) of $(nscan) scanned layers carry invalid values in '$(varname)'" *
+	      " ($(tally[1]) infinite nodes, $(tally[2]) absurd values far beyond the bathymetry's own relief).\n\n" *
+	      "The file is displayed anyway — infinite nodes as NaN, absurd values held at each layer's own " *
+	      "extreme — but it is NOT a valid result.\n\n" *
+	      "Revise the model setup before running it again: the nested bathymetry grids (too coarse a " *
+	      "grid, an abrupt resolution jump between nesting levels, spikes or holes in the bathymetry, " *
+	      "a nested grid that does not fit its parent), the time step against the CFL condition, and " *
+	      "the source/initial condition."
+	try
+		ccall(_fn(:gmtvtk_log_error), Cvoid, (Ptr{Cvoid}, Cstring), scene,
+		      "Aquamoto: $(basename(path)) — the simulation DIVERGED ($(tally[3])/$(nscan) layers with invalid values)")
+	catch
+	end
+	_TEST_MODE[] && return nothing
+	ccall(_fn(:gmtvtk_error_box), Cvoid, (Ptr{Cvoid}, Cstring, Cstring), scene, "Aquamoto — simulation diverged", msg)
+	return nothing
+end
+
+"""
+    _aqua_fence(bat) -> (lo, hi)
+
+THE PLAUSIBLE SPAN of any quantity in this file, for `_aqua_sanitize!`: the bathymetry's own
+envelope widened by ten times its relief on each side. A sane run never comes near it (a wave is a
+tiny fraction of the relief it travels over), so a clean file's ranges are what they always were.
+"""
+function _aqua_fence(bat::GMTgrid)::Tuple{Float64,Float64}
+	lo, hi = Float64(bat.range[5]), Float64(bat.range[6])
+	(isfinite(lo) && isfinite(hi)) || return (-Inf, Inf)
+	R = max(hi - lo, 1.0)
+	return (lo - 10R, hi + 10R)
+end
+
 # Every time-varying (>=3-D) quantity variable in `path`, skipping `skip` (the bathymetry
 # variable) — NOT just the first match: the caller must load and offer ALL of them, never silently
 # pick one and discard the rest. Pure netCDF subdataset introspection (drop.jl's
@@ -317,6 +412,18 @@ function _aqua_side_nodes(st::_AquaState, side::Int, lo::Float64, hi::Float64)
 	return (p[1], p[2], length(p[1]))
 end
 
+# A nodata node (NaN — and an Inf, once `_aqua_inf_to_nan!` has read it) has no place on the palette:
+# it is painted the Preferences NaN fill colour, the SAME value `makeGridCTF` gives every grid's LUT,
+# asked of the viewer (preference-application law, SACRED_LAW.md). Without it, a NaN reached
+# `round(UInt8, NaN)` and the whole slice died.
+function _aqua_nan_rgb()::NTuple{3,UInt8}
+	haskey(_LIB_FNS, :gmtvtk_pref_nan_color) || return (0x80, 0x80, 0x80)
+	c = zeros(Float64, 3)
+	ccall(_fn(:gmtvtk_pref_nan_color), Cvoid, (Ptr{Cdouble},), c)
+	return (round(UInt8, clamp(c[1], 0, 1) * 255), round(UInt8, clamp(c[2], 0, 1) * 255),
+	        round(UInt8, clamp(c[3], 0, 1) * 255))
+end
+
 function _aqua_colorize(Z::Matrix{Float32}, zlo::Float64, zhi::Float64, cmap::Symbol)::Array{UInt8,3}
 	cz, crgb, n = _cpt_nodes_range(zlo, zhi, cmap)
 	return _aqua_colorize(Z, zlo, zhi, cz, crgb, n)
@@ -331,8 +438,13 @@ function _aqua_colorize(Z::Matrix{Float32}, cz::Vector{Float64}, crgb::Vector{Fl
 	rgb = Array{UInt8}(undef, ny, nx, 3)
 	n = length(cz)
 	(n < 2) && (fill!(rgb, 0xa0); return rgb)
+	nanc = _aqua_nan_rgb()
 	@inbounds for j in 1:nx, i in 1:ny
 		v = Float64(Z[i, j])
+		if isnan(v)
+			rgb[i, j, 1], rgb[i, j, 2], rgb[i, j, 3] = nanc
+			continue
+		end
 		k = searchsortedlast(cz, v)
 		if k < 1
 			b = 0
@@ -366,12 +478,17 @@ function _aqua_colorize(Z::Matrix{Float32}, zlo::Float64, zhi::Float64,
 	# left land in only ~16 of the 256 nodes), not from too few palette entries.
 	span = (zhi > zlo) ? (zhi - zlo) : 1.0
 	invspan = (n - 1) / span
+	nanc = _aqua_nan_rgb()
 	# INTERPOLATED, like the viewer's own colour transfer function. Snapping to the nearest of the 256
 	# nodes is a 256-step staircase, and the SAME half shown as a plain grid goes through VTK's
 	# continuous CTF — so the composite and the standalone half were two different pictures of one
 	# colour scale. Same z, same palette, same colour now.
 	@inbounds for j in 1:nx, i in 1:ny
 		v = Float64(Z[i, j])
+		if isnan(v)
+			rgb[i, j, 1], rgb[i, j, 2], rgb[i, j, 3] = nanc
+			continue
+		end
 		t = clamp((v - zlo) * invspan, 0.0, Float64(n - 1))
 		i0 = floor(Int, t)
 		i1 = min(i0 + 1, n - 1)
@@ -642,15 +759,18 @@ function _aquamoto_open(scene::Ptr{Cvoid}, path::String)
 	nsteps = inl === nothing ? 1 : max(1, Int(info.data[inl]))
 	geog = _isgeographic(bat)
 
+	_aqua_sanitize!(bat, (-Inf, Inf))       # its Infs are nodata too; the fence is built FROM it
 	batz = bat.z
+	fence = _aqua_fence(bat)
 	# Scan EVERY discovered variable now, not just the active one -- the whole point of this fix is
 	# that no variable in the file is silently left unread. One shared progress bar spans all of them.
 	# `alllo`/`allhi` are read straight off each layer's OWN GMTgrid `.range` -- GMT already computes a
 	# grid's z min/max when it reads it, so recomputing that by hand would be pure waste. `wetlo`/
 	# `wethi` genuinely need a per-cell scan (wet/dry is a comparison against bathymetry, not something
-	# any header/metadata carries) -- this file class is guaranteed clean Float32 with no NaNs, so no
-	# isnan guard either.
+	# any header/metadata carries). Each layer comes through `_aqua_sanitize!` first, so a run that blew
+	# up reaches this loop with its Infs as NaN and its 1e38 garbage held inside the slice's own range.
 	scans = Dict{String,_AquaVarScan}()
+	tally = [0, 0, 0]                        # what `_aqua_sanitize!` had to repair, for the divergence warning
 	_progress_show_async(nsteps * length(varnames), "Aquamoto — scanning layers…")
 	for (vi, vn) in enumerate(varnames)
 		sc = get!(scans, vn) do
@@ -662,7 +782,7 @@ function _aquamoto_open(scene::Ptr{Cvoid}, path::String)
 			# share an element order. Spelling the subdataset index out here instead would be the same
 			# operation written twice — with the two spellings disagreeing on the index base, which is
 			# exactly how that drifts.
-			Gk = _aqua_clipx(_read_cube_layer("$(path)?$(vn)", k + 1), xwin)
+			Gk = _aqua_sanitize!(_aqua_clipx(_read_cube_layer("$(path)?$(vn)", k + 1), xwin), fence, tally)
 			Z = Gk.z
 			sc.alllo[k+1], sc.allhi[k+1] = Gk.range[5], Gk.range[6]
 			lo_w, hi_w = Inf, -Inf
@@ -670,7 +790,7 @@ function _aquamoto_open(scene::Ptr{Cvoid}, path::String)
 			@inbounds for i in eachindex(Z)
 				dry[i] && continue                    # dry cell -> excluded from the wet-only range
 				z = Z[i]
-				z < lo_w && (lo_w = z); z > hi_w && (hi_w = z)
+				z < lo_w && (lo_w = z); z > hi_w && (hi_w = z)   # a NaN node fails both, so it never counts
 			end
 			sc.wetany[k+1] = lo_w <= hi_w
 			sc.wetlo[k+1], sc.wethi[k+1] = lo_w, hi_w
@@ -678,6 +798,7 @@ function _aquamoto_open(scene::Ptr{Cvoid}, path::String)
 		end
 	end
 	_progress_close()
+	_aqua_warn_diverged(scene, String(path), join(varnames, "', '"), tally, nsteps * length(varnames))
 
 	# Push the LAND colorbar ONCE here (static for the whole file, unlike the per-slice water bar) --
 	# re-pushed later only if the user picks a different land colormap (_aquamoto_set_cmap).
@@ -1972,7 +2093,8 @@ function _aqua_layer(st::_AquaState, k::Int)::Union{GMTgrid,Nothing}
 	# Off disk: the display window is applied HERE, at the read, so the slice on screen has exactly
 	# the extent the bathymetry and the scan were given (a RAM-resident cube was already clipped when
 	# it was loaded, so the view above needs nothing).
-	return _aqua_clipx(_read_cube_layer("$(st.path)?$(st.varname)", k + 1), st.xwin)
+	return _aqua_sanitize!(_aqua_clipx(_read_cube_layer("$(st.path)?$(st.varname)", k + 1), st.xwin),
+	                       _aqua_fence(st.bat))
 end
 
 # "Load all in RAM" for the ACTIVE variable — the option the other netCDF cubes get from the cube
@@ -1997,6 +2119,8 @@ function _aqua_load_all(scene::Ptr{Cvoid})::Cint
 		C = _read_whole_cube("$(st.path)?$(st.varname)", st.nsteps)
 		(C isa GMTgrid && ndims(C.z) == 3) || return Cint(2)
 		C = _aqua_clipx(C, st.xwin)          # clipped ONCE, here -- every layer view then comes out right
+		fence = _aqua_fence(st.bat)          # …and sanitised once, layer by layer, as a disk read would be
+		for k in 1:size(C.z, 3);  _aqua_sanitize!(_cube_layer_view(C, k), fence);  end
 		st.ram[st.varname] = C
 		# THE CONTROLS THAT DESCRIBE RESIDENCY LEARN IT HERE, at the one place that makes it true — so
 		# "Load all in RAM" freezes at "In RAM ✓" whichever route asked for the load: the button itself,

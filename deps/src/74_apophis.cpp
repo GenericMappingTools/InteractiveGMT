@@ -352,42 +352,48 @@ static const double kApophisRkm = 0.17;            // effective diameter 0.34 km
 static const double kApophisH = 19.09, kApophisG = 0.24;   // H, G magnitude system (Pravec et al. 2014)
 static const double kEphGauss = 0.01720209895;     // Gaussian gravitational constant (rad/day)
 
+// THE reader of an osculating-element table (`t`, `n` rows) -- Apophis' here, Halley's (74_halley.cpp)
+// and any small body after them go through these, never a copy.
+
 // Is there a position for the TT Julian Date `jdTT`?
-static bool ephApophisSpan(double jdTT) {
-	return jdTT >= kApophis[0].jd && jdTT <= kApophis[kApophisN - 1].jd;
+static bool ephOscSpan(const EphOsc *t, int n, double jdTT) {
+	return jdTT >= t[0].jd && jdTT <= t[n - 1].jd;
 }
 
 // The row whose epoch is the last at or before `jdTT` (clamped so a next row exists).
-static int ephApophisRow(double jdTT) {
-	const EphOsc *r = std::upper_bound(kApophis, kApophis + kApophisN, jdTT,
-	                                   [](double t, const EphOsc &o) { return t < o.jd; });
-	return std::clamp(int(r - kApophis) - 1, 0, kApophisN - 2);
+static int ephOscRow(const EphOsc *t, int n, double jdTT) {
+	const EphOsc *r = std::upper_bound(t, t + n, jdTT, [](double v, const EphOsc &o) { return v < o.jd; });
+	return std::clamp(int(r - t) - 1, 0, n - 2);
 }
 
 // Row `r`'s two-body orbit at `jdTT`; `Mforce` (deg) replaces the mean anomaly (NaN = run from r's own).
-static void ephApophisFrom(const EphOsc &r, double jdTT, double Mforce, double xyz[3]) {
+static void ephOscFrom(const EphOsc &r, double jdTT, double Mforce, double xyz[3]) {
 	const double n = kEphGauss / (r.a * std::sqrt(r.a)) / kEphRad;   // mean motion, deg/day
 	const double M = std::isnan(Mforce) ? r.M + n * (jdTT - r.jd) : Mforce;
 	ephElemsHelio(r.a, r.e, r.I * kEphRad, M, r.w * kEphRad, r.O * kEphRad, xyz);
 }
 
 // Heliocentric position (AU, J2000 ECLIPTIC) at `jdTT`: the two bracketing rows' orbits, blended by time.
-static void ephApophisHelio(double jdTT, double xyz[3]) {
-	const int i = ephApophisRow(jdTT);
-	const EphOsc &a = kApophis[i], &b = kApophis[i + 1];
+static void ephOscHelio(const EphOsc *t, int n, double jdTT, double xyz[3]) {
+	const int i = ephOscRow(t, n, jdTT);
+	const EphOsc &a = t[i], &b = t[i + 1];
 	const double f = std::clamp((jdTT - a.jd) / (b.jd - a.jd), 0.0, 1.0);
 	double p[3], q[3];
-	ephApophisFrom(a, jdTT, std::nan(""), p);
-	ephApophisFrom(b, jdTT, std::nan(""), q);
+	ephOscFrom(a, jdTT, std::nan(""), p);
+	ephOscFrom(b, jdTT, std::nan(""), q);
 	for (int k = 0; k < 3; ++k) xyz[k] = (1.0 - f) * p[k] + f * q[k];
 }
 
 // The orbit of the instant: the nearer row's ellipse at mean anomaly `Mdeg`.
-static void ephApophisOrbit(double jdTT, double Mdeg, double xyz[3]) {
-	const int i = ephApophisRow(jdTT);
-	const int k = jdTT - kApophis[i].jd <= kApophis[i + 1].jd - jdTT ? i : i + 1;
-	ephApophisFrom(kApophis[k], jdTT, Mdeg, xyz);
+static void ephOscOrbit(const EphOsc *t, int n, double jdTT, double Mdeg, double xyz[3]) {
+	const int i = ephOscRow(t, n, jdTT);
+	const int k = jdTT - t[i].jd <= t[i + 1].jd - jdTT ? i : i + 1;
+	ephOscFrom(t[k], jdTT, Mdeg, xyz);
 }
+
+static bool ephApophisSpan(double jdTT) { return ephOscSpan(kApophis, kApophisN, jdTT); }
+static void ephApophisHelio(double jdTT, double xyz[3]) { ephOscHelio(kApophis, kApophisN, jdTT, xyz); }
+static void ephApophisOrbit(double jdTT, double Mdeg, double xyz[3]) { ephOscOrbit(kApophis, kApophisN, jdTT, Mdeg, xyz); }
 
 // Apparent magnitude of an asteroid of absolute magnitude H and slope G at heliocentric distance r,
 // geocentric distance d (AU) and phase angle `i` (deg): the IAU H, G system (Bowell et al. 1989).

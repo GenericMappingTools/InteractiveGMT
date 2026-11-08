@@ -824,35 +824,15 @@ void msBuildScene() {
 	{
 		vtkNew<vtkPoints> pts;
 		vtkNew<vtkCellArray> solid, dotted;
-		if (m->view_boundingbox) {
+		// NEVER in the pane: there the soundings live in an iGMT window, whose OWN axes are the box. A second
+		// one drawn here was a second set of cube axes on screen (SACRED_LAW.md one-axes-on-screen law).
+		if (m->view_boundingbox && !m->pane) {
 			double glxmin = soundingdata->scale * soundingdata->xmin;
 			double glxmax = soundingdata->scale * soundingdata->xmax;
 			double glymin = soundingdata->scale * soundingdata->ymin;
 			double glymax = soundingdata->scale * soundingdata->ymax;
 			double glzmin = m->exaggeration * soundingdata->zscale * soundingdata->zmin;
 			double glzmax = m->exaggeration * soundingdata->zscale * soundingdata->zmax;
-			if (m->pane) {                       // the box of the shown soundings, in their true coords
-				bool first = true;
-				for (int i = 0; i < soundingdata->num_soundings; i++) {
-					const mb3dsoundings_sounding_struct *s = &(soundingdata->soundings[i]);
-					if (!msSoundingShown(m, s) || (!m->view_scalewithflagged && !mb_beam_ok(s->beamflag)))
-						continue;
-					if (first) {
-						glxmin = glxmax = s->glx;
-						glymin = glymax = s->gly;
-						glzmin = glzmax = s->glz;
-						first = false;
-					}
-					else {
-						glxmin = MIN(glxmin, (double)s->glx);
-						glxmax = MAX(glxmax, (double)s->glx);
-						glymin = MIN(glymin, (double)s->gly);
-						glymax = MAX(glymax, (double)s->gly);
-						glzmin = MIN(glzmin, (double)s->glz);
-						glzmax = MAX(glzmax, (double)s->glz);
-					}
-				}
-			}
 			auto loop = [&](bool full, const double v[4][3]) {
 				vtkIdType ids[5];
 				for (int k = 0; k < 4; k++)
