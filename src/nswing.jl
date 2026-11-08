@@ -748,6 +748,15 @@ function _nswing_resolve_grid(scene::Ptr{Cvoid}, ref::AbstractString)
 	return try _gmtread_trb(String(g)) catch; nothing end      # grids are READ in "TRB"
 end
 
+# The level-0 bathymetry FILE given to the dialog of a window with no grid: "dx dy zmin geog" for the
+# dialog's Time step / Geographic prefill (NswingDialog::prefillFromLevel0). "" when it is no grid.
+function _nswing_bathy_header(scene::Ptr{Cvoid}, ref::AbstractString)
+	G = _nswing_resolve_grid(scene, ref)
+	G isa GMTgrid || (print(""); return nothing)
+	print(G.inc[1], " ", G.inc[2], " ", G.range[5], " ", _isgeographic(G) ? 1 : 0)
+	return nothing
+end
+
 # Fired the INSTANT a nest-grid file name is loaded/typed in the dialog (C++ NswingDialog, gated on a
 # real file). Reads the daughter header, resolves its parent (the window's bathymetry for level 1, the
 # previous level's grid otherwise via `parentref`), and PRINTS the Mirone nesting message ("" if it
@@ -796,6 +805,11 @@ function _nswing_validate(scene::Ptr{Cvoid}, d::Dict{String,String})
 		extra[1] in have || push!(nests, extra)
 	end
 	sort!(nests; by=first)
+	# Level 0 is the bathymetry, never a nest: the window's own grid, or — in a window with no grid —
+	# the level-0 file the dialog asked for first (resolved below, where `base` is).
+	i0 = findfirst(p -> first(p) == 0, nests)
+	level0 = i0 === nothing ? nothing : last(nests[i0])
+	filter!(p -> first(p) != 0, nests)
 
 	# "Max level to use" (dialog's maxlevel combo): run with levels 0..maxlvl only, deeper ones dropped
 	# here — BEFORE anything else looks at the chain, so the nesting checks, the -M-/-M+ decision and
@@ -837,6 +851,10 @@ function _nswing_validate(scene::Ptr{Cvoid}, d::Dict{String,String})
 		                          "fill it with real bathymetry via Transplant before running NSWING")
 	end
 	base = _find_object(scene, :grid, "")             # layer0: the window's base bathymetry grid
+	if !(base isa GMTgrid) && level0 !== nothing      # a window with no grid: the dialog's level-0 file
+		base = level0 isa GMTgrid ? level0 : _nswing_resolve_grid(scene, String(level0))
+		base isa GMTgrid || error("NSWING: the level-0 bathymetry \"$(level0)\" is not a readable grid")
+	end
 	base isa GMTgrid && (base = _as_gridline(base))   # a run with no nest never went through the tool's swap
 
 	# Every nest level must fit inside its PARENT — bathy for layer1, the previous layer for the rest
@@ -914,6 +932,7 @@ function _nswing_plan_paths(scene::Ptr{Cvoid}, d::Dict{String,String})
 	dir = _nswing_save_dir(scene, d)
 
 	bathy_known = _path_for_handle(scene)
+	isempty(bathy_known) && isfile(_get(d, "nestL0")) && (bathy_known = _get(d, "nestL0"))   # a window with no grid
 	# A pixel-registered bathymetry FILE is not what the run uses (`base` is its gridline twin), so the
 	# converted grid is saved beside the others instead of the file being referenced as it lies.
 	bathy_needs_save = isempty(bathy_known) || _grid_file_is_pixel(bathy_known)

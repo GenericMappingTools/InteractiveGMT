@@ -11361,6 +11361,29 @@ GMTVTK_API int gmtvtk_nswing_enter_test(void *scene) {
 	return ran;
 }
 
+// test hook: the NSWING dialog on `scene` as the user meets it — "level=<n>|enabled=<0/1>|prompt=<text>"
+// for the level it starts on and its Nest box — then, when `level0` is not empty, that file TYPED into
+// the Nest box (the real textChanged path), appending "|dt=<Time step box>|geog=<0/1>". -> out (cap bytes).
+GMTVTK_API int gmtvtk_nswing_level0_test(void *scene, const char *level0, char *out, int cap) {
+	Scene *s = static_cast<Scene*>(scene);
+	NswingDialog dlg(nullptr, s);
+	QString r = QString("level=%1|enabled=%2|prompt=%3").arg(dlg.levelCombo->currentIndex())
+		.arg(dlg.nestEdit->isEnabled() ? 1 : 0).arg(dlg.nestEdit->placeholderText());
+	if (level0 && *level0) {
+		dlg.nestEdit->setText(QString::fromUtf8(level0));
+		QApplication::processEvents();
+		r += QString("|dt=%1|geog=%2").arg(dlg.dtEdit->text()).arg(dlg.cGeog->isChecked() ? 1 : 0);
+		r += QString("|next=%1").arg(dlg.nextOpenLevel());
+	}
+	const QByteArray b = r.toUtf8();
+	if (out && cap > 0) {
+		const int n = std::min(cap - 1, (int)b.size());
+		memcpy(out, b.constData(), n);
+		out[n] = '\0';
+	}
+	return (int)b.size();
+}
+
 // test hook: open a real AquamotoWindow (loaded from aquamoto.ui via QUiLoader, no parent), show
 // it, and report whether every expected control was actually found by findChild — the exact bug
 // class an "it compiled" claim would miss (a reparenting mistake leaving the window visually

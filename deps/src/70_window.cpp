@@ -25689,6 +25689,8 @@ public:
 	std::map<QLineEdit*, std::function<void()>> fileBrowsers;   // edit -> its "..." browse action (fileRow); double-click runs it too
 	bool nestReady_ = false;              // gate: don't run the load-time nest check during construction/seed
 	QString lastNestChecked_;             // dedup so the same path isn't re-checked on every keystroke/refresh
+	bool noBase_ = false;                 // the window has no grid of its own: level 0 (the bathymetry) is a FILE
+	                                      // the dialog asks for first, and level 1 waits for it
 
 	// Back from the dock — double-click, the row's checkbox, its "Show". ONE function for every way
 	// in, exactly like LidarPicker::unpark and the region picker's.
@@ -25823,13 +25825,15 @@ public:
 		                  this, [this](int idx) { showLevel(idx); });
 		QObject::connect(nestEdit, &QLineEdit::textChanged, this, [this](const QString &txt) {
 			const int lvl = levelCombo->currentIndex();
-			if (lvl <= 0) return;               // level 0 has no file, its box is disabled anyway
+			if (lvl < 0 || (lvl == 0 && !noBase_)) return;   // level 0 is the window's own grid: no file
 			nestNames[lvl] = txt.trimmed();
 			refreshLevelCombo();
 			checkNestFile();                    // validate the moment a nest grid FILE is loaded/typed
+			prefillFromLevel0();                // ...and a level-0 bathymetry file sets the Time step
 		});
-		// Start on the next OPEN level (level 1 the first time — nothing filled yet), not level 0, so
-		// the Nest box is immediately ready to accept that level's grid name. From here on, only that
+		// Start on the next OPEN level (level 1 the first time — nothing filled yet — or level 0 when the
+		// window has no grid: the bathymetry comes first), so the Nest box is immediately ready to
+		// accept that level's grid name. From here on, only that
 		// one open level or an already-filled one (to replace its name) can ever be selected.
 		levelCombo->setCurrentIndex(std::min(nextOpenLevel(), levelCombo->count() - 1));
 		showLevel(levelCombo->currentIndex());
@@ -25939,21 +25943,15 @@ public:
 		v->addWidget(gRun);
 
 		// --- Prefill Name / Time step / Geographic from the window's OWN bathymetry grid ---------
-		// Time step: Mirone's CFL estimate (src_figs/tintol.m L55-58): dtCFL = dx / sqrt(|zmin|*g) / 2,
-		// dx = min(x_inc,y_inc) in METRES (degrees * 111000 if geographic). Geographic detection mirrors
-		// faultLineGeom's CRS/bbox heuristic above. Name: "tsu" beside the bathymetry's source file.
+		// (prefillFromBathy; a window with no grid gets them when its level-0 file is given). Geographic
+		// detection mirrors faultLineGeom's CRS/bbox heuristic above. Name: "tsu" beside the
+		// bathymetry's source file.
 		if (scene_) {
 			bool geog = scene_->crsProj4.find("longlat") != std::string::npos ||
 			            scene_->crsProj4.find("latlong") != std::string::npos;
 			if (scene_->crsProj4.empty())
 				geog = (scene_->gx0 >= -180 && scene_->gx1 <= 360 && scene_->gy0 >= -90 && scene_->gy1 <= 90);
-			cGeog->setChecked(geog);
-
-			double dx = std::min(scene_->gdx, scene_->gdy);
-			if (geog) dx *= 111000.0;
-			double depth = std::fabs(scene_->zmin);
-			if (dx > 0 && depth > 0)
-				dtEdit->setText(QString::number(dx / std::sqrt(depth * 9.8) / 2.0, 'f', 3));
+			prefillFromBathy(scene_->gdx, scene_->gdy, scene_->zmin, geog);
 
 			// The default is a FULL path, like anything the user picks with the "..." button: a bare
 			// stem leaves "where does this actually get written?" unanswered until after the run.
@@ -26147,15 +26145,44 @@ public:
 	// bathymetry for level 1, the previous level otherwise) by nswing's own nesting rule; if it violates,
 	// the exact "does not obey to the nesting rules … X_MIN should be …" message pops immediately, so the
 	// user learns of it here and not only at RUN. (_nswing_check_nest_file, nswing.jl.)
+	// Time step + Geographic from a bathymetry's increments and deepest point. Time step: Mirone's CFL
+	// estimate (src_figs/tintol.m L55-58): dtCFL = dx / sqrt(|zmin|*g) / 2, dx = min(x_inc,y_inc) in
+	// METRES (degrees * 111000 if geographic). The window's own grid and a level-0 file both come here.
+	void prefillFromBathy(double gdx, double gdy, double zmin, bool geog) {
+		cGeog->setChecked(geog);
+		double dx = std::min(gdx, gdy);
+		if (geog) dx *= 111000.0;
+		const double depth = std::fabs(zmin);
+		if (dx > 0 && depth > 0)
+			dtEdit->setText(QString::number(dx / std::sqrt(depth * 9.8) / 2.0, 'f', 3));
+	}
+
+	// The level-0 file of a window with no grid, the moment it is given: its header ("dx dy zmin geog",
+	// _nswing_bathy_header in nswing.jl) feeds the same prefill the window's own grid gets.
+	void prefillFromLevel0() {
+		if (!nestReady_ || !noBase_ || levelCombo->currentIndex() != 0) return;
+		const QString path = nestEdit->text().trimmed();
+		if (path.isEmpty() || !QFileInfo(path).isFile()) return;
+		QString out;
+		const QString expr = QString("InteractiveGMT._nswing_bathy_header(Ptr{Cvoid}(UInt(%1)),raw\"%2\")")
+			.arg((qulonglong)reinterpret_cast<uintptr_t>(scene_)).arg(path);
+		if (!juliaEvalCall(expr, out)) { QMessageBox::warning(this, "NSWING", out); return; }
+		const QStringList f = out.trimmed().split(' ', Qt::SkipEmptyParts);
+		if (f.size() == 4)
+			prefillFromBathy(f[0].toDouble(), f[1].toDouble(), f[2].toDouble(), f[3] == "1");
+	}
+
 	void checkNestFile() {
 		if (!nestReady_) return;
 		const int lvl = levelCombo->currentIndex();
-		if (lvl < 1) return;
+		if (lvl < 1) return;                              // level 0 has no parent to fit into
 		const QString path = nestEdit->text().trimmed();
 		if (path.isEmpty() || !QFileInfo(path).isFile()) { lastNestChecked_.clear(); return; }
 		if (path == lastNestChecked_) return;             // already checked this exact file
 		lastNestChecked_ = path;
-		const QString parentRef = (lvl >= 2 && nestNames.count(lvl - 1)) ? nestNames[lvl - 1] : QString();
+		// the parent: the previous level; for level 1 that is the window's own grid, or the level-0 file
+		// when the window has none (nestNames[0] exists only then)
+		const QString parentRef = (lvl >= 1 && nestNames.count(lvl - 1)) ? nestNames[lvl - 1] : QString();
 		QString out;
 		const QString expr = QString("InteractiveGMT._nswing_check_nest_file(Ptr{Cvoid}(UInt(%1)),%2,raw\"%3\",raw\"%4\")")
 			.arg((qulonglong)reinterpret_cast<uintptr_t>(scene_)).arg(lvl).arg(path).arg(parentRef);
@@ -26354,6 +26381,7 @@ public:
 	// objects (names, not file paths) — this is a convenience default; the user can still browse to files.
 	void populateFromScene() {
 		if (!scene_) return;
+		noBase_ = scene_->gridZ.empty();      // an empty window: no bathymetry until level 0 is given
 		// Source: base surface + any extra grid whose name starts with "Okada z".
 		auto isOkada = [](const std::string &n) { return QString::fromStdString(n).startsWith("Okada z", Qt::CaseInsensitive); };
 		bool haveSrc = false;
@@ -26410,9 +26438,18 @@ public:
 	// by refreshLevelCombo (which level to leave enabled) and the constructor (which level to start
 	// on), so the two can never disagree about what "open" means.
 	int nextOpenLevel() const {
+		if (!levelFilled(0)) return 0;        // no bathymetry yet: level 0 before anything else
 		int maxFilled = 0;
 		for (auto &kv : nestNames) if (!kv.second.isEmpty() && kv.first > maxFilled) maxFilled = kv.first;
 		return maxFilled + 1;
+	}
+
+	// Level `i` has its grid: level 0 is the window's own grid unless the window has none, then it is
+	// the level-0 file; every other level is its file or "layerN".
+	bool levelFilled(int i) const {
+		if (i == 0 && !noBase_) return true;
+		auto it = nestNames.find(i);
+		return it != nestNames.end() && !it->second.isEmpty();
 	}
 
 	// Relabel every levelCombo item from `nestNames` ("N -- level ready to use" once filled, else the
@@ -26424,10 +26461,8 @@ public:
 		const int nextOpen = nextOpenLevel();
 		auto *model = qobject_cast<QStandardItemModel *>(levelCombo->model());
 		for (int i = 0; i < levelCombo->count(); ++i) {
-			const bool filled = i > 0 && nestNames.count(i) && !nestNames[i].isEmpty();
-			levelCombo->setItemText(i, i == 0 ? "0 -- level ready to use"
-			                              : filled ? QString("%1 -- level ready to use").arg(i)
-			                                       : QString::number(i));
+			const bool filled = levelFilled(i);
+			levelCombo->setItemText(i, filled ? QString("%1 -- level ready to use").arg(i) : QString::number(i));
 			if (model) model->item(i)->setEnabled(i == 0 || filled || i == nextOpen);
 		}
 		// "Max level to use" can only offer levels that EXIST: 0 .. highest filled. Item 0 is "All
@@ -26445,7 +26480,7 @@ public:
 	// box disabled); an already-filled level shows its grid name; the (only ever ONE) open level shows
 	// an "Enter grid name for level N" placeholder, ready for the user to browse/type into.
 	void showLevel(int idx) {
-		if (idx <= 0) {
+		if (idx < 0 || (idx == 0 && !noBase_)) {
 			nestEdit->setEnabled(false);
 			nestEdit->clear();
 			nestEdit->setPlaceholderText("In memory grid");
@@ -26458,7 +26493,8 @@ public:
 			nestEdit->setText(it->second);
 		} else {
 			nestEdit->clear();
-			nestEdit->setPlaceholderText(QString("Enter grid name for level %1").arg(idx));
+			nestEdit->setPlaceholderText(idx == 0 ? QString("Enter the bathymetry grid (level 0)")
+			                                      : QString("Enter grid name for level %1").arg(idx));
 		}
 	}
 
