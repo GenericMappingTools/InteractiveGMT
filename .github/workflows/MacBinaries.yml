@@ -13,7 +13,8 @@
 # to move that target as GitHub updates the alias.
 #
 # THE TWO ARCHES DO NOT REACH THE SAME FLOOR, and the reason is GitHub's runner catalogue, not us:
-#   arm64  -- macos-14 is the OLDEST standard image still offered, so the bundle's floor is 14.x.
+#   arm64  -- macos-15 is the OLDEST standard image still offered (macos-14 was retired in Nov 2026),
+#             so the bundle's floor is 15.x.
 #   x86_64 -- the only standard Intel labels are macos-15-intel and macos-26-intel. There is NO
 #             free macOS 14 Intel runner (macos-14-large is a LARGER, billed runner), so this leg
 #             stays on 15 and its bundle's real floor is 15.x, whatever deps/CMakeLists.txt
@@ -69,7 +70,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-14     # Apple Silicon -- oldest standard arm64 image; sets the 14.x floor
+          - os: macos-15     # Apple Silicon -- oldest standard arm64 image; sets the 15.x floor
+                             # (macos-14 retired by GitHub, Nov 2026: "configuration
+                             # 'macos-14-arm64-us-default' is not supported", job cancelled with no runner)
             arch: arm64
             julia_arch: aarch64
           - os: macos-15-intel   # no free macOS 14 Intel runner exists; see the header
