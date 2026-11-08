@@ -19946,6 +19946,878 @@ static EmodnetDialog *openEmodnetDialog(QWidget *win, Scene *s) {
 }
 
 // ============================================================================================
+// IPMA radar rain (Tools > PT Tools) — IPMA's radar rain-rate images of mainland Portugal, one every
+// 5 minutes (src/ipmaradar.jl downloads them). Start/End times (opened on the 3 h ending at IPMA's
+// newest frame), Fetch, a frame slider with arrows at its tips, Play, and Save, which writes the frames
+// as ONE netCDF cube. The frames are drawn here, in the dialog; nothing is put in the window yet.
+
+// The map: everything in Web Mercator metres, the frame IPMA lays its PNGs in. The view is a centre
+// plus a scale (metres per screen pixel); the wheel zooms about the cursor, a left drag pans, a
+// double-click shows the whole radar again. Layers, bottom up: the background (`bg[0]`, under the whole
+// radar), a sharper patch of it over what is on screen (`bg[1]`, web tiles only), the radar frame.
+// Each layer is an image plus its outer edges in metres; only the part on screen is ever scaled.
+class IpmaMapView : public QWidget {
+public:
+	struct Layer { QImage img; double e[4] = { 0, 0, 0, 0 }; };   // e = x0, x1, y0, y1 (edges, metres)
+	Layer bg[2];
+	Layer radar;                        // its edges = the radar's Mercator box, set once from Julia
+	QString credit;                     // the background's attribution, drawn bottom-right
+	QString note;                       // what is loading right now, drawn top-left ("" = nothing)
+	double cx = 0, cy = 0, mpp = 0;     // view centre (metres) and metres per logical pixel
+	double fitMpp = 0;                  // the scale that shows the whole radar
+	std::function<void()> onView;       // the view moved (the dialog asks for sharper tiles)
+	explicit IpmaMapView(QWidget *parent) : QWidget(parent) { setMouseTracking(false); }
+
+	bool hasExtent() const { return radar.e[1] > radar.e[0] && radar.e[3] > radar.e[2]; }
+	void fit() {
+		if (!hasExtent() || width() < 2 || height() < 2) return;
+		cx = (radar.e[0] + radar.e[1]) / 2;  cy = (radar.e[2] + radar.e[3]) / 2;
+		fitMpp = std::max((radar.e[1] - radar.e[0]) / width(), (radar.e[3] - radar.e[2]) / height());
+		mpp = fitMpp;
+		update();
+		if (onView) onView();
+	}
+	// The visible box, x0 x1 y0 y1 in metres.
+	void viewBox(double v[4]) const {
+		v[0] = cx - mpp * width() / 2;   v[1] = cx + mpp * width() / 2;
+		v[2] = cy - mpp * height() / 2;  v[3] = cy + mpp * height() / 2;
+	}
+	// Zoom by `f` (> 1 = in) keeping the world point under `at` where it is.
+	void zoomAt(const QPointF &at, double f) {
+		if (mpp <= 0) return;
+		const double nm = std::clamp(mpp / f, 0.5, fitMpp * 4);
+		const double wx = cx + (at.x() - width() / 2.0) * mpp, wy = cy - (at.y() - height() / 2.0) * mpp;
+		cx = wx - (at.x() - width() / 2.0) * nm;
+		cy = wy + (at.y() - height() / 2.0) * nm;
+		mpp = nm;
+		update();
+		if (onView) onView();
+	}
+protected:
+	QPoint dragFrom;
+	bool dragging = false;
+	void drawLayer(QPainter &p, const Layer &L, double opacity) {
+		if (L.img.isNull() || !(L.e[1] > L.e[0]) || !(L.e[3] > L.e[2])) return;
+		double v[4];
+		viewBox(v);
+		const double x0 = std::max(v[0], L.e[0]), x1 = std::min(v[1], L.e[1]);
+		const double y0 = std::max(v[2], L.e[2]), y1 = std::min(v[3], L.e[3]);
+		if (!(x1 > x0) || !(y1 > y0)) return;
+		const double sx = L.img.width() / (L.e[1] - L.e[0]), sy = L.img.height() / (L.e[3] - L.e[2]);
+		const QRectF src((x0 - L.e[0]) * sx, (L.e[3] - y1) * sy, (x1 - x0) * sx, (y1 - y0) * sy);
+		const QRectF dst((x0 - v[0]) / mpp, (v[3] - y1) / mpp, (x1 - x0) / mpp, (y1 - y0) / mpp);
+		p.setOpacity(opacity);
+		p.drawImage(dst, L.img, src);
+		p.setOpacity(1.0);
+	}
+	void paintEvent(QPaintEvent *) override {
+		QPainter p(this);
+		p.fillRect(rect(), QColor(235, 235, 235));
+		if (mpp <= 0) return;
+		p.setRenderHint(QPainter::SmoothPixmapTransform);
+		drawLayer(p, bg[0], 1.0);
+		drawLayer(p, bg[1], 1.0);
+		drawLayer(p, radar, 0.8);           // IPMA's own page lays the frames at 0.8 opacity
+		if (!note.isEmpty()) {
+			const QRect t = p.fontMetrics().boundingRect(note).adjusted(-6, -3, 6, 3);
+			const QRect r(6, 6, t.width(), t.height());
+			p.fillRect(r, QColor(255, 255, 220, 230));
+			p.setPen(QColor(40, 40, 40));
+			p.drawRect(r.adjusted(0, 0, -1, -1));
+			p.drawText(r, Qt::AlignCenter, note);
+		}
+		if (!credit.isEmpty()) {
+			const QRect t = p.fontMetrics().boundingRect(credit).adjusted(-4, -1, 4, 1);
+			const QRect r(width() - t.width() - 2, height() - t.height() - 2, t.width(), t.height());
+			p.fillRect(r, QColor(255, 255, 255, 190));
+			p.setPen(QColor(60, 60, 60));
+			p.drawText(r, Qt::AlignCenter, credit);
+		}
+	}
+	void resizeEvent(QResizeEvent *) override {
+		if (mpp <= 0) fit();                // first size: open on the whole radar; later sizes keep the scale
+		else if (onView) onView();
+	}
+	void wheelEvent(QWheelEvent *e) override {
+		const double steps = e->angleDelta().y() / 120.0;
+		if (steps != 0) zoomAt(e->position(), std::pow(1.25, steps));
+		e->accept();
+	}
+	void mousePressEvent(QMouseEvent *e) override {
+		if (e->button() != Qt::LeftButton) return;
+		dragging = true;
+		dragFrom = e->pos();
+		setCursor(Qt::SizeAllCursor);
+	}
+	void mouseMoveEvent(QMouseEvent *e) override {
+		if (!dragging) return;
+		const QPoint d = e->pos() - dragFrom;
+		dragFrom = e->pos();
+		cx -= d.x() * mpp;
+		cy += d.y() * mpp;
+		update();
+	}
+	void mouseReleaseEvent(QMouseEvent *e) override {
+		if (e->button() != Qt::LeftButton || !dragging) return;
+		dragging = false;
+		unsetCursor();
+		if (onView) onView();
+	}
+	void mouseDoubleClickEvent(QMouseEvent *e) override {
+		if (e->button() == Qt::LeftButton) fit();
+	}
+};
+
+class IpmaRadarDialog;
+static std::map<Scene *, IpmaRadarDialog *> g_ipmaDlgs;   // one per window, alive while parked
+static QHash<void *, QDialog *> &scriptEditorRegistry();   // the script editor's registry (defined below)
+// Is `p` a live IPMA dialog? What the shared script editor asks of an owner it does not create itself.
+static bool ipmaAlive(void *p) {
+	for (const auto &kv : g_ipmaDlgs)
+		if (static_cast<void *>(kv.second) == p) return true;
+	return false;
+}
+
+class IpmaRadarDialog {
+public:
+	QDialog *dlg = nullptr;
+	Scene *scn = nullptr;
+	QDateTimeEdit *dtStart = nullptr, *dtEnd = nullptr;
+	QScrollBar *slider = nullptr;
+	QPushButton *btFetch = nullptr, *btPlay = nullptr, *btSave = nullptr, *btMovie = nullptr, *btImage = nullptr;
+	QPushButton *btScript = nullptr;
+	QString lastFetchKV;                // the span last fetched, so an edit that changes nothing fetches nothing
+	bool timesEdited = false;           // Start/End changed by the user since the last fetch (or opening)
+	QToolButton *btLeft = nullptr, *btRight = nullptr;
+	QLabel *lblTime = nullptr, *lblStatus = nullptr;
+	QComboBox *cbBg = nullptr;          // the Background choices; its drop-down shows them all at once
+	IpmaMapView *view = nullptr;
+	QTimer *playTimer = nullptr;
+	QTimer *bgTimer = nullptr;          // waits for the zoom/pan to settle before asking for sharper tiles
+	QStringList labels;                 // each frame's time, "yyyy-MM-dd HH:mm", oldest first
+	std::vector<QByteArray> pngs;       // the PNG IPMA sent for it, same order; decoded when shown
+	QStringList newLabels;              // the list a running Fetch is building (swapped in when it ends)
+	std::vector<QByteArray> newPngs;
+	bool fetchBusy = false;             // this Fetch has raised the download notice
+	bool reallyClose = false;
+	bool fetching = false;
+	int bgIndex = 0;                    // the Background entry in force (to go back to when a pick is cancelled)
+	int baseZoom = 0;                   // zoom level of the tiles under the whole radar (bg[0])
+	QString detailKey;                  // the last sharper-tiles request, so an unchanged view asks nothing
+	static constexpr const char *kFmt = "yyyy-MM-dd HH:mm";   // the time format Julia reads and writes
+	static constexpr int kPlayMs = 300;                        // Play's step, and so the movie's frame rate
+
+	// The Background choices. Web tiles come from GMT.mosaic: the providers that hand them back in Web
+	// Mercator (merc=true), each with its variants as GMT.jl's getprovider names them. `credit` is drawn on
+	// the map. The last two entries are not tiles: no background, and a grid or image from a file.
+	struct BgSrc { const char *label; const char *prov; const char *variant; const char *credit; };
+	static const std::vector<BgSrc> &bgSources() {
+		static const std::vector<BgSrc> v = {
+			{ "OpenStreetMap",    "OSM",    "",                          "© OpenStreetMap contributors" },
+			{ "Esri streets",     "Esri",   "World_Street_Map",          "© Esri" },
+			{ "Esri imagery",     "Esri",   "World_Imagery",             "© Esri" },
+			{ "Esri hillshade",   "Esri",   "Elevation/World_Hillshade", "© Esri" },
+			{ "Google road",      "Google", "Road",                      "© Google" },
+			{ "Google satellite", "Google", "Satellite",                 "© Google" },
+			{ "Google terrain",   "Google", "Terrain",                   "© Google" },
+			{ "Google hybrid",    "Google", "Hybrid",                    "© Google" },
+			{ "Bing aerial",      "Bing",   "Aerial",                    "© Microsoft" },
+			{ "Bing road",        "Bing",   "Road",                      "© Microsoft" },
+			{ "Bing hybrid",      "Bing",   "Hybrid",                    "© Microsoft" },
+			{ "None",             "",       "",                          "" },
+		};
+		return v;
+	}
+	static int bgNone() { return int(bgSources().size()) - 1; }
+	int bgPick() const { return bgNone() + 1; }          // "From file…", right after "None"
+
+	explicit IpmaRadarDialog(QWidget *parent, Scene *scene) : scn(scene) {
+		dlg = new QDialog(parent);
+		dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint | Qt::WindowMinimizeButtonHint);
+		dlg->setWindowModality(Qt::NonModal);
+		dlg->setWindowTitle("IPMA radar rain");
+		QDialog *d = dlg;
+		Scene *sc = scn;
+		QObject::connect(d, &QObject::destroyed, d, [sc, d]() {
+			if (sceneAlive(sc)) unparkTool(sc, d);
+		});
+		parkOnMinimise(d, [this]() { parkNow(); });
+		struct CloseParks : QObject {
+			IpmaRadarDialog *rd;
+			CloseParks(QObject *parent, IpmaRadarDialog *r) : QObject(parent), rd(r) {}
+			bool eventFilter(QObject *o, QEvent *e) override {
+				if (e->type() == QEvent::Close && rd && !rd->reallyClose && sceneAlive(rd->scn)) {
+					e->ignore();
+					rd->parkNow();
+					return true;
+				}
+				return QObject::eventFilter(o, e);
+			}
+		};
+		d->installEventFilter(new CloseParks(d, this));
+		QObject::connect(d, &QDialog::rejected, d, [this]() { parkNow(); });   // Esc
+		g_ipmaDlgs[scn] = this;
+
+		// A narrow control column on the left, the frame filling the rest.
+		auto *h = new QHBoxLayout(d);
+		h->setContentsMargins(4, 4, 4, 4);
+		h->setSpacing(4);
+		auto *side = new QWidget(d);
+		side->setFixedWidth(200);
+		auto *v = new QVBoxLayout(side);
+		v->setContentsMargins(0, 0, 0, 0);
+		v->setSpacing(3);
+		auto *f = new QFormLayout();
+		f->setContentsMargins(0, 0, 0, 0);
+		f->setSpacing(3);
+		const QString tipTime = "Times as IPMA names its frames. IPMA makes one frame every 5 minutes; "
+		                        "a time between two is taken back to the one before it. An End in the future "
+		                        "means up to IPMA's newest frame. Finishing an edit (Enter, or leaving the "
+		                        "box) fetches the frames.";
+		for (QDateTimeEdit **e : { &dtStart, &dtEnd }) {
+			*e = new QDateTimeEdit(side);
+			(*e)->setDisplayFormat(kFmt);
+			(*e)->setTimeSpec(Qt::UTC);
+			(*e)->setCalendarPopup(true);
+			(*e)->setToolTip(tipTime);
+		}
+		f->addRow("Start", dtStart);
+		f->addRow("End", dtEnd);
+		v->addLayout(f);
+		btFetch = new QPushButton("Fetch", side);
+		btFetch->setToolTip("Get every frame from Start to End. Only frames not already held are brought in, "
+		                    "and only frames not yet downloaded in this session are downloaded. When End is "
+		                    "within 30 minutes of now (or in the future) Fetch is an update: End moves to "
+		                    "IPMA's newest frame and the frames made since are added. IPMA keeps about a "
+		                    "week of frames.");
+		v->addWidget(btFetch);
+		lblTime = new QLabel(side);
+		QFont bf = lblTime->font();
+		bf.setBold(true);
+		lblTime->setFont(bf);
+		v->addWidget(lblTime);
+		// The slider: a QScrollBar re-skinned thin, with a real arrow button at each tip (same look as
+		// Aquamoto's slice slider; no native style here draws usable arrows of its own).
+		auto *row = new QHBoxLayout();
+		row->setSpacing(2);
+		btLeft = new QToolButton(side);
+		btRight = new QToolButton(side);
+		btLeft->setArrowType(Qt::LeftArrow);
+		btRight->setArrowType(Qt::RightArrow);
+		btLeft->setAutoRepeat(true);
+		btRight->setAutoRepeat(true);
+		btLeft->setToolTip("Previous frame");
+		btRight->setToolTip("Next frame");
+		slider = new QScrollBar(Qt::Horizontal, side);
+		slider->setStyleSheet(
+			"QScrollBar:horizontal { border: none; background: #e0e0e0; height: 8px; margin: 0px; border-radius: 4px; }"
+			"QScrollBar::handle:horizontal { background: #808080; border-radius: 4px; min-width: 20px; }"
+			"QScrollBar::handle:horizontal:hover { background: #606060; }"
+			"QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0px; }"
+			"QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal { background: transparent; }");
+		slider->setRange(0, 0);
+		slider->setPageStep(1);
+		slider->setToolTip("The frame shown. Drag, or use the arrows at its ends.");
+		row->addWidget(btLeft);
+		row->addWidget(slider, 1);
+		row->addWidget(btRight);
+		v->addLayout(row);
+		btPlay = new QPushButton("Play", side);
+		btPlay->setToolTip("Run through the frames, oldest to newest, over and over. Press again to stop.");
+		v->addWidget(btPlay);
+		btSave = new QPushButton("Save as netCDF…", side);
+		btSave->setToolTip("Write the frames on this dialog as one netCDF-4 cube (time, y, x), compressed: "
+		                   "every pixel's colour index, one palette for all the frames, in Web Mercator "
+		                   "(EPSG:3857) metres.");
+		v->addWidget(btSave);
+		btImage = new QPushButton("Save image…", side);
+		btImage->setToolTip("Save the map as shown — frame, background and zoom — as PNG, JPEG, or a "
+		                    "GeoTIFF georeferenced in Web Mercator (EPSG:3857) to exactly the area on screen. "
+		                    "The GeoTIFF is written by the same writer as the main window's Save Screenshot GeoTIFF.");
+		v->addWidget(btImage);
+		btScript = new QPushButton("Plot with GMT.jl…", side);
+		btScript->setToolTip("This view as a GMT.jl script — the frame shown, over the same background, as a "
+		                     "map of the area on screen — in iGMT's script editor (Run, Save…), the same one "
+		                     "the main window's File > Plot with GMT.jl opens.");
+		v->addWidget(btScript);
+		btMovie = new QPushButton("Save movie…", side);
+		btMovie->setToolTip("Film the frames as they are shown here — background, zoom and all — at the Play "
+		                    "speed, to MP4, WebM or animated GIF. Encoded by ffmpeg exactly as Tools > Make "
+		                    "movie encodes.");
+		v->addWidget(btMovie);
+		v->addWidget(new QLabel("Background", side));
+		cbBg = new QComboBox(side);
+		for (const BgSrc &b : bgSources()) cbBg->addItem(b.label);
+		cbBg->addItem("From file (grid or image)…");
+		fitBgList();
+		cbBg->setToolTip("What the radar is drawn over. Web map tiles come through GMT.mosaic and its tile "
+		                 "cache; sharper tiles are fetched for what is on screen when you zoom in. A grid or "
+		                 "image file is warped to Web Mercator for this display only (a grid is coloured "
+		                 "with iGMT's default palette for it).");
+		v->addWidget(cbBg);
+		lblStatus = new QLabel(side);
+		lblStatus->setWordWrap(true);
+		v->addWidget(lblStatus);
+		v->addStretch(1);
+		auto *hint = new QLabel("Wheel: zoom.  Drag: pan.\nDouble-click: whole radar.", side);
+		hint->setStyleSheet("color: #707070;");
+		v->addWidget(hint);
+		h->addWidget(side);
+		view = new IpmaMapView(d);
+		view->setMinimumSize(200, 310);
+		h->addWidget(view, 1);
+		bgTimer = new QTimer(d);
+		bgTimer->setSingleShot(true);
+		bgTimer->setInterval(450);
+		QObject::connect(bgTimer, &QTimer::timeout, d, [this]() { requestDetail(); });
+		view->onView = [this]() { if (bgTimer) bgTimer->start(); };
+		for (QPushButton *b : d->findChildren<QPushButton *>()) { b->setAutoDefault(false); b->setDefault(false); }
+
+		// The frame area opens with the image's own shape (1500 x 2331), as tall as the screen allows.
+		if (QScreen *scr = d->screen()) {
+			const int fh = std::min(900, scr->availableGeometry().height() - 120);
+			d->resize(200 + 12 + int(std::lround(fh * 1500.0 / 2331.0)), fh + 8);
+		}
+
+		QObject::connect(btFetch, &QPushButton::clicked, d, [this]() { fetch(); });
+		QObject::connect(btPlay, &QPushButton::clicked, d, [this]() { togglePlay(); });
+		QObject::connect(btSave, &QPushButton::clicked, d, [this]() { save(); });
+		QObject::connect(btMovie, &QPushButton::clicked, d, [this]() { saveMovie(); });
+		QObject::connect(btImage, &QPushButton::clicked, d, [this]() { saveImage(); });
+		QObject::connect(btScript, &QPushButton::clicked, d, [this]() { plotWithGMT(); });
+		// EDITING A TIME IS ASKING FOR ITS FRAMES. editingFinished = Enter or leaving the box, never a
+		// keystroke; a day picked in the calendar pop-up is a finished edit too (queued, so the pop-up
+		// has closed first). An edit that leaves the span as it was fetches nothing.
+		for (QDateTimeEdit *e : { dtStart, dtEnd }) {
+			// Only a time the USER changed counts: leaving a box that was merely focused is not an edit.
+			QObject::connect(e, &QDateTimeEdit::dateTimeChanged, d, [this](const QDateTime &) { timesEdited = true; });
+			QObject::connect(e, &QDateTimeEdit::editingFinished, d, [this]() { fetchIfChanged(); });
+			if (QCalendarWidget *cw = e->calendarWidget())
+				QObject::connect(cw, &QCalendarWidget::clicked, d, [this, d](const QDate &) {
+					QTimer::singleShot(0, d, [this]() { fetchIfChanged(); });
+				});
+		}
+		QObject::connect(btLeft, &QToolButton::clicked, d, [this]() { slider->setValue(slider->value() - 1); });
+		QObject::connect(btRight, &QToolButton::clicked, d, [this]() { slider->setValue(slider->value() + 1); });
+		QObject::connect(slider, &QScrollBar::valueChanged, d, [this](int i) { showFrame(i); });
+		QObject::connect(cbBg, QOverload<int>::of(&QComboBox::currentIndexChanged), d, [this](int i) { if (i >= 0) applyBg(i); });
+		wrapTooltips(d);
+		syncEnabled();
+		QObject::connect(d, &QObject::destroyed, d, [this]() { delete this; });
+	}
+
+	void say(const QString &m) {
+		if (lblStatus) lblStatus->setText(m);
+		if (scn && scn->win) scn->win->statusBar()->showMessage(m, 4000);
+	}
+
+	// ONE way into Julia for every request, behind the app's busy notice (SACRED_LAW no-dead-time).
+	// `busy` null = the request raises its own notice on the Julia side (the movie's shared progress bar).
+	// ONE REQUEST AT A TIME. The busy notice takes the keyboard focus, a time box losing it is a finished
+	// edit, and that edit used to start a second request INSIDE this one — which deleted the notice the
+	// outer request was still showing (crash). Callers that can wait check `asking` and come back later.
+	bool asking = false;
+	bool ask(const QString &kv, const char *busy, QString &ans) {
+		if (!g_juliaIpma) { ans = "IPMA radar: callback not registered (src/ipmaradar.jl)."; return false; }
+		if (asking) { ans = "another request is still running"; return false; }
+		asking = true;
+		std::vector<char> buf(1 << 14);
+		buf[0] = '\0';
+		if (busy) showBusyDialog(busy);
+		const int ok = g_juliaIpma(scn, this, kv.toUtf8().constData(), buf.data(), (int)buf.size());
+		if (busy) closeBusyDialog();
+		asking = false;
+		ans = QString::fromUtf8(buf.data()).trimmed();
+		return ok != 0;
+	}
+
+	// Opening: the radar's Mercator box (the map's frame) and IPMA's newest frame, in one request; then
+	// the default background. The default span is the 3 h ending at IPMA's newest frame; when IPMA cannot
+	// be asked, the 3 h ending at the last 5-minute step of the clock, and the status line says why.
+	void init() {
+		QString ans;
+		const bool ok = ask("mode=init\n", "Asking IPMA for its newest frame…", ans);
+		QMap<QString, QString> kv;
+		for (const QString &ln : ans.split('\n')) {
+			const int k = ln.indexOf('=');
+			if (k > 0) kv[ln.left(k)] = ln.mid(k + 1).trimmed();
+		}
+		const QStringList ex = kv.value("extent").split(' ', Qt::SkipEmptyParts);
+		if (ok && ex.size() == 4)
+			for (int i = 0; i < 4; ++i) view->radar.e[i] = ex[i].toDouble();
+		QDateTime end = QDateTime::fromString(kv.value("latest"), kFmt);
+		if (!end.isValid()) {
+			const qint64 s = QDateTime::currentSecsSinceEpoch();
+			end = QDateTime::fromSecsSinceEpoch(s - s % 300, Qt::UTC);
+			say(QString("Could not read IPMA's newest frame (%1); the times are the last 3 hours of the clock.")
+			    .arg(ok ? kv.value("err") : ans));
+		}
+		end.setTimeSpec(Qt::UTC);
+		dtEnd->setDateTime(end);
+		dtStart->setDateTime(end.addSecs(-3 * 3600));
+		timesEdited = false;                     // the defaults are not an edit
+		view->mpp = 0;
+		view->fit();
+		applyBg(cbBg->currentIndex());
+	}
+
+	// The Background drop-down, when opened, shows EVERY choice — no scroll bar — re-fitted whenever a
+	// "File:" entry is added.
+	void fitBgList() {
+		cbBg->setMaxVisibleItems(cbBg->count());
+	}
+
+	// The tile zoom level whose pixels match the screen's at `mpp` metres per logical pixel.
+	int zoomFor(double mpp) const {
+		const double dev = mpp / std::max(1.0, view->devicePixelRatioF());
+		if (dev <= 0) return 1;
+		return std::clamp(int(std::ceil(std::log2(2 * M_PI * 6378137.0 / (256 * dev)))), 1, 19);
+	}
+	bool tiled() const { return cbBg && cbBg->currentIndex() >= 0 && cbBg->currentIndex() < bgNone(); }
+
+	// Julia's answer to a background request (gmtvtk_ipma_set_bg): layer 0 under the whole radar, layer 1
+	// the sharper patch over what is on screen.
+	void setBg(int which, QImage img, const double e[4]) {
+		if (which < 0 || which > 1) return;
+		view->bg[which].img = std::move(img);
+		for (int i = 0; i < 4; ++i) view->bg[which].e[i] = e[i];
+		view->update();
+	}
+
+	void clearBg() {
+		view->bg[0] = IpmaMapView::Layer();
+		view->bg[1] = IpmaMapView::Layer();
+		view->credit.clear();
+		detailKey.clear();
+		view->update();
+	}
+
+	// A tile request. Tiles load at every zoom and pan, so no pop-up: the map itself says what it is
+	// waiting for (a note top-left, drawn before the call blocks) and the cursor waits (SACRED_LAW
+	// no-dead-time, in its light form, on the user's order).
+	bool askTiles(const QString &kv, QString &ans) {
+		view->note = "Loading map tiles…";
+		view->repaint();
+		QApplication::setOverrideCursor(Qt::WaitCursor);
+		const bool ok = ask(kv, nullptr, ans);
+		QApplication::restoreOverrideCursor();
+		view->note.clear();
+		view->update();
+		return ok;
+	}
+
+	QString tileKV(int which, const double b[4], int zoom) const {
+		const BgSrc &s = bgSources()[(size_t)cbBg->currentIndex()];
+		return QString("mode=bg\nwhich=%1\nprovider=%2\nvariant=%3\nbox=%4 %5 %6 %7\nzoom=%8\n")
+		       .arg(which).arg(s.prov, s.variant).arg(b[0], 0, 'f', 2).arg(b[1], 0, 'f', 2)
+		       .arg(b[2], 0, 'f', 2).arg(b[3], 0, 'f', 2).arg(zoom);
+	}
+
+	// A Background entry chosen (and once at opening).
+	void applyBg(int i) {
+		if (i == bgPick()) {                       // "From file…": a grid or an image
+			const QString p = QFileDialog::getOpenFileName(dlg, "Background grid or image", prefStartDir(),
+			                      "Grids and images (*.grd *.nc *.tif *.tiff *.img *.jpg *.jpeg *.png *.jp2);;All files (*)");
+			if (p.isEmpty() || !pickFile(p)) {
+				QSignalBlocker b(cbBg);
+				cbBg->setCurrentIndex(bgIndex);
+			}
+			return;
+		}
+		if (i > bgPick()) {                        // the file picked earlier, chosen again
+			if (loadBgFile(cbBg->itemData(i).toString())) bgIndex = i;
+			else { QSignalBlocker b(cbBg); cbBg->setCurrentIndex(bgIndex); }
+			return;
+		}
+		bgIndex = i;
+		clearBg();
+		if (i == bgNone() || !view->hasExtent()) return;
+		view->credit = QString::fromUtf8(bgSources()[(size_t)i].credit);
+		baseZoom = zoomFor(view->fitMpp);
+		QString ans;
+		if (!askTiles(tileKV(0, view->radar.e, baseZoom), ans)) {
+			say("The background could not be loaded.");
+			QMessageBox::warning(dlg, "IPMA radar rain", ans.isEmpty() ? QString("The map tiles could not be loaded.") : ans);
+			return;
+		}
+		requestDetail();
+	}
+
+	// A file chosen for the background: load it, and make it the combo's "File: <name>" entry (one entry,
+	// replaced by the next file), so choosing it again later reloads it.
+	bool pickFile(const QString &p) {
+		if (!loadBgFile(p)) return false;
+		rememberStartDir(p);
+		QSignalBlocker b(cbBg);
+		const QString item = "File: " + QFileInfo(p).fileName();
+		if (cbBg->count() > bgPick() + 1) cbBg->setItemText(bgPick() + 1, item);
+		else { cbBg->addItem(item); fitBgList(); }
+		cbBg->setItemData(bgPick() + 1, p);
+		cbBg->setCurrentIndex(bgPick() + 1);
+		bgIndex = bgPick() + 1;
+		return true;
+	}
+
+	bool loadBgFile(const QString &path) {
+		clearBg();
+		QString ans;
+		if (!ask(QString("mode=bgfile\nfile=%1\n").arg(QDir::toNativeSeparators(path)), "Reading the background…", ans)) {
+			say("The background could not be loaded.");
+			QMessageBox::warning(dlg, "IPMA radar rain", ans.isEmpty() ? QString("The background could not be read.") : ans);
+			return false;
+		}
+		view->credit = QFileInfo(path).fileName();
+		say(ans);
+		return true;
+	}
+
+	// Sharper tiles over what is on screen, once the zoom/pan has settled: only for web tiles, only when
+	// the screen wants a finer level than the base layer has, and never twice for the same view.
+	void requestDetail() {
+		if (asking) { if (bgTimer) bgTimer->start(); return; }   // a request is running: try again shortly
+		if (!tiled() || !view->hasExtent() || view->mpp <= 0) return;
+		const int z = zoomFor(view->mpp);
+		if (z <= baseZoom) {
+			if (!view->bg[1].img.isNull()) { view->bg[1] = IpmaMapView::Layer(); detailKey.clear(); view->update(); }
+			return;
+		}
+		double b[4];
+		view->viewBox(b);
+		const QString kv = tileKV(1, b, z);
+		if (kv == detailKey) return;
+		QString ans;
+		if (askTiles(kv, ans)) detailKey = kv;
+		else say("Sharper tiles could not be loaded: " + ans);
+	}
+
+	void syncEnabled() {
+		const bool any = !labels.isEmpty();
+		for (QWidget *w : std::initializer_list<QWidget *>{ slider, btLeft, btRight, btPlay, btSave, btMovie, btScript })
+			w->setEnabled(any);
+	}
+
+	// This dialog as the owner of iGMT's ONE script editor (buildScriptEditor, the same dialog a viewer
+	// window or an X,Y plot gets): parks in the window's Scene Objects, errors to its Errors tab.
+	ScriptHost scriptHost() {
+		ScriptHost h;
+		h.key = this;
+		h.parent = dlg;
+		h.parkIn = scn;
+		h.parkLabel = "GMT.jl script (IPMA radar)";
+		IpmaRadarDialog *me = this;
+		Scene *sc = scn;
+		h.alive = [me]() { return ipmaAlive(me); };
+		h.logError = [sc](const QString &m) { if (sceneAlive(sc)) sceneLogError(sc, m); };
+		h.status = [me](const QString &m, int) { if (ipmaAlive(me)) me->say(m); };
+		return h;
+	}
+
+	// "Plot with GMT.jl…": an editor already open (or parked) comes back with its edits; otherwise Julia
+	// writes the script of what is on screen now and it opens in the editor.
+	void plotWithGMT() {
+		if (labels.isEmpty()) return;
+		const ScriptHost h = scriptHost();
+		if (scriptEditorRegistry().value(h.key, nullptr)) { scriptEditorUnpark(h); return; }
+		double b[4];
+		view->viewBox(b);
+		const int row = cbBg->currentIndex();
+		const bool file = row > bgPick();
+		const QString bg = tiled() ? "tiles" : file ? "file" : "none";
+		const BgSrc &s = bgSources()[(size_t)std::min(std::max(row, 0), bgNone())];
+		const QString kv = QString("mode=script\nframe=%1\nbox=%2 %3 %4 %5\nbg=%6\nprovider=%7\nvariant=%8\nzoom=%9\n")
+		                   .arg(labels[slider->value()]).arg(b[0], 0, 'f', 2).arg(b[1], 0, 'f', 2).arg(b[2], 0, 'f', 2)
+		                   .arg(b[3], 0, 'f', 2).arg(bg).arg(tiled() ? s.prov : "").arg(tiled() ? s.variant : "")
+		                   .arg(std::max(baseZoom, zoomFor(view->mpp)));
+		QString ans;
+		if (!ask(kv, "Writing the GMT.jl script…", ans)) {
+			QMessageBox::warning(dlg, "IPMA radar rain", ans.isEmpty() ? QString("The script could not be written.") : ans);
+			return;
+		}
+		buildScriptEditor(h, ans);
+	}
+
+	// "Save image…": the map exactly as shown. PNG / JPEG straight from the widget. GeoTIFF through the
+	// main window's own writer (g_juliaSaveGeoTiff -> savefile.jl `_on_save_geotiff`, the File > Save
+	// Screenshot GeoTIFF path): the same packed top-first RGB, georeferenced to the visible box in Web
+	// Mercator — every pixel of the map is in that one frame, so the box IS the geotransform.
+	void saveImage() {
+		stopPlay();
+		QString filter;
+		QString fn = QFileDialog::getSaveFileName(dlg, "Save the map as an image", prefStartDir(
+		                 labels.isEmpty() ? QString("ipma_radar.png")
+		                                  : QString("ipma_radar_%1.png").arg(QString(labels[slider->value()]).remove('-').remove(':').replace(' ', 'T'))),
+		                 "PNG (*.png);;JPEG (*.jpg *.jpeg);;GeoTIFF (*.tif *.tiff)", &filter);
+		if (fn.isEmpty()) return;
+		rememberStartDir(fn);
+		const QString ext = QFileInfo(fn).suffix().toLower();
+		if (filter.startsWith("GeoTIFF") && ext != "tif" && ext != "tiff") fn += ".tif";
+		writeImage(fn);
+	}
+	// The writing half of "Save image…" (the format follows the file's extension).
+	void writeImage(const QString &fn) {
+		const QString ext = QFileInfo(fn).suffix().toLower();
+		const bool tif = ext == "tif" || ext == "tiff";
+		view->note.clear();
+		const QImage img = view->grab().toImage();
+		if (!tif) {
+			if (img.save(fn)) say("Image written: " + QFileInfo(fn).fileName());
+			else QMessageBox::warning(dlg, "IPMA radar rain", "The image could not be written to\n" + fn);
+			return;
+		}
+		if (!g_juliaSaveGeoTiff) {
+			QMessageBox::warning(dlg, "IPMA radar rain", "Saving a GeoTIFF needs the Julia side (callback not registered).");
+			return;
+		}
+		const QImage rgbImg = img.convertToFormat(QImage::Format_RGB888);
+		const int w = rgbImg.width(), h = rgbImg.height();
+		std::vector<unsigned char> rgb(size_t(w) * size_t(h) * 3);
+		for (int r = 0; r < h; ++r)                       // QImage rows may be padded: copy them packed
+			std::memcpy(rgb.data() + size_t(r) * size_t(w) * 3, rgbImg.constScanLine(r), size_t(w) * 3);
+		double b[4];
+		view->viewBox(b);
+		static const char *kMerc = "+proj=merc +a=6378137 +b=6378137 +lat_ts=0 +lon_0=0 +x_0=0 +y_0=0 +k=1 "
+		                           "+units=m +nadgrids=@null +wktext +no_defs";   // EPSG:3857
+		showBusyDialog("Writing the GeoTIFF…");
+		g_juliaSaveGeoTiff(scn, rgb.data(), w, h, fn.toUtf8().constData(), b[0], b[1], b[2], b[3], kMerc, "");
+		closeBusyDialog();
+		say(QFileInfo(fn).exists() ? "GeoTIFF written: " + QFileInfo(fn).fileName()
+		                           : "The GeoTIFF was not written — see the window's Errors tab.");
+	}
+
+	QString fetchKV() const {
+		return QString("mode=fetch\nstart=%1\nend=%2\n")
+		       .arg(dtStart->dateTime().toString(kFmt), dtEnd->dateTime().toString(kFmt));
+	}
+	// A finished edit of Start or End: fetch, unless the span is the one already on the dialog. An End
+	// before the Start is still being typed, so it waits silently rather than shouting mid-edit.
+	void fetchIfChanged() {
+		if (asking || fetching || !timesEdited || dtEnd->dateTime() < dtStart->dateTime()) return;
+		if (fetchKV() == lastFetchKV) return;
+		fetch();
+	}
+
+	// "Save movie…": the frames as the map shows them, at the Play speed. Julia walks the frames through
+	// gmtvtk_ipma_grab_frame and encodes them with movie.jl's ffmpeg step (src/ipmaradar.jl `_ipma_movie`).
+	void saveMovie() {
+		if (labels.size() < 2) return;
+		stopPlay();
+		auto stamp = [](const QString &l) { return QString(l).remove('-').remove(':').replace(' ', 'T'); };
+		const QString seed = QString("ipma_radar_%1_%2.mp4").arg(stamp(labels.first()), stamp(labels.last()));
+		const QString p = QFileDialog::getSaveFileName(dlg, "Save the frames as a movie", prefStartDir(seed),
+		                      "MP4 video (*.mp4);;WebM video (*.webm);;Animated GIF (*.gif)");
+		if (p.isEmpty()) return;
+		rememberStartDir(p);
+		const int keep = slider->value();
+		const QString kv = QString("mode=movie\nfile=%1\nnframes=%2\nrate=%3\n")
+		                   .arg(QDir::toNativeSeparators(p)).arg(labels.size()).arg(1000.0 / kPlayMs, 0, 'f', 4);
+		QString ans;
+		const bool ok = ask(kv, nullptr, ans);
+		slider->setValue(keep);                  // back on the frame the user was looking at
+		if (!ok) {
+			say("Save movie failed.");
+			QMessageBox::warning(dlg, "IPMA radar rain", ans.isEmpty() ? QString("The movie could not be written.") : ans);
+			return;
+		}
+		say(ans);
+	}
+
+	// One movie frame (gmtvtk_ipma_grab_frame): frame `k` shown and the map grabbed to `path` as a PNG.
+	bool grabFrame(int k, const QString &path) {
+		if (k < 0 || k >= int(pngs.size())) return false;
+		slider->setValue(k);                     // -> showFrame
+		view->repaint();
+		// Quality 100 = no compression: these PNGs only feed ffmpeg and are deleted after, and squeezing a
+		// screen-sized frame was most of the time a movie took.
+		return view->grab().save(path, "PNG", 100);
+	}
+
+	void fetch() {
+		if (fetching) return;
+		if (dtEnd->dateTime() < dtStart->dateTime()) {
+			QMessageBox::warning(dlg, "IPMA radar rain", "The End time is before the Start time.");
+			return;
+		}
+		stopPlay();
+		// ONLY WHAT IS NEW. The frames on the dialog stay; Julia walks the new span and sends just the
+		// frames this list lacks (`have`), and downloads just the ones its session memory lacks. The
+		// span's frame list is rebuilt from that walk (addFrame) into new*, swapped in at the end.
+		const QString kv = fetchKV() + "have=" + labels.join(',') + "\n";
+		const QString spanKV = fetchKV();
+		newLabels.clear();
+		newPngs.clear();
+		fetchBusy = false;
+		fetching = true;
+		timesEdited = false;
+		QString ans;
+		QApplication::setOverrideCursor(Qt::WaitCursor);       // the index check; downloads raise the notice
+		const bool ok = ask(kv, nullptr, ans);
+		QApplication::restoreOverrideCursor();
+		if (fetchBusy) closeBusyDialog();
+		fetching = false;
+		lastFetchKV = ok ? spanKV : QString();
+		if (!ok) {
+			syncEnabled();
+			if (!pngs.empty()) showFrame(slider->value());   // a frame shown mid-download goes back
+			say("Fetch failed.");
+			QMessageBox::warning(dlg, "IPMA radar rain", ans.isEmpty() ? QString("The download failed.") : ans);
+			return;
+		}
+		labels = newLabels;
+		pngs.swap(newPngs);
+		newLabels.clear();
+		newPngs.clear();
+		{
+			QSignalBlocker b(slider);
+			slider->setRange(0, std::max(0, int(labels.size()) - 1));
+			slider->setValue(slider->maximum());
+		}
+		syncEnabled();
+		if (pngs.empty()) { view->radar.img = QImage(); view->update(); lblTime->clear(); }
+		else showFrame(slider->value());
+		// An End past IPMA's newest frame was cut there: the box shows the End actually fetched, and that
+		// span is what "already fetched" now means.
+		const QString report = ans.section('\n', 0, 0);
+		const QString cut = ans.section("end=", 1, 1).section('\n', 0, 0).trimmed();
+		if (!cut.isEmpty()) {
+			QDateTime t = QDateTime::fromString(cut, kFmt);
+			t.setTimeSpec(Qt::UTC);
+			if (t.isValid()) {
+				QSignalBlocker b(dtEnd);
+				dtEnd->setDateTime(t);
+				lastFetchKV = fetchKV();
+			}
+		}
+		say(labels.isEmpty() ? QString("IPMA has no frame between those times (%1).").arg(report) : report + ".");
+	}
+
+	// Julia's walk of the span, once per 5-minute step (gmtvtk_ipma_add_frame), in time order. `status`:
+	// 0 IPMA has no such frame, 1 this dialog already holds it (nothing sent), 2 sent from Julia's
+	// memory, 3 downloaded now. The progress notice goes up at the FIRST real download and only then —
+	// a span that is all in memory never shows it — and each downloaded frame is shown as it arrives.
+	void addFrame(const QString &label, const unsigned char *png, int n, int k, int ntot, int status) {
+		if (status == 1) {
+			const int i = labels.indexOf(label);
+			if (i >= 0) { newLabels << label; newPngs.push_back(pngs[(size_t)i]); }
+		}
+		else if ((status == 2 || status == 3) && png && n > 0) {
+			newLabels << label;
+			newPngs.emplace_back(reinterpret_cast<const char *>(png), n);
+		}
+		if (status == 3) {
+			if (!fetchBusy) { showBusyDialog("Downloading IPMA radar frames…"); fetchBusy = true; }
+			view->radar.img = QImage::fromData(newPngs.back(), "PNG");
+			view->update();
+			lblTime->setText(label);
+		}
+		if (fetchBusy && g_progress) {
+			g_progress->setRange(0, std::max(ntot, 1));
+			g_progress->setValue(k);
+			g_progress->setLabelText(QString("Frame %1 of %2 — %3").arg(k).arg(ntot).arg(label));
+			QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+		}
+	}
+
+	void showFrame(int i) {
+		if (i < 0 || i >= int(pngs.size())) return;
+		view->radar.img = QImage::fromData(pngs[(size_t)i], "PNG");
+		view->update();
+		lblTime->setText(QString("%1   (%2/%3)").arg(labels[i]).arg(i + 1).arg(labels.size()));
+	}
+
+	void togglePlay() {
+		if (playTimer) { stopPlay(); return; }
+		if (labels.size() < 2) return;
+		if (slider->value() >= slider->maximum()) slider->setValue(0);   // a run starts from the oldest
+		playTimer = new QTimer(dlg);
+		playTimer->setInterval(kPlayMs);
+		QObject::connect(playTimer, &QTimer::timeout, dlg, [this]() {
+			slider->setValue(slider->value() >= slider->maximum() ? 0 : slider->value() + 1);
+		});
+		playTimer->start();
+		btPlay->setText("Stop");
+	}
+	void stopPlay() {
+		if (!playTimer) return;
+		playTimer->stop();
+		playTimer->deleteLater();
+		playTimer = nullptr;
+		btPlay->setText("Play");
+	}
+
+	void save() {
+		if (labels.isEmpty()) return;
+		stopPlay();
+		auto stamp = [](const QString &l) { return QString(l).remove('-').remove(':').replace(' ', 'T'); };
+		const QString seed = QString("ipma_radar_%1_%2.nc").arg(stamp(labels.first()), stamp(labels.last()));
+		const QString p = QFileDialog::getSaveFileName(dlg, "Save the frames as a netCDF cube", prefStartDir(seed),
+		                                               "netCDF (*.nc);;All files (*)");
+		if (p.isEmpty()) return;
+		rememberStartDir(p);
+		const QString kv = QString("mode=save\nframes=%1\nfile=%2\n").arg(labels.join(','), QDir::toNativeSeparators(p));
+		QString ans;
+		if (!ask(kv, "Writing the netCDF cube…", ans)) {
+			say("Save failed.");
+			QMessageBox::warning(dlg, "IPMA radar rain", ans.isEmpty() ? QString("Writing the cube failed.") : ans);
+			return;
+		}
+		say(ans);
+	}
+
+	void unpark() {
+		if (!dlg) return;
+		unparkTool(scn, dlg);
+		dlg->setWindowState(dlg->windowState() & ~Qt::WindowMinimized);
+		dlg->showNormal();
+		dlg->raise();
+		dlg->activateWindow();
+	}
+	std::function<void(const QPoint &)> parkedMenu() {
+		return [this](const QPoint &g) {
+			QMenu m;
+			QAction *aShow = m.addAction("Show");
+			m.addSeparator();
+			QAction *aDel  = m.addAction("Delete");
+			QAction *pick  = m.exec(g);
+			if (pick == aShow) unpark();
+			else if (pick == aDel) {
+				reallyClose = true;
+				unparkTool(scn, dlg);
+				forget();
+				dlg->deleteLater();          // destroyed -> this wrapper goes with it
+			}
+		};
+	}
+	void parkNow() {
+		if (!dlg || !sceneAlive(scn)) return;
+		stopPlay();
+		dlg->setWindowState(dlg->windowState() & ~Qt::WindowMinimized);
+		dlg->hide();
+		parkTool(scn, dlg, "IPMA radar rain", IC_Rect,
+		         "Minimised IPMA radar rain — double-click to bring it back, click for Show / Delete",
+		         [this]() { unpark(); }, parkedMenu());
+		unfoldSceneObjects(scn);
+	}
+	void forget() {
+		for (auto it = g_ipmaDlgs.begin(); it != g_ipmaDlgs.end(); )
+			it = (it->second == this) ? g_ipmaDlgs.erase(it) : std::next(it);
+	}
+	~IpmaRadarDialog() { forget(); }
+};
+
+// Tools > PT Tools > IPMA radar rain: the window's OWN dialog (a parked one comes back as it was), else
+// a new one, opened on the 3 h ending at IPMA's newest frame.
+static IpmaRadarDialog *openIpmaDialog(QWidget *win, Scene *s) {
+	auto it = g_ipmaDlgs.find(s);
+	if (it != g_ipmaDlgs.end()) { it->second->unpark(); return it->second; }
+	auto *w = new IpmaRadarDialog(win, s);
+	w->dlg->show();
+	w->dlg->raise();
+	w->dlg->activateWindow();
+	w->init();
+	return w;
+}
+
+// ============================================================================================
 // grdlandmask (GMT menu) — build a wet/dry mask grid from the shoreline database. Layout is Mirone's
 // grdlandmask window: the shared "Griding Line Geometry" block, coastline resolution, Min area (-A),
 // registration, and the five Node values with the Boundary flag. The .ui carries a verbatim copy of
@@ -32412,6 +33284,29 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		// in, together with the background image's corners converted to this map's own CRS.
 		if (g_juliaLidar) g_juliaLidar(s, dlg, "cminit");
 		dlg->show();
+	});
+	// IPMA radar rain: IPMA's 5-minute radar rain-rate frames, played in the dialog and saved, on request,
+	// as one netCDF cube (src/ipmaradar.jl). Wired on first use, so the first click waits (wait cursor)
+	// for the Julia side to register itself — same as EMODNET.
+	mPT->addAction("IPMA radar rain", [win, s]() {
+		if (g_juliaIpma) { openIpmaDialog(win, s); return; }
+		warmupTool("ipma");
+		QApplication::setOverrideCursor(Qt::WaitCursor);
+		auto tries = std::make_shared<int>(0);
+		auto step = std::make_shared<std::function<void()>>();
+		*step = [win, s, tries, step]() {
+			if (!g_juliaIpma && ++*tries < 200) {
+				QTimer::singleShot(50, win, *step);
+				return;
+			}
+			QApplication::restoreOverrideCursor();
+			if (!sceneAlive(s)) return;
+			if (g_juliaIpma)
+				openIpmaDialog(win, s);
+			else
+				QMessageBox::warning(win, "IPMA radar rain", "The IPMA radar tool's Julia side did not answer (src/ipmaradar.jl).");
+		};
+		QTimer::singleShot(0, win, *step);
 	});
 
 	// --- Tools > GMT sub-menu: helper windows to drive GMT modules ----

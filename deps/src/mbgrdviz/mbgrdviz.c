@@ -3750,8 +3750,16 @@ int do_mbgrdviz_readnav(size_t instance, char *swathfile, int pathstatus, char *
   color = MBV_COLOR_BLACK;
   size = 2;
   name[0] = '\0';
+  /* InteractiveGMT port: the file's name after the last separator, '/' OR '\'. MBIO's datalist reader
+     hands Windows paths over with '\' (mbio.dll rebuilt 2026-11-07), and cutting at '/' only left the
+     whole path as the track's name. */
   lastslash = strrchr(swathfile, '/');
-  if ((lastslash = strrchr(swathfile, '/')) != NULL)
+  {
+    char *bs = strrchr(swathfile, '\\');
+    if (bs != NULL && (lastslash == NULL || bs > lastslash))
+      lastslash = bs;
+  }
+  if (lastslash != NULL)
     strcpy(name, &(lastslash[1]));
   else
     strcpy(name, swathfile);

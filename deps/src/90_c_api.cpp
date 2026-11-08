@@ -1526,7 +1526,8 @@ GMTVTK_API int gmtvtk_axes_props_h(void *handle, const char *name, char *buf, in
 // the byte count, then with a buffer of at least count+1. Returns the byte count, 0 when there is no
 // editor for this window.
 GMTVTK_API int gmtvtk_script_editor_text_h(void *handle, char *buf, int cap) {
-	if (!sceneAlive(static_cast<Scene*>(handle)) && !xyAlive(static_cast<XYPlot*>(handle))) return 0;
+	// The editor's owners: a viewer window, an X,Y plot, and the IPMA radar dialog (its Plot with GMT.jl).
+	if (!sceneAlive(static_cast<Scene*>(handle)) && !xyAlive(static_cast<XYPlot*>(handle)) && !ipmaAlive(handle)) return 0;
 	QDialog *d = scriptEditorRegistry().value(handle, nullptr);
 	QPlainTextEdit *ed = d ? d->findChild<QPlainTextEdit *>() : nullptr;
 	if (!ed) return 0;
@@ -5277,6 +5278,130 @@ GMTVTK_API void gmtvtk_emodnet_set_tiles(void *dlg, const double *rects, const c
 		out.push_back({ rects[4 * k], rects[4 * k + 1], rects[4 * k + 2], rects[4 * k + 3],
 		                k < nm.size() ? nm[k] : QString() });
 	d->setTiles(std::move(out), QString::fromUtf8(release ? release : ""));
+}
+
+// Register the IPMA radar rain callback (Tools > PT Tools; contract in 30_app.cpp). nullptr to detach.
+GMTVTK_API void gmtvtk_set_ipma_callback(JuliaIpmaFn fn) {
+	g_juliaIpma = fn;
+}
+
+// Julia's walk of the IPMA dialog's mode=fetch span, once per 5-minute step: step k of ntot, its time
+// `label` ("yyyy-MM-dd HH:mm"), the PNG (`n` bytes, copied; none when status is 0 or 1) and `status`:
+// 0 not on IPMA's server, 1 the dialog already holds it, 2 from Julia's memory, 3 downloaded now.
+GMTVTK_API void gmtvtk_ipma_add_frame(void *dlg, const char *label, const unsigned char *png, int n, int k, int ntot,
+                                      int status) {
+	auto *d = static_cast<IpmaRadarDialog *>(dlg);
+	if (!d || !d->dlg) return;
+	d->addFrame(QString::fromUtf8(label ? label : ""), png, n, k, ntot, status);
+}
+
+// Julia's answer to an IPMA background request: layer `which` (0 = under the whole radar, 1 = the
+// sharper patch on screen) as `w` x `h` RGBA bytes, row 1 = north, copied; e = its outer edges in Web
+// Mercator metres (x0 x1 y0 y1).
+GMTVTK_API void gmtvtk_ipma_set_bg(void *dlg, int which, const unsigned char *rgba, int w, int h,
+                                   double x0, double x1, double y0, double y1) {
+	auto *d = static_cast<IpmaRadarDialog *>(dlg);
+	if (!d || !d->dlg || !rgba || w <= 0 || h <= 0) return;
+	const double e[4] = { x0, x1, y0, y1 };
+	d->setBg(which, QImage(rgba, w, h, 4 * w, QImage::Format_RGBA8888).copy(), e);
+}
+
+// One frame of the IPMA dialog's "Save movie": frame `k` (0-based) shown on its map and the map grabbed
+// to `path` as a PNG. Returns 1/0.
+GMTVTK_API int gmtvtk_ipma_grab_frame(void *dlg, int k, const char *path) {
+	auto *d = static_cast<IpmaRadarDialog *>(dlg);
+	if (!d || !d->dlg || !path) return 0;
+	return d->grabFrame(k, QString::fromUtf8(path)) ? 1 : 0;
+}
+
+// Drive / read window `handle`'s IPMA radar rain dialog (tests), through its own widgets: "" = read only,
+// "fetch" / "play" = click that button, "frame:N" = slider to N, "start:<t>" / "end:<t>" = type a time
+// ("yyyy-MM-dd HH:mm") and press Enter, "movie:<path>" = Save movie to that file, "zoom:N" = N wheel notches at the map's centre (negative = out), "bg:N" = pick
+// Background entry N, "bgfile:<path>" = a grid/image background (the step after "From file…"'s file
+// dialog), "shot:<png>" = grab the dialog, "close" = close (= park). out[0..9] = visible,
+// frames held, slider value, playing, parked row in `handle`, start and end as seconds since 1970,
+// background layer 0 present, sharper layer 1 present, map scale relative to the whole-radar fit,
+// the dialog's address (the script editor's owner key), its script editor open. `out` holds 12.
+// More actions: "image:<path>" = Save image to that file, "script" = click Plot with GMT.jl….
+// Returns 1, or 0 with no dialog.
+GMTVTK_API int gmtvtk_ipma_test(void *handle, const char *action, double *out) {
+	auto it = g_ipmaDlgs.find(static_cast<Scene *>(handle));
+	if (it == g_ipmaDlgs.end() || !it->second->dlg) return 0;
+	IpmaRadarDialog *m = it->second;
+	const QString a = QString::fromUtf8(action ? action : "");
+	if (a == "fetch") m->btFetch->click();
+	else if (a == "play") m->btPlay->click();
+	else if (a.startsWith("frame:")) m->slider->setValue(a.mid(6).toInt());
+	else if (a.startsWith("start:") || a.startsWith("end:")) {
+		// Typed and finished with Enter, as the user does: the box's own editingFinished does the rest.
+		QDateTimeEdit *e = a.startsWith("start:") ? m->dtStart : m->dtEnd;
+		QDateTime t = QDateTime::fromString(a.mid(a.indexOf(':') + 1), IpmaRadarDialog::kFmt);
+		t.setTimeSpec(Qt::UTC);
+		e->setDateTime(t);
+		QKeyEvent press(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
+		QApplication::sendEvent(e, &press);
+	}
+	else if (a.startsWith("typeend:")) {
+		// Key by key into the End box, the text selected first, then Enter: what a user typing a time does.
+		QDateTimeEdit *e = m->dtEnd;
+		e->setFocus();
+		e->selectAll();
+		for (const QChar c : a.mid(8)) {
+			QKeyEvent k(QEvent::KeyPress, 0, Qt::NoModifier, QString(c));
+			QApplication::sendEvent(e, &k);
+		}
+		QKeyEvent ret(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
+		QApplication::sendEvent(e, &ret);
+	}
+	else if (a.startsWith("movie:")) {
+		// "Save movie…" past its file dialog: the same request saveMovie() sends.
+		const QString kv = QString("mode=movie\nfile=%1\nnframes=%2\nrate=%3\n").arg(a.mid(6))
+		                   .arg(m->labels.size()).arg(1000.0 / IpmaRadarDialog::kPlayMs, 0, 'f', 4);
+		QString ans;
+		m->ask(kv, nullptr, ans);
+		m->say(ans);
+	}
+	else if (a.startsWith("zoom:")) {
+		const int n = a.mid(5).toInt();
+		const QPointF c(m->view->width() / 2.0, m->view->height() / 2.0);
+		for (int k = 0; k < std::abs(n); ++k) {
+			QWheelEvent we(c, m->view->mapToGlobal(c), QPoint(), QPoint(0, n > 0 ? 120 : -120),
+			               Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+			QApplication::sendEvent(m->view, &we);
+		}
+	}
+	else if (a.startsWith("bg:")) m->cbBg->setCurrentIndex(a.mid(3).toInt());
+	else if (a.startsWith("bgpopup:")) {                             // the Background drop-down, opened, grabbed
+		m->cbBg->showPopup();
+		QApplication::processEvents();
+		m->cbBg->view()->window()->grab().save(a.mid(8), "PNG");
+		m->cbBg->hidePopup();
+	}
+	else if (a.startsWith("bgfile:")) m->pickFile(a.mid(7));     // what "From file…" does after its file dialog
+	else if (a.startsWith("image:")) m->writeImage(a.mid(6));      // "Save image…" past its file dialog
+	else if (a == "script") m->btScript->click();                  // Plot with GMT.jl…
+	else if (a.startsWith("shot:")) m->dlg->grab().save(a.mid(5), "PNG");
+	else if (a == "close") m->dlg->close();
+	Scene *s = static_cast<Scene *>(handle);
+	bool row = false;
+	if (sceneAlive(s))
+		for (auto &pt : s->parkedTools)
+			if (pt.win == m->dlg) row = true;
+	if (out) {
+		out[0] = m->dlg->isVisible() ? 1 : 0;
+		out[1] = double(m->pngs.size());
+		out[2] = m->slider->value();
+		out[3] = m->playTimer ? 1 : 0;
+		out[4] = row ? 1 : 0;
+		out[5] = double(m->dtStart->dateTime().toSecsSinceEpoch());
+		out[6] = double(m->dtEnd->dateTime().toSecsSinceEpoch());
+		out[7] = m->view->bg[0].img.isNull() ? 0 : 1;
+		out[8] = m->view->bg[1].img.isNull() ? 0 : 1;
+		out[9] = m->view->fitMpp > 0 ? m->view->mpp / m->view->fitMpp : 0;
+		out[10] = double(reinterpret_cast<quintptr>(static_cast<void *>(m)));   // the script editor's owner key
+		out[11] = scriptEditorRegistry().value(m, nullptr) ? 1 : 0;            // its script editor is open
+	}
+	return 1;
 }
 
 // Register the Euler rotations Compute callback (Plates menu). fn(scene, params) with the "key=value"

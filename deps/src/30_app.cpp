@@ -1464,6 +1464,15 @@ static JuliaDgtFn g_juliaDgt = nullptr;
 typedef int (*JuliaEmodnetFn)(void *scene, void *dlg, const char *params);
 static JuliaEmodnetFn g_juliaEmodnet = nullptr;
 
+// IPMA radar rain (Tools > PT Tools): IPMA's radar rain-rate frames of mainland Portugal, one every 5
+// minutes. IpmaRadarDialog (70_window.cpp) hands a newline-separated "key=value" block to Julia
+// (_on_ipma, src/ipmaradar.jl): mode=latest (the newest frame IPMA lists), mode=fetch start= end= (the
+// frames come back one by one through gmtvtk_ipma_add_frame) or mode=save frames= file= (one netCDF
+// cube). Times are "yyyy-MM-dd HH:mm". `out`/`cap` carry the answer text back, or the error text.
+// Registered lazily (warm_register "ipma"). Returns 1 on success, 0 on failure.
+typedef int (*JuliaIpmaFn)(void *scene, void *dlg, const char *params, char *out, int cap);
+static JuliaIpmaFn g_juliaIpma = nullptr;
+
 // grdlandmask (GMT menu), dialog laid out after Mirone's grdlandmask window. GrdLandmaskDialog
 // (70_window.cpp, loads deps/ui/grdlandmask_dialog.ui) hands a newline-separated "key=value" block to
 // Julia (_on_grdlandmask, src/grdlandmask.jl): region, inc, res, area, maskvalues, border, pixel,

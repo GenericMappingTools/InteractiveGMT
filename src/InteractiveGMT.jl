@@ -172,6 +172,7 @@ include("computeeuler.jl") # Plates > Compute Euler pole (port of Mirone compute
 include("shapenc.jl")    # write a SHAPENC netCDF file (port of Mirone utils/shapenc.m; GDAL MDArray API, no MEX)
 include("benchmark1_analytic.jl") # Carrier--Greenspan analytic solution of benchmark 1 (self-contained module)
 include("benchmark1.jl") # Geophysics > Tsunamis > Catalina benchmark 1 (NSWING demo; needs shapenc's MDArray helpers)
+include("ipmaradar.jl")  # Tools > PT Tools > IPMA radar rain: IPMA's 5-min radar frames (cube save needs shapenc's MDArray helpers)
 include("gmtedit.jl")    # Geophysics > Magnetics > gmtedit: the MGD77 track editor (port of Mirone src_figs/gmtedit.m)
 # EXPERIMENTAL swath editor (MB-System's mbedit, deps/src/mbedit/): comment this line out to drop its
 # Julia side (`mbedit`, exported from the file itself). The C side is switched by IGMT_WITH_MBEDIT in

@@ -144,8 +144,10 @@ end
 	                                          (Ptr{Cvoid}, Cint, Ptr{Cdouble}, Cint), h, fault, xy, length(xy) ÷ 2))
 	pts(s) = [parse.(Float64, split(p, ',')) for p in split(s, ';')]
 	rows(h) = unsafe_string(ccall(_test_fn(:gmtvtk_objrows_test), Cstring, (Ptr{Cvoid},), h))
-	ttt(h, src) = IG._on_ttt(h, Base.unsafe_convert(Cstring, Base.cconvert(Cstring,
-		"what=grid\ngrid=\nmethod=mirone\nfillvoids=0\nsrcxy=$src")))
+	# The request string is KEPT ALIVE for the call: a bare unsafe_convert of a temporary left _on_ttt
+	# reading freed memory (measured 2026-11-08: it received "\x90\x9fpu\xd9\x01", no srcxy in it).
+	ttt(h, src) = (s = "what=grid\ngrid=\nmethod=mirone\nfillvoids=0\nsrcxy=$src";
+	               GC.@preserve s IG._on_ttt(h, Base.unsafe_convert(Cstring, s)))
 	for fault in (0, 1)
 		f = viz(TttTest.bathy())
 		try
