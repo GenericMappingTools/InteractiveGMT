@@ -819,7 +819,7 @@ static bool sunSyncOpen(QWidget *parent, Scene *scene) {
 		t->GetTextProperty()->SetFontSize(11);
 		t->GetTextProperty()->SetColor(0.95, 0.95, 0.95);
 		t->SetDisplayPosition(6, 6);
-		m->inset->AddActor2D(t);
+		m->inset->AddViewProp(t);	// AddActor2D: gone in VTK 9.7 (macOS CI)
 	}
 
 	// ---- the chart, the facts and the controls -------------------------------------------------
