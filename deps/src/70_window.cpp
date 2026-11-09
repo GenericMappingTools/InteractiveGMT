@@ -26534,6 +26534,194 @@ static void faultRunDialog(Scene *s, vtkActor *seedPatch) {
 }
 
 // ============================================================================================
+// NSWING nesting-rule violation, DRAWN (nestRulesWarning below). One panel per offending corner of the
+// daughter grid, after Mirone's quad figure: the parent's cells (grey lines = cell edges, circled x =
+// parent nodes), the daughter as it IS (red: outer cell edge, cells, corner node) and as the rule
+// REQUIRES (green). The rule, seen: the daughter's outer CELL EDGE lies on a parent cell edge, so its
+// corner node sits half a parent cell + half a daughter cell inside a parent node. Pure drawing —
+// every number (both corners, which edges are bad) comes from Julia's _nswing_nest_geom, i.e. the same
+// _nest_binning verdicts the text reports.
+class NestCornerView : public QWidget {
+public:
+	bool ur = false;                      // false: lower-left corner, true: upper-right
+	double px0 = 0, py0 = 0, pdx = 1, pdy = 1, cdx = 1, cdy = 1;   // parent origin + incs, daughter incs
+	double ax = 0, ay = 0, rx = 0, ry = 0;                       // daughter corner node: as it is / required
+	bool badX = false, badY = false;
+
+	explicit NestCornerView(QWidget *parent) : QWidget(parent) { setFixedSize(460, 424); }
+
+protected:
+	void paintEvent(QPaintEvent *) override {
+		QPainter g(this);
+		g.setRenderHint(QPainter::Antialiasing, true);
+		g.setRenderHint(QPainter::TextAntialiasing, true);
+		g.fillRect(rect(), Qt::white);
+		const QRectF plot(92, 30, width() - 106, height() - 70);     // square: 354 x 354
+		// parent-cell units: u = (x - px0)/pdx, so parent nodes are integers, parent cell edges half-integers
+		const double au = (ax - px0) / pdx, av = (ay - py0) / pdy;
+		const double ru = (rx - px0) / pdx, rv = (ry - py0) / pdy;
+		const double cu = cdx / pdx, cv = cdy / pdy;                 // one daughter cell, in parent cells
+		const double sgn = ur ? -1.0 : 1.0;                          // the daughter lies this way of its corner
+		const double half = std::max({1.6, std::fabs(au - ru) / 2 + 1.2, std::fabs(av - rv) / 2 + 1.2});
+		const double u0 = (au + ru) / 2 - half, v0 = (av + rv) / 2 - half, u1 = u0 + 2 * half, v1 = v0 + 2 * half;
+		const double k = plot.width() / (2 * half);                  // pixels per parent cell
+		auto X = [&](double u) { return plot.left() + (u - u0) * k; };
+		auto Y = [&](double v) { return plot.bottom() - (v - v0) * k; };
+
+		g.save();
+		g.setClipRect(plot);
+		// the parent: cell edges + nodes
+		g.setPen(QPen(QColor(150, 150, 150), 1.2));
+		for (double e = std::floor(u0) - 0.5; e <= u1 + 1; e += 1) g.drawLine(QPointF(X(e), plot.top()), QPointF(X(e), plot.bottom()));
+		for (double e = std::floor(v0) - 0.5; e <= v1 + 1; e += 1) g.drawLine(QPointF(plot.left(), Y(e)), QPointF(plot.right(), Y(e)));
+		g.setPen(QPen(QColor(80, 80, 80), 1.2));
+		g.setBrush(Qt::NoBrush);
+		const double r = 6;
+		for (double i = std::floor(u0); i <= u1 + 1; i += 1)
+			for (double j = std::floor(v0); j <= v1 + 1; j += 1) {
+				const QPointF c(X(i), Y(j));
+				g.drawEllipse(c, r, r);
+				g.drawLine(c + QPointF(-r * 0.7, -r * 0.7), c + QPointF(r * 0.7, r * 0.7));
+				g.drawLine(c + QPointF(-r * 0.7, r * 0.7), c + QPointF(r * 0.7, -r * 0.7));
+			}
+
+		// one daughter: translucent body, its cells, its thick outer cell edge, its corner node
+		auto daughter = [&](double nu, double nv, const QColor &col) {
+			const double eu = nu - sgn * cu / 2, ev = nv - sgn * cv / 2;  // outer cell edge
+			const double fu = sgn > 0 ? u1 + 1 : u0 - 1, fv = sgn > 0 ? v1 + 1 : v0 - 1;
+			QColor fill = col; fill.setAlpha(40);
+			g.fillRect(QRectF(QPointF(X(eu), Y(ev)), QPointF(X(fu), Y(fv))).normalized(), fill);
+			if (cu * k >= 5 && cv * k >= 5) {
+				g.setPen(QPen(col, 0.8));
+				for (double e = eu + sgn * cu; (e - fu) * sgn < 0; e += sgn * cu) g.drawLine(QPointF(X(e), Y(ev)), QPointF(X(e), Y(fv)));
+				for (double e = ev + sgn * cv; (e - fv) * sgn < 0; e += sgn * cv) g.drawLine(QPointF(X(eu), Y(e)), QPointF(X(fu), Y(e)));
+			}
+			g.setPen(QPen(col, 3));
+			g.drawLine(QPointF(X(eu), Y(ev)), QPointF(X(eu), Y(fv)));
+			g.drawLine(QPointF(X(eu), Y(ev)), QPointF(X(fu), Y(ev)));
+			g.setPen(Qt::NoPen);
+			g.setBrush(col);
+			g.drawEllipse(QPointF(X(nu), Y(nv)), 5, 5);
+			g.setBrush(Qt::NoBrush);
+		};
+		const QColor green(0, 150, 60), red(220, 30, 30);
+		daughter(ru, rv, green);
+		daughter(au, av, red);
+
+		// the move that fixes it: from where the corner is to where it must be
+		const QPointF pa(X(au), Y(av)), pr(X(ru), Y(rv));
+		const QPointF d = pr - pa;
+		const double len = std::hypot(d.x(), d.y());
+		if (len > 12) {
+			const QPointF uvec = d / len, tip = pr - uvec * 7;
+			const QPointF nrm(-uvec.y(), uvec.x());
+			g.setPen(QPen(Qt::black, 1.6));
+			g.drawLine(pa + uvec * 7, tip);
+			g.setBrush(Qt::black);
+			g.drawPolygon(QPolygonF({tip, tip - uvec * 11 + nrm * 4.5, tip - uvec * 11 - nrm * 4.5}));
+			g.setBrush(Qt::NoBrush);
+		}
+		g.restore();
+
+		// frame, title, parent-node coordinates
+		g.setPen(QPen(Qt::black, 1.2));
+		g.drawRect(plot);
+		QFont tf = font(); tf.setBold(true); g.setFont(tf);
+		QString title = ur ? "Upper-right corner" : "Lower-left corner";
+		QStringList bad;
+		if (badX) bad << (ur ? "X_MAX" : "X_MIN");
+		if (badY) bad << (ur ? "Y_MAX" : "Y_MIN");
+		g.drawText(QRectF(0, 4, width(), 22), Qt::AlignCenter, title + "  —  wrong: " + bad.join(", "));
+		g.setFont(font());
+		const QFontMetricsF fm(font());
+		const int nd = 6;
+		const double wx = fm.horizontalAdvance(QString::number(px0 + std::floor(u0) * pdx, 'f', nd)) * 1.3;
+		const int sx = std::max(1, (int)std::ceil(wx / k)), sy = std::max(1, (int)std::ceil(fm.height() * 1.5 / k));
+		for (double i = std::ceil(u0); i <= u1; i += 1) {
+			if ((long long)std::llround(i) % sx) continue;
+			g.drawLine(QPointF(X(i), plot.bottom()), QPointF(X(i), plot.bottom() + 4));
+			g.drawText(QRectF(X(i) - 60, plot.bottom() + 6, 120, fm.height()), Qt::AlignHCenter | Qt::AlignTop,
+			           QString::number(px0 + i * pdx, 'f', nd));
+		}
+		for (double j = std::ceil(v0); j <= v1; j += 1) {
+			if ((long long)std::llround(j) % sy) continue;
+			g.drawLine(QPointF(plot.left() - 4, Y(j)), QPointF(plot.left(), Y(j)));
+			g.drawText(QRectF(0, Y(j) - fm.height() / 2, plot.left() - 6, fm.height()), Qt::AlignRight | Qt::AlignVCenter,
+			           QString::number(py0 + j * pdy, 'f', nd));
+		}
+	}
+};
+
+// The NSWING dialog's nesting-rule popup: the message plus, when Julia appended its "@@NESTGEOM" line
+// (_nswing_nest_geom, nswing.jl), one drawn panel per offending corner showing where the daughter's
+// corner IS and where the rule needs it. nullptr when `out` carries no geometry.
+static QDialog *buildNestRulesDialog(QWidget *parent, const QString &out) {
+	const int at = out.indexOf("@@NESTGEOM");
+	if (at < 0) return nullptr;
+	const QString msg = out.left(at).trimmed();
+	const QStringList f = out.mid(at + 10).split(QRegularExpression("\\s+"), Qt::SkipEmptyParts);
+	if (f.size() < 15) return nullptr;
+	double v[14];
+	for (int i = 0; i < 14; ++i) v[i] = f[i].toDouble();
+	const int mask = f[14].toInt();
+
+	auto *dlgp = new QDialog(parent);
+	QDialog &dlg = *dlgp;
+	dlg.setWindowTitle("NSWING — nesting rules");
+	auto *lay = new QVBoxLayout(&dlg);
+	auto *rule = new QLabel("<b>Nesting rule:</b> the daughter grid's outermost <i>cell edge</i> must fall on a "
+		"<i>cell edge</i> of its parent grid. Its corner node therefore sits half a parent cell plus half a "
+		"daughter cell inside a parent node (towards the daughter's interior).", &dlg);
+	rule->setWordWrap(true);
+	lay->addWidget(rule);
+
+	auto *row = new QHBoxLayout();
+	const QString fmt = "<span style='color:%1'><b>%2</b> X = %3 &nbsp; Y = %4</span>";
+	for (int c = 0; c < 2; ++c) {                      // 0: lower-left (X_MIN, Y_MIN), 1: upper-right
+		const bool bx = mask & (c ? 4 : 1), by = mask & (c ? 8 : 2);
+		if (!bx && !by) continue;
+		auto *col = new QVBoxLayout();
+		auto *w = new NestCornerView(&dlg);
+		w->ur = c == 1;
+		w->px0 = v[0]; w->py0 = v[1]; w->pdx = v[2]; w->pdy = v[3]; w->cdx = v[4]; w->cdy = v[5];
+		w->ax = v[6 + 2 * c]; w->ay = v[7 + 2 * c]; w->rx = v[10 + 2 * c]; w->ry = v[11 + 2 * c];
+		w->badX = bx; w->badY = by;
+		col->addWidget(w);
+		auto *cap = new QLabel(fmt.arg("#dc1e1e", "corner node is:").arg(w->ax, 0, 'f', 6).arg(w->ay, 0, 'f', 6) + "<br>" +
+		                       fmt.arg("#00963c", "must be:").arg(w->rx, 0, 'f', 6).arg(w->ry, 0, 'f', 6), &dlg);
+		cap->setTextInteractionFlags(Qt::TextSelectableByMouse);
+		col->addWidget(cap);
+		row->addLayout(col);
+	}
+	lay->addLayout(row);
+
+	auto *legend = new QLabel("<span style='color:#dc1e1e'><b>red</b></span> daughter grid as it is &nbsp; "
+		"<span style='color:#00963c'><b>green</b></span> daughter grid as the rule requires &nbsp; "
+		"<b>grey</b> parent cell edges, circled x = parent nodes &nbsp; arrow = the shift that fixes it", &dlg);
+	legend->setWordWrap(true);
+	lay->addWidget(legend);
+	auto *txt = new QLabel(msg, &dlg);
+	txt->setTextInteractionFlags(Qt::TextSelectableByMouse);
+	lay->addWidget(txt);
+	auto *bb = new QDialogButtonBox(QDialogButtonBox::Ok, &dlg);
+	QObject::connect(bb, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+	lay->addWidget(bb);
+	return dlgp;
+}
+
+// Pop it (modal, like the warning it replaces); text without geometry stays the plain warning.
+static void nestRulesWarning(QWidget *parent, const QString &out) {
+	QDialog *dlg = buildNestRulesDialog(parent, out);
+	if (!dlg) {
+		const int at = out.indexOf("@@NESTGEOM");
+		QMessageBox::warning(parent, "NSWING", at < 0 ? out : out.left(at).trimmed());
+		return;
+	}
+	dlg->exec();
+	delete dlg;
+}
+
+// ============================================================================================
 // NSWING tsunami modelling — port of Mirone's swan_options.m (src_figs/swan_options.m) driving the
 // `nswing` executable. A modal options dialog mirroring the original window: Source / Nest grids +
 // nesting level, output target (grids / ANUGA .sww / MOST .nc) + name stem, the per-field outputs
@@ -26858,7 +27046,7 @@ public:
 			QString out;
 			if (!juliaEvalCall(QString("InteractiveGMT._nswing_check(Ptr{Cvoid}(UInt(%1)),raw\"%2\")")
 			                       .arg((qulonglong)reinterpret_cast<uintptr_t>(scene_)).arg(params), out)) {
-				QMessageBox::warning(this, "NSWING", out);
+				nestRulesWarning(this, out);
 				return;
 			}
 			if (!params.isEmpty() && g_juliaNswing) g_juliaNswing(scene_, params.toUtf8().constData());
@@ -26917,7 +27105,7 @@ public:
 				QString existing;
 				if (!juliaEvalCall(QString("InteractiveGMT._nswing_existing_files(Ptr{Cvoid}(UInt(%1)),raw\"%2\")")
 				                       .arg((qulonglong)reinterpret_cast<uintptr_t>(scene_)).arg(p), existing)) {
-					QMessageBox::warning(this, "NSWING", existing);
+					nestRulesWarning(this, existing);
 					return QString();
 				}
 				if (!existing.trimmed().isEmpty()) {
@@ -27060,7 +27248,7 @@ public:
 			.arg((qulonglong)reinterpret_cast<uintptr_t>(scene_)).arg(lvl).arg(path).arg(parentRef);
 		if (!juliaEvalCall(expr, out)) { QMessageBox::warning(this, "NSWING", out); return; }
 		if (!out.trimmed().isEmpty())
-			QMessageBox::warning(this, "NSWING — nesting rules", out.trimmed());
+			nestRulesWarning(this, out.trimmed());
 	}
 
 	// Double-click on a fileRow edit box opens the same "..." picker (fileBrowsers, set up in fileRow).
@@ -27348,14 +27536,16 @@ public:
 		if (maxLevelCombo->currentIndex() - 1 > maxAvail) maxLevelCombo->setCurrentIndex(0);
 	}
 
-	// Reflect the selected level in the Nest box: level 0 needs no file ("In memory grid" placeholder,
-	// box disabled); an already-filled level shows its grid name; the (only ever ONE) open level shows
+	// Reflect the selected level in the Nest box: level 0 needs no file ("<bathymetry name> — In memory
+	// grid" placeholder, box disabled); an already-filled level shows its grid name; the (only ever ONE) open level shows
 	// an "Enter grid name for level N" placeholder, ready for the user to browse/type into.
 	void showLevel(int idx) {
 		if (idx < 0 || (idx == 0 && !noBase_)) {
 			nestEdit->setEnabled(false);
 			nestEdit->clear();
-			nestEdit->setPlaceholderText("In memory grid");
+			// the level-0 bathymetry is the window's base grid: name it, so the user sees WHICH grid
+			const QString bathy = (scene_ && !scene_->surfName.empty()) ? QString::fromStdString(scene_->surfName) : QString();
+			nestEdit->setPlaceholderText(bathy.isEmpty() ? "In memory grid" : bathy + " — In memory grid");
 			return;
 		}
 		nestEdit->setEnabled(true);

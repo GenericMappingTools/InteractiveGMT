@@ -11494,6 +11494,11 @@ GMTVTK_API int gmtvtk_nswing_level0_test(void *scene, const char *level0, char *
 	NswingDialog dlg(nullptr, s);
 	QString r = QString("level=%1|enabled=%2|prompt=%3").arg(dlg.levelCombo->currentIndex())
 		.arg(dlg.nestEdit->isEnabled() ? 1 : 0).arg(dlg.nestEdit->placeholderText());
+	if (!dlg.noBase_) {                           // a window WITH a grid: what level 0 says
+		dlg.showLevel(0);
+		r += QString("|level0text=%1").arg(dlg.nestEdit->placeholderText());
+		dlg.showLevel(dlg.levelCombo->currentIndex());
+	}
 	if (level0 && *level0) {
 		dlg.nestEdit->setText(QString::fromUtf8(level0));
 		QApplication::processEvents();
@@ -11507,6 +11512,20 @@ GMTVTK_API int gmtvtk_nswing_level0_test(void *scene, const char *level0, char *
 		out[n] = '\0';
 	}
 	return (int)b.size();
+}
+
+// test hook: build the NSWING nesting-rule popup from a check's output text (message + "@@NESTGEOM"
+// line), show it, grab it to `pngPath`. Returns 1 when the drawn dialog was built, 0 when the text
+// carried no usable geometry (the plain warning would be shown instead).
+GMTVTK_API int gmtvtk_nest_rules_view_test(const char *out, const char *pngPath) {
+	QDialog *dlg = buildNestRulesDialog(nullptr, QString::fromUtf8(out));
+	if (!dlg) return 0;
+	dlg->show();
+	QElapsedTimer t; t.start();
+	while (t.elapsed() < 400) QApplication::processEvents(QEventLoop::AllEvents, 50);
+	if (pngPath && pngPath[0]) dlg->grab().save(QString::fromUtf8(pngPath));
+	delete dlg;
+	return 1;
 }
 
 // test hook: open a real AquamotoWindow (loaded from aquamoto.ui via QUiLoader, no parent), show

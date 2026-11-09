@@ -710,12 +710,24 @@ function _nest_binning(x0P, x0D, dxP, dxD)
 	return false, 0.0
 end
 
+# Is `child` finer than `parent` in both directions? The 1e-6 relative margin absorbs header float
+# noise only: a same-resolution nest (ratio 1.0000000000000022, a real case) is NOT finer.
+_nswing_nest_refines(parent::GMTgrid, child::GMTgrid) =
+	child.inc[1] < parent.inc[1] * (1 - 1e-6) && child.inc[2] < parent.inc[2] * (1 - 1e-6)
+
 # The exact Mirone/nswing nesting-rule message for a daughter grid vs its parent — "" when it obeys.
 # Pure Julia port of nswing's check_paternity/check_binning (mex/nswing.c), the SAME half-cell rule the
 # "Nested grids" rectangles use: each daughter corner must sit at parent_node ∓ parent_inc/2 ± child_inc/2.
 # The four texts and the "in grid registration" wording (including Mirone's "doughter" spelling) are
 # reproduced verbatim from nswing.c so the console/dialog shows precisely what the tool itself prints.
 function _nswing_nest_msg(parent::GMTgrid, child::GMTgrid)
+	# A nested grid must always be FINER than its direct parent. One that is not is no refinement at
+	# all, and its corners cannot be judged by the half-cell rule (at ratio 1 every parent node is a
+	# legal corner and float noise decides the verdict), so this is the whole message.
+	_nswing_nest_refines(parent, child) ||
+		return "Daughter grid is not finer than its parent grid: a nested grid must always have a " *
+		       "smaller cell size than its direct parent.\nDaughter increments:\t$(_ffmt(child.inc[1], 10))\t$(_ffmt(child.inc[2], 10))" *
+		       "\nParent increments:\t$(_ffmt(parent.inc[1], 10))\t$(_ffmt(parent.inc[2], 10))"
 	px0, py0 = parent.range[1], parent.range[3]
 	pxi, pyi = parent.inc[1], parent.inc[2]
 	cx0, cx1, cy0, cy1 = child.range[1], child.range[2], child.range[3], child.range[4]
@@ -732,12 +744,53 @@ function _nswing_nest_msg(parent::GMTgrid, child::GMTgrid)
 	return join(parts, "\n\n")
 end
 
+# The geometry the NSWING dialog DRAWS a nesting violation from (C++ nestRulesWarning, 70_window.cpp):
+# one "@@NESTGEOM" line — parent origin + incs, child incs, the child's actual corners, the corners the
+# rule requires (the actual value where an edge obeys) and a bitmask of the bad edges (1 X_MIN, 2 Y_MIN,
+# 4 X_MAX, 8 Y_MAX). Every verdict comes from `_nest_binning`, the same calls `_nswing_nest_msg` makes,
+# so the picture and the text can never disagree.
+function _nswing_nest_geom(parent::GMTgrid, child::GMTgrid)
+	_nswing_nest_refines(parent, child) || return ""       # no corner to draw: the message says it all
+	px0, py0 = parent.range[1], parent.range[3]
+	pxi, pyi = parent.inc[1], parent.inc[2]
+	cx0, cx1, cy0, cy1 = child.range[1], child.range[2], child.range[3], child.range[4]
+	cxi, cyi = child.inc[1], child.inc[2]
+	edges = ((px0, cx0, pxi,  cxi), (py0, cy0, pyi,  cyi), (px0, cx1, pxi, -cxi), (py0, cy1, pyi, -cyi))
+	req = Float64[]; mask = 0
+	for (k, (o, c, pinc, cinc)) in enumerate(edges)
+		(bad, s) = _nest_binning(o, c, pinc, cinc)
+		push!(req, bad ? s : c)
+		bad && (mask |= 1 << (k - 1))
+	end
+	v = (px0, py0, pxi, pyi, cxi, cyi, cx0, cy0, cx1, cy1, req[1], req[2], req[3], req[4])
+	return "@@NESTGEOM " * join((repr(Float64(x)) for x in v), " ") * " $mask"
+end
+
+# A nesting-rule violation: the message, plus the geometry line the NSWING dialog draws it from. It
+# prints as the message alone, so a run's log or the console reads exactly as before.
+struct NestViolation <: Exception
+	msg::String
+	geom::String
+end
+Base.showerror(io::IO, e::NestViolation) = print(io, e.msg)
+
+# The NSWING dialog's synchronous doors (RUN pre-flight, Save files & RUN): a nesting violation crosses
+# to C++ with its geometry line appended, so the dialog shows WHERE the corner is and where it must be.
+function _nswing_dialog_door(f)
+	try
+		return f()
+	catch e
+		e isa NestViolation && error(isempty(e.geom) ? e.msg : e.msg * "\n" * e.geom)
+		rethrow()
+	end
+end
+
 # Does `child` nest correctly inside `parent`? Throws the Mirone nesting message on violation (used by
 # the RUN pre-flight so a bad nest can't reach a run). Same authority as the load-time file check.
 function _nswing_check_nest_fits(parent::GMTgrid, child::GMTgrid, parent_label::AbstractString, child_label::AbstractString)
 	msg = _nswing_nest_msg(parent, child)
 	isempty(msg) && return nothing
-	error("NSWING: \"$child_label\" does not nest inside \"$parent_label\".\n$msg")
+	throw(NestViolation("NSWING: \"$child_label\" does not nest inside \"$parent_label\".\n$msg", _nswing_nest_geom(parent, child)))
 end
 
 # Resolve a nest reference (a Scene Objects grid NAME or a raw file path) to a live GMTgrid, or `nothing`.
@@ -767,7 +820,10 @@ function _nswing_check_nest_file(scene::Ptr{Cvoid}, level::Integer, childpath::A
 	parent = isempty(parentref) ? _find_object(scene, :grid, "") : _nswing_resolve_grid(scene, parentref)
 	parent isa GMTgrid || (print(""); return nothing) # no parent to check against yet -> silent
 	# checked as the run will see them: both on gridline nodes (_nswing_validate converts the same way)
-	print(_nswing_nest_msg(_as_gridline(parent), _as_gridline(child)))
+	P, C = _as_gridline(parent), _as_gridline(child)
+	msg = _nswing_nest_msg(P, C)
+	geom = isempty(msg) ? "" : _nswing_nest_geom(P, C)
+	print(isempty(geom) ? msg : msg * "\n" * geom)
 	return nothing
 end
 
@@ -894,7 +950,7 @@ end
 # printed) when the fields are good to run.
 function _nswing_check(scene::Ptr{Cvoid}, cparams::AbstractString)
 	d = _nswing_parse(cparams)
-	_nswing_validate(scene, d)
+	_nswing_dialog_door(() -> _nswing_validate(scene, d))
 	return nothing
 end
 
@@ -999,8 +1055,8 @@ _nswing_grid_differs(path::String, G::GMTgrid) = !isempty(_nswing_grid_diff_repo
 # real overwrite, so it never needs asking about. Empty output = nothing would collide.
 function _nswing_existing_files(scene::Ptr{Cvoid}, cparams::AbstractString)
 	d = _nswing_parse(cparams)
-	plan = _nswing_plan_paths(scene, d)
-	targets = [path for (path, G) in plan.write_targets if isfile(path) && _nswing_grid_differs(path, G)]
+	plan = _nswing_dialog_door(() -> _nswing_plan_paths(scene, d))
+	targets =[path for (path, G) in plan.write_targets if isfile(path) && _nswing_grid_differs(path, G)]
 	print(join(targets, "\n"))
 	return nothing
 end

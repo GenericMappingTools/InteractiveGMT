@@ -2343,6 +2343,18 @@ int check_paternity(void *API, struct nestContainer *nest) {
 	double suggest;
 
 	while (k < 10 && nest->level[k] > 0) {
+		/* A nested grid must always be FINER than its direct parent. One that is not is no refinement,
+		   and its corners cannot be judged by check_binning (at ratio 1 every parent node is a legal
+		   corner and float noise decides the verdict). The 1e-6 margin absorbs header noise only. */
+		if (nest->hdr[k].inc[GMT_X] >= nest->hdr[k-1].inc[GMT_X] * (1 - 1e-6) ||
+		    nest->hdr[k].inc[GMT_Y] >= nest->hdr[k-1].inc[GMT_Y] * (1 - 1e-6)) {
+			GMT_Report(API, GMT_MSG_ERROR, "Nested grid of level %d is not finer than its parent grid: a nested grid "
+				"must always have a smaller cell size than its direct parent.\n"
+				"Daughter increments:\t%.10f\t%.10f\nParent increments:\t%.10f\t%.10f\n", k,
+				nest->hdr[k].inc[GMT_X], nest->hdr[k].inc[GMT_Y], nest->hdr[k-1].inc[GMT_X], nest->hdr[k-1].inc[GMT_Y]);
+			error++;
+			break;
+		}
 		/* Check nesting at LowerLeft corner */
 		if (check_binning(nest->hdr[k-1].wesn[XLO], nest->hdr[k].wesn[XLO], nest->hdr[k-1].inc[GMT_X],
 		                  nest->hdr[k].inc[GMT_X], nest->hdr[k-1].inc[GMT_X] / 4, &suggest)) {
