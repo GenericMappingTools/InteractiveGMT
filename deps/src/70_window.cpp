@@ -33946,6 +33946,23 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		if (n < 0) QMessageBox::warning(win, "Check for Updates", txt);
 		else       QMessageBox::information(win, "Check for Updates", txt);
 	});
+	// Update GMT.jl (InteractiveGMT.update_gmtjl!(), selfupdate.jl): in an iGMT Windows install it
+	// fast-forwards the install's GMT.jl clone and keeps the JLLs its bundled GMT replaces out of it;
+	// anywhere else a plain Pkg.update("GMT"). Same busy dialog + captured text as above.
+	mHelp->addAction("Update &GMT.jl…", [win, s]() {
+		if (!g_juliaEval) {
+			QMessageBox::warning(win, "Update GMT.jl", "This needs the Julia/GMT host.");
+			return;
+		}
+		showBusyDialog("Updating GMT.jl…");
+		static std::vector<char> buf(1 << 16);
+		int n = g_juliaEval(s, "InteractiveGMT.update_gmtjl!()", buf.data(), (int)buf.size());
+		closeBusyDialog();
+		QString txt = QString::fromUtf8(buf.data(), n < 0 ? -n : n).trimmed();
+		if (txt.isEmpty()) txt = "No output.";
+		if (n < 0) QMessageBox::warning(win, "Update GMT.jl", txt);
+		else       QMessageBox::information(win, "Update GMT.jl", txt);
+	});
 
 	// --- toolbar row (below the menu bar): quick-access buttons (ParaView-style) ------------
 	// Open file -> route through the SAME drop path as File > Open (g_juliaDrop / _on_drop): the file

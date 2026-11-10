@@ -80,8 +80,44 @@ function update!()
 			@tool_error "InteractiveGMT: deps/build.jl not found at $script -- binaries not synced."
 		end
 	end
-	_update_gmtjl()
 	println("InteractiveGMT: update complete. Restart i'GMT to use the new version.")
+	return nothing
+end
+
+"""
+    InteractiveGMT.update_gmtjl!()
+
+Update GMT.jl (Help > Update GMT.jl). Two cases:
+
+  * an iGMT Windows install (its depot holds the installer's marker, gmtjl_strip.jl): fast-forward
+    the install's GMT.jl clone and take the JLLs its bundled GMT replaces out of it again;
+  * anywhere else: `Pkg.update("GMT")` -- the registry GMT.jl, exactly as any Julia user updates it.
+    A `] dev` GMT.jl checkout is the user's own and is not touched.
+"""
+function update_gmtjl!()
+	if isfile(joinpath(first(DEPOT_PATH), _GMTJL_MARKER))
+		_update_gmtjl()
+	else
+		f = Base.locate_package(Base.PkgId(Base.UUID("5752ebe1-31b9-557e-87aa-f909b540aa54"), "GMT"))
+		f === nothing && (println("GMT.jl: not installed in this environment."); return nothing)
+		dir = dirname(dirname(f))
+		if !any(d -> startswith(lowercase(abspath(dir)), lowercase(abspath(joinpath(d, "packages")))), DEPOT_PATH)
+			println("GMT.jl at $dir is a `] dev` checkout -- update it with git, not from here.")
+			return nothing
+		end
+		println("GMT.jl: Pkg.update(\"GMT\")...")
+		buf = IOBuffer()
+		try
+			run(pipeline(`$(Base.julia_cmd()) --startup-file=no --color=no -e "import Pkg; Pkg.update(\"GMT\")"`;
+			             stdout=buf, stderr=buf))
+			print(String(take!(buf)))
+		catch e
+			print(String(take!(buf)))
+			@tool_error "GMT.jl: Pkg.update failed." exception=(e,)
+			return nothing
+		end
+	end
+	println("Restart i'GMT to use an updated GMT.jl.")
 	return nothing
 end
 
