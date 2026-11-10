@@ -257,6 +257,9 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_pbr_render_offscreen,  # method 1: VTK's PBR render into an offscreen buffer — no window at all
 	:gmtvtk_pbr_render_offscreen_tex,  # …the same render with the albedo as a TEXTURE (Aquamoto "Sat img")
 	:gmtvtk_aqua_layer_rgb_h,      # the tsunami layer picture (aquaBakeNodes): Rendered image, Water/Land side
+	:gmtvtk_grid_picture_h,        # the picture a grid layer displays: File > Save Image on a grid
+	:gmtvtk_vector_shown_h,        # is the vector element X on screen (GMT.jl script skips unchecked rows)
+	:gmtvtk_line_pen_h,            # the on-screen pen of a named polygon / ruler track (GMT.jl script)
 	:gmtvtk_aqua_set_side_rgb_h,   # method 1 on a tsunami side: VTK's render of its surface, pushed
 	:gmtvtk_aqua_side_light_h,     # a tsunami side's own sun + material, for that render
 	:gmtvtk_aqua_side_method_h,    # the method a tsunami side carries, as the viewer holds it

@@ -1192,7 +1192,9 @@ function _session_replay_curtain!(fig::QtFigure, r::ElementRecipe, imgpath::Stri
 	             flipv=parse(Bool, get(r.params, "flipv", "false")), clip=parse(Bool, get(r.params, "clip", "false")),
 	             clip_n=parse(Int, get(r.params, "clip_n", "300")), record=false)
 	h = getfield(fig, :h)
-	_session_record!(h, :curtain, :menu; params=copy(r.params))
+	p = copy(r.params)
+	p["name"] = _curtain_last_name(h)                  # the name THIS window gave the rebuilt curtain
+	_session_record!(h, :curtain, :menu; params=p)
 	get(r.params, "image_origin", "") == "generated" && _curtain_img_store!(h, r.params["image"], read(imgpath))
 	return
 end

@@ -3147,6 +3147,7 @@ extern "C" __declspec(dllexport) int gmtvtk_show_layer_image_h(void*, const floa
 extern "C" __declspec(dllexport) int gmtvtk_replace_base_grid_h(void*, const float*, int, int, double, double,
                                                      double, double, int, const double*, const double*, int, const char*, int);
 extern "C" __declspec(dllexport) int gmtvtk_remove_grid_h(void*, const char*);   // the ONE layer-removal path
+static void saveGridPictureDialog(Scene *s, const QString &name);   // File > Save Image on a grid (87_vtkio.cpp)
 // fwd (defined in 90_c_api.cpp; same TU) -- the SHARED flat-image/composite builder.
 static int showLayerImageTail(Scene *s, const unsigned char *rgba, int txW, int txH,
                               const float *z, int nx, int ny,
@@ -20103,7 +20104,7 @@ public:
 	bool fetching = false;
 	int bgIndex = 0;                    // the Background entry in force (to go back to when a pick is cancelled)
 	int baseZoom = 0;                   // zoom level of the tiles under the whole radar (bg[0])
-	QString detailKey;                  // the last sharper-tiles request, so an unchanged view asks nothing
+	int detailZoom = 0;                 // zoom level of the sharper patch on hand (bg[1]); 0 = none
 	static constexpr const char *kFmt = "yyyy-MM-dd HH:mm";   // the time format Julia reads and writes
 	static constexpr int kPlayMs = 300;                        // Play's step, and so the movie's frame rate
 
@@ -20142,19 +20143,21 @@ public:
 			if (sceneAlive(sc)) unparkTool(sc, d);
 		});
 		parkOnMinimise(d, [this]() { parkNow(); });
-		struct CloseParks : QObject {
+		// The X KILLS this dialog (never parks it): minimise and Esc still park.
+		struct CloseKills : QObject {
 			IpmaRadarDialog *rd;
-			CloseParks(QObject *parent, IpmaRadarDialog *r) : QObject(parent), rd(r) {}
+			CloseKills(QObject *parent, IpmaRadarDialog *r) : QObject(parent), rd(r) {}
 			bool eventFilter(QObject *o, QEvent *e) override {
-				if (e->type() == QEvent::Close && rd && !rd->reallyClose && sceneAlive(rd->scn)) {
-					e->ignore();
-					rd->parkNow();
-					return true;
+				if (e->type() == QEvent::Close && rd && !rd->reallyClose) {
+					rd->reallyClose = true;
+					rd->stopPlay();
+					rd->forget();
+					rd->dlg->deleteLater();      // destroyed -> this wrapper goes with it
 				}
 				return QObject::eventFilter(o, e);
 			}
 		};
-		d->installEventFilter(new CloseParks(d, this));
+		d->installEventFilter(new CloseKills(d, this));
 		QObject::connect(d, &QDialog::rejected, d, [this]() { parkNow(); });   // Esc
 		g_ipmaDlgs[scn] = this;
 
@@ -20367,12 +20370,18 @@ public:
 		cbBg->setMaxVisibleItems(cbBg->count());
 	}
 
-	// The tile zoom level whose pixels match the screen's at `mpp` metres per logical pixel.
+	// The tile zoom level whose pixels are CLOSEST to a logical screen pixel at `mpp` metres per logical
+	// pixel, so the place names on the tiles are drawn at about the size they were made for (between 0.71x
+	// and 1.41x). It used to round UP and count DEVICE pixels: the tiles were always finer than the screen
+	// and shrunk to fit it, so every new level drew the names smaller (by up to 2x, times the display scale).
 	int zoomFor(double mpp) const {
-		const double dev = mpp / std::max(1.0, view->devicePixelRatioF());
-		if (dev <= 0) return 1;
-		return std::clamp(int(std::ceil(std::log2(2 * M_PI * 6378137.0 / (256 * dev)))), 1, 19);
+		if (mpp <= 0) return 1;
+		return std::clamp(int(std::lround(std::log2(2 * M_PI * 6378137.0 / (256 * mpp)))), 1, 19);
 	}
+	// Metres per tile pixel at zoom `z`, in the Web Mercator metres the map is drawn in (any latitude).
+	static double tileMpp(int z) { return 2 * M_PI * 6378137.0 / (256 * std::ldexp(1.0, z)); }
+	static constexpr double kPixelated = 1.6;   // a tile pixel this many screen pixels wide looks blocky
+	static constexpr double kDetailPad = 0.25;  // the sharper patch reaches this fraction of the view past each side
 	bool tiled() const { return cbBg && cbBg->currentIndex() >= 0 && cbBg->currentIndex() < bgNone(); }
 
 	// Julia's answer to a background request (gmtvtk_ipma_set_bg): layer 0 under the whole radar, layer 1
@@ -20388,7 +20397,7 @@ public:
 		view->bg[0] = IpmaMapView::Layer();
 		view->bg[1] = IpmaMapView::Layer();
 		view->credit.clear();
-		detailKey.clear();
+		detailZoom = 0;
 		view->update();
 	}
 
@@ -20472,21 +20481,34 @@ public:
 	}
 
 	// Sharper tiles over what is on screen, once the zoom/pan has settled: only for web tiles, only when
-	// the screen wants a finer level than the base layer has, and never twice for the same view.
+	// the screen wants a finer level than the base layer has. The patch on hand is KEPT while it still
+	// does the job: it covers the part of the radar on screen and its pixels are not yet blown up into
+	// blocks (kPixelated). Only then are new tiles asked for, over a box padded past the view
+	// (kDetailPad) so the next small pan or zoom-out is still covered.
 	void requestDetail() {
 		if (asking) { if (bgTimer) bgTimer->start(); return; }   // a request is running: try again shortly
 		if (!tiled() || !view->hasExtent() || view->mpp <= 0) return;
 		const int z = zoomFor(view->mpp);
 		if (z <= baseZoom) {
-			if (!view->bg[1].img.isNull()) { view->bg[1] = IpmaMapView::Layer(); detailKey.clear(); view->update(); }
+			if (!view->bg[1].img.isNull()) { view->bg[1] = IpmaMapView::Layer(); detailZoom = 0; view->update(); }
 			return;
 		}
-		double b[4];
-		view->viewBox(b);
-		const QString kv = tileKV(1, b, z);
-		if (kv == detailKey) return;
+		const double *R = view->radar.e;
+		double v[4];
+		view->viewBox(v);
+		const double s0 = std::max(v[0], R[0]), s1 = std::min(v[1], R[1]);   // the radar's part on screen
+		const double s2 = std::max(v[2], R[2]), s3 = std::min(v[3], R[3]);
+		if (!(s1 > s0) || !(s3 > s2)) return;                                // no radar on screen: nothing to sharpen
+		const IpmaMapView::Layer &D = view->bg[1];
+		if (!D.img.isNull() && detailZoom > 0) {
+			const bool covers = D.e[0] <= s0 && D.e[1] >= s1 && D.e[2] <= s2 && D.e[3] >= s3;
+			if (covers && tileMpp(detailZoom) / view->mpp <= kPixelated) return;
+		}
+		const double px = kDetailPad * (v[1] - v[0]), py = kDetailPad * (v[3] - v[2]);
+		const double b[4] = { std::max(v[0] - px, R[0]), std::min(v[1] + px, R[1]),
+		                      std::max(v[2] - py, R[2]), std::min(v[3] + py, R[3]) };
 		QString ans;
-		if (askTiles(kv, ans)) detailKey = kv;
+		if (askTiles(tileKV(1, b, z), ans)) detailZoom = z;
 		else say("Sharper tiles could not be loaded: " + ans);
 	}
 
@@ -32038,7 +32060,16 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	QAction *aSaveGrid  = mFile->addAction("Save &Grid…",  [s]() {
 		saveObjectDialog(s, "grid", QString::fromStdString(activeGridName(s)));
 	});
-	QAction *aSaveImage = mFile->addAction("Save &Image…", [s]() { saveObjectDialog(s, "image", displayedImageName(s)); });
+	// Save Image saves the picture ON DISPLAY, whatever made it: an image layer as it is, and a grid
+	// (plain, cube layer, tsunami) as the picture it displays — saveGridPictureDialog (87_vtkio.cpp).
+	// An image is ON DISPLAY when one is visible (displayedImageName) or the window IS an image.
+	QAction *aSaveImage = mFile->addAction("Save &Image…", [s]() {
+		const QString img = displayedImageName(s);
+		if (!img.isEmpty() || (s->drape && s->imageOnly) || !sceneHasGrid(s))
+			saveObjectDialog(s, "image", img);
+		else
+			saveGridPictureDialog(s, QString::fromStdString(activeGridName(s)));
+	});
 	// …and the clipboard twin of Save Screenshot img, in the same menu the user goes to for a picture:
 	// the displayed view (globe wrap, tilt, VE) with a transparent background. Same one function the
 	// image handle's own "Copy to Clipboard" runs — copyViewToClipboardUI (50_scene.cpp).
@@ -32058,7 +32089,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	QObject::connect(mFile, &QMenu::aboutToShow, [s, aShotGeoTiff, aSaveGrid, aSaveImage, aBgRegion]() {
 		aShotGeoTiff->setEnabled(s->hasCRS() && (sceneHasGrid(s) || sceneHasImage(s)));
 		aSaveGrid->setEnabled(sceneHasGrid(s));
-		aSaveImage->setEnabled(sceneHasImage(s));
+		aSaveImage->setEnabled(sceneHasImage(s) || sceneHasGrid(s));
 		const bool hasContent = (s->surf && !s->emptyStart) || !s->extras.empty();
 		aBgRegion->setVisible(!hasContent);
 	});

@@ -856,6 +856,58 @@ GMTVTK_API int gmtvtk_set_vector_visible_h(void *handle, const char *name, int v
 	return 1;
 }
 
+// Is the vector element called `name` ON SCREEN? The read twin of gmtvtk_set_vector_visible_h, over
+// the same families plus the batch-named ones (a slip model and a focal-mechanism batch by their group
+// name, a curtain by its own). The ACTOR's visibility is the answer — the same fact the Scene Objects
+// checkbox is built from, cascade from an unchecked group row included. `part` = 1 asks about a fault's
+// 3-D dipping plane instead of its trace. Returns 1 shown, 0 present but hidden, -1 no such element.
+// For a consumer that must reproduce what the window shows (the GMT.jl script export): an unchecked
+// row is not on screen, so it is not in the figure either.
+GMTVTK_API int gmtvtk_vector_shown_h(void *handle, const char *name, int part) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !name || !name[0]) return -1;
+	const std::string want = name;
+	int found = -1;
+	auto see = [&found](vtkProp *p) {
+		if (!p) return;
+		if (p->GetVisibility()) found = 1;
+		else if (found < 0) found = 0;
+	};
+	if (part == 1) {
+		for (auto &pg : s->polys)
+			if (pg.isFault && pg.name == want) { see(pg.faultPlane3D); see(pg.faultPlane); }
+		return found;
+	}
+	for (auto &ov : s->overlays) if (ov.name == want) see(ov.actor);
+	for (auto &sl : s->symbols)  if (sl.name == want) see(sl.actor);
+	for (auto &pg : s->polys)
+		if (pg.name == want || (pg.isSlip && pg.groupName == want)) { see(pg.line); see(pg.fill); }
+	for (auto &tl : s->texts)     if (tl.name == want) see(tl.actor);
+	for (auto &mb : s->mecaBalls) if (mb.groupName == want) for (auto *a : mb.actors) see(a);
+	for (auto &cu : s->curtains)  if (cu.name == want) see(cu.actor);
+	for (auto &r : s->rulers)
+		if ("Ruler " + std::to_string(r.id) == want) see(r.line);
+	return found;
+}
+
+// The pen ON SCREEN of the line called `name` — a drawn polygon (a nested-grid rectangle among them)
+// or a ruler's track ("Ruler <id>", its Scene Objects group name): out5 = r,g,b (0..1), width (screen
+// px), shown (0/1). Read off the actor, where Line Properties puts them. Returns 1, 0 when no such line.
+GMTVTK_API int gmtvtk_line_pen_h(void *handle, const char *name, double *out5) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !name || !name[0] || !out5) return 0;
+	const std::string want = name;
+	vtkActor *a = nullptr;
+	for (auto &pg : s->polys) if (pg.name == want && pg.line) { a = pg.line; break; }
+	if (!a)
+		for (auto &r : s->rulers) if ("Ruler " + std::to_string(r.id) == want && r.line) { a = r.line; break; }
+	if (!a) return 0;
+	a->GetProperty()->GetColor(out5);
+	out5[3] = a->GetProperty()->GetLineWidth();
+	out5[4] = a->GetVisibility() ? 1.0 : 0.0;
+	return 1;
+}
+
 // Add a screen-constant SYMBOL layer to a window by its handle: `npts` (x,y,z) triples in TRUE
 // coords, one GMT symbol code (sym: "c" circle "s" square "t" triangle "i" inv-triangle "d" diamond
 // "h" hexagon "n" pentagon "g" octagon "a" star "x" cross "+" plus "-" dash), `sizePx` = on-screen
@@ -6432,17 +6484,22 @@ GMTVTK_API int gmtvtk_add_text_h(void *handle, double x, double y, const char *t
 // the GMT.jl script export wants EVERY label on screen (1) — no recipe redraws them there, and since
 // gmtvtk_capture_rect_rgb stopped baking text into the captured pixels, a label this blob omits is a
 // label the exported figure loses. Session rebuilds each line via gmtvtk_add_text_h.
+// "On screen" is meant literally in mode 1: a HIDDEN label (its row unchecked, or its group's) is not
+// on screen, so it is not in the figure. Mode 0 keeps hidden labels — the session must restore them.
 GMTVTK_API int gmtvtk_serialize_texts(void *handle, char *buf, int cap, int includeGroups) {
 	Scene *s = static_cast<Scene*>(handle);
 	std::string o;
 	char t[128];
 	if (sceneAlive(s)) {
 		for (auto &tl : s->texts) {
-			// A RULER's distance annotations are never written here, in either mode: they belong to the
+			// A RULER's distance annotations are never written here for a session (mode 0): they belong to the
 			// measurement, and gmtvtk_add_ruler_h re-measures and re-labels it on rebuild. Writing them
 			// too would restore each label twice — once as the ruler's, once as a loose "Text N".
-			if (tl.ruler) continue;
+			// In mode 1 they ARE written: the figure has no measurement to re-label it, and a visible
+			// label the blob omits is a label the figure loses.
+			if (tl.ruler && !includeGroups) continue;
 			if (!includeGroups && !tl.groupName.empty()) continue;
+			if (includeGroups && (!tl.actor || !tl.actor->GetVisibility())) continue;
 			snprintf(t, sizeof(t), "%.12g;%.12g;%.6g;%.6g;%.6g;%d;",
 			         tl.pos[0], tl.pos[1], tl.color[0], tl.color[1], tl.color[2], tl.size);
 			o += t;
@@ -14309,6 +14366,57 @@ GMTVTK_API int gmtvtk_capture_rect_databaked(void *handle, double w, double e, d
 		buf[dsti] = rgba[srci]; buf[dsti+1] = rgba[srci+1]; buf[dsti+2] = rgba[srci+2];
 	}
 	*outRgb = buf; *outW = txW; *outH = txH;
+	return 1;
+}
+
+// THE PICTURE A GRID LAYER DISPLAYS, one pixel per grid node — what File > Save Image writes when the
+// window is showing a grid (or a cube layer, or a tsunami layer) rather than an image. Nothing is
+// re-made here: a tsunami layer is aquaBakeNodes, the very pixels it is lit with; any other grid is
+// bakeLayerRGBA, THE plain-grid bake its flat image and zoom tile are painted with (SACRED_LAW.md: one
+// shading engine). An extra is baked with the window's look over ITS OWN surface — its own z range,
+// its own axis mapping and its own reflectance — the same side mechanism a tsunami side is lit with.
+// `name` = the Scene Objects label of the grid ("" or the base's own name = the base surface).
+// nx*ny RGB, FIRST ROW NORTH, x fastest. Caller frees with gmtvtk_free_rgb. Returns 1, or 0 when the
+// name resolves to no grid with a colour map.
+GMTVTK_API int gmtvtk_grid_picture_h(void *handle, const char *name, unsigned char **outRgb, int *oW, int *oH) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !outRgb || !oW || !oH) return 0;
+	const std::string nm = name ? name : "";
+	std::vector<unsigned char> px;
+	int nx = 0, ny = 0;
+	if (nm.empty() || nm == s->surfName) {
+		nx = s->gnx;  ny = s->gny;
+		if (s->gridZ.size() != (size_t)nx * ny || nx < 2 || ny < 2) return 0;
+		if (!aquaBakeNodes(s, px)) {                    // not a tsunami layer: the plain-grid bake
+			vtkColorTransferFunction *ctf = vtkColorTransferFunction::SafeDownCast(s->surfLut);
+			if (!ctf) return 0;
+			bakeLayerRGBA(s, s->gridZ.data(), nx, ny, s->gx0, s->gy0, s->gdx, s->gdy, ctf,
+			              s->zmin, s->zmax, s->gx0, s->gx1, s->gy0, s->gy1, nx, ny, px);
+		}
+	}
+	else {
+		ExtraObj *ex = nullptr;
+		for (auto &e : s->extras)
+			if (!e.isImage && e.name == nm && !e.gridZ.empty()) { ex = &e; break; }
+		if (!ex) return 0;
+		nx = ex->gnx;  ny = ex->gny;
+		vtkColorTransferFunction *ctf = vtkColorTransferFunction::SafeDownCast(ex->lut);
+		if (!ctf || nx < 2 || ny < 2 || ex->gridZ.size() != (size_t)nx * ny) return 0;
+		const double dx = (ex->gx1 - ex->gx0) / (nx - 1), dy = (ex->gy1 - ex->gy0) / (ny - 1);
+		const AquaSideShade A = snapshotShade(s);
+		const double zf = (ex->zmax > ex->zmin) ? sceneZRefFor(s, ex->zmin, ex->zmax, ex->gx0, ex->gx1, ex->gy0, ex->gy1) : 0.0;
+		bakeLayerRGBA(s, ex->gridZ.data(), nx, ny, ex->gx0, ex->gy0, dx, dy, ctf, ex->zmin, ex->zmax,
+		              ex->gx0, ex->gx1, ex->gy0, ex->gy1, nx, ny, px, nullptr, /*zlayout=*/0, &A, &ex->shadeIn, zf);
+	}
+	if (px.size() != (size_t)nx * ny * 4) return 0;
+	unsigned char *buf = new unsigned char[(size_t)nx * ny * 3];
+	for (int r = 0; r < ny; ++r)
+		for (int c = 0; c < nx; ++c) {
+			const unsigned char *p = &px[((size_t)r * nx + c) * 4];
+			unsigned char *d = buf + ((size_t)(ny - 1 - r) * nx + c) * 3;   // row 0 south -> row 0 north
+			d[0] = p[0];  d[1] = p[1];  d[2] = p[2];
+		}
+	*outRgb = buf; *oW = nx; *oH = ny;
 	return 1;
 }
 

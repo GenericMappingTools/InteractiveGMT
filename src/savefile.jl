@@ -196,6 +196,28 @@ function _save_image(I, ::String, path::String)
 	end
 end
 
+# File > Save Image on a window showing a GRID: the picture that grid displays (`gmtvtk_grid_picture_h`
+# — the viewer's own bake, CPT + shading, one pixel per node, first row north) as an RGB GMTimage on
+# the grid's OWN geometry: its x/y vectors carry the registration, so the image lands on exactly the
+# grid's nodes, with the grid's CRS.
+function _grid_picture(scene::Ptr{Cvoid}, name::String, G)
+	buf = Ref{Ptr{UInt8}}(C_NULL);  w = Ref{Cint}(0);  h = Ref{Cint}(0)
+	ok = ccall(_fn(:gmtvtk_grid_picture_h), Cint, (Ptr{Cvoid}, Cstring, Ptr{Ptr{UInt8}}, Ptr{Cint}, Ptr{Cint}),
+	           scene, name, buf, w, h)
+	ok == 1 || error("This grid has no displayed picture to save")
+	mat = try
+		permutedims(unsafe_wrap(Array, buf[], (3, Int(w[]), Int(h[]))), (3, 2, 1))   # (row, col, band), owned
+	finally
+		ccall(_fn(:gmtvtk_free_rgb), Cvoid, (Ptr{UInt8},), buf[])
+	end
+	nx, ny = GMT.getsize(G)
+	(size(mat, 2) == nx && size(mat, 1) == ny) ||
+		error("Displayed picture is $(size(mat,2))x$(size(mat,1)), the grid is $(nx)x$(ny)")
+	I = mat2img(mat; x=G.x, y=G.y, proj4=G.proj4, wkt=G.wkt)
+	I.epsg = G.epsg
+	return I
+end
+
 # C callback: req = "<kind>;<fmt>;<path>;<name>" (name optional/empty) for kind grid/image. Resolve
 # the named scene object (or the primary), write it in the chosen format. Errors are reported in the
 # Errors console.
@@ -220,6 +242,11 @@ function _on_save(scene::Ptr{Cvoid}, req::Cstring)::Cvoid
 			I === nothing && error("No image to save in this window")
 			path = _ensure_ext(path, get(_IMG_EXT, fmt, ".tif"), _IMG_EXT)
 			_save_image(I, fmt, path)
+		elseif (kind == "gridimage")
+			G = _find_object(scene, :grid, name)
+			G === nothing && error("No grid to save in this window")
+			path = _ensure_ext(path, get(_IMG_EXT, fmt, ".tif"), _IMG_EXT)
+			_save_image(_grid_picture(scene, name, G), fmt, path)
 		else
 			error("Save: unknown kind '$kind'")
 		end

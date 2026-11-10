@@ -621,6 +621,8 @@ end
 # frame / xaxis / yaxis / zaxis / par kwargs. A set never edited draws the app's mapping convention:
 # W and S annotated, ticks on all four sides. One function, so the backdrop export frames the same way.
 function _script_frame_kw(h::Ptr{Cvoid}, name::String, view3d::Bool)::Vector{Pair{Symbol,Any}}
+	# No axes on screen (the Axes row unchecked): no frame in the figure either.
+	get(_scene_state(h), "axes", 1) == 0 && return Pair{Symbol,Any}[:frame => :none]
 	default = Pair{Symbol,Any}[:frame => (annot=:auto, ticks=:auto, axes=:WSen)]
 	n = ccall(_fn(:gmtvtk_axes_props_h), Cint, (Ptr{Cvoid}, Cstring, Ptr{UInt8}, Cint), h, name, C_NULL, Cint(0))
 	n <= 0 && return default
@@ -1068,6 +1070,12 @@ function _text_labels(scene::Ptr{Cvoid}, szpt::Int, rgb::String, skip::String = 
 	return [GMT.mat2ds(hcat(xs, ys); text=txt)]
 end
 
+# Is the vector element `name` on screen? `gmtvtk_vector_shown_h`: the element's own actor visibility,
+# the fact its Scene Objects checkbox shows (part 1 = a fault's 3-D plane). An element the viewer does
+# not know by that name (-1) is kept: only a known-hidden one leaves the script.
+_script_shown(h::Ptr{Cvoid}, name::AbstractString, part::Int=0)::Bool =
+	ccall(_fn(:gmtvtk_vector_shown_h), Cint, (Ptr{Cvoid}, Cstring, Cint), h, name, part) != 0
+
 "One fault's TRACE, by name."
 function _fault_layer(scene::Ptr{Cvoid}, name::String, want3d::Bool=false)
 	for line in split(_serialize_faults_raw(scene), '\n'; keepempty=false)
@@ -1156,6 +1164,54 @@ function _meca_layer(scene::Ptr{Cvoid}, name::String, want3d::Bool=false)
 		return [GMT.mat2ds(M)]
 	end
 	return GMTdataset[]
+end
+
+"One nested-grid rectangle, by name (the `N` record of the faults blob)."
+function _nest_layer(scene::Ptr{Cvoid}, name::String, want3d::Bool=false)
+	for line in split(_serialize_faults_raw(scene), '\n'; keepempty=false)
+		startswith(line, "N;") || continue
+		p = split(line, ';'; limit=6)
+		length(p) < 6 && continue
+		String(p[5]) == name || continue
+		M = _script_verts2(String(p[6]))
+		size(M, 1) < 2 && break
+		return [GMT.mat2ds(M)]
+	end
+	return GMTdataset[]
+end
+
+"One ruler's track, by its Scene Objects name (\"Ruler <id>\")."
+function _ruler_layer(scene::Ptr{Cvoid}, name::String, want3d::Bool=false)
+	for r in _parse_rulers_blob(_serialize_rulers_raw(scene))
+		"Ruler $(r.id)" == name || continue
+		return [GMT.mat2ds(want3d ? r.verts : r.verts[:, 1:2])]
+	end
+	return GMTdataset[]
+end
+
+# The pen a named line wears ON SCREEN (`gmtvtk_line_pen_h`: a drawn polygon or a ruler track), as a
+# GMT pen, and whether it is shown. `nothing` when the viewer has no line by that name.
+function _script_line_pen(ctx::ScriptCtx, name::String)
+	o = zeros(5)
+	ccall(_fn(:gmtvtk_line_pen_h), Cint, (Ptr{Cvoid}, Cstring, Ptr{Cdouble}), ctx.scene, name, o) == 1 || return nothing
+	return (pen = _script_pen(_script_ptstr_w(o[4], ctx), _script_rgb(o[1], o[2], o[3])), shown = o[5] != 0)
+end
+
+# Every ruler ON SCREEN: its track with the pen it has. Its leg labels are ordinary text labels and
+# travel with them (gmtvtk_serialize_texts writes a visible ruler label for the script).
+function _script_emit_rulers!(ctx::ScriptCtx, h::Ptr{Cvoid})
+	steps = ScriptStep[]
+	for r in _parse_rulers_blob(_serialize_rulers_raw(h))
+		name = "Ruler $(r.id)"
+		lp = _script_line_pen(ctx, name)
+		(lp === nothing || !lp.shown) && continue
+		want3d = ctx.view !== nothing && any(!iszero, view(r.verts, :, 3))
+		bind = _script_bind_live_vector!(ctx, "_ruler_layer", name, want3d,
+		                                 [GMT.mat2ds(want3d ? r.verts : r.verts[:, 1:2])])
+		push!(steps, ScriptStep("$name  (ruler track)", DataBind[bind], want3d ? :plot3 : :plot, bind.var,
+		                        Pair{Symbol,Any}[:pen => lp.pen], true))
+	end
+	return steps
 end
 
 # DELETED, do not bring back: `_script_bind_vector!`, which wrote an ASCII sidecar and emitted a
@@ -1265,6 +1321,7 @@ function _script_emit_poly!(ctx::ScriptCtx, line::String)
 	lw = parse(Float64, p[6])
 	fr, fg, fb, fop = parse(Float64, p[8]), parse(Float64, p[9]), parse(Float64, p[10]), parse(Float64, p[11])
 	name = String(p[12])
+	_script_shown(ctx.scene, name) || return nothing     # unchecked row: not on screen, not in the script
 	M = _script_verts(String(p[13]))
 	isempty(M) && return nothing
 	want3d = ctx.view !== nothing && any(!iszero, view(M, :, 3))
@@ -1349,6 +1406,9 @@ end
 # the per-window meca table stashed at plot time). Nothing here recomputes geometry the viewer
 # already holds: the fault PLANE arrives as the quad read off its actor (tag `P`), never re-walked
 # from strike/dip/width in Julia — that geodesic walk lives in updateFaultPlane and must stay there.
+#
+# An UNCHECKED element is not on screen, so it is not in the figure: each record asks the viewer
+# (`_script_shown`) the same question the overlay and symbol passes answer from their `visible` field.
 function _script_emit_faults!(ctx::ScriptCtx, h::Ptr{Cvoid})
 	steps = ScriptStep[]
 	slipgroups = String[]
@@ -1358,6 +1418,7 @@ function _script_emit_faults!(ctx::ScriptCtx, h::Ptr{Cvoid})
 			p = split(line, ';'; limit=10)
 			length(p) < 10 && continue
 			name = String(p[9])
+			_script_shown(h, name) || continue
 			M = _script_verts2(String(p[10]))
 			size(M, 1) < 2 && continue
 			bind = _script_bind_live_vector!(ctx, "_fault_layer", name, false, [GMT.mat2ds(M)])
@@ -1367,6 +1428,7 @@ function _script_emit_faults!(ctx::ScriptCtx, h::Ptr{Cvoid})
 			p = split(line, ';'; limit=3)
 			length(p) < 3 && continue
 			name = String(p[2])
+			_script_shown(h, name, 1) || continue
 			M = _script_verts(String(p[3]))
 			size(M, 1) < 3 && continue
 			# The plane is a 3-D body: it only means anything under a tilted view, and it is drawn as a
@@ -1382,6 +1444,7 @@ function _script_emit_faults!(ctx::ScriptCtx, h::Ptr{Cvoid})
 			p = split(line, ';'; limit=12)
 			length(p) < 12 && continue
 			g = String(p[2])
+			_script_shown(h, g) || continue
 			M = _script_verts2(String(p[12]))
 			size(M, 1) < 3 && continue
 			fc = split(p[11], ',')
@@ -1389,6 +1452,17 @@ function _script_emit_faults!(ctx::ScriptCtx, h::Ptr{Cvoid})
 			fill = _script_rgb(parse(Float64, fc[1]), parse(Float64, fc[2]), parse(Float64, fc[3]))
 			g in slipgroups || push!(slipgroups, g)
 			push!(get!(() -> Tuple{Matrix{Float64},String}[], slippatch, g), (M, fill))
+		elseif startswith(line, "N;")                    # a nested-grid rectangle
+			p = split(line, ';'; limit=6)
+			length(p) < 6 && continue
+			name = String(p[5])
+			lp = _script_line_pen(ctx, name)
+			(lp === nothing || !lp.shown) && continue
+			M = _script_verts2(String(p[6]))
+			size(M, 1) < 2 && continue
+			bind = _script_bind_live_vector!(ctx, "_nest_layer", name, false, [GMT.mat2ds(M)])
+			push!(steps, ScriptStep("$(isempty(name) ? "nested grid" : name)  (nested grid rectangle)", DataBind[bind],
+			                        :plot, bind.var, Pair{Symbol,Any}[:pen => lp.pen], true))
 		end
 	end
 	# One call per slip MODEL, not per patch: every patch becomes a segment carrying its own -G fill in
@@ -1446,9 +1520,13 @@ function _script_emit_curtain!(ctx::ScriptCtx, r::ElementRecipe)
 	end
 	M[2n + 1, :] = M[1, :]
 	push!(ctx.notes, "curtain texture NOT exported (GMT has no vertical image sheet); its outline is drawn instead")
-	ctx.view === nothing && return nothing        # a vertical sheet is invisible from straight above
 	ctx.ncurtain += 1
 	bind = _script_bind_live_curtain!(ctx, ctx.ncurtain, [GMT.mat2ds(M)])
+	# Seen from straight above the sheet stands edge-on: what is on screen is its TRACK, and the closed
+	# outline's x,y run along exactly that track and back — so it is drawn, as a plain line.
+	ctx.view === nothing &&
+		return ScriptStep("curtain track (seen from above; texture not exported)", DataBind[bind], :plot, bind.var,
+		                  Pair{Symbol,Any}[:pen => "0.75p,80/80/80"], true)
 	return ScriptStep("curtain outline (texture not exported)", DataBind[bind], :plot3, bind.var,
 	                  Pair{Symbol,Any}[:pen => "0.75p,80/80/80"], true)
 end
@@ -1460,7 +1538,8 @@ function _script_emit_meca!(ctx::ScriptCtx, h::Ptr{Cvoid})
 	steps = ScriptStep[]
 	for (name, M) in get(_MECA_TABLE, h, Tuple{String,Matrix{Float64}}[])
 		isempty(M) && continue
-		bind = _script_bind_live_vector!(ctx, "_meca_layer", name, false, [GMT.mat2ds(M)])
+		_script_shown(h, name) || continue              # unchecked batch: not on screen, not in the script
+		bind =_script_bind_live_vector!(ctx, "_meca_layer", name, false, [GMT.mat2ds(M)])
 		# `proj` MUST be repeated here. GMT.jl reads psmeca's `scale` as a figure-scale change, and an
 		# overlay that changes the scale without restating the projection is rejected outright
 		# ("In Overlay mode you cannot change a fig scale and NOT repeat the projection").
@@ -1541,6 +1620,7 @@ function _script_vector_steps!(ctx::ScriptCtx, h::Ptr{Cvoid}, recipes::Vector{El
 	geosteps = Tuple{String,ScriptStep}[]
 	for r in recipes
 		r.kind === :geography || continue
+		_script_shown(h, r.name) || continue            # unchecked coastline: not on screen, not in the script
 		st = _script_emit_geography(ctx, r)
 		st === nothing && continue
 		skip[r.name] = 0
@@ -1585,8 +1665,14 @@ function _script_vector_steps!(ctx::ScriptCtx, h::Ptr{Cvoid}, recipes::Vector{El
 	end
 	# P3: faults + slip models + curtains + beachballs, then labels on top of everything.
 	append!(steps, _script_emit_faults!(ctx, h))
+	append!(steps, _script_emit_rulers!(ctx, h))
+	ncur = 0
 	for r in recipes
 		r.kind === :curtain || continue
+		ncur += 1
+		# The curtain's Scene Objects name; a recipe from before it was recorded is the ncur-th curtain,
+		# the name the viewer gave it ("Curtain N", in add order).
+		_script_shown(h, String(get(r.params, "name", "Curtain $ncur"))) || continue
 		st = _script_emit_curtain!(ctx, r)
 		st === nothing || push!(steps, st)
 	end

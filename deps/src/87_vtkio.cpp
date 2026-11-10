@@ -672,6 +672,66 @@ static bool vtkioSaveObject(Scene *s, const std::string &name, const std::string
 // Does this Save format code belong to us (rather than Julia's GMT/GDAL writers)?
 static bool vtkioIsVtkSaveCode(const QString &code) { return code.startsWith(QLatin1String("vtk_")); }
 
+// File > Save Image on a window that is SHOWING A GRID (a plain grid, a cube layer, a tsunami layer):
+// the picture that grid displays, gmtvtk_grid_picture_h (90_c_api.cpp) — one pixel per node, on the
+// grid's own geometry. Same format dialog as every image save. The GMT/GDAL formats go to Julia as
+// "gridimage;<fmt>;<path>;<name>" (_on_save fetches the same picture and writes it georeferenced);
+// the VTK formats are written here, as a 3-band vtkImageData over the grid's own nodes.
+extern "C" __declspec(dllexport) int gmtvtk_grid_picture_h(void*, const char*, unsigned char**, int*, int*);
+extern "C" __declspec(dllexport) void gmtvtk_free_rgb(unsigned char*);
+static void saveGridPictureDialog(Scene *s, const QString &name) {
+	SaveFormatDialog dlg(s ? s->win : nullptr, false, name);
+	if (dlg.exec() != QDialog::Accepted || dlg.path.isEmpty()) return;
+	if (!vtkioIsVtkSaveCode(dlg.code)) {
+		if (!g_juliaSave) {
+			if (s && s->win) s->win->statusBar()->showMessage("Save: callback not registered", 3000);
+			return;
+		}
+		const QString req = QString("gridimage;%1;%2;%3").arg(dlg.code).arg(dlg.path).arg(name);
+		g_juliaSave(s, req.toUtf8().constData());
+		return;
+	}
+	const std::string nm = name.toStdString();
+	const std::vector<float> *z = nullptr;
+	int nx = 0, ny = 0, w = 0, h = 0;
+	double x0 = 0, x1 = 0, y0 = 0, y1 = 0;
+	unsigned char *rgb = nullptr;
+	std::string err;
+	if (!vtkioResolveGrid(s, nm, z, nx, ny, x0, x1, y0, y1) ||
+	    !gmtvtk_grid_picture_h(s, nm.c_str(), &rgb, &w, &h) || w != nx || h != ny)
+		err = "this grid has no displayed picture to write";
+	else {
+		vtkNew<vtkImageData> im;
+		im->SetDimensions(nx, ny, 1);
+		im->SetOrigin(x0, y0, 0.0);
+		im->SetSpacing((x1 - x0) / (nx - 1), (y1 - y0) / (ny - 1), 1.0);
+		im->AllocateScalars(VTK_UNSIGNED_CHAR, 3);
+		auto *dst = static_cast<unsigned char*>(im->GetScalarPointer());
+		for (int j = 0; j < ny; ++j)                   // picture row 0 = north, VTK row 0 = south
+			memcpy(dst + (size_t)j * nx * 3, rgb + (size_t)(ny - 1 - j) * nx * 3, (size_t)nx * 3);
+		bool ok;
+		if (dlg.code == QLatin1String("vtk_vti")) {
+			vtkNew<vtkXMLImageDataWriter> wr;
+			wr->SetFileName(dlg.path.toStdString().c_str());
+			wr->SetInputData(im);
+			wr->SetDataModeToBinary();
+			ok = wr->Write() != 0;
+		}
+		else {
+			vtkNew<vtkDataSetWriter> wr;
+			wr->SetFileName(dlg.path.toStdString().c_str());
+			wr->SetFileTypeToBinary();
+			wr->SetInputData(im);
+			ok = wr->Write() != 0;
+		}
+		if (!ok) err = "the VTK writer failed";
+	}
+	if (rgb) gmtvtk_free_rgb(rgb);
+	if (!s || !s->win) return;
+	if (err.empty()) s->win->statusBar()->showMessage("Saved " + dlg.path, 4000);
+	else QMessageBox::warning(s->win, "Save failed", "Could not write " + dlg.path + "\n\n" + QString::fromStdString(err));
+}
+
 // Put WHAT IS ON SCREEN on the system clipboard as a bitmap — the rendered frame, not the source
 // raster. A picture wrapped on the globe (or tilted in 3-D, or exaggerated) is displayed by the
 // PROJECTION, which lives in the render, so copying the texture's own rows handed back a flat

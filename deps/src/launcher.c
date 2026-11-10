@@ -25,8 +25,9 @@
  * desktop entry points at. A release zip unpacks it into <depot>/gmtvtk_runtime/deps/build, so
  * --install-shortcut copies it up into the package root from there. <home>/.gmt is for SETTINGS
  * (iGMT.ini) and receives nothing but igmt_launcher.ini: never a binary, never an icon copy.
- * The ini records root + julia; every --install-shortcut run, that is every precompile, rewrites
- * it. A launch takes the first julia on PATH and uses the ini's julia only when PATH has none
+ * The ini records only the julia, shared by every iGMT on the machine -- each launcher finds its
+ * own package root from where it sits. Every --install-shortcut run, that is every precompile,
+ * rewrites it. A launch takes the first julia on PATH and uses the ini's julia only when PATH has none
  * (see find_julia); if that is stale too it falls back to a live search, the old .vbs's search.
  *
  * Pure C, no Qt, no VTK, no dependency on gmtvtk.dll: this must run BEFORE Julia exists in the
@@ -282,12 +283,106 @@ static void self_path(char *out, size_t n)
 #endif
 }
 
+#ifdef _WIN32
+/* Every message this launcher shows goes through here: a box whose text can be SELECTED and
+ * COPIED (a read-only multi-line EDIT, plus a Copy button that takes all of it). MessageBoxW
+ * draws its text as a label nobody can select, so a user could not hand over an error message. */
+#define COPYBOX_TEXT 101
+#define COPYBOX_COPY 102
+
+static LRESULT CALLBACK copybox_proc(HWND h, UINT m, WPARAM wp, LPARAM lp)
+{
+	switch (m) {
+	case WM_COMMAND:
+		if (LOWORD(wp) == COPYBOX_COPY) {
+			HWND e = GetDlgItem(h, COPYBOX_TEXT);
+			SendMessageW(e, EM_SETSEL, 0, -1);
+			SendMessageW(e, WM_COPY, 0, 0);
+			return 0;
+		}
+		if (LOWORD(wp) == IDOK || LOWORD(wp) == IDCANCEL) { DestroyWindow(h); return 0; }
+		break;
+	case WM_CLOSE:
+		DestroyWindow(h);
+		return 0;
+	case WM_DESTROY:
+		PostQuitMessage(0);
+		return 0;
+	}
+	return DefWindowProcW(h, m, wp, lp);
+}
+
+static void copy_box(const char *title, const char *text, int is_error)
+{
+	static const wchar_t *cls = L"iGMTCopyBox";
+	HINSTANCE inst = GetModuleHandleW(NULL);
+	WNDCLASSW wc;
+	HWND h, e, bc, bo;
+	HFONT font = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+	RECT rc;
+	MSG msg;
+	int W = 680, H = 420, x, y;
+	size_t i, k = 0, l = strlen(text);
+	char *crlf = (char *)malloc(2 * l + 1);   /* an EDIT control breaks lines only on \r\n */
+	wchar_t *wt, *wx;
+
+	/* The splash loop ends on WM_QUIT too; one still queued would close this box the moment it opens. */
+	while (PeekMessageW(&msg, NULL, WM_QUIT, WM_QUIT, PM_REMOVE)) {}
+	for (i = 0; i < l; i++) {
+		if (text[i] == '\n' && (i == 0 || text[i - 1] != '\r')) crlf[k++] = '\r';
+		crlf[k++] = text[i];
+	}
+	crlf[k] = 0;
+	wt = wide(title);
+	wx = wide(crlf);
+	free(crlf);
+
+	memset(&wc, 0, sizeof(wc));
+	wc.lpfnWndProc = copybox_proc;
+	wc.hInstance = inst;
+	wc.lpszClassName = cls;
+	wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
+	wc.hCursor = LoadCursorW(NULL, (LPCWSTR)IDC_ARROW);
+	wc.hIcon = LoadIconW(NULL, (LPCWSTR)(is_error ? IDI_ERROR : IDI_WARNING));
+	RegisterClassW(&wc);                      /* fails harmlessly when already registered */
+
+	x = (GetSystemMetrics(SM_CXSCREEN) - W) / 2;
+	y = (GetSystemMetrics(SM_CYSCREEN) - H) / 2;
+	h = CreateWindowExW(WS_EX_TOPMOST | WS_EX_DLGMODALFRAME, cls, wt,
+	                    WS_CAPTION | WS_SYSMENU | WS_VISIBLE, x, y, W, H, NULL, NULL, inst, NULL);
+	if (!h) {                                 /* no window at all: the plain box is still better than nothing */
+		MessageBoxW(NULL, wx, wt, (is_error ? MB_ICONERROR : MB_ICONEXCLAMATION) | MB_OK | MB_TOPMOST);
+		free(wt); free(wx);
+		return;
+	}
+	GetClientRect(h, &rc);
+	e = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", wx,
+	                    WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_TABSTOP | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL,
+	                    10, 10, rc.right - 20, rc.bottom - 58, h, (HMENU)(INT_PTR)COPYBOX_TEXT, inst, NULL);
+	bc = CreateWindowExW(0, L"BUTTON", L"&Copy", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+	                     rc.right - 210, rc.bottom - 40, 95, 28, h, (HMENU)(INT_PTR)COPYBOX_COPY, inst, NULL);
+	bo = CreateWindowExW(0, L"BUTTON", L"OK", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
+	                     rc.right - 105, rc.bottom - 40, 95, 28, h, (HMENU)(INT_PTR)IDOK, inst, NULL);
+	SendMessageW(e, WM_SETFONT, (WPARAM)font, TRUE);
+	SendMessageW(bc, WM_SETFONT, (WPARAM)font, TRUE);
+	SendMessageW(bo, WM_SETFONT, (WPARAM)font, TRUE);
+	SetForegroundWindow(h);
+	SetFocus(bo);
+	free(wt); free(wx);
+
+	while (GetMessageW(&msg, NULL, 0, 0) > 0) {
+		if (!IsDialogMessageW(h, &msg)) {       /* Tab / Enter / Esc, like a real dialog */
+			TranslateMessage(&msg);
+			DispatchMessageW(&msg);
+		}
+	}
+}
+#endif
+
 static void message_box(const char *title, const char *text)
 {
 #ifdef _WIN32
-	wchar_t *wt = wide(title), *wx = wide(text);
-	MessageBoxW(NULL, wx, wt, MB_ICONEXCLAMATION | MB_OK);
-	free(wt); free(wx);
+	copy_box(title, text, 0);
 #else
 	fprintf(stderr, "%s: %s\n", title, text);
 #endif
@@ -317,7 +412,11 @@ static int ini_get(const char *key, char *out, size_t n)
 	return got;
 }
 
-static void ini_write(const char *root, const char *julia)
+/* Only the julia: this file is shared by every iGMT on the machine (dev checkout, `] add`,
+ * installer bundle), so it may only hold what they can share. The package root is NOT here --
+ * each launcher finds its own from where it sits (find_root); a root= in this file made every
+ * launcher run whichever iGMT last precompiled. */
+static void ini_write(const char *julia)
 {
 	char path[MAXP];
 	FILE *f;
@@ -325,7 +424,6 @@ static void ini_write(const char *root, const char *julia)
 	if (!(f = fopen(path, "w"))) return;
 	fprintf(f, "# Written by `igmt --install-shortcut`. Rewritten on every precompile of\n");
 	fprintf(f, "# InteractiveGMT; the launcher searches for itself if these ever go stale.\n");
-	fprintf(f, "root=%s\n", root ? root : "");
 	fprintf(f, "julia=%s\n", julia ? julia : "");
 	fclose(f);
 }
@@ -353,10 +451,17 @@ static void bundle_load(char *julia, char *root, size_t n) {
 	char dir[MAXP], path[MAXP], line[MAXP * 4];
 	FILE *f;
 	julia[0] = root[0] = 0;
+	int up;
 	self_path(dir, sizeof(dir));
 	parent_of(dir);
-	joinp(path, sizeof(path), dir, "igmt_bundle.ini");
-	if (!(f = fopen(path, "r"))) return;
+	/* Beside this binary, or in a folder above it: a launcher copy inside the bundle's depot
+	 * (<INSTDIR>\depot\gmtvtk_runtime\deps\build, <INSTDIR>\depot\dev\InteractiveGMT) belongs to
+	 * that bundle too. Outside an installer bundle no such file exists and nothing changes. */
+	for (up = 0, f = NULL; up < 6 && dir[0]; up++, parent_of(dir)) {
+		joinp(path, sizeof(path), dir, "igmt_bundle.ini");
+		if ((f = fopen(path, "r")) != NULL) break;
+	}
+	if (!f) return;
 	while (fgets(line, sizeof(line), f)) {
 		size_t l = strlen(line);
 		char *eq, *val;
@@ -457,8 +562,9 @@ static int find_root(char *out, size_t n, const char *hint)
 {
 	char buf[MAXP], depot[MAXP];
 
+	/* Never ~/.gmt/igmt_launcher.ini: that file is shared by every iGMT on the machine, so a root
+	 * there belongs to whichever one wrote it last. This launcher's iGMT is the one it sits in. */
 	if (hint && *hint && is_pkg_root(hint)) { snprintf(out, n, "%s", hint); return 1; }
-	if (ini_get("root", buf, sizeof(buf)) && is_pkg_root(buf)) { snprintf(out, n, "%s", buf); return 1; }
 
 	/* Running in place from <root>/deps/build/igmt — two levels up is the package. */
 	self_path(buf, sizeof(buf));
@@ -1557,9 +1663,7 @@ static void read_tail(const char *path, char *out, size_t n)
 static void error_popup(const char *title, const char *text)
 {
 #if defined(_WIN32)
-	wchar_t *wt = wide(title), *wx = wide(text);
-	MessageBoxW(NULL, wx, wt, MB_ICONERROR | MB_OK | MB_SETFOREGROUND | MB_TOPMOST);
-	free(wt); free(wx);
+	copy_box(title, text, 1);
 #elif defined(__APPLE__)
 	@autoreleasepool {
 		NSAlert *a = [[NSAlert alloc] init];
@@ -1827,7 +1931,7 @@ static int install_shortcut(const char *root, const char *julia)
 	HRESULT hr;
 	wchar_t *w;
 
-	ini_write(root, julia);
+	ini_write(julia);
 	if (!install_icon(root, "igmt.ico", icon, sizeof(icon))) icon[0] = 0;
 	if (!desktop_dir(desk, sizeof(desk))) return -1;
 
@@ -1872,7 +1976,7 @@ static int install_shortcut(const char *root, const char *julia)
 	FILE *f;
 	int have_icns;
 
-	ini_write(root, julia);
+	ini_write(julia);
 	snprintf(app, sizeof(app), "%s/Applications/iGMT.app", home_dir());
 	snprintf(macos, sizeof(macos), "%s/Contents/MacOS", app);
 	snprintf(res, sizeof(res), "%s/Contents/Resources", app);
@@ -1952,7 +2056,7 @@ static int install_shortcut(const char *root, const char *julia)
 	char apps[MAXP], entry[MAXP], icon[MAXP], desk[MAXP];
 	const char *stable = install_stable_copy(root);
 
-	ini_write(root, julia);
+	ini_write(julia);
 	if (!install_icon(root, "igmt.png", icon, sizeof(icon))) snprintf(icon, sizeof(icon), "applications-science");
 
 	snprintf(apps, sizeof(apps), "%s/.local/share/applications", home_dir());
@@ -2114,7 +2218,7 @@ static int run(int argc, char **argv)
 	if (!find_root(root, sizeof(root), hint_root)) {
 		message_box("iGMT",
 		            "Could not locate InteractiveGMT.\n\n"
-		            "Checked the hint passed on the command line, ~/.gmt/igmt_launcher.ini, this "
+		            "Checked the hint passed on the command line, this "
 		            "program's own folder, <depot>/dev/InteractiveGMT and "
 		            "<depot>/packages/InteractiveGMT/*.\n\n"
 		            "Is it added ('] add https://github.com/GenericMappingTools/InteractiveGMT') "

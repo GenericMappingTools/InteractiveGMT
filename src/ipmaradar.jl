@@ -60,7 +60,11 @@ end
 # IPMA's newest frame as last read off its index. Re-read only when a span reaches past it — the index
 # is not asked again for a span that is all in the past.
 const _IPMA_NEWEST = Ref{Union{GMT.Dates.DateTime,Nothing}}(nothing)
-const _IPMA_HEAD   = GMT.Dates.Minute(30)   # an End this close to the clock means "the latest"
+# An End this close to the clock means "the latest". It is IPMA's own "current" span, the 3 h its index
+# lists. 30 min was too short: the End box is SET to IPMA's newest frame, already ~15 min behind the clock,
+# so an End left there fell out a few minutes later and Fetch stopped updating. An End further back than
+# this is a past span and is never moved.
+const _IPMA_HEAD   = GMT.Dates.Hour(3)
 
 # What became of one 5-minute step of a fetch (the `status` of gmtvtk_ipma_add_frame).
 const _IPMA_ST_MISSING    = 0   # IPMA has no such frame (404: too old, or not made yet)
@@ -76,7 +80,7 @@ const _IPMA_ST_DOWNLOADED = 3   # downloaded now
 function _ipma_fetch(dlg::Ptr{Cvoid}, t0::GMT.Dates.DateTime, t1::GMT.Dates.DateTime,
                      have::Set{String})::Tuple{Int,Int,Int,String}
 	t0 = floor(t0, _IPMA_STEP);  t1 = floor(t1, _IPMA_STEP)
-	# AN END AT "NOW" MEANS "THE LATEST", and Fetch is then an UPDATE: an End within _IPMA_HEAD of the
+	# AN END AT "NOW" MEANS "THE LATEST", and Fetch is then an UPDATE: an End within _IPMA_HEAD (3 h) of the
 	# clock (IPMA publishes each frame ~10-15 min late) or in the future is moved to IPMA's newest frame,
 	# read fresh off the index — so pressing Fetch again later brings in what IPMA has made since. An
 	# End further back is the user's own and is only cut if it passes the newest frame known. Either
@@ -474,7 +478,7 @@ function _ipma_movie(dlg::Ptr{Cvoid}, file::String, nframes::Int, rate::Float64)
 		end
 		isfile(output) && rm(output; force = true)
 		exe = _movie_ffmpeg_path(nothing)
-		args = _movie_ffmpeg_args(exe, joinpath(frame_dir, stem * "_%0$(width)d.png"), output, format, rate)
+		args = _ipma_mp4_small(_movie_ffmpeg_args(exe, joinpath(frame_dir, stem * "_%0$(width)d.png"), output, format, rate))
 		tenc = @elapsed _ipma_encode(args, nframes)
 		isfile(output) || error("ffmpeg returned without creating \"$output\"")
 	finally
@@ -487,6 +491,25 @@ function _ipma_movie(dlg::Ptr{Cvoid}, file::String, nframes::Int, rate::Float64)
 end
 
 const _IPMA_MOVIE_TIMES = Ref((0.0, 0.0))   # the last Save movie: (s grabbing, s encoding), for its report
+
+# SMALLER MP4s, for this dialog only (movie.jl's arguments are Tools > Make movie's too, and stay as they
+# are). movie.jl encodes at CRF 18, near lossless, from frames grabbed at the map's full screen size: here
+# CRF 26 (x264's rule of thumb: +6 = about half the size), tuned for flat-coloured animation, and the
+# frames scaled down to at most _IPMA_MOVIE_W pixels wide (height follows, kept even for yuv420p) before
+# movie.jl's own even-size pad. WebM and GIF go through unchanged.
+const _IPMA_MOVIE_W = 1280
+
+function _ipma_mp4_small(args::Vector{String})::Vector{String}
+	"libx264" in args || return args
+	a = copy(args)
+	k = findfirst(==("-crf"), a)
+	k === nothing || (a[k + 1] = "26")
+	k = findfirst(==("-vf"), a)
+	k === nothing || (a[k + 1] = "scale='min($(_IPMA_MOVIE_W),iw)':-2," * a[k + 1] * ",setsar=1")   # square pixels: the even-height rounding left SAR 2261:2260
+	k = findfirst(==("-preset"), a)
+	k === nothing || splice!(a, k + 2:k + 1, ["-tune", "animation"])
+	return a
+end
 
 # NO DEAD TIME WHILE FFMPEG ENCODES. A plain `run` blocks this thread — the UI thread — until ffmpeg
 # exits, so iGMT stopped repainting and looked dead for the whole encode. ffmpeg is started WITHOUT

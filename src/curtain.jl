@@ -103,7 +103,8 @@ function add_curtain!(fig::QtFigure, path; image, zrange, spacing::Symbol=:dista
 		track = join(("$(px0[i]),$(py0[i])" for i in eachindex(px0)), "|")
 		params = Dict{String,Any}("track" => track, "zmin" => string(zrange[1]), "zmax" => string(zrange[2]),
 		                          "spacing" => String(spacing), "flipv" => string(flipv),
-		                          "clip" => string(clip === true), "clip_n" => string(clip_n))
+		                          "clip" => string(clip === true), "clip_n" => string(clip_n),
+		                          "name" => _curtain_last_name(fig.h))
 		if image isa AbstractString
 			params["image"] = String(image); params["image_origin"] = "file"
 		else
@@ -115,6 +116,11 @@ function add_curtain!(fig::QtFigure, path; image, zrange, spacing::Symbol=:dista
 	end
 	return fig
 end
+
+# The Scene Objects name of the curtain just added: the viewer names it "Curtain N", N its count once
+# it is in (addCurtain, 50_scene.cpp). Kept in the recipe so a consumer that must know whether THIS
+# curtain is on screen (the GMT.jl script export) can ask for it by name.
+_curtain_last_name(h::Ptr{Cvoid})::String = "Curtain " * string(Int(get(_scene_state(h), "n_curtains", 0)))
 
 # Dispatch the `_view_grid(; vcurtain=)` kwarg: nothing / one spec NamedTuple / a vector or tuple
 # of specs. A spec is `(; image, path, zrange, spacing=:distance, flipv=false, clip=false, clip_n=300)`.

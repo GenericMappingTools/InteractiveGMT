@@ -557,6 +557,75 @@ end
 	end
 end
 
+@testitem "Plot with GMT.jl: an unchecked fault trace is not in the script" tags=[:gui] setup=[GmtvtkTest] begin
+	IG = InteractiveGMT; GMT = IG.GMT
+	G = GMT.mat2grid(Float32[ix + iy for iy in 0:9, ix in 0:9]; x=[0.0, 9.0], y=[0.0, 9.0])
+	f = viz(G)
+	try
+		xy = [2.0, 2.0, 7.0, 7.0]                          # the door Load Session rebuilds a fault through
+		@test ccall(IG._fn(:gmtvtk_add_fault_geom_h), Cint,
+			(Ptr{Cvoid}, Ptr{Cdouble}, Cint, Cdouble, Cdouble, Cdouble, Cdouble, Cdouble, Cdouble, Cint),
+			f.h, xy, Cint(2), 1.0, 90.0, 45.0, 30.0, 2.0, 0.5, Cint(0)) == 1
+		IG._pump_once()
+		txt = IG.gmtscript(f)
+		m = match(r"# ── (.+?)  \(fault trace\)", txt)
+		@test m !== nothing                                # checked: the trace is in the figure
+		name = String(m.captures[1])
+		# the user's click on the fault's own Scene Objects checkbox
+		@test ccall(_test_fn(:gmtvtk_objrow_click_test), Cint, (Ptr{Cvoid}, Cstring), f.h, name) == 0
+		IG._pump_once()
+		@test !occursin("(fault trace)", IG.gmtscript(f))  # unchecked: not on screen, not in the script
+		@test ccall(_test_fn(:gmtvtk_objrow_click_test), Cint, (Ptr{Cvoid}, Cstring), f.h, name) == 1
+		IG._pump_once()
+		@test occursin("(fault trace)", IG.gmtscript(f))
+	finally
+		ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), f.h)
+	end
+end
+
+@testitem "Plot with GMT.jl: every visible element plotted, no hidden one" tags=[:gui] setup=[GmtvtkTest] begin
+	IG = InteractiveGMT; GMT = IG.GMT
+	G = GMT.mat2grid(Float32[ix + iy for iy in 0:9, ix in 0:9]; x=[0.0, 9.0], y=[0.0, 9.0])
+	f = viz(G)
+	click(path) = ccall(_test_fn(:gmtvtk_objrow_click_test), Cint, (Ptr{Cvoid}, Cstring), f.h, path)
+	tree() = unsafe_string(ccall(_test_fn(:gmtvtk_objtree_checks_test), Cstring, (Ptr{Cvoid},), f.h))
+	try
+		@test ccall(IG._fn(:gmtvtk_add_text_h), Cint, (Ptr{Cvoid}, Cdouble, Cdouble, Cstring, Cdouble, Cdouble, Cdouble, Cint),
+			f.h, 4.0, 4.0, "BlaBla", 0.0, 0.0, 0.0, Cint(14)) == 1
+		@test ccall(IG._fn(:gmtvtk_add_ruler_h), Cint, (Ptr{Cvoid}, Ptr{Cdouble}, Cint),
+			f.h, [1.0, 1.0, 0.0, 6.0, 2.0, 0.0], Cint(2)) == 1
+		@test ccall(IG._fn(:gmtvtk_add_nested_rect), Cint, (Ptr{Cvoid}, Ptr{Cdouble}, Cint, Cdouble, Cdouble, Cint, Cstring),
+			f.h, [2.0, 2.0, 5.0, 2.0, 5.0, 5.0, 2.0, 5.0], Cint(4), 0.5, 0.5, Cint(0), "Nest A") >= 0
+		IG.add_curtain!(f, [1.0 8.0; 8.0 1.0]; image=GMT.mat2img(rand(UInt8, 20, 30, 3); x=[0.0, 1.0], y=[0.0, 1.0]),
+		                zrange=(0.0, 18.0))
+		IG._pump_once()
+		t = tree()
+		txt = IG.gmtscript(f)
+		@test occursin("BlaBla", txt) || occursin("text labels", txt)   # visible label: plotted
+		@test occursin("(ruler track)", txt)                            # visible ruler: plotted
+		@test occursin("(nested grid rectangle)", txt)                  # visible nest: plotted
+		@test occursin("curtain ", txt)                                 # visible curtain: plotted
+		@test !occursin(r"frame\s*=\s*:none", txt)
+		# uncheck each, the user's click on its own row
+		rows = split(t, '\n')
+		lab(k) = (i = findfirst(l -> occursin(k, l), rows); i === nothing ? "" : strip(rows[i][5:end]))
+		@test click(lab("Text")) == 0
+		@test click(lab("Ruler")) == 0
+		@test click(lab("Nest A")) == 0
+		@test click("Surface/Axes") == 0
+		@test click("Curtain 1") == 0
+		IG._pump_once()
+		txt = IG.gmtscript(f)
+		@test !occursin("curtain ", txt)
+		@test !occursin("text labels", txt)
+		@test !occursin("(ruler track)", txt)
+		@test !occursin("(nested grid rectangle)", txt)
+		@test occursin(r"frame\s*=\s*:none", txt)                     # Axes unchecked: no frame
+	finally
+		ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), f.h)
+	end
+end
+
 # ---- coverage for the previously-untested scene elements -----------------------------------------
 
 @testitem "add! puts a line overlay on the window" tags=[:gui] begin

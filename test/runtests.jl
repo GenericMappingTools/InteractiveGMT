@@ -241,6 +241,10 @@ function _progress_filter(ti)
 	# DROPPED FOR NOW (user, 2026-10-03): the PngQuant module is not included in the package
 	# (src/InteractiveGMT.jl, its include line commented out), so its unit tests cannot run.
 	occursin("test-pngquant", ti.filename) && return false
+	# THIS checkout's own test/ only. TestItemRunner scans the whole package tree, and the installer
+	# build keeps a full copy of the package under deps/build/installer_depot — without this every item
+	# ran twice, the second time from that stale copy.
+	normpath(dirname(abspath(ti.filename))) == normpath(@__DIR__) || return false
 	run = (_RUN_GUI || !(:gui in ti.tags)) && (_RUN_NET || !(:net in ti.tags)) &&
 	      (isempty(_ONLY) || occursin(_ONLY, ti.name)) &&
 	      (isempty(_ONLYFILE) || occursin(_ONLYFILE, ti.filename)) &&
