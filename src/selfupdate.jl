@@ -80,6 +80,69 @@ function update!()
 			@tool_error "InteractiveGMT: deps/build.jl not found at $script -- binaries not synced."
 		end
 	end
+	_update_gmtjl()
 	println("InteractiveGMT: update complete. Restart i'GMT to use the new version.")
+	return nothing
+end
+
+# GMT.jl of an iGMT Windows install (gmtjl_strip.jl): only in a depot that holds the installer's
+# marker. A registry GMT.jl or a user's own `] dev` GMT.jl is never touched.
+function _update_gmtjl()
+	marker = joinpath(first(DEPOT_PATH), _GMTJL_MARKER)
+	isfile(marker) || return nothing
+	dir = strip(read(marker, String))
+	pf  = joinpath(dir, "Project.toml")
+	(isdir(joinpath(dir, ".git")) && isfile(pf)) ||
+		(@tool_error "GMT.jl: $dir (named in $marker) is not a git checkout -- not updated."; return nothing)
+
+	olddeps = Set(_gmtjl_project_deps(pf))
+	repo = LibGit2.GitRepo(dir)
+	before = after = LibGit2.head_oid(repo)
+	try
+		# The stripped Project.toml is a local edit: back to git's own, or the pull cannot fast-forward
+		write(pf, LibGit2.rawcontent(LibGit2.GitBlob(repo, "HEAD:Project.toml")))
+		println("GMT.jl: fetching latest changes... ($dir)")
+		LibGit2.fetch(repo)
+		if LibGit2.merge!(repo; fastforward=true)
+			after = LibGit2.head_oid(repo)
+			println(before == after ? "GMT.jl: already up to date." :
+			        "GMT.jl: updated $(string(before)[1:8]) -> $(string(after)[1:8]).")
+		else
+			@warn "GMT.jl: couldn't fast-forward at $dir -- keeping the current version."
+		end
+	catch e
+		@tool_error "GMT.jl: update failed -- keeping the current version." exception=(e,)
+	finally
+		close(repo)
+		_strip_gmtjl_project!(pf)      # always, a failed pull included: the JLLs never stay in
+	end
+	before == after && return nothing
+
+	# deps\deps.jl again, with the new build.jl, from the same GMT the old one names. build.jl runs
+	# the first `gmt` on PATH, so that GMT's bin dir goes first -- for that process only.
+	depsjl = joinpath(dir, "deps", "deps.jl")
+	try
+		m = Module()
+		Base.include(m, depsjl)
+		gmtbin = dirname(replace(Base.invokelatest(getproperty, m, :_libgmt), '/' => '\\'))
+		bf = joinpath(dir, "deps", "build.jl")
+		withenv("PATH" => gmtbin * ";" * get(ENV, "PATH", "")) do
+			cd(() -> run(`$(Base.julia_cmd()) --startup-file=no --color=no $bf`), dirname(bf))
+		end
+		_backslash_depsjl!(depsjl)
+	catch e
+		@tool_error "GMT.jl: rebuilding deps.jl failed." exception=(e,)
+	end
+
+	# New dependencies in the new GMT.jl: the environment's Manifest must get them (the JLLs stay out,
+	# they are no longer in GMT.jl's Project.toml).
+	if Set(_gmtjl_project_deps(pf)) != olddeps
+		println("GMT.jl: its dependencies changed, resolving the environment...")
+		try
+			run(`$(Base.julia_cmd()) --startup-file=no --color=no -e "import Pkg; Pkg.resolve()"`)
+		catch e
+			@tool_error "GMT.jl: resolving the environment failed." exception=(e,)
+		end
+	end
 	return nothing
 end

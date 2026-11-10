@@ -30,6 +30,7 @@ using PrecompileTools: @setup_workload, @compile_workload
 # --- C-API DLL loader (resolved at runtime in __init__; see libgmtvtk.jl) ----------------
 include("errors.jl")   # THE failure sink + @tool_error: first, so every later file can report
 include("libgmtvtk.jl")
+include("gmtjl_strip.jl") # GMT.jl in an iGMT Windows install: the JLLs its bundled GMT replaces
 include("selfupdate.jl") # update!() -- pull + rebuild in place, for a `] dev`-installed checkout
 
 # --- handles, event loop, in-window Julia console ----------------------------------------
