@@ -447,6 +447,89 @@ static void set_env(const char *name, const char *val)
 #endif
 }
 
+#ifdef _WIN32
+/* Help > Update Julia (InteractiveGMT.update_julia!, src/selfupdate.jl) leaves the new Julia, its
+ * packages already compiled, in <bundle>\julia-new, marked by julia-new\igmt_ready. It cannot replace
+ * <bundle>\julia while that one runs, so it is swapped in HERE, before any julia starts:
+ * julia -> julia-old (an earlier julia-old is deleted first), julia-new -> julia. A step that fails
+ * (another i'GMT still running, ...) leaves everything as it was, and the next start tries again. */
+static void rm_tree(const char *d)
+{
+	wchar_t *w = wide(d);
+	size_t k = wcslen(w);
+	wchar_t *z = (wchar_t *)calloc(k + 2, sizeof(wchar_t));   /* SHFileOperation: a double-NUL list */
+	SHFILEOPSTRUCTW op;
+	memcpy(z, w, k * sizeof(wchar_t));
+	memset(&op, 0, sizeof(op));
+	op.wFunc  = FO_DELETE;
+	op.pFrom  = z;
+	op.fFlags = FOF_NO_UI;
+	SHFileOperationW(&op);
+	free(z);
+	free(w);
+}
+
+static void julia_swap(const char *dir)
+{
+	char jl[MAXP], jnew[MAXP], jold[MAXP], ready[MAXP];
+	wchar_t *wjl, *wnew, *wold;
+	joinp(jnew, sizeof(jnew), dir, "julia-new");
+	joinp(ready, sizeof(ready), jnew, "igmt_ready");
+	if (!file_exists(ready)) return;
+	joinp(jl, sizeof(jl), dir, "julia");
+	joinp(jold, sizeof(jold), dir, "julia-old");
+	if (dir_exists(jold)) rm_tree(jold);
+	wjl = wide(jl); wnew = wide(jnew); wold = wide(jold);
+	if (MoveFileW(wjl, wold)) {
+		if (MoveFileW(wnew, wjl)) {
+			joinp(ready, sizeof(ready), jl, "igmt_ready");
+			delete_file(ready);
+		}
+		else
+			MoveFileW(wold, wjl);       /* the new one did not move: the old one goes back */
+	}
+	free(wjl); free(wnew); free(wold);
+}
+
+/* The bundle folder bundle_load found igmt_bundle.ini in, "" outside an installer bundle */
+static char g_bundle[MAXP];
+static HANDLE g_child;         /* defined with the splash below: the julia spawned */
+
+/* julia-old exists only between a swap and the first start that brings the viewer window up. That
+ * start proves the new Julia works: julia-old is deleted (and a julia-failed a rollback left). */
+static void julia_old_remove(void)
+{
+	char d[MAXP];
+	if (!g_bundle[0]) return;
+	joinp(d, sizeof(d), g_bundle, "julia-old");
+	if (dir_exists(d)) rm_tree(d);
+	joinp(d, sizeof(d), g_bundle, "julia-failed");
+	if (dir_exists(d)) rm_tree(d);
+}
+
+/* The first start after a swap failed: the new Julia goes to julia-failed and julia-old comes back,
+ * so the next start runs the Julia that worked. Nothing happens without a julia-old. */
+static void julia_rollback(void)
+{
+	char jl[MAXP], jold[MAXP], jbad[MAXP];
+	wchar_t *wjl, *wold, *wbad;
+	if (!g_bundle[0]) return;
+	joinp(jold, sizeof(jold), g_bundle, "julia-old");
+	if (!dir_exists(jold)) return;
+	joinp(jl, sizeof(jl), g_bundle, "julia");
+	joinp(jbad, sizeof(jbad), g_bundle, "julia-failed");
+	if (g_child && WaitForSingleObject(g_child, 0) == WAIT_TIMEOUT) {   /* it holds julia\ open */
+		TerminateProcess(g_child, 1);
+		WaitForSingleObject(g_child, 10000);
+	}
+	if (dir_exists(jbad)) rm_tree(jbad);
+	wjl = wide(jl); wold = wide(jold); wbad = wide(jbad);
+	if (MoveFileW(wjl, wbad) && !MoveFileW(wold, wjl))
+		MoveFileW(wbad, wjl);           /* julia-old did not move back: keep what there was */
+	free(wjl); free(wold); free(wbad);
+}
+#endif
+
 static void bundle_load(char *julia, char *root, size_t n) {
 	char dir[MAXP], path[MAXP], line[MAXP * 4];
 	FILE *f;
@@ -462,6 +545,10 @@ static void bundle_load(char *julia, char *root, size_t n) {
 		if ((f = fopen(path, "r")) != NULL) break;
 	}
 	if (!f) return;
+#ifdef _WIN32
+	snprintf(g_bundle, sizeof(g_bundle), "%s", dir);
+	julia_swap(dir);
+#endif
 	while (fgets(line, sizeof(line), f)) {
 		size_t l = strlen(line);
 		char *eq, *val;
@@ -2262,9 +2349,15 @@ static int run(int argc, char **argv)
 	splash_run(root);   /* returns when the window is up - or when startup died */
 	free(files);
 	if (g_failed || launch_failed()) {
+#ifdef _WIN32
+		julia_rollback();       /* the first start on an updated Julia: back to the old one */
+#endif
 		report_startup_failure(root, julia);
 		return 1;
 	}
+#ifdef _WIN32
+	julia_old_remove();         /* the window is up: an updated Julia works, the old one goes */
+#endif
 	return 0;
 }
 

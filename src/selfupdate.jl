@@ -121,6 +121,90 @@ function update_gmtjl!()
 	return nothing
 end
 
+# ---------------------------------------------------------------------------- Help > Update Julia
+# The Julia of an iGMT Windows install (deps\installer), replaced without a reinstall. LOCKED until a
+# version is set here: "" = no Julia update is offered and the menu item stays greyed out. Set it to
+# e.g. "1.15.0" once that Julia is known to work with iGMT; installs get it with Check for Updates.
+const _JULIA_UPDATE_TO = ""
+
+# <INSTDIR> of an iGMT Windows install (this julia is <INSTDIR>\julia\bin\julia.exe, beside
+# igmt_bundle.ini, on a depot that holds the installer's marker), "" anywhere else.
+function _julia_update_root()::String
+	r = dirname(dirname(Sys.BINDIR))
+	(isfile(joinpath(r, "igmt_bundle.ini")) && isfile(joinpath(first(DEPOT_PATH), _GMTJL_MARKER))) || return ""
+	return r
+end
+
+# The Julia version Help > Update Julia installs, "" when there is none: locked, not an iGMT Windows
+# install, or this Julia is already that one or newer. The viewer greys the item out on "".
+function _julia_update_target()::String
+	(Sys.iswindows() && !isempty(_JULIA_UPDATE_TO)) || return ""
+	isempty(_julia_update_root()) && return ""
+	VersionNumber(_JULIA_UPDATE_TO) > VERSION || return ""
+	return _JULIA_UPDATE_TO
+end
+
+# For the viewer's Help menu: "" = not an iGMT Windows install, the item is NOT SHOWN; "-" = shown
+# greyed out (no update); else the version it updates to.
+function _julia_update_state()::String
+	(Sys.iswindows() && !isempty(_julia_update_root())) || return ""
+	v = _julia_update_target()
+	return isempty(v) ? "-" : v
+end
+
+"""
+    InteractiveGMT.update_julia!()
+
+Help > Update Julia, iGMT Windows install only. Downloads the official portable Julia
+`_JULIA_UPDATE_TO` into `<INSTDIR>\\julia-new`, gives it a copy of this environment and has IT resolve
+and precompile the packages into the same depot (the caches are per Julia version: this Julia's are
+not touched). The running Julia cannot be replaced, so `igmt.exe` swaps it at the next start of
+i'GMT: `julia` -> `julia-old`, `julia-new` -> `julia` (launcher.c, julia_swap). When that start
+brings the window up, `julia-old` is deleted; when it fails, `julia-old` is put back. Any failure
+here removes what it made; nothing else changes.
+"""
+function update_julia!()
+	v = _julia_update_target()
+	isempty(v) && (println("No Julia update is available (this is Julia $VERSION)."); return nothing)
+	root   = _julia_update_root()
+	new    = joinpath(root, "julia-new")
+	ver    = VersionNumber(v)
+	url    = "https://julialang-s3.julialang.org/bin/winnt/x64/$(ver.major).$(ver.minor)/julia-$v-win64.zip"
+	envold = joinpath(first(DEPOT_PATH), "environments", "v$(VERSION.major).$(VERSION.minor)")
+	envnew = joinpath(first(DEPOT_PATH), "environments", "v$(ver.major).$(ver.minor)")
+	tmp    = mktempdir()
+	try
+		ispath(new) && rm(new; recursive = true, force = true)
+		println("Julia $v: downloading $url ...")
+		zip = GMT.Downloads.download(url, joinpath(tmp, "julia.zip"))
+		cd(() -> run(`$(_craft_tar()) -xf $zip`), tmp)
+		src = joinpath(tmp, "julia-$v")
+		isfile(joinpath(src, "bin", "julia.exe")) || error("the download has no julia-$v\\bin\\julia.exe")
+		mv(src, new)
+		if envnew != envold        # the dev paths in it are relative (../../dev/...): valid as they are
+			mkpath(envnew)
+			for f in ("Project.toml", "Manifest.toml")
+				cp(joinpath(envold, f), joinpath(envnew, f); force = true)
+			end
+		end
+		# WITH the depot's startup.jl (setup.jl): GMT's plugins find their DLLs while GMT.jl precompiles
+		println("Julia $v: resolving and precompiling the packages (several minutes)...")
+		jl = joinpath(new, "bin", "julia.exe")
+		run(`$jl --color=no -e "import Pkg; Pkg.resolve(); Pkg.precompile()"`)
+		write(joinpath(new, "igmt_ready"), v * "\n")
+		println("Julia $v is ready. It replaces Julia $VERSION at the next start of i'GMT -- close every ",
+		        "i'GMT window first. Julia $VERSION is deleted once Julia $v has started i'GMT; if that ",
+		        "first start fails, Julia $VERSION is put back.")
+	catch e
+		rm(new; recursive = true, force = true)
+		envnew != envold && rm(envnew; recursive = true, force = true)
+		@tool_error "Julia $v: the update failed -- nothing was changed." exception=(e,)
+	finally
+		rm(tmp; recursive = true, force = true)
+	end
+	return nothing
+end
+
 # GMT.jl of an iGMT Windows install (gmtjl_strip.jl): only in a depot that holds the installer's
 # marker. A registry GMT.jl or a user's own `] dev` GMT.jl is never touched.
 function _update_gmtjl()

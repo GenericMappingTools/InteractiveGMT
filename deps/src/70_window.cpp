@@ -33946,6 +33946,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		if (n < 0) QMessageBox::warning(win, "Check for Updates", txt);
 		else       QMessageBox::information(win, "Check for Updates", txt);
 	});
+	mHelp->addSeparator();
 	// Update GMT.jl (InteractiveGMT.update_gmtjl!(), selfupdate.jl): in an iGMT Windows install it
 	// fast-forwards the install's GMT.jl clone and keeps the JLLs its bundled GMT replaces out of it;
 	// anywhere else a plain Pkg.update("GMT"). Same busy dialog + captured text as above.
@@ -33962,6 +33963,37 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		if (txt.isEmpty()) txt = "No output.";
 		if (n < 0) QMessageBox::warning(win, "Update GMT.jl", txt);
 		else       QMessageBox::information(win, "Update GMT.jl", txt);
+	});
+	// Update Julia (InteractiveGMT.update_julia!(), selfupdate.jl): SHOWN ONLY in an iGMT installed by
+	// the Windows installer, and there LOCKED (greyed out) until selfupdate.jl's _JULIA_UPDATE_TO names
+	// a Julia newer than this one. Asked once per window, the first time Help opens: the answer cannot
+	// change before a restart. The new Julia is swapped in by igmt.exe at the next start (launcher.c).
+	QAction *actJulia = mHelp->addAction("Update &Julia…");
+	actJulia->setVisible(false);
+	actJulia->setEnabled(false);
+	QObject::connect(mHelp, &QMenu::aboutToShow, [actJulia, s]() {
+		if (actJulia->property("igmtAsked").toBool() || !g_juliaEval) return;
+		actJulia->setProperty("igmtAsked", true);
+		std::vector<char> buf(256);
+		int n = g_juliaEval(s, "print(InteractiveGMT._julia_update_state()); nothing", buf.data(), (int)buf.size());
+		const QString v = n > 0 ? QString::fromUtf8(buf.data(), n).trimmed() : QString();
+		actJulia->setVisible(!v.isEmpty());                  // "" = not an installer install
+		actJulia->setEnabled(!v.isEmpty() && v != "-");      // "-" = no update: greyed out
+		if (actJulia->isEnabled()) actJulia->setText(QString("Update &Julia to %1…").arg(v));
+	});
+	QObject::connect(actJulia, &QAction::triggered, [win, s]() {
+		if (!g_juliaEval) {
+			QMessageBox::warning(win, "Update Julia", "This needs the Julia/GMT host.");
+			return;
+		}
+		showBusyDialog("Updating Julia… (download and precompile, several minutes)");
+		static std::vector<char> buf(1 << 16);
+		int n = g_juliaEval(s, "InteractiveGMT.update_julia!()", buf.data(), (int)buf.size());
+		closeBusyDialog();
+		QString txt = QString::fromUtf8(buf.data(), n < 0 ? -n : n).trimmed();
+		if (txt.isEmpty()) txt = "No output.";
+		if (n < 0) QMessageBox::warning(win, "Update Julia", txt);
+		else       QMessageBox::information(win, "Update Julia", txt);
 	});
 
 	// --- toolbar row (below the menu bar): quick-access buttons (ParaView-style) ------------
