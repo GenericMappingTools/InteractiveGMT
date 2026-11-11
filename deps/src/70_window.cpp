@@ -34417,6 +34417,12 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 				const double dpr = widget->devicePixelRatioF();
 				const int    Hpx = widget->renderWindow()->GetSize()[1];
 				const int    px  = int(pos.x() * dpr), py = int(Hpx - pos.y() * dpr);
+				{   // the colour bar is a 2-D overlay over everything: its labels + fonts dialog first
+					const int *wsz = widget->renderWindow()->GetSize();
+					if (wsz && wsz[0] > 0 && wsz[1] > 0 &&
+					    colorbarFontsAtCursor(s, double(px) / wsz[0], double(py) / wsz[1]))
+						return;
+				}
 				if (profileHitAt(s, px, py)) {   // profile line sits on top -> its menu wins
 					popupProfileMenu(s, widget->mapToGlobal(pos));
 					return;

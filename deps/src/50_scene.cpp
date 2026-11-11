@@ -141,13 +141,22 @@ namespace cbar {
 // which own the first nTicks entries and are laid out against them: entry nTicks is the x label,
 // nTicks+1 the y label. Living in the same list, they are removed, shown / hidden and grabbed for a
 // drag together with the numbers by every loop that already handles those.
+// ONE BarFont onto a text property — every number and label of every colour bar goes through it.
+static void barApplyFont(vtkTextProperty *tp, const BarFont &f) {
+	if (!tp) return;
+	tp->SetFontFamilyAsString(f.family.c_str());
+	tp->SetFontSize(f.size);
+	tp->SetColor(f.color[0], f.color[1], f.color[2]);
+	tp->SetBold(f.bold ? 1 : 0);
+	tp->SetItalic(f.italic ? 1 : 0);
+}
+
 static void barAddTitles(Scene *s, std::vector<vtkSmartPointer<vtkTextActor>> &labels, const BarLabels &lab) {
 	for (int k = 0; k < 2; ++k) {
 		vtkSmartPointer<vtkTextActor> ta = vtkSmartPointer<vtkTextActor>::New();
 		ta->SetInput((k == 0 ? lab.x : lab.y).c_str());
 		vtkTextProperty *tp = ta->GetTextProperty();
-		tp->SetColor(0.9, 0.9, 0.9);
-		tp->SetFontSize(12);
+		barApplyFont(tp, lab.labFont);
 		tp->SetJustificationToCentered();
 		tp->SetVerticalJustificationToBottom();   // rotated, "above the anchor" is to its left
 		if (k == 0) tp->SetOrientation(90.0);     // x: reads up the bar
@@ -168,7 +177,8 @@ static void barLayoutTitles(Scene *s, std::vector<vtkSmartPointer<vtkTextActor>>
 	const int *sz = s->ren->GetSize();
 	const double vw = (sz && sz[0] > 0) ? sz[0] : 1000.0;
 	const double dpi = s->ren->GetRenderWindow() ? s->ren->GetRenderWindow()->GetDPI() : 72.0;
-	const double numW = nch * 7.0 * dpi / 72.0 / vw;                // ~7 pt a digit
+	const int fs = (nTicks > 0 && labels[0]) ? labels[0]->GetTextProperty()->GetFontSize() : 10;
+	const double numW = nch * 0.7 * fs * dpi / 72.0 / vw;           // ~0.7 em a digit (7 pt at size 10)
 	if (labels[nTicks])
 		labels[nTicks]->SetPosition(barLeft - cbar::TICKLEN - cbar::LABELGAP - numW - 0.004, Y0 + cbar::H / 2);
 	if (labels[nTicks + 1])
@@ -248,8 +258,7 @@ static void buildColorbar(Scene *s, vtkScalarsToColors *lut, double lo, double h
 			dlines->InsertNextCell(2); dlines->InsertCellPoint(a); dlines->InsertCellPoint(b);
 			vtkSmartPointer<vtkTextActor> ta = vtkSmartPointer<vtkTextActor>::New();
 			ta->SetInput(std::to_string(k).c_str());
-			ta->GetTextProperty()->SetColor(0.9, 0.9, 0.9);
-			ta->GetTextProperty()->SetFontSize(10);
+			barApplyFont(ta->GetTextProperty(), s->barLabShown.annFont);
 			ta->GetTextProperty()->SetJustificationToRight();
 			ta->GetTextProperty()->SetVerticalJustificationToCentered();
 			ta->GetPositionCoordinate()->SetCoordinateSystemToNormalizedViewport();
@@ -292,8 +301,7 @@ static void buildColorbar(Scene *s, vtkScalarsToColors *lut, double lo, double h
 		char buf[32]; snprintf(buf, sizeof buf, "%.*f", decimals, vv);
 		vtkSmartPointer<vtkTextActor> ta = vtkSmartPointer<vtkTextActor>::New();
 		ta->SetInput(buf);
-		ta->GetTextProperty()->SetColor(0.9, 0.9, 0.9);
-		ta->GetTextProperty()->SetFontSize(10);
+		barApplyFont(ta->GetTextProperty(), s->barLabShown.annFont);
 		ta->GetTextProperty()->SetJustificationToRight();
 		ta->GetTextProperty()->SetVerticalJustificationToCentered();
 		ta->GetPositionCoordinate()->SetCoordinateSystemToNormalizedViewport();
@@ -390,8 +398,7 @@ static void buildAquaLandColorbar(Scene *s, vtkScalarsToColors *lut, double lo, 
 		char buf[32]; snprintf(buf, sizeof buf, "%.*f", decimals, vv);
 		vtkSmartPointer<vtkTextActor> ta = vtkSmartPointer<vtkTextActor>::New();
 		ta->SetInput(buf);
-		ta->GetTextProperty()->SetColor(0.9, 0.9, 0.9);
-		ta->GetTextProperty()->SetFontSize(10);
+		barApplyFont(ta->GetTextProperty(), s->aquaLandBarLab.annFont);
 		ta->GetTextProperty()->SetJustificationToRight();
 		ta->GetTextProperty()->SetVerticalJustificationToCentered();
 		ta->GetPositionCoordinate()->SetCoordinateSystemToNormalizedViewport();
@@ -541,8 +548,47 @@ static void chooseColormap(Scene *s, const QPoint &gp, std::function<void(const 
 	if (labels) {
 		m.addSeparator();
 		m.addAction("Labels…", [labels]() { labels(); });
+		m.addAction("Fonts…",  [labels]() { labels(); });   // same dialog: labels + their fonts
 	}
 	m.exec(gp);
+}
+
+// One font block of the colour bar dialog (family / size / bold / italic / colour), seeded from `f`.
+// `read` is filled with the function that copies the widgets back into a BarFont on OK.
+static QGroupBox *barFontGroup(QDialog *d, const QString &title, const BarFont &f,
+                               std::function<void(BarFont&)> &read) {
+	QGroupBox *g = new QGroupBox(title, d);
+	QFormLayout *fl = new QFormLayout(g);
+	QComboBox *eFont = new QComboBox(g);
+	eFont->addItems({ "Arial", "Courier", "Times" });
+	eFont->setCurrentText(QString::fromStdString(f.family));
+	QSpinBox *eSize = new QSpinBox(g); eSize->setRange(4, 200); eSize->setValue(f.size);
+	QCheckBox *eBold = new QCheckBox("Bold", g);   eBold->setChecked(f.bold);
+	QCheckBox *eItal = new QCheckBox("Italic", g); eItal->setChecked(f.italic);
+	auto col = std::make_shared<QColor>(QColor::fromRgbF(f.color[0], f.color[1], f.color[2]));
+	QPushButton *eColor = new QPushButton(g);
+	auto paintSwatch = [eColor](const QColor &c) { eColor->setStyleSheet("background:" + c.name()); };
+	paintSwatch(*col);
+	QObject::connect(eColor, &QPushButton::clicked, g, [d, col, paintSwatch]() {
+		const QColor c = QColorDialog::getColor(*col, d, "Text colour");
+		if (c.isValid()) { *col = c; paintSwatch(c); }
+	});
+	QHBoxLayout *style = new QHBoxLayout;
+	style->addWidget(eBold);
+	style->addWidget(eItal);
+	style->addStretch(1);
+	fl->addRow("Font", eFont);
+	fl->addRow("Size", eSize);
+	fl->addRow("Style", style);
+	fl->addRow("Colour", eColor);
+	read = [eFont, eSize, eBold, eItal, col](BarFont &o) {
+		o.family = eFont->currentText().toStdString();
+		o.size   = eSize->value();
+		o.bold   = eBold->isChecked();
+		o.italic = eItal->isChecked();
+		o.color[0] = col->redF(); o.color[1] = col->greenF(); o.color[2] = col->blueF();
+	};
+	return g;
 }
 
 // "Labels…" on a Color Bar row: the bar's two axis labels — X along the bar (the quantity), Y at its
@@ -554,8 +600,10 @@ static void colorbarLabelsDialog(Scene *s, std::function<BarLabels*()> owner, st
 	BarLabels *lab = owner();
 	if (!lab) return;
 	QDialog d(s->win);
-	d.setWindowTitle("Color bar labels");
+	d.setWindowTitle("Color bar labels and fonts");
 	QFormLayout *f = new QFormLayout(&d);
+	// The two label boxes are the dialog's FIRST two line edits (gmtvtk_colorbar_labels_test fills
+	// them in that order) — the font blocks below are built after them.
 	QLineEdit *ex = new QLineEdit(QString::fromStdString(lab->x), &d);
 	QLineEdit *ey = new QLineEdit(QString::fromStdString(lab->y), &d);
 	ex->setToolTip("Written along the bar: the quantity it colours (e.g. Elevation)");
@@ -563,6 +611,9 @@ static void colorbarLabelsDialog(Scene *s, std::function<BarLabels*()> owner, st
 	ex->setMinimumWidth(260);
 	f->addRow("X label (along the bar):", ex);
 	f->addRow("Y label (at its top):", ey);
+	std::function<void(BarFont&)> readLab, readAnn;
+	f->addRow(barFontGroup(&d, "Labels font", lab->labFont, readLab));
+	f->addRow(barFontGroup(&d, "Annotations font", lab->annFont, readAnn));
 	QDialogButtonBox *bb = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &d);
 	QObject::connect(bb, &QDialogButtonBox::accepted, &d, &QDialog::accept);
 	QObject::connect(bb, &QDialogButtonBox::rejected, &d, &QDialog::reject);
@@ -571,6 +622,8 @@ static void colorbarLabelsDialog(Scene *s, std::function<BarLabels*()> owner, st
 	if (!(lab = owner())) return;                   // the layer went while the dialog was up
 	lab->x = ex->text().trimmed().toStdString();
 	lab->y = ey->text().trimmed().toStdString();
+	readLab(lab->labFont);
+	readAnn(lab->annFont);
 	if (redraw) redraw();
 }
 
@@ -1780,6 +1833,49 @@ static void refreshGridColorbar(Scene *s) {
 	if (showWaterBar) buildColorbar(s, ag.lut, bz0, bz1, 0, lab);
 	if (isAqua) setAquaLandColorbarVisible(s, s->aquaLandShowBar && !s->aquaShowWater);
 	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+}
+
+// The Land bar is built once per file, so new labels/fonts reach it only by building it again.
+static void rebuildAquaLandColorbar(Scene *s) {
+	if (!s || !s->aquaLandBar) return;
+	vtkSmartPointer<vtkScalarsToColors> lut = s->aquaLandBar->GetLookupTable();
+	buildAquaLandColorbar(s, lut, s->aquaLandBarLo, s->aquaLandBarHi);
+	refreshGridColorbar(s);
+}
+
+// RIGHT-CLICK ON THE COLOUR BAR ITSELF (its numbers, its labels, its strip): the same "Color bar labels
+// and fonts" dialog its Scene Objects Color Bar row opens, aimed at the owner of the bar ON SCREEN —
+// resolved exactly as refreshGridColorbar hands the bar out: the Land bar when it is the one up, else
+// a checked palette legend (it wins the slot), else the grid that owns the bar (base or extra, by tag).
+// The owner is pinned by KIND + TAG when the click lands and re-found by them when the dialog closes,
+// never by a pointer held across the modal loop. nx/ny: normalized viewport, bottom-up. False = the
+// cursor is not on a bar (the caller's other right-click targets get their turn).
+static bool colorbarFontsAtCursor(Scene *s, double nx, double ny) {
+	if (!colorbarHit(s, nx, ny)) return false;
+	if (aquaLandColorbarVisible(s)) {
+		colorbarLabelsDialog(s, [s]() { return &s->aquaLandBarLab; }, [s]() { rebuildAquaLandColorbar(s); });
+		return true;
+	}
+	if (PaletteLegend *pl = resolveActivePalette(s); pl && pl->show) {
+		int ptag = -1;                                   // -1 = the window's primary image
+		if (pl != &s->palette)
+			for (auto &ex : s->extras) if (&ex.palette == pl) { ptag = ex.tag; break; }
+		colorbarLabelsDialog(s, [s, ptag]() -> BarLabels* {
+			if (ptag < 0) return &s->palette.lab;
+			for (auto &ex : s->extras) if (ex.isImage && ex.tag == ptag) return &ex.palette.lab;
+			return nullptr;
+		}, [s]() { refreshGridColorbar(s); });
+		return true;
+	}
+	const ActiveGrid vis = resolveActiveGrid(s);
+	const ActiveGrid ag  = vis.valid ? vis : resolveActiveGrid(s, /*requireVisible=*/false);
+	const int gtag = ag.valid ? ag.tag : -1;
+	colorbarLabelsDialog(s, [s, gtag]() -> BarLabels* {
+		if (gtag < 0) return &s->surfBarLab;
+		for (auto &ex : s->extras) if (!ex.isImage && ex.tag == gtag) return &ex.barLab;
+		return nullptr;
+	}, [s]() { refreshGridColorbar(s); });
+	return true;
 }
 
 // Normalize every element's rank to 0..n-1 by current `stack`, then map rank -> polygon offset
@@ -3184,9 +3280,11 @@ static void rebuildSceneObjects(Scene *s) {
 		        [s, pl](bool on) { pl->show = on; refreshGridColorbar(s); },
 		        [s, pl](const QPoint &g) {
 		            QMenu m(s->win);
-		            m.addAction("Labels…", [s, pl]() {
+		            auto dlg = [s, pl]() {
 		                colorbarLabelsDialog(s, [pl]() { return &pl->lab; }, [s]() { refreshGridColorbar(s); });
-		            });
+		            };
+		            m.addAction("Labels…", dlg);
+		            m.addAction("Fonts…", dlg);
 		            m.exec(g);
 		        },
 		        "Show / hide this indexed image's class legend · left-click the label to set its labels");
@@ -3244,12 +3342,8 @@ static void rebuildSceneObjects(Scene *s) {
 		            [s]() { double lo, hi; aquaSideEditorRange(s, 1, lo, hi);
 		                    showColorPalettesAquaSide(s, 1, lo, hi); },
 		            // the Land bar is built once per file: rebuilt here, with its new labels
-		            [s]() { colorbarLabelsDialog(s, [s]() { return &s->aquaLandBarLab; }, [s]() {
-		                        if (!s->aquaLandBar) return;
-		                        vtkSmartPointer<vtkScalarsToColors> lut = s->aquaLandBar->GetLookupTable();
-		                        buildAquaLandColorbar(s, lut, s->aquaLandBarLo, s->aquaLandBarHi);
-		                        refreshGridColorbar(s);
-		                    }); });
+		            [s]() { colorbarLabelsDialog(s, [s]() { return &s->aquaLandBarLab; },
+		                                         [s]() { rebuildAquaLandColorbar(s); }); });
 		        },
 		        "Show / hide the Land colorbar · checking it switches to Shade Land · left-click the label to choose a colormap");
 	};

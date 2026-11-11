@@ -648,8 +648,19 @@ struct Curtain {
 // quantity), `y` sits at its top end (-By+l, the unit). Owned by whatever owns the bar — every grid
 // layer, an indexed image's legend, each Aquamoto side — set from its Color Bar row's "Labels…",
 // drawn by buildColorbar and handed to the GMT.jl script's colorbar call.
+// The two fonts the bar is written with, as GMT names them: `labFont` for the two axis labels
+// (FONT_LABEL), `annFont` for the tick numbers / class values (FONT_ANNOT_PRIMARY). Same owner, so a
+// layer keeps its own fonts through every rebuild of the one bar. Defaults = what the bar always drew.
+struct BarFont {
+	std::string family = "Arial";            // VTK's freetype faces: Arial / Courier / Times
+	int    size = 10;                        // VTK font size (screen-constant)
+	double color[3] = { 0.9, 0.9, 0.9 };
+	bool   bold = false, italic = false;
+};
 struct BarLabels {
 	std::string x, y;
+	BarFont labFont{ "Arial", 12 };          // the axis labels
+	BarFont annFont;                         // the annotations (tick numbers)
 };
 
 struct PaletteLegend {
