@@ -129,56 +129,20 @@ function _vw_gray(A::Array{UInt8,3})::Matrix{Float64}
 	return _vw_lum.(Float64.(A[:, :, 1]), Float64.(A[:, :, 2]), Float64.(A[:, :, 3]))
 end
 
-# The centre (row of C) nearest to row i of M. A top-level function, not a closure inside the k-means:
-# the closure over its reassigned centres was boxed and made the whole grouping ~50x slower.
-function _vw_nearest(M::Matrix{Float64}, i::Int, C::Matrix{Float64}, K::Int, nb::Int)::Int
-	bk = 1;  bd = Inf
-	@inbounds for k in 1:K
-		d = 0.0
-		for b in 1:nb
-			d += (M[i, b] - C[k, b])^2
-		end
-		d < bd && (bd = d; bk = k)
-	end
-	return bk
-end
-
-# k-means over the pixels of X (N x nb): centres fitted on a fixed subsample (deterministic: seeded
-# at luminance quantiles, every stride-th pixel), then every pixel assigned to its nearest centre.
-# Returns (centres K x nb, labels N).
-function _vw_kmeans(X::Matrix{Float64}, K::Int; iters::Int=20, nsamp::Int=40000)
+# k-means over the pixels of X (N x nb). The clustering is classification.jl's `_km_dckmeans` (the
+# Mirone dcKMeans port) — never a second k-means here. The centres are fitted on a fixed subsample
+# (every stride-th pixel), seeded at its luminance quantiles so the same picture always gives the
+# same tones; then ONE `_km_dckmeans` pass over every pixel labels each one with its nearest fitted
+# centre (its labels are taken against the centres it was handed; the centres it moves afterwards
+# are dropped). Returns (centres K x nb, labels N).
+function _vw_kmeans(X::Matrix{Float32}, K::Int; iters::Int=20, nsamp::Int=40000)
 	N, nb = size(X)
-	stride = max(1, N ÷ nsamp)
-	S = X[1:stride:N, :]
-	ns = size(S, 1)
+	S = X[1:max(1, N ÷ nsamp):N, :]
 	lum = nb == 3 ? _vw_lum.(S[:, 1], S[:, 2], S[:, 3]) : S[:, 1]
-	o = sortperm(lum)
-	C = S[o[round.(Int, range(1, ns; length=K))], :]
-	nearest(M, i, C) = _vw_nearest(M, i, C, K, nb)
-	lab = zeros(Int, ns)
-	for _ in 1:iters
-		for i in 1:ns
-			lab[i] = nearest(S, i, C)
-		end
-		sums = zeros(K, nb);  cnt = zeros(Int, K)
-		@inbounds for i in 1:ns
-			k = lab[i];  cnt[k] += 1
-			for b in 1:nb
-				sums[k, b] += S[i, b]
-			end
-		end
-		Cn = copy(C)
-		for k in 1:K
-			cnt[k] > 0 && (Cn[k, :] = sums[k, :] ./ cnt[k])      # an empty tone keeps its centre
-		end
-		Cn == C && break
-		C = Cn
-	end
-	L = Vector{Int}(undef, N)
-	for i in 1:N
-		L[i] = nearest(X, i, C)
-	end
-	return C, L
+	init = S[sortperm(lum)[round.(Int, range(1, size(S, 1); length=K))], :]
+	_, C = _km_dckmeans(S, K, init, iters)
+	L, _ = _km_dckmeans(X, K, C, 1)
+	return Float64.(C), L
 end
 
 # The tones of the picture: `rank` (h, w) = 1 (lightest) .. K (darkest) and `rgb` (K x 3, 0-255).
@@ -198,7 +162,7 @@ function _vw_tones(A::Array{UInt8,3}, p::_VWParams)
 		end
 		return rank, rgb
 	end
-	X = p.mode === :grey ? reshape(_vw_gray(A), :, 1) : Float64.(reshape(A, h * w, nb))
+	X = p.mode === :grey ? Float32.(reshape(_vw_gray(A), :, 1)) : Float32.(reshape(A, h * w, nb))
 	C, L = _vw_kmeans(X, p.n)
 	lum = size(C, 2) == 3 ? _vw_lum.(C[:, 1], C[:, 2], C[:, 3]) : C[:, 1]
 	ord = sortperm(lum; rev=true)                         # lightest first
