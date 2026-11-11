@@ -40,6 +40,12 @@ At the end of the install process, use `i'GMT` via the desktop icon that was jus
 
 Skip step 1 if you already have Julia installed. Skip points 1 and 2 if you already have [GMT.jl](https://github.com/GenericMappingTools/GMT.jl) installed (but it must be at least the 1.43.2 version)
 
+## EXPERIMENTAL FOR WINDOWS ONLY
+
+If you don't have Julia installed (or have but want to use this anyway), use this
+[installer](https://github.com/GenericMappingTools/InteractiveGMT/releases/download/installer-latest/iGMT-setup-win64.exe).
+It will install everything for you (Julia 1.14, GMT.jl and GMT CLI), it is faster to load and saves about a 1 GB of disk space (all, but Julia,
+is build with MSVC and will have a rolling GMT update system).
 
 ## See the [Vision](https://www.generic-mapping-tools.org/InteractiveGMT/dev/00-vision) for where this project is headed.
 
