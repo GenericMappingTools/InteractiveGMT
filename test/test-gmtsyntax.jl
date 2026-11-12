@@ -62,7 +62,9 @@ end
 	@test scatter!(fig, [0.5, 1.5], [0.5, 1.5]; marker=:circle, ms=[0.2, 0.4], legend="sized") === fig   # per-point ms, as GMT.jl
 	IG._pump_once()
 	@test isalive(fig)
-	close(p); ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), fig.h)
+	# EVERY window this item opened, the feather's too: left open it stayed the CURRENT X,Y window, and the
+	# next file's plot()/feather() drew into it (shard 2: 4 series where 1 was expected).
+	close(p); close(f); ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), fig.h)
 end
 
 @testitem "one name per job: error_bars and per-point ms translate" tags=[:unit, :fast] begin

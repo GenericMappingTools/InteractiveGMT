@@ -11,6 +11,8 @@ struct MTL_short
 	sun_dist::Float64
 	K1::Float64
 	K2::Float64
+	level2::Bool		# Level-2 product: reflect_mul/add scale SURFACE reflectance (already sun-corrected)
+	rad_per_refl::Float64	# RADIANCE_MULT / Level-1 REFLECTANCE_MULT: L = rho_TOA * sin(sun_elev) * rad_per_refl
 end
 
 const Lsat8_desc = Dict{Int,String}(
@@ -491,13 +493,12 @@ function parse_mtl(mtl::Vector{<:AbstractString}, band::Int)::MTL_short
 	# Parse the 'mtl' string vector and extract the info relevant for 'band'
 	# Make this a separate function so it can be called from read_mtl() or from the
 	# MTL metadata stored in a cube file created with cutcube().
-	# The calibration keys are looked up in the LEVEL1_RADIOMETRIC_RESCALING group when there is one:
-	# a Level-2 MTL ALSO carries REFLECTANCE_MULT/ADD_BAND_n in its surface-reflectance group (Level-2
-	# scaling, listed first), and the first match used to be that one.
-	i_l1 = findfirst(l -> strip(l) == "GROUP = LEVEL1_RADIOMETRIC_RESCALING", mtl)
+	# A Level-2 MTL carries REFLECTANCE_MULT/ADD_BAND_n twice: first in LEVEL2_SURFACE_REFLECTANCE_PARAMETERS
+	# (2.75e-5/-0.2, the scaling of the SR band's own DNs), then in LEVEL1_RADIOMETRIC_RESCALING. The FIRST
+	# match is taken, i.e. the Level-2 pair on a Level-2 product, as Mirone does (aux_funs.m). A Level-1
+	# MTL has only the Level-1 pair. RADIANCE_* exist only in the Level-1 group.
 	function get_par(str::String)::Float64
-		from = (i_l1 !== nothing && occursin(r"^(RADIANCE|REFLECTANCE)_(MULT|ADD)_", str)) ? i_l1 : 1
-		ind = findnext(l -> occursin(str, l), mtl, from)
+		ind = findfirst(l -> occursin(str, l), mtl)
 		(ind === nothing) && error("Parameter $str not found in the MTL data")
 		parse(Float64, split(mtl[ind], "=")[2])
 	end
@@ -513,7 +514,16 @@ function parse_mtl(mtl::Vector{<:AbstractString}, band::Int)::MTL_short
 	sun_dist = get_par("EARTH_SUN")
 	K1 = (band >= 10) ? get_par("K1_CONSTANT_BAND_$(band)") : 0.0
 	K2 = (band >= 10) ? get_par("K2_CONSTANT_BAND_$(band)") : 0.0
-	MTL_short(band, rad_mul, rad_add, rad_max, reflect_mul, reflect_add, reflect_max, sun_azim, sun_elev, sun_dist, K1, K2)
+	level2 = any(l -> strip(l) == "GROUP = LEVEL2_SURFACE_REFLECTANCE_PARAMETERS", mtl)
+	rad_per_refl = 0.0
+	if (band < 10)		# The Level-1 reflectance scale is the one that pairs with the radiance scale
+		i_l1 = findfirst(l -> strip(l) == "GROUP = LEVEL1_RADIOMETRIC_RESCALING", mtl)
+		key = "REFLECTANCE_MULT_BAND_$(band)"
+		ind = findnext(l -> occursin(key, l), mtl, (i_l1 === nothing) ? 1 : i_l1)
+		(ind === nothing) && error("Parameter $key not found in the MTL data")
+		rad_per_refl = rad_mul / parse(Float64, split(mtl[ind], "=")[2])
+	end
+	MTL_short(band, rad_mul, rad_add, rad_max, reflect_mul, reflect_add, reflect_max, sun_azim, sun_elev, sun_dist, K1, K2, level2, rad_per_refl)
 end
 
 # ----------------------------------------------------------------------------------------------------------
@@ -688,9 +698,34 @@ function _dn2one(fname::String, reflect::Bool, band::Int, bandname::String, band
 	band_layer, pars = helper_dns(fname, band, bandname, bandnames, mtl)
 	(reflect && pars.band >= 10) && error("Computing Reflectance for Thermal bands is not defined.")
 	I, indNaN, o = helper1_sats(fname, band_layer)
-	reflect || return helper_dns_op(I, pars.rad_mul, pars.rad_add, indNaN, o)
+	(!reflect && pars.band >= 10) && return helper_dns_op(I, pars.rad_mul, pars.rad_add, indNaN, o)
 	s_elev = sin(pars.sun_elev * pi/180)
-	return helper_dns_op(I, pars.reflect_mul / s_elev, pars.reflect_add / s_elev, indNaN, o)
+	if (reflect)
+		# A Level-2 SR band is already sun-corrected: dividing by sin(sun elevation) again inflated it ~10 %.
+		s = pars.level2 ? 1.0 : s_elev
+		mul, add, lo, hi = pars.reflect_mul / s, pars.reflect_add / s, REFLECT_NEG_TOL, 1.0
+	else
+		# Radiance and reflectance are tied by L = rho_TOA * sin(el) * K, K = RADIANCE_MULT / L1 REFLECTANCE_MULT.
+		# Level-1: L = DN*rad_mul + rad_add. Level-2: the radiance scale does not apply to SR DNs, so the
+		# radiance is the one of the SR reflectance, L = rho_SR * sin(el) * K. Same [lo hi] as reflectance.
+		k = s_elev * pars.rad_per_refl
+		mul, add = pars.level2 ? (pars.reflect_mul * k, pars.reflect_add * k) : (pars.rad_mul, pars.rad_add)
+		lo, hi = REFLECT_NEG_TOL * k, k
+	end
+	_dns_op!(o, I.image, mul, add, indNaN)
+	_reflect_clean!(o, Float32(lo), Float32(hi))
+	return mat2grid(o, I)
+end
+
+# Reflectance lives in [0 1] (radiance in the same interval scaled to radiance units). Near-zero negatives
+# (dark water: retrieval noise around 0) become 0; values below `lo`, or above `hi`, are bad retrievals -> NaN.
+const REFLECT_NEG_TOL = -0.02
+function _reflect_clean!(o::Matrix{Float32}, lo::Float32, hi::Float32)
+	@inbounds Threads.@threads for k = 1:length(o)
+		v = o[k]
+		o[k] = (v < lo || v > hi) ? NaN32 : (v < 0f0 ? 0f0 : v)
+	end
+	return nothing
 end
 
 function dn2aux(fname::String, reflect::Bool; band::Int=0, bandname::String="", bandnames::String="", mtl::String="", save::String="")

@@ -160,7 +160,7 @@ end
 # A Landsat Level-2 MTL lists REFLECTANCE_MULT/ADD_BAND_n TWICE: its Level-2 scaling first, then the
 # Level-1 rescaling. The TOA calibration takes the Level-1 numbers, and the MTL is found from the
 # Level-2 band's own name (…_T1_SR_B5.TIF -> …_T1_MTL.txt).
-@testitem "RemoteS: calibration reads the Level-1 rescaling from a Level-2 MTL" tags=[:unit, :remotes] begin
+@testitem "RemoteS: a Level-2 MTL gives the Level-2 reflectance pair, radiance from Level-1" tags=[:unit, :remotes] begin
 	RS = InteractiveGMT.RemoteS
 	dir = mktempdir()
 	stem = "LC09_L2SP_204033_20260702_20260703_02_T1"
@@ -191,7 +191,11 @@ end
 	""")
 	p = RS.read_mtl(joinpath(dir, stem * "_SR_B5.TIF"))
 	@test p.band == 5
-	@test (p.reflect_mul, p.reflect_add) == (2.0e-5, -0.1)
+	# Reflectance: the FIRST pair, i.e. the Level-2 surface-reflectance scaling of the SR DNs (as Mirone).
+	@test (p.reflect_mul, p.reflect_add) == (2.75e-5, -0.2)
+	@test p.level2
 	@test (p.rad_mul, p.rad_add) == (5.9248e-3, -29.62)
 	@test (p.rad_max, p.reflect_max) == (400.0, 1.2)
+	# L = rho * sin(el) * K, K = RADIANCE_MULT / the LEVEL-1 REFLECTANCE_MULT
+	@test p.rad_per_refl ≈ 5.9248e-3 / 2.0e-5
 end

@@ -150,6 +150,9 @@ function _session_record_elastic!(scene::Ptr{Cvoid}, raw::String)
 	return _session_record_single!(scene, :elastic, :menu; params = params)
 end
 
+# The Scene Objects name of the grid an :elastic recipe puts on screen (`_on_elastic` below).
+_elastic_layer_name(r::ElementRecipe)::String = haskey(r.params, "model_slip") ? "Okada z (model)" : "Okada z"
+
 # The dialog's request string back from a recipe's named fields. A session saved before the fields had
 # names carries the old positional `cparams` string, which is used as it is.
 function _elastic_request(params::AbstractDict)::String

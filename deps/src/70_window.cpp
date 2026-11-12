@@ -7956,11 +7956,14 @@ public:
 		auto *upBtn      = d->findChild<QPushButton *>("upButton");
 		auto *histoBtn   = d->findChild<QPushButton *>("computeHistogramButton");
 
-		// Prefill Below/Above with the grid's own z range (ml_clip.m sets edit_below/above to
-		// z_min/z_max with a %.4g format). scene->zmin/zmax carry the true (unscaled) range.
-		if (scene && scene->zmax > scene->zmin) {
-			if (belowEdit) belowEdit->setText(QString::number(scene->zmin, 'g', 4));
-			if (aboveEdit) aboveEdit->setText(QString::number(scene->zmax, 'g', 4));
+		// Prefill Below/Above with the z range of the grid ON DISPLAY (ml_clip.m sets edit_below/above
+		// to z_min/z_max with a %.4g format) -- the SAME layer Apply clips (_active_grid) and the colour
+		// bar / Z axis describe (activeGridZRange). scene->zmin/zmax were the PRIMARY surface's: with a
+		// Landsat band as base and its reflectance on display, the boxes showed the band's raw DNs.
+		double zlo = 0.0, zhi = 0.0;
+		if (activeGridZRange(scene, zlo, zhi)) {
+			if (belowEdit) belowEdit->setText(QString::number(zlo, 'g', 4));
+			if (aboveEdit) aboveEdit->setText(QString::number(zhi, 'g', 4));
 		}
 
 		// "Clip in between": the band [Below,Above] is replaced by the Below Value (used as the

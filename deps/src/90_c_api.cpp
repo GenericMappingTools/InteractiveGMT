@@ -6697,6 +6697,47 @@ GMTVTK_API int gmtvtk_layer_display(void *handle, const char *name, char *buf, i
 	return n;
 }
 
+// THE PBR SETTINGS one grid layer is lit with (`name` empty = the base surface), so the GMT.jl export
+// can hand GMT the GRID and have `grdimage -I+P` light it — GMT's port of method 7 (gmt_pbr_*,
+// gmt_support.c) — instead of a capture of the pixels. Only READS the layer's own LayerShade and the
+// renderer's light rig; the same numbers makeReliefLight/reliefLightRig feed applyPBRShade with:
+//   az;el;rough;metal;ior;keyi;filli;tone;ao;ssaor;shadow;zscale;xfac;gizi;bake
+// `tone/ao/shadow` are method 7's own switches (bakeTone/bakeAO/bakeShadows) when the layer is baked
+// with method 7, method 1's passes (useTone/useSSAO/useShadows) otherwise. `ssaor` is in drawn world
+// units; `zscale` is the layer's drawn z scale (its normaliser times its own VE), `xfac` the drawn x
+// scale, so the host can express both in GMT's own terms. `gizi` is the gizmo light's intensity
+// (0 = none): a third light GMT's +P does not have.
+GMTVTK_API int gmtvtk_layer_pbr(void *handle, const char *name, char *buf, int cap) {
+	Scene *s = static_cast<Scene*>(handle);
+	std::string o;
+	char t[128];
+	auto kvd = [&](const char *k, double v) { snprintf(t, sizeof(t), "%s=%.12g;", k, v); o += t; };
+	if (sceneAlive(s)) {
+		const std::string want = (name && name[0]) ? name : std::string();
+		const ExtraObj *ex = nullptr;
+		if (!want.empty())
+			for (const auto &e : s->extras) if (e.name == want) { ex = &e; break; }
+		const LayerShade &lk = ex ? ex->look : s->look;
+		const bool bake = lk.litBake && lk.pbrBake;
+		ReliefLight L;
+		reliefLightRig(s, lk.ior, L);
+		kvd("az", lk.lightAz);         kvd("el", lk.lightEl);
+		kvd("rough", lk.roughness);    kvd("metal", lk.metallic);    kvd("ior", lk.ior);
+		kvd("keyi", s->lightIntensity); kvd("filli", s->fillIntensity);
+		kvd("tone", (bake ? s->bakeTone : s->useTone) ? 1 : 0);
+		kvd("ao", (bake ? s->bakeAO : s->useSSAO) ? 1 : 0);
+		kvd("ssaor", s->ssaoRadius);
+		kvd("shadow", (bake ? s->bakeShadows : s->useShadows) ? 1 : 0);
+		kvd("zscale", layerZScale(s, ex ? ex->tag : kAxesOwnerBase));
+		kvd("xfac", s->xfac);
+		kvd("gizi", L.gizI);
+		kvd("bake", bake ? 1 : 0);
+	}
+	const int n = (int)o.size();
+	if (buf && cap > 0) { int c = (n < cap - 1) ? n : cap - 1; memcpy(buf, o.data(), c); buf[c] = '\0'; }
+	return n;
+}
+
 // Serialize the window's line/point OVERLAYS (dropped tables, coastlines, imported vectors) as one
 // line each:
 //   mode;r;g;b;lw;ps;lstyle;stack;visible;filled;group;name;x,y,z|x,y,z>x,y,z|x,y,z\n

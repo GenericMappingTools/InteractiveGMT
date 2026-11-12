@@ -303,6 +303,11 @@ _script_obj_kind(r::ElementRecipe)::Symbol = r.kind in (:image, :dropimage, :bas
 # same reason: rasters go down before anything that draws on top of them.
 _script_israster(r::ElementRecipe) = r.kind in (:basegrid, :image, :dropgrid, :dropimage, :basemap)
 
+# Okada's :elastic recipe is the REQUEST (deform.jl records it unnamed, so a session recomputes the
+# field), but what it put on screen is a GRID named for it. For the script it is exactly that grid.
+_script_raster_recipe(r::ElementRecipe) = r.kind === :elastic ?
+	ElementRecipe(:dropgrid, :generated, ""; name = _elastic_layer_name(r)) : r
+
 # A grid's z range, for the CPT the layer is drawn with. `range` carries zmin/zmax in slots 5-6
 # (GMT fills them on read/compute); a non-finite pair falls back to scanning the buffer, which is
 # what the viewer's own `_cpt_nodes` does.
@@ -378,17 +383,78 @@ end
 
 # Does this layer have to be drawn from the pixels on screen?
 #
-# A GRID SURFACE: ALWAYS. The viewer renders a grid as a lit 3-D surface — PBR key + fill light, SSAO,
-# tone mapping — or with a baked hillshade, a drape, an illumination grid, a composite. GMT draws flat
-# CPT colours. Those are never the same picture, so the grid's displayed pixels are what goes to GMT.
-# There is no "but the simple case is fine" exception here: emitting `grdimage(G, cmap=C)` for a grid
-# is precisely the output that was reported as ignoring the instruction, and no reading of the scene
-# state is allowed to talk this back into that shape.
-#
-# An IMAGE: only when the window is compositing it into something else (draped, Aquamoto blend). A
-# plain image actor is rendered flat-albedo, so GMT drawing the same image gives the same picture —
-# and passing the image through is better than a screenshot of it (full resolution, re-projectable).
-_script_needs_pixels(disp, isgrid::Bool)::Bool = isgrid || get(disp, "repro", 0) == 0
+# ONLY WHEN GMT CANNOT DRAW THE LOOK ITSELF. A grid display GMT can reproduce is handed to GMT AS THE
+# GRID, and GMT makes the image — never a capture (user order, 2026-11-12; PBR only when the installed
+# GMT has -I+P, else captured). Two grid looks qualify:
+#   * no light at all ("Remove illumination", repro=1): plain CPT colours, `grdimage(G, cmap=C)`;
+#   * the PBR light (method 1's lit surface, method 7's bake, with or without cast shadows): GMT's
+#     `grdimage/grdview -I+P` is method 7's maths ported into GMT (gmt_pbr_*, gmt_support.c), lit with
+#     the layer's own sun, material and passes (`_script_pbr_shade`).
+# Everything else (drape, Aquamoto composite, baked hillshades, external illumination grid) is still
+# captured. An IMAGE: only when the window is compositing it into something else (draped, Aquamoto
+# blend); a plain image actor is flat albedo, so GMT drawing the image gives the same picture.
+# ONLY when the GMT that GMT.jl loaded HAS `-I+P`: an older GMT rejects the option, so the layer is then
+# captured exactly as before. Asked once, of the library itself (its exported `gmt_pbr_image`).
+const _SCRIPT_PBR_WHY = ("lit 3-D surface (PBR key+fill light)", "baked PBR shaded image", "cast shadows")
+const _GMT_HAS_PBR = Ref{Union{Nothing,Bool}}(nothing)
+function _gmt_has_pbr()::Bool
+	v = _GMT_HAS_PBR[]
+	v === nothing || return v
+	ok = try
+		Libdl.dlsym(Libdl.dlopen(GMT.libgmt), :gmt_pbr_image; throw_error=false) !== nothing
+	catch
+		false
+	end
+	_GMT_HAS_PBR[] = ok
+	return ok
+end
+# DISABLED 2026-11-12 (user order): GMT's -I+P comes out DARKER than iGMT's own image of the same layer.
+# Find out why before re-enabling — then restore the commented body below and delete the `false` line.
+# Everything it drives (_script_pbr_shade, gmtvtk_layer_pbr, the :shade kwarg in _script_emit_raster!)
+# is left in place, so re-enabling is this one line.
+_script_gmt_pbr(disp, isgrid::Bool)::Bool = false
+#	isgrid && get(disp, "repro", 1) == 0 && get(disp, "why", "") in _SCRIPT_PBR_WHY && _gmt_has_pbr()
+_script_needs_pixels(disp, isgrid::Bool)::Bool = get(disp, "repro", 0) == 0 && !_script_gmt_pbr(disp, isgrid)
+
+# The layer's PBR settings, from the viewer (gmtvtk_layer_pbr, 90_c_api.cpp).
+function _script_layer_pbr(h::Ptr{Cvoid}, name::String)
+	n = ccall(_fn(:gmtvtk_layer_pbr), Cint, (Ptr{Cvoid}, Cstring, Ptr{UInt8}, Cint), h, name, C_NULL, Cint(0))
+	n <= 0 && return Dict{String,Any}()
+	buf = Vector{UInt8}(undef, n + 1)
+	ccall(_fn(:gmtvtk_layer_pbr), Cint, (Ptr{Cvoid}, Cstring, Ptr{UInt8}, Cint), h, name, buf, Cint(n + 1))
+	return _parse_scene_state(unsafe_string(pointer(buf)))
+end
+
+# GMT's `-I+P…` for one grid layer, lit as the window lights it. GMT draws the relief with x and y at
+# one scale (x times xfac) and the z span as 0.1 of the larger horizontal side times <ve>; the viewer
+# draws z at `zscale` world units per data unit. So GMT's <ve> is the one that gives the SAME drawn
+# relief, and the occlusion radius (world units in the viewer) becomes GMT's fraction of the drawn
+# relief's diagonal.
+function _script_pbr_shade(ctx::ScriptCtx, name::String, G::GMTgrid)::String
+	p = _script_layer_pbr(ctx.scene, name)
+	f(k, d) = Float64(get(p, k, d))
+	xfac = f("xfac", 1.0);  xfac > 0 || (xfac = 1.0)
+	W = abs(G.range[2] - G.range[1]) * xfac
+	H = abs(G.range[4] - G.range[3])
+	zr = _script_zrange(G)
+	zspan = zr === nothing ? 0.0 : zr[2] - zr[1]
+	zscale = f("zscale", 0.0)
+	ve = (zspan > 0 && max(W, H) > 0 && zscale > 0) ? zscale / (0.1 * max(W, H) / zspan) : 1.0
+	s = "+P$(f("az", 315.0))/$(clamp(f("el", 45.0), 0.0, 90.0))" *
+	    "+f$(f("filli", 0.35))+i$(max(f("ior", 1.5), 1.0))+l$(f("keyi", 1.0))" *
+	    "+m$(clamp(f("metal", 0.0), 0.0, 1.0))+r$(clamp(f("rough", 0.3), 0.0, 1.0))+v$(ve)"
+	if f("ao", 0.0) != 0
+		diag = sqrt(W^2 + H^2 + (zspan * zscale)^2)
+		r = f("ssaor", 0.0)
+		(r > 0 && diag > 0) && (s *= "+o$(r / diag)")
+	end
+	f("shadow", 0.0) != 0 && (s *= "+s")
+	f("tone", 0.0) != 0 && (s *= "+t")
+	gi = f("gizi", 0.0)
+	gi > 0 && push!(ctx.notes, "'$(isempty(name) ? "(base)" : name)': the viewer's gizmo light " *
+	                           "(intensity $(round(gi, digits=2))) has no GMT counterpart; GMT -I+P lights with the sun and headlight")
+	return s
+end
 
 # THE rule for a look GMT has no equivalent for: hand GMT the PIXELS THAT ARE ON SCREEN.
 #
@@ -612,6 +678,8 @@ function _script_emit_raster!(ctx::ScriptCtx, r::ElementRecipe, obj, first::Bool
 			push!(binds, cptbind)
 			push!(kw, :cmap => cptbind.var)
 		end
+		# The PBR light, made by GMT from the grid (-I+P), never a capture of it.
+		_script_gmt_pbr(disp, isgrid) && push!(kw, :shade => _script_pbr_shade(ctx, r.name, obj))
 		mod === :grdview && push!(kw, :surftype => :image)     # -Qi: a draped image, not a mesh
 	end
 	return _script_emit_raster_finish!(ctx, r, binds, mod, bind.var, kw, first, isgrid, disp)
@@ -740,7 +808,8 @@ function _script_emit_raster_finish!(ctx::ScriptCtx, r::ElementRecipe, binds::Ve
 	label = isempty(r.name) ? (isgrid ? "base grid" : "base image") : r.name
 	tier = isempty(binds) ? "" : String(binds[1].tier)   # the DATA bind; a trailing :cpt is not the tier
 	why = get(disp, "why", "")
-	extra = (get(disp, "repro", 1) == 0 && !isempty(why)) ? ", displayed pixels: $why" : ""
+	extra = _script_gmt_pbr(disp, isgrid) ? ", lit by GMT -I+P: $why" :
+	        (get(disp, "repro", 1) == 0 && !isempty(why)) ? ", displayed pixels: $why" : ""
 	return ScriptStep("$(label)  ($(r.kind), $(tier)$(extra))", binds, mod, pos, kw, !first)
 end
 
@@ -1811,7 +1880,8 @@ function _script_emit(h::Ptr{Cvoid}; figsize::Real=15.0, recompute::Bool=false, 
 	# Covering only proves anything looking STRAIGHT DOWN: under a tilted view a buried layer's relief
 	# can stand above the one stacked over it.
 	topdown = ctx.view === nothing || ctx.view[2] >= 90.0
-	for r in recipes
+	for r0 in recipes
+		r = _script_raster_recipe(r0)
 		if _script_israster(r)
 			k = _script_layer_of(layers, r)
 			k === nothing || (layers[k].vis && !(topdown && _script_layer_covered(h, layers, k))) || continue
