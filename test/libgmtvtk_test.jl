@@ -141,6 +141,8 @@ const _TEST_SYMBOLS = (
 	:gmtvtk_nodegraph_step_test,      # the script graph: a step added (Add step menu, a box's menu, a drop) or removed
 	:gmtvtk_set_remotes_callback,     # NOT test-only -- mirrored: this dll's Remote sensing dialogs call Julia too
 	:gmtvtk_colorbar_labels_test,     # a Color Bar row clicked, "Labels…" picked, its dialog filled
+	:gmtvtk_colorbar_fonts_test,      # the fonts the bar on screen is drawn with, off its own text actors
+	:gmtvtk_colorbar_fonts_set_test,  # the bar's fonts set through its row's "Fonts…" or a right-click on it
 )
 
 function _load_test_library()

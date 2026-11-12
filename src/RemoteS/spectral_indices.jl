@@ -318,6 +318,26 @@ ndwi2(cube::_Cube3; bands::Vector{Int}=Int[], layers::Vector{Int}=Int[], bandnam
 
 # ----------------------------------------------------------------------------------------------------------
 """
+    NDMI = ndmi(nir, swir1; kw...)
+or
+
+    NDMI = ndmi(cube::Union{String, GMTgrid}; [bands=Int[], bandnames=String[], layers=Int[]], kwargs...)
+
+Normalized difference moisture index. Gao 1996 (NDWI with the 1.6 μm SWIR band). Leaf water content,
+crop water stress. Landsat 8/9 bands 5 and 6; Sentinel-2 bands 8A and 11.
+
+NDMI = (nir - swir1)/(nir + swir1)
+
+$(generic_docs)
+"""
+ndmi(nir, swir1; kw...) = sp_indices(nir, swir1; index="NDMI", kw...)
+ndmi(cube::String; bands::Vector{Int}=Int[], layers::Vector{Int}=Int[], bandnames::Vector{String}=String[], kw...) =
+	helper_si_method(cube, "NDMI"; bands=bands, layers=layers, bandnames=bandnames, defbandnames=["nir", "swir1"], kw...)
+ndmi(cube::_Cube3; bands::Vector{Int}=Int[], layers::Vector{Int}=Int[], bandnames::Vector{String}=String[], kw...) =
+	helper_si_method(cube, "NDMI"; bands=bands, layers=layers, bandnames=bandnames, defbandnames=["nir", "swir1"], kw...)
+
+# ----------------------------------------------------------------------------------------------------------
+"""
     NDREI1 = ndrei1(redEdge1, redEdge2; kw...)
 
 Normalized difference red edge index. Gitelson and Merzlyak 1994
@@ -512,9 +532,9 @@ function _si_formula(index::String)
 	(index == "MTCI")  && return (_f_mtci,  3, false, false)
 	(index == "MCARI") && return (_f_mcari, 3, false, false)
 	(index == "MSAVI") && return (_f_msavi, 2, false, false)
-	# Normalized differences. MNDWI (green,swir2), NBRI (nir,swir2), NDWI (green,nir) and NDWI2
-	# (nir,swir2) are (1st - 2nd); GNDVI, NDVI, NDREI1, NDREI2 are (2nd - 1st).
-	(index == "MNDWI" || index == "NBRI" || index == "NDWI" || index == "NDWI2") && return (_f_ndr, 2, true, true)
+	# Normalized differences. MNDWI (green,swir2), NBRI (nir,swir2), NDWI (green,nir), NDWI2
+	# (nir,swir2) and NDMI (nir,swir1) are (1st - 2nd); GNDVI, NDVI, NDREI1, NDREI2 are (2nd - 1st).
+	(index == "MNDWI" || index == "NBRI" || index == "NDWI" || index == "NDWI2" || index == "NDMI") && return (_f_ndr, 2, true, true)
 	(index == "GNDVI" || index == "NDVI" || index == "NDREI1" || index == "NDREI2") && return (_f_nd, 2, true, true)
 	(index == "SATVI") && return (_f_satvi, 3, false, false)
 	(index == "SAVI")  && return (_f_savi,  2, false, false)

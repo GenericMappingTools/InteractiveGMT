@@ -114,6 +114,7 @@ const _RS_INDICES = Tuple{String,String,Vector{String}}[
 	("NDWI2",  "Normalized difference water (Gao)",       ["nir", "swir2"]),
 	("MNDWI",  "Modified normalized difference water",    ["green", "swir2"]),
 	("NBRI",   "Normalized burn ratio",                   ["nir", "swir2"]),
+	("NDMI",   "Normalized difference moisture",          ["nir", "swir1"]),
 ]
 
 function _rs_indices(scene::Ptr{Cvoid}, d::Dict{String,String}, io::IOBuffer)::Bool
@@ -835,6 +836,7 @@ function _rs_modisscenes(scene::Ptr{Cvoid}, d::Dict{String,String}, io::IOBuffer
 		return true
 	end
 	if what == "rgwindow" || (what == "init" && !_rs_empty(scene))
+		what == "rgwindow" && _rs_need_map(scene)		# an empty window's frame is a placeholder, not a region
 		st = _scene_state(scene)
 		if haskey(st, "x0") && st["x1"] > st["x0"] && st["y1"] > st["y0"]
 			for (w, k) in (("p_rg_w", "x0"), ("p_rg_e", "x1"), ("p_rg_s", "y0"), ("p_rg_n", "y1"))
@@ -930,12 +932,205 @@ function _rs_modis_run(scene::Ptr{Cvoid}, d::Dict{String,String}, io::IOBuffer, 
 	return true
 end
 
+# --- HLS time series (Harmonized Landsat Sentinel-2) -------------------------------------------
+# RS.hls_series (or RS.s2_series, Sentinel-2 at 10 m from Earth Search) over a lon/lat box and a
+# period: every clear date's index grid, read box-only from the COGs. HLS needs the Earthdata login
+# of the Account tab; Earth Search needs none.
+
+# The index list, in this order; the text of each is the Spectral indices dialog's own.
+const _RS_HLS_INDICES = ["NDVI", "EVI", "SAVI", "MSAVI", "NDMI", "NDWI", "MNDWI", "NBRI", "NDREI1", "NDREI2"]
+const _RS_HLS_PRODUCTS = [["L30", "S30"], ["L30"], ["S30"], ["S2"]]      # p_products, by index; "S2" = Earth Search
+_rs_hls_s2(d::Dict{String,String})::Bool = _rs_idx(d, "p_products") == 3
+
+function _rs_index_text(ix::String)::String
+	k = findfirst(e -> e[1] == ix, _RS_INDICES)
+	return k === nothing ? ix : _RS_INDICES[k][2]
+end
+
+# A box in the window's own units -> lon/lat (HLS is searched and cut in degrees). An unreferenced
+# window is taken to be in degrees already, and must look like it.
+function _rs_lonlat_box(scene::Ptr{Cvoid}, W::Float64, E::Float64, S::Float64, N::Float64)::NTuple{4,Float64}
+	src = _window_srs(scene)
+	(isempty(src) || _project_is_geog(src)) || return _box_to(src, _LONLAT, W, E, S, N)
+	(-360 <= W < E <= 360 && -90 <= S < N <= 90) ||
+		error("The window has no coordinate system and its limits ($W/$E/$S/$N) are not longitudes/latitudes.")
+	return (W, E, S, N)
+end
+
+# The last rectangle drawn in the window (Draw > Rectangle), as W/E/S/N in the window's units.
+function _rs_drawn_rect(scene::Ptr{Cvoid})::NTuple{4,Float64}
+	box = nothing
+	for line in split(_serialize_polys_raw(scene), '\n'; keepempty = false)
+		p = split(line, ';'; limit = 13)
+		(length(p) == 13 && p[2] == "1") || continue
+		xy = [parse.(Float64, split(v, ',')[1:2]) for v in split(p[13], '|'; keepempty = false)]
+		isempty(xy) && continue
+		xs, ys = first.(xy), last.(xy)
+		box = (minimum(xs), maximum(xs), minimum(ys), maximum(ys))
+	end
+	box === nothing && error("The window has no drawn rectangle: draw one (Draw > Rectangle) over the area first.")
+	return box
+end
+
+function _rs_set_region!(io::IOBuffer, b::NTuple{4,Float64})
+	for (w, v) in zip(("p_rg_w", "p_rg_e", "p_rg_s", "p_rg_n"), b)
+		_rs_set(io, w, string(round(v, digits = 5)))
+	end
+end
+
+# One small function per request: Julia compiles a whole method on its first call, so with every
+# request in one function, OPENING the dialog paid the JIT of all of them.
+function _rs_hls(scene::Ptr{Cvoid}, d::Dict{String,String}, io::IOBuffer)::Bool
+	what = _rs_get(d, "what")
+	what == "init"      && return _rs_hls_init(scene, d, io)
+	what == "refresh"   && return _rs_hls_status(d, io)
+	what == "rgwindow"  && return _rs_hls_rgwindow(scene, io)
+	what == "rgrect"    && return _rs_hls_rgrect(scene, io)
+	what == "savelogin" && return _rs_hls_savelogin(d, io)
+	# Behind an inference barrier: a plain call made inference walk into hls_series and the GDAL reads
+	# while compiling THIS function, i.e. on the dialog's first init (~2.5 s of it).
+	what == "compute"   && return Base.inferencebarrier(_rs_hls_compute)(scene, d, io)::Bool
+	error("unknown request: $what")
+end
+
+_rs_hls_index(d::Dict{String,String})::String = _RS_HLS_INDICES[clamp(_rs_idx(d, "p_index") + 1, 1, length(_RS_HLS_INDICES))]
+
+# The window's box, when it shows something: (W, E, S, N) in its own units, else nothing.
+function _rs_window_box(scene::Ptr{Cvoid})
+	st = _scene_state(scene)
+	(haskey(st, "x0") && st["x1"] > st["x0"] && st["y1"] > st["y0"]) || return nothing
+	return (Float64(st["x0"]), Float64(st["x1"]), Float64(st["y0"]), Float64(st["y1"]))
+end
+
+function _rs_hls_init(scene::Ptr{Cvoid}, d::Dict{String,String}, io::IOBuffer)::Bool
+	_rs_items(io, "p_index", String["$(n) — $(_rs_index_text(n))" for n in _RS_HLS_INDICES])
+	_rs_set(io, "p_index", 0)
+	f = _rs_netrc_path()
+	u, p, why = try
+		(_rs_netrc_get(f, _RS_URS)..., isfile(f) ? "" : "  (the file does not exist yet)")
+	catch e
+		("", "", "  — cannot read it: " * sprint(showerror, e))
+	end
+	_rs_set(io, "p_ed_user", u);  _rs_set(io, "p_ed_pass", p)
+	_rs_label(io, "lbl_ed_where", "Saved in $(f) as machine $(_RS_URS)$(why)")
+	today = GMT.Dates.Date(RS.now(RS.UTC))
+	_rs_set(io, "p_from", "$(today - GMT.Dates.Day(90))T00:00:00")
+	_rs_set(io, "p_to", "$(today)T00:00:00")
+	if !_rs_empty(scene)
+		b = _rs_window_box(scene)
+		b === nothing || try _rs_set_region!(io, _rs_lonlat_box(scene, b...)) catch end
+	end
+	return _rs_hls_status(d, io)
+end
+
+function _rs_hls_status(d::Dict{String,String}, io::IOBuffer)::Bool
+	ix = _rs_hls_index(d)
+	u, p = _rs_netrc_get(_rs_netrc_path(), _RS_URS)
+	roles = RS._HLS_INDEX[ix]
+	if _rs_hls_s2(d)
+		res = all(r -> haskey(RS._ES_BANDS10, r), roles) ? "10 m" : "20 m"
+		_rs_status(io, "$(ix) takes $(join(roles, ", ")): Sentinel-2 L2A at $(res), from Earth Search (no login needed).")
+		return true
+	end
+	s2only = !all(r -> haskey(RS._HLS_BANDS["L30"], r), roles)
+	msg = "$(ix) takes $(join(roles, ", "))." *
+	      (s2only ? " Landsat has no red-edge bands: only the Sentinel-2 (S30) dates are used." : "")
+	(isempty(u) || isempty(p)) &&
+		(msg *= " Reading HLS needs your NASA Earthdata login: save it in the Account tab.")
+	_rs_status(io, msg)
+	return true
+end
+
+# An empty window has no limits of its own: its frame is a placeholder (0/1/0/1), never a region.
+_rs_need_map(scene::Ptr{Cvoid}) = _rs_empty(scene) &&
+	error("The window has no map yet: open one first (File > Base Map…, or a grid or image of the area), or type the limits.")
+
+function _rs_hls_rgwindow(scene::Ptr{Cvoid}, io::IOBuffer)::Bool
+	_rs_need_map(scene)
+	b = _rs_window_box(scene)
+	b === nothing && error("The window shows nothing yet: type the limits, or draw a rectangle over a map.")
+	_rs_set_region!(io, _rs_lonlat_box(scene, b...))
+	_rs_status(io, "Region set to the window's limits.")
+	return true
+end
+
+function _rs_hls_rgrect(scene::Ptr{Cvoid}, io::IOBuffer)::Bool
+	_rs_need_map(scene)
+	_rs_set_region!(io, _rs_lonlat_box(scene, _rs_drawn_rect(scene)...))
+	_rs_status(io, "Region set to the drawn rectangle.")
+	return true
+end
+
+function _rs_hls_savelogin(d::Dict{String,String}, io::IOBuffer)::Bool		# the .netrc entry MODIS scenes and SWOT save too
+	f = _rs_netrc_path()
+	_rs_netrc_set!(f, _RS_URS, _rs_get(d, "p_ed_user"), _rs_get(d, "p_ed_pass"))
+	_rs_status(io, "Earthdata login saved in $(f) (machine $(_RS_URS)).")
+	return true
+end
+
+# "Get the series".
+function _rs_hls_compute(scene::Ptr{Cvoid}, d::Dict{String,String}, io::IOBuffer)::Bool
+	ix = _rs_hls_index(d)
+	prods = _RS_HLS_PRODUCTS[clamp(_rs_idx(d, "p_products") + 1, 1, length(_RS_HLS_PRODUCTS))]
+	W, E, S, N = (_rs_num(d, w, NaN) for w in ("p_rg_w", "p_rg_e", "p_rg_s", "p_rg_n"))
+	any(isnan, (W, E, S, N)) && error("Give the four limits of the region (degrees).")
+	(W < E && S < N) || error("The region must have W < E and S < N.")
+	(-180 <= W && E <= 180 && -90 <= S && N <= 90) || error("The region must be in longitudes -180..180 and latitudes -90..90.")
+	from, to = first(_rs_get(d, "p_from"), 10), first(_rs_get(d, "p_to"), 10)
+	save = _rs_get(d, "p_save")
+	outdir, prefix = isempty(save) ? ("", "") : (dirname(save), splitext(basename(save))[1])
+	(!isempty(save) && isempty(prefix)) && error("Give a file name for the results (its name is the prefix of every file).")
+	s2 = _rs_hls_s2(d)
+	src = s2 ? "Sentinel-2" : "HLS"				# names the grids, the cube and the recipe
+	fn  = s2 ? "s2_series" : "hls_series"
+	_rs_prog_show("Searching for $(src) $(ix) dates over the region…")
+	r = try
+		mc, mn = _rs_num(d, "p_maxcloud", 80.0), _rs_num(d, "p_minclear", 80.0) / 100
+		pr = (pc, m) -> _rs_prog(pc, m)
+		s2 ? RS.s2_series([W, E, S, N]; from = from, to = to, index = ix, maxcloud = mc, minclear = mn,
+		                  outdir = outdir, prefix = isempty(prefix) ? "s2" : prefix, progress = pr) :
+		     RS.hls_series([W, E, S, N]; from = from, to = to, index = ix, products = prods, maxcloud = mc,
+		                   minclear = mn, outdir = outdir, prefix = isempty(prefix) ? "hls" : prefix, progress = pr)
+	finally
+		_rs_prog_close()
+	end
+	# The series as text: one line per date (tabs = new lines on the wire).
+	rows = ["date        product  mean $(ix)  clear"]
+	for (t, p, m, c) in zip(r.time, r.product, r.mean, r.clear)
+		push!(rows, "$(GMT.Dates.Date(t))  $(p)      $(lpad(rpad(string(round(m, digits = 4)), m < 0 ? 7 : 6, '0'), 8))  $(round(Int, 100 * c)) %")
+	end
+	_rs_set(io, "p_series", join(rows, '\t'))
+	if isempty(outdir)
+		# Each date its own grid, in time order: the last date is the one left showing.
+		for (t, p, G) in zip(r.time, r.product, r.grids)
+			nm = "$(ix) $(GMT.Dates.Date(t)) $(p) — $(src) $(r.tile)"
+			_rs_deliver(scene, G, nm, "RemoteS.$(fn)([$W, $E, $S, $N]; from=\"$from\", to=\"$to\", index=\"$ix\")")
+		end
+		_rs_status(io, "$(length(r.grids)) clear date(s) on tile $(r.tile), each added as its own grid.")
+	else
+		cube = joinpath(outdir, "$(prefix)_cube.nc")
+		# A derived cube, one layer per date: into an empty window the open-a-file path, else an extra
+		# cube element (as Compute Euler shows its residues), read whole (prescan: the header has no
+		# z range) and then made what the window shows. Its slider is its "Cube layers…" item.
+		if _rs_empty(scene)
+			_on_drop(scene, cube)
+		else
+			cname = "$(ix) $(src) $(r.tile) $(GMT.Dates.Date(first(r.time)))…$(GMT.Dates.Date(last(r.time)))"
+			_load_cube_element(scene, cube, cname, true)
+			_adopt_derived!(scene, cname, r.grids[1])
+		end
+		_rs_status(io, "$(length(r.grids)) clear date(s) on tile $(r.tile): $(prefix)_*.tif, $(basename(cube)) " *
+		               "and $(prefix)_series.csv written to $(outdir); the cube is open.")
+	end
+	return true
+end
+
 # --- the callback ------------------------------------------------------------------------------
 
 const _RS_TOOLS = Dict{String,Function}(
 	"indices" => _rs_indices, "truecolor" => _rs_truecolor, "calibration" => _rs_calibration,
 	"classify" => _rs_classify, "cutcube" => _rs_cutcube, "modisl2" => _rs_modisl2,
-	"modisscenes" => _rs_modisscenes, "swot" => _rs_swot, "s1" => _rs_s1)
+	"modisscenes" => _rs_modisscenes, "hls" => _rs_hls, "swot" => _rs_swot, "s1" => _rs_s1)
 
 function _on_remotes(scene::Ptr{Cvoid}, params::Cstring, out::Ptr{UInt8}, cap::Cint)::Cint
 	tool = ""

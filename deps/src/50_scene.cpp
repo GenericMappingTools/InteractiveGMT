@@ -398,7 +398,8 @@ static void buildAquaLandColorbar(Scene *s, vtkScalarsToColors *lut, double lo, 
 		char buf[32]; snprintf(buf, sizeof buf, "%.*f", decimals, vv);
 		vtkSmartPointer<vtkTextActor> ta = vtkSmartPointer<vtkTextActor>::New();
 		ta->SetInput(buf);
-		barApplyFont(ta->GetTextProperty(), s->aquaLandBarLab.annFont);
+		ta->GetTextProperty()->SetColor(0.9, 0.9, 0.9);
+		ta->GetTextProperty()->SetFontSize(10);
 		ta->GetTextProperty()->SetJustificationToRight();
 		ta->GetTextProperty()->SetVerticalJustificationToCentered();
 		ta->GetPositionCoordinate()->SetCoordinateSystemToNormalizedViewport();
@@ -1835,14 +1836,6 @@ static void refreshGridColorbar(Scene *s) {
 	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 }
 
-// The Land bar is built once per file, so new labels/fonts reach it only by building it again.
-static void rebuildAquaLandColorbar(Scene *s) {
-	if (!s || !s->aquaLandBar) return;
-	vtkSmartPointer<vtkScalarsToColors> lut = s->aquaLandBar->GetLookupTable();
-	buildAquaLandColorbar(s, lut, s->aquaLandBarLo, s->aquaLandBarHi);
-	refreshGridColorbar(s);
-}
-
 // RIGHT-CLICK ON THE COLOUR BAR ITSELF (its numbers, its labels, its strip): the same "Color bar labels
 // and fonts" dialog its Scene Objects Color Bar row opens, aimed at the owner of the bar ON SCREEN —
 // resolved exactly as refreshGridColorbar hands the bar out: the Land bar when it is the one up, else
@@ -1852,10 +1845,7 @@ static void rebuildAquaLandColorbar(Scene *s) {
 // cursor is not on a bar (the caller's other right-click targets get their turn).
 static bool colorbarFontsAtCursor(Scene *s, double nx, double ny) {
 	if (!colorbarHit(s, nx, ny)) return false;
-	if (aquaLandColorbarVisible(s)) {
-		colorbarLabelsDialog(s, [s]() { return &s->aquaLandBarLab; }, [s]() { rebuildAquaLandColorbar(s); });
-		return true;
-	}
+	if (aquaLandColorbarVisible(s)) return false;        // Aquamoto: not touched (no authorization)
 	if (PaletteLegend *pl = resolveActivePalette(s); pl && pl->show) {
 		int ptag = -1;                                   // -1 = the window's primary image
 		if (pl != &s->palette)
@@ -3342,8 +3332,12 @@ static void rebuildSceneObjects(Scene *s) {
 		            [s]() { double lo, hi; aquaSideEditorRange(s, 1, lo, hi);
 		                    showColorPalettesAquaSide(s, 1, lo, hi); },
 		            // the Land bar is built once per file: rebuilt here, with its new labels
-		            [s]() { colorbarLabelsDialog(s, [s]() { return &s->aquaLandBarLab; },
-		                                         [s]() { rebuildAquaLandColorbar(s); }); });
+		            [s]() { colorbarLabelsDialog(s, [s]() { return &s->aquaLandBarLab; }, [s]() {
+		                        if (!s->aquaLandBar) return;
+		                        vtkSmartPointer<vtkScalarsToColors> lut = s->aquaLandBar->GetLookupTable();
+		                        buildAquaLandColorbar(s, lut, s->aquaLandBarLo, s->aquaLandBarHi);
+		                        refreshGridColorbar(s);
+		                    }); });
 		        },
 		        "Show / hide the Land colorbar · checking it switches to Shade Land · left-click the label to choose a colormap");
 	};

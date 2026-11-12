@@ -75,7 +75,7 @@ end # @testmodule
 		# Firing an entry BUILDS its dialog from deps/ui/remotes_<tool>.ui, so a missing or broken .ui
 		# fails here and not on the user's screen.
 		for entry in ("Spectral indices", "True color", "Landsat calibration", "Supervised classification",
-		              "Band cube (cut)", "MODIS L2 swath to grid", "MODIS scenes (Terra")
+		              "Band cube (cut)", "MODIS L2 swath to grid", "HLS time series", "MODIS scenes (Terra")
 			@test trig(entry) == 1
 			IG._pump_once()
 		end
@@ -83,7 +83,7 @@ end # @testmodule
 		@test ccall(_test_fn(:gmtvtk_window_active_test), Cint, (Cstring,), "RemoteSModisScenes") == 1
 		# ...and every one is OWNED by the iGMT window, so Windows can never put it behind that window.
 		for nm in ("RemoteSIndices", "RemoteSTruecolor", "RemoteSCalibration", "RemoteSClassify",
-		           "RemoteSCutcube", "RemoteSModisL2", "RemoteSModisScenes")
+		           "RemoteSCutcube", "RemoteSModisL2", "RemoteSHls", "RemoteSModisScenes")
 			@test ccall(_test_fn(:gmtvtk_window_owned_test), Cint, (Cstring,), nm) == 1
 		end
 	finally

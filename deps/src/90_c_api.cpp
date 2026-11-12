@@ -8548,6 +8548,139 @@ GMTVTK_API int gmtvtk_colorbar_labels_test(void *handle, const char *group, cons
 	return result;
 }
 
+// test hooks: a colour bar's FONTS. ------------------------------------------------------------------
+// A font as the tests spell it: "Family,size,bold,italic,#rrggbb".
+static QString cbFontSpec(vtkTextProperty *tp) {
+	if (!tp) return QString();
+	double c[3]; tp->GetColor(c);
+	return QString("%1,%2,%3,%4,%5").arg(QString::fromLatin1(tp->GetFontFamilyAsString()))
+	       .arg(tp->GetFontSize()).arg(tp->GetBold()).arg(tp->GetItalic())
+	       .arg(QColor::fromRgbF(c[0], c[1], c[2]).name());
+}
+
+// What the bar ON SCREEN is drawn with, read off its own text actors (not the stored BarLabels):
+// "ann=<spec>;annsame=<0|1>;lab=<spec>" — `ann` the first tick number, `annsame` 1 when every tick
+// number wears that same font, `lab` the X label. `land` != 0 reads the Aquamoto Land bar instead.
+// Two-pass like every string getter; 0 = no such bar.
+GMTVTK_API int gmtvtk_colorbar_fonts_test(void *handle, int land, char *buf, int cap) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!s) return 0;   // (not sceneAlive: that registry is this dll's own copy, the window is the production dll's)
+	const auto &labels = land ? s->aquaLandBarLabels : s->barLabels;
+	const size_t nt    = land ? s->aquaLandBarValues.size() : s->barValues.size();
+	if ((land ? !s->aquaLandBar : !s->bar) || nt == 0 || labels.size() < nt + 2) return 0;
+	const QString ann = cbFontSpec(labels[0]->GetTextProperty());
+	bool same = true;
+	for (size_t i = 1; i < nt; ++i) same = same && cbFontSpec(labels[i]->GetTextProperty()) == ann;
+	const std::string o = QString("ann=%1;annsame=%2;lab=%3").arg(ann).arg(same ? 1 : 0)
+	                      .arg(cbFontSpec(labels[nt]->GetTextProperty())).toStdString();
+	if (buf && cap > (int)o.size()) { memcpy(buf, o.data(), o.size()); buf[o.size()] = '\0'; }
+	return (int)o.size();
+}
+
+// Fill the open "Color bar labels and fonts" dialog's two font blocks from specs ("" = leave that block
+// as it is) and press OK. The colour goes through the block's own button and the QColorDialog it opens.
+static bool cbFillFontsDialog(QDialog *d, const QString &labSpec, const QString &annSpec) {
+	if (!d) return false;
+	auto fill = [d](const QString &title, const QString &spec) -> bool {
+		if (spec.isEmpty()) return true;
+		const QStringList p = spec.split(',');
+		if (p.size() != 5) return false;
+		QGroupBox *g = nullptr;
+		for (QGroupBox *b : d->findChildren<QGroupBox *>()) if (b->title() == title) g = b;
+		if (!g) return false;
+		QComboBox *cf = g->findChild<QComboBox *>();
+		QSpinBox  *cs = g->findChild<QSpinBox *>();
+		QPushButton *cc = g->findChild<QPushButton *>();
+		QCheckBox *cb = nullptr, *ci = nullptr;
+		for (QCheckBox *k : g->findChildren<QCheckBox *>()) {
+			if (k->text() == "Bold") cb = k;
+			if (k->text() == "Italic") ci = k;
+		}
+		if (!cf || !cs || !cc || !cb || !ci) return false;
+		cf->setCurrentText(p[0]);
+		cs->setValue(p[1].toInt());
+		cb->setChecked(p[2] == "1");
+		ci->setChecked(p[3] == "1");
+		const QColor want(p[4]);
+		bool picked = false;
+		QTimer::singleShot(50, [want, &picked]() {                 // inside QColorDialog::getColor's exec
+			if (auto *cd = qobject_cast<QColorDialog *>(QApplication::activeModalWidget())) {
+				cd->setCurrentColor(want);
+				picked = true;
+				cd->accept();
+			}
+		});
+		cc->click();
+		return picked;
+	};
+	const bool ok = fill("Labels font", labSpec) && fill("Annotations font", annSpec);
+	if (ok) d->accept(); else d->reject();
+	return ok;
+}
+
+// test hook: set a colour bar's fonts THE USER'S WAY, by one of the two doors:
+//   route 0 — a left click on the first "Color Bar" row of Scene Objects, then "Fonts…" from its menu;
+//   route 1 — a right-click in the 3-D view ON the bar's first tick number (`land` != 0: the Land bar's).
+// Then the dialog's font blocks filled from `labSpec` / `annSpec` and OK. Returns 1 when the dialog was
+// reached and accepted; -1 no row / no bar, -2 no "Fonts…" item, -3 no dialog, -4 a font block missing.
+GMTVTK_API int gmtvtk_colorbar_fonts_set_test(void *handle, int route, int land, const char *labSpec,
+                                              const char *annSpec) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!s) return -1;
+	const QString ls = QString::fromUtf8(labSpec ? labSpec : ""), as = QString::fromUtf8(annSpec ? annSpec : "");
+	int result = -3;
+	auto armDialog = [&result, ls, as]() {
+		QTimer::singleShot(50, [&result, ls, as]() {             // inside the dialog's exec
+			auto *d = qobject_cast<QDialog *>(QApplication::activeModalWidget());
+			if (!d) return;
+			result = cbFillFontsDialog(d, ls, as) ? 1 : -4;
+		});
+	};
+	if (route == 1) {
+		const auto &labels = land ? s->aquaLandBarLabels : s->barLabels;
+		if (!s->widget || !s->widget->renderWindow() || labels.empty() || !labels[0]) return -1;
+		double bb[4];
+		labels[0]->GetBoundingBox(s->ren, bb);                   // display px, bottom-up
+		const double dpr = s->widget->devicePixelRatioF();
+		const int H = s->widget->renderWindow()->GetSize()[1];
+		const QPoint at(int(0.5 * (bb[0] + bb[1]) / dpr), int((H - 0.5 * (bb[2] + bb[3])) / dpr));
+		armDialog();
+		QContextMenuEvent ce(QContextMenuEvent::Mouse, at, s->widget->mapToGlobal(at));
+		QApplication::sendEvent(s->widget, &ce);
+		QApplication::processEvents();
+		return result;
+	}
+	if (!s->objPanel) return -1;
+	QTreeWidget *tree = s->objPanel->findChild<QTreeWidget*>();
+	if (!tree) return -1;
+	ClickableLabel *row = nullptr;
+	for (QTreeWidgetItemIterator it(tree); *it && !row; ++it) {
+		QWidget *w = tree->itemWidget(*it, 0);
+		if (!w) continue;
+		for (QLabel *l : w->findChildren<QLabel*>())
+			if (l->text() == "Color Bar")
+				if (auto *c = dynamic_cast<ClickableLabel *>(l)) { row = c; break; }
+	}
+	if (!row) return -1;
+	result = -2;
+	QTimer::singleShot(50, [&result, armDialog]() {               // inside the menu's exec
+		auto *m = qobject_cast<QMenu *>(QApplication::activePopupWidget());
+		QAction *pick = nullptr;
+		if (m) for (QAction *a : m->actions()) if (a->text() == "Fonts…") pick = a;
+		if (!pick) { if (m) m->close(); return; }
+		result = -3;
+		armDialog();
+		m->close();
+		pick->trigger();
+	});
+	const QPoint c = row->rect().center();
+	QMouseEvent press(QEvent::MouseButtonPress, QPointF(c), row->mapToGlobal(QPointF(c)),
+	                  Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+	QApplication::sendEvent(row, &press);
+	QApplication::processEvents();
+	return result;
+}
+
 // test hook: a button (push or tool), by objectName, inside a top-level dialog, by window title -- searched over
 // QApplication::topLevelWidgets(), which both dlls share, so it reaches a dialog the PRODUCTION dll built
 // (the Plot with GMT.jl editor lives in its file-static registry, out of this dll's sight). Writes the

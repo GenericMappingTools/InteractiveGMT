@@ -14730,6 +14730,21 @@ public:
 						QMessageBox::warning(d, d->windowTitle(), QString("Could not open a browser for\n\n%1").arg(u.toString()));
 				});
 			}
+			// link_<anything>: a button whose dynamic property `page` names another page of the manual (a
+			// dialog with both a reference page and a tutorial: the green ? opens one, this the other). It
+			// keeps its own text ("Tutorial"); same plain openUrl as the ? disk.
+			if (n.startsWith("link_")) {
+				auto *ab = qobject_cast<QAbstractButton *>(w);
+				const QString page = w->property("page").toString();
+				if (!ab || page.isEmpty()) continue;
+				ab->setCursor(Qt::PointingHandCursor);
+				ab->setFocusPolicy(Qt::NoFocus);
+				QObject::connect(ab, &QAbstractButton::clicked, d, [d, page]() {
+					const QUrl u("https://www.generic-mapping-tools.org/InteractiveGMT/dev/" + page + "/");
+					if (!QDesktopServices::openUrl(u))
+						QMessageBox::warning(d, d->windowTitle(), QString("Could not open a browser for\n\n%1").arg(u.toString()));
+				});
+			}
 			// pickline_<verb>: point at a line in the view. Arms the viewer's shared click pick
 			// (Scene::vectorPickMode 1, vectorPickFire) for ONE line; that line's Scene Objects name is
 			// sent as what=<verb>, picked=<name> — the same request its guide line's own menu item sends
@@ -14749,6 +14764,24 @@ public:
 				const QString verb = n.mid(10);
 				QObject::connect(pb, &QPushButton::clicked, [this, pb, verb] { armPointPick(pb, verb); });
 			}
+		}
+
+		// needsmap: a widget that takes something FROM the window (its limits, a rectangle drawn on it) is
+		// disabled while the window shows nothing — an empty launcher's frame is a placeholder, not a
+		// region. Followed live, so it wakes up the moment a map is loaded; the same test as
+		// gmtvtk_has_surface.
+		QList<QWidget *> needMap;
+		for (QWidget *w : d->findChildren<QWidget *>())
+			if (w->property("needsmap").toBool()) needMap << w;
+		if (!needMap.isEmpty()) {
+			auto follow = [this, needMap]() {
+				const bool has = sceneAlive(scn) && scn->surf && !scn->emptyStart;
+				for (QWidget *w : needMap) if (w->isEnabled() != has) w->setEnabled(has);
+			};
+			follow();
+			auto *t = new QTimer(d);
+			QObject::connect(t, &QTimer::timeout, d, follow);
+			t->start(400);
 		}
 
 		// The wrapper dies WITH its dialog (the row's "Delete" frees the QDialog).
@@ -14832,9 +14865,23 @@ static void openRemoteSDialogNow(QWidget *win, Scene *s, const std::string &tool
 	}
 	g_remotesDlgs[{s, tool}] = rd;
 	QDialog *d = rd->dlg;
-	// The .ui's own geometry puts it at (0,0) of the primary screen: over the viewer instead.
+	// The .ui's own geometry puts it at (0,0) of the primary screen: over the viewer instead. A .ui whose
+	// dialog carries the dynamic property `placement` = "right" (HLS time series) opens right-justified
+	// to the window instead: its right edge on the window's, still centred vertically.
+	const bool atRight = d->property("placement").toString() == "right";
 	d->move(win->frameGeometry().center() - QPoint(d->width() / 2, d->height() / 2));
 	d->show();
+	if (atRight) {
+		// After show(): only then does frameGeometry() include the title bar and borders.
+		const QRect wf = win->frameGeometry(), df = d->frameGeometry();
+		QPoint at(wf.right() - df.width() + 1, df.top());
+		if (QScreen *sc = win->screen()) {
+			const QRect av = sc->availableGeometry();
+			at.setX(std::clamp(at.x(), av.left(), std::max(av.left(), av.right() - df.width() + 1)));
+			at.setY(std::clamp(at.y(), av.top(), std::max(av.top(), av.bottom() - df.height() + 1)));
+		}
+		d->move(at);
+	}
 	d->raise();
 	d->activateWindow();
 	QApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
@@ -33372,6 +33419,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	mRs->addAction("Supervised classification…",  [win, s]() { openRemoteSDialog(win, s, "classify"); });
 	mRs->addAction("Band cube (cut)…",            [win, s]() { openRemoteSDialog(win, s, "cutcube"); });
 	mRs->addAction("MODIS L2 swath to grid…",     [win, s]() { openRemoteSDialog(win, s, "modisl2"); });
+	mRs->addAction("HLS time series…",            [win, s]() { openRemoteSDialog(win, s, "hls"); });
 	mRs->addSeparator();
 	mRs->addAction("MODIS scenes (Terra/Aqua)…",  [win, s]() { openRemoteSDialog(win, s, "modisscenes"); });
 

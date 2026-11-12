@@ -685,6 +685,9 @@
       <property name="text">
        <string>Use the window's limits</string>
       </property>
+      <property name="needsmap" stdset="0">
+       <bool>true</bool>
+      </property>
      </widget>
     </widget>
     <widget class="QGroupBox" name="gb_rg_period">
