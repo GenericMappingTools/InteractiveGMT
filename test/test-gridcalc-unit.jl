@@ -107,6 +107,72 @@ end
 	end
 end
 
+# One-band images are operands (a Landsat band, any 16-bit image) — at FULL precision, the stashed
+# original, never the 8-bit display copy. An RGB picture is not one value per node: not offered.
+@testitem "gridcalc: one-band images are operands, at full precision" tags=[:unit, :fast] begin
+	IG = InteractiveGMT; GMT = IG.GMT
+	nx, ny = 4, 3
+	img(A) = GMT.mat2img(A; x = [0.0, Float64(nx)], y = [0.0, Float64(ny)], noconv = true)
+	B4 = img(UInt16[1000 * j + i for i in 1:ny, j in 1:nx])
+	B5 = img(UInt16[3000 + 10 * (j + i) for i in 1:ny, j in 1:nx])
+	shown4 = IG._stretch_to_u8(B4);  shown5 = IG._stretch_to_u8(B5)   # what the window displays
+	rgb = img(rand(UInt8, ny, nx, 3))
+	scene = Ptr{Cvoid}(UInt(0x51EDCA1D))
+	IG._SCENE_OBJS[scene] = Tuple{Symbol,String,Any}[(:image, "B4", shown4), (:image, "B5", shown5), (:image, "rgb", rgb)]
+	IG._IMG_ORIG[scene] = Dict("B4" => B4, "B5" => B5)
+	try
+		objs = IG._gridcalc_objects(scene, "Surface")
+		@test first.(objs) == ["B4", "B5"]                               # the RGB picture is not offered
+		z = IG._gridcalc_eval(objs, Dict{String,String}(), "(B5 - B4) / (B5 + B4)")
+		@test isapprox(z, (Float32.(B5.image) .- Float32.(B4.image)) ./ (Float32.(B5.image) .+ Float32.(B4.image)))
+		@test maximum(IG._gridcalc_eval(objs, Dict{String,String}(), "B4")) == 1000 * nx + ny   # DNs, not bytes
+	finally
+		delete!(IG._SCENE_OBJS, scene);  delete!(IG._IMG_ORIG, scene)
+	end
+end
+
+# A window with no grid at all still computes: a "Load Grid" file (a band .TIF) is the reference.
+@testitem "gridcalc: computes with no grid in the window" tags=[:unit, :fast] begin
+	IG = InteractiveGMT; GMT = IG.GMT
+	nx, ny = 4, 3
+	# Values under 256: gmtwrite stores this small image as 8-bit.
+	B = GMT.mat2img(UInt8[10 * j + i for i in 1:ny, j in 1:nx]; x = [0.0, Float64(nx)], y = [0.0, Float64(ny)], noconv = true)
+	tmp = joinpath(mktempdir(), "LC09_B4.tif")
+	GMT.gmtwrite(tmp, B)
+	try
+		files = Dict("LC09_B4.tif" => tmp)
+		objs = IG._gc_with_reference(Tuple{String,IG.GMTgrid}[], files, "LC09_B4.tif * 2")
+		@test first.(objs) == ["LC09_B4.tif"]
+		z = IG._gridcalc_eval(Tuple{String,IG.GMTgrid}[], files, "LC09_B4.tif * 2")
+		@test sort(vec(z)) == sort(vec(Float32.(B.image) .* 2))
+		@test_throws Exception IG._gc_with_reference(Tuple{String,IG.GMTgrid}[], Dict{String,String}(), "1")
+	finally
+		try rm(tmp, force = true) catch end     # GDAL may still hold the .tif open (Windows)
+	end
+end
+
+# A band image read from DISK (the reader every open/drop uses) lands in the calculator the right way
+# up: node for node the same as GDAL's own grid read of that file. It used to come out flipped.
+@testitem "gridcalc: a band read from disk keeps its orientation" tags=[:unit, :fast] begin
+	IG = InteractiveGMT; GMT = IG.GMT
+	nx, ny = 5, 4
+	B = GMT.mat2img(UInt8[10 * j + i for i in 1:ny, j in 1:nx]; x = [0.0, Float64(nx)], y = [0.0, Float64(ny)], noconv = true)
+	tmp = joinpath(mktempdir(), "LC09_Bx.tif")
+	GMT.gmtwrite(tmp, B)
+	try
+		I = IG._gmtread_trb(tmp)                     # an image: the plain reader, as on open/drop
+		@test I isa GMT.GMTimage
+		G = IG._gc_image_grid(I)
+		R = GMT.gmtread(tmp, grd = true)              # GDAL's own grid of the same file
+		@test IG._zmat(G) == Float32.(IG._zmat(R))
+		# …and through the whole calculator
+		z = IG._gridcalc_eval(Tuple{String,IG.GMTgrid}[("b", G)], Dict{String,String}(), "b * 1")
+		@test IG._zmat(GMT.mat2grid(Float32.(z), G)) == Float32.(IG._zmat(R))
+	finally
+		try rm(tmp, force = true) catch end     # GDAL may still hold the .tif open (Windows)
+	end
+end
+
 @testitem "gridcalc: token spelling" tags=[:unit, :fast] begin
 	IG = InteractiveGMT
 	@test IG._gc_token_name("&topo.grd")   == "topo.grd"

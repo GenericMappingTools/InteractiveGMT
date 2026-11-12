@@ -1741,6 +1741,9 @@ static void (*g_binarizeReopen)(Scene *scene, const char *name) = nullptr;
 // only HIDES it, so the image's Scene Objects handle is where it lives while "minimized" and where
 // it comes back from, with its per-band contrast windows intact.
 static void (*g_enhanceReopen)(Scene *scene, const char *name) = nullptr;
+// Satellite > Remote sensing > "Landsat calibration…" (radiance / reflectance TOA, …) opened on the
+// FILE of the image whose Scene Objects handle was clicked ("" = the window's primary image).
+static void (*g_rsCalibrateImage)(Scene *scene, const char *name) = nullptr;
 // "Image > Show Histogram", reachable from an image's own Scene Objects handle as well as from the
 // menu bar. ONE function draws it (70_window.cpp `showImageHistogram`); this hook is only how the
 // earlier fragment reaches it. `name` names the image whose handle was clicked ("" = the primary).
@@ -1974,7 +1977,7 @@ static bool moveObjectToNewWindow(Scene *s, const char *kind, const QString &nam
 	return g_juliaMove(s, req.toUtf8().constData()) != 0;
 }
 
-// Ask Julia to build a histogram-stretched 8-bit copy of the named image as a NEW row (g_juliaImgStretch,
+// Ask Julia to histogram-stretch the named image IN PLACE, under the same name (g_juliaImgStretch,
 // req = "image;<name>"). A nullptr callback just posts a status-bar notice.
 static void stretchImageObject(Scene *s, const QString &name) {
 	if (!g_juliaImgStretch) {

@@ -459,32 +459,45 @@ function _remember_img_orig!(scene::Ptr{Cvoid}, name::String, I::GMTimage)
 end
 
 # C callback: req = "image;<name>". Look up the stashed full-precision source (fall back to the live
-# scene image if none), histogram-stretch it to 8-bit, and add the result as a NEW image row in the
-# same window. Errors go to the Errors console.
+# scene image if none), histogram-stretch it to 8-bit, and REPLACE the displayed image with it, in
+# place, under the same name (user order, 2026-11-12: no new row). The stashed original is left
+# alone, so a second stretch starts from full precision again. Errors go to the Errors console.
 function _on_img_stretch(scene::Ptr{Cvoid}, req::Cstring)::Cvoid
 	name = ""
 	try
 		parts = split(unsafe_string(req), ';', limit=2)
 		name = length(parts) >= 2 ? String(strip(parts[2])) : ""
+		# The object on screen (8-bit display copy); "" = the window's primary image, under its own name.
+		key, Idisp = isempty(name) ? _find_object_named(scene, :image) : (name, _find_object(scene, :image, name))
+		(Idisp isa GMTimage) || error("No image named '$name' to stretch")
 		d = get(_IMG_ORIG, scene, nothing)
-		Isrc = (d === nothing) ? nothing : get(d, name, nothing)
-		(Isrc === nothing) && (Isrc = _find_object(scene, :image, name))   # fall back to the live image
-		(Isrc === nothing) && error("No source image named '$name' to stretch")
-		# TWO sources, ONE menu entry: `mat2img(; stretch=true)` is a UInt16-only path (it returns an
-		# 8-bit image untouched), so on a plain 8-bit image this entry used to do nothing at all but
-		# write a line in the Errors console. An 8-bit image gets the SAME auto contrast stretch the
-		# Adjust Contrast dialog's "Contrast Stretch" button applies — `_enh_auto_stretch`, i.e. the
-		# ported stretchlim + imadjust — never a second stretch of my own invention.
-		Istr = eltype(Isrc.image) == UInt16 ?
-		       GMT.mat2img(Isrc; stretch=true) :         # percentile histogram stretch -> 8-bit
-		       _enh_auto_stretch(Isrc)                   # 8-bit: Mirone's 1% stretchlim + imadjust
-		newname = isempty(name) ? "stretched" : "$name (stretched)"
-		_commit_derived_image!(scene, Istr, newname)     # new row in THIS window, source unchecked
-		_viewer_log_info(scene, "Histogram-stretched image -> '$newname'")
+		Isrc = (d === nothing) ? nothing : get(d, key, nothing)
+		(Isrc === nothing) && (Isrc = Idisp)              # no wider original: the image itself
+		_img_stretch_replace!(Idisp, Isrc)
+		_update_image_pixels!(scene, name, Idisp) || error("the viewer has no image named '$name' to redraw")
+		_viewer_log_info(scene, "Histogram-stretched image '$name'")
 	catch e
 		_tool_failed(scene, "Stretch image", e)
 	end
 	return
+end
+
+# THE auto histogram stretch, in place: stretch `Isrc` to 8-bit and write the result into `Idisp` (the
+# displayed object — the viewer's registry, Save… and Save Session all hold that very object, so they
+# see the stretch without being told, as Image Flip does). Only the pixels and their layout change;
+# the georef is untouched. `Isrc` may be `Idisp` itself (an 8-bit image with no wider original).
+# TWO sources, ONE entry: `mat2img(; stretch=true)` is a UInt16-only path (it returns an 8-bit image
+# untouched), so an 8-bit image gets the SAME auto contrast stretch the Adjust Contrast dialog's
+# "Contrast Stretch" applies — `_enh_auto_stretch`, the ported stretchlim + imadjust.
+function _img_stretch_replace!(Idisp::GMTimage, Isrc::GMTimage)
+	Istr = eltype(Isrc.image) == UInt16 ?
+	       GMT.mat2img(Isrc; stretch=true) :                 # percentile histogram stretch -> 8-bit
+	       _enh_auto_stretch(_to_band_planar(Isrc))          # 8-bit: Mirone's 1% stretchlim + imadjust
+	(eltype(Istr.image) == eltype(Idisp.image) && ndims(Istr.image) == ndims(Idisp.image)) ||
+		error("stretch gave a $(typeof(Istr.image)) for a $(typeof(Idisp.image)) image")
+	Idisp.image  = Istr.image
+	Idisp.layout = Istr.layout
+	return Idisp
 end
 
 # Land a DERIVED image (any "compute X from Y" image result — contrast/decorrelation stretch, auto

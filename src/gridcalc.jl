@@ -50,15 +50,39 @@ function _gc_same_geom(G::GMTgrid, ref::GMTgrid)::Bool
 	return true
 end
 
+# A ONE-band image as a calculator operand: its pixel values (a Landsat band's DNs) as a Float32 grid
+# on the image's own georeference. `nothing` for an RGB(A) picture — three bands are not one value
+# per node. The buffer is taken where it lies: the layout travels with it (`mat2grid(z, I)` copies
+# `I.layout`), and (ny,nx) dims over that memory are GMT.jl's grid convention for either order.
+function _gc_image_grid(I::GMTimage)::Union{GMTgrid,Nothing}
+	(ndims(I.image) == 2 || size(I.image, 3) == 1) || return nothing
+	nx = length(I.x) - I.registration
+	ny = length(I.y) - I.registration
+	length(I.image) == nx * ny || return nothing
+	G = GMT.mat2grid(reshape(Float32.(vec(I.image)), ny, nx), I)
+	# The row order the buffer REALLY has — `_north_first` (drape.jl), the rule the display reads it
+	# with: gmtread's disk reader hands a row-major image back north row first but labels it 'B', and
+	# the grid inherited that label, so a Landsat band came out of the calculator upside down.
+	lay = I.layout
+	rowmajor = length(lay) >= 2 && lay[2] == 'R'
+	length(lay) >= 3 && (G.layout = string(_north_first(lay, rowmajor) ? 'T' : 'B', lay[2], 'B'))
+	return G
+end
+
 # Every grid this window knows about, in Scene Objects order: [(label, GMTgrid), …]. The window's
 # base grid is remembered under the empty name (grid.jl `_remember_object!(h, :grid, "", G)`), so it
 # takes the label the dialog sees in Scene Objects (`basename`, handed over by the C++ side).
+# One-band IMAGES are operands too (a Landsat band, any 16-bit image), at full precision: a 16-bit
+# image's stashed original, never its 8-bit display copy.
 function _gridcalc_objects(scene::Ptr{Cvoid}, basenm::AbstractString)
 	out = Tuple{String,GMTgrid}[]
+	origs = get(_IMG_ORIG, scene, Dict{String,GMTimage}())
 	for (kind, nm, data) in get(_SCENE_OBJS, scene, Tuple{Symbol,String,Any}[])
-		kind === :grid && isa(data, GMTgrid) || continue
 		label = isempty(nm) ? String(basenm) : nm
-		any(t -> t[1] == label, out) || push!(out, (label, data))
+		G = (kind === :grid && data isa GMTgrid) ? data :
+		    (kind === :image && data isa GMTimage) ? _gc_image_grid(get(origs, nm, data)) : nothing
+		G === nothing && continue
+		any(t -> t[1] == label, out) || push!(out, (label, G))
 	end
 	if isempty(out)                                   # never registered? fall back to the figure itself
 		fig = get(_FIGREG, scene, nothing)
@@ -105,13 +129,27 @@ function _gc_replace_bare(code::String, names::Vector{String}, tovar::Function):
 	return out
 end
 
+# The operands with a REFERENCE geometry first. A window with no grid and no one-band image (an empty
+# or an RGB-only one) still computes: the "Load Grid" file the expression names first is then the
+# reference. Returns `objs` untouched when it already has one.
+function _gc_with_reference(objs::Vector{Tuple{String,GMTgrid}}, files::Dict{String,String}, expr::AbstractString)
+	isempty(objs) || return objs
+	isempty(files) && error("no grid or one-band image to compute with: use Load Grid to add one")
+	pos(k) = (r = findfirst(k, String(expr)); r === nothing ? typemax(Int) : first(r))
+	nm = argmin(pos, collect(keys(files)))
+	G = _gmtread_trb(files[nm])
+	G isa GMTimage && (G = _gc_image_grid(G))
+	G isa GMTgrid || error(nm * " is not a grid or a one-band image")
+	return [(nm, G)]
+end
+
 # The maths, apart from any window: substitute every grid name in `expr` by the matching grid and
 # evaluate the expression element-wise. `objs` is [(label, grid), …] (the window's grids, first one
 # = the reference geometry), `files` maps a file NAME to its path (the "Load Grid" entries, read
 # here — Mirone's button likewise only stores the name). Returns the result array.
 # Kept separate from the callback so the whole compute path is testable without a live window.
 function _gridcalc_eval(objs::Vector{Tuple{String,GMTgrid}}, files::Dict{String,String}, expr::AbstractString)
-	isempty(objs) && error("this window has no grid")
+	objs = _gc_with_reference(objs, files, expr)
 	ref = objs[1][2]
 	# Each name becomes a generated variable, the grid behind it read (and geometry-checked) the first
 	# time it appears. Same name twice = same variable, so a grid is never read twice. ONE resolver for
@@ -135,6 +173,7 @@ function _gridcalc_eval(objs::Vector{Tuple{String,GMTgrid}}, files::Dict{String,
 				return "nothing"
 			end
 			G = _gmtread_trb(path)      # grids are READ in "TRB" — THE reader
+			G isa GMTimage && (G = _gc_image_grid(G))     # a one-band image file (a Landsat band .TIF)
 			if !isa(G, GMTgrid)
 				badname = nm * " is not a grid"
 				return "nothing"
@@ -188,12 +227,12 @@ function _on_gridcalc(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		isempty(expr) && error("empty expression")
 		occursin('`', expr) && error("backquotes are not allowed in an expression")
 
-		objs = _gridcalc_objects(scene, _get(d, "base"))
 		files = Dict{String,String}()
 		for k in 1:1000
 			p = _get(d, "file$k");  isempty(p) && break
 			files[basename(p)] = p
 		end
+		objs = _gc_with_reference(_gridcalc_objects(scene, _get(d, "base")), files, expr)
 
 		z = _gridcalc_eval(objs, files, expr)
 		G = GMT.mat2grid(Float32.(z), objs[1][2])

@@ -1275,15 +1275,29 @@ static bool photoCraftChosen(QAction *c, const PhotoCraftActs &a, Scene *s, cons
 	return true;
 }
 
-static void imageObjectMenu(Scene *s, vtkProp3D *actor, const QPoint &g) {
-	int idx = extraIndexOfActor(s, actor);
-	if (idx < 0) return;
-	const bool draped = s->extras[idx].draped;
+// THE properties menu of an image handle — every image, the window's own (base) one included, so
+// five bands loaded the same way show the same entries (SACRED_LAW: one element type, one menu).
+// `idx` = the image's index in s->extras, or -1 for the window's base image. The base image is the
+// window's own raster: it is not in the image pile, so Stack order and Drape are shown but greyed.
+static void sceneRemoveSurface(Scene *s);   // below: the base image's Remove / Move
+static void imageHandleMenu(Scene *s, int idx, const QPoint &g) {
+	const bool base = idx < 0;
+	if (!base && idx >= (int)s->extras.size()) return;
+	// The names the base image answers to: "" to most host calls, its own name once a dropped file was
+	// promoted to it (a flag set before the promotion only knows that one) — see imageFlagSet.
+	const std::string key = base ? s->surfName : s->extras[idx].name;
+	auto flagged = [s, base, &key](const std::set<std::string> &f) {
+		return f.count(key) != 0 || (base && f.count(std::string()) != 0);
+	};
+	const std::string cname = base ? std::string() : key;           // what the host calls take
+	const QString qname = base ? (s->surfName.empty() ? QString("Image") : QString::fromStdString(s->surfName))
+	                           : QString::fromStdString(key);
+	const bool draped = !base && s->extras[idx].draped;
 	// Stacking orders the image against the RELIEF SURFACE, and drape lays it on the grid — both are
 	// meaningless without a real grid. An image-only window (iview_image_obj) carries only a hidden
 	// blank scaffold plane, which is NOT a grid: sceneHasGrid excludes it (gates on !imageOnly), so
 	// the stack + drape entries grey out when the window holds just image(s).
-	const bool hasGrid = sceneHasGrid(s);
+	const bool hasGrid = !base && sceneHasGrid(s);
 	const bool canDrape = !draped && hasGrid && imageOverlapsGrid(s, s->extras[idx]);
 	QMenu m(s->widget);
 	QMenu *stackMenu = m.addMenu("Stack order");
@@ -1297,12 +1311,15 @@ static void imageObjectMenu(Scene *s, vtkProp3D *actor, const QPoint &g) {
 	QAction *aDrape = m.addAction(draped ? "Undrape (flat)" : "Drape on grid");
 	aDrape->setEnabled(draped || canDrape);
 	m.addSeparator();
-	// Percentile histogram stretch -> new 8-bit image row. It re-derives from the FULL-PRECISION
+	// Percentile histogram stretch of this image, IN PLACE. It re-derives from the FULL-PRECISION
 	// (UInt16) source the host stashed when the image was loaded, so it is offered ONLY for an image
 	// that has one (s->imgHasOrig, set from Julia). On a plain 8-bit image there is nothing wider to
 	// stretch from and the entry would have nothing to do.
-	QAction *aStretch = s->imgHasOrig.count(s->extras[idx].name)
-	                    ? m.addAction("Auto histogram stretch (new image)") : nullptr;
+	QAction *aStretch = flagged(s->imgHasOrig) ? m.addAction("Auto histogram stretch") : nullptr;
+	// The same wide (UInt16) images are the satellite bands: Landsat calibration (radiance / reflectance
+	// TOA, surface reflectance, brightness temperature) opened on THIS image's file.
+	QAction *aCalib = (g_rsCalibrateImage && flagged(s->imgHasOrig))
+	                  ? m.addAction("Landsat calibration (radiance / reflectance TOA)…") : nullptr;
 	// Binarize, Shape detector and K-means classification are NOT here: they live in the Image menu,
 	// which opens them — or brings back a parked/hidden one — for the displayed image.
 	// Same "Image > Show Histogram" the menu bar opens, on THIS handle's image (the menu-bar entry
@@ -1313,7 +1330,7 @@ static void imageObjectMenu(Scene *s, vtkProp3D *actor, const QPoint &g) {
 	QAction *aResize = g_showImageResize ? m.addAction("Image resize…") : nullptr;
 	// A MASK (two states, 0/1 — a tsunami file's inundation footprint, a beach) can be DIGITIZED: the
 	// outline of its whites, as vector geometry. Offered only for a handle Julia flagged as a mask.
-	QAction *aDigit = s->maskNames.count(s->extras[idx].name) ? m.addAction("Digitize whites") : nullptr;
+	QAction *aDigit = flagged(s->maskNames) ? m.addAction("Digitize whites") : nullptr;
 	m.addSeparator();
 	const PhotoCraftActs pc = photoCraftItems(m);
 	QAction *aSave = m.addAction("Save image…");
@@ -1324,23 +1341,29 @@ static void imageObjectMenu(Scene *s, vtkProp3D *actor, const QPoint &g) {
 	QAction *aDel = m.addAction("Remove");
 	QAction *c = m.exec(g);
 	if (!c) return;
-	if (photoCraftChosen(c, pc, s, "image", QString::fromStdString(s->extras[idx].name))) return;
-	if (aDigit && c == aDigit) { digitizeWhitesUI(s, s->extras[idx].name); return; }
-	if (aHisto && c == aHisto) { g_showImageHisto(s, s->extras[idx].name.c_str()); return; }
-	if (aEnhance && c == aEnhance) { g_enhanceReopen(s, s->extras[idx].name.c_str()); return; }
-	if (aResize && c == aResize) { g_showImageResize(s, s->extras[idx].name.c_str()); return; }
+	if (photoCraftChosen(c, pc, s, "image", QString::fromStdString(cname))) return;
+	if (aDigit && c == aDigit) { digitizeWhitesUI(s, cname); return; }
+	if (aHisto && c == aHisto) { g_showImageHisto(s, cname.c_str()); return; }
+	if (aEnhance && c == aEnhance) { g_enhanceReopen(s, cname.c_str()); return; }
+	if (aCalib && c == aCalib) { g_rsCalibrateImage(s, cname.c_str()); return; }
+	if (aResize && c == aResize) { g_showImageResize(s, cname.c_str()); return; }
 	if (c == aMove) {
-		const QString nm = QString::fromStdString(s->extras[idx].name);
-		if (!moveObjectToNewWindow(s, "image", nm)) return;   // a failed move leaves the image put
-		sceneRemoveExtraAt(s, (size_t)idx);
+		if (!moveObjectToNewWindow(s, "image", QString::fromStdString(cname))) return;   // a failed move leaves the image put
+		if (base) sceneRemoveSurface(s);
+		else sceneRemoveExtraAt(s, (size_t)idx);
 		return;
 	}
-	if (c == aSave) { saveObjectDialog(s, "image", QString::fromStdString(s->extras[idx].name)); return; }
+	if (c == aSave) { saveObjectDialog(s, "image", qname); return; }
 	if (c == aClip) { copyViewToClipboardUI(s); return; }
-	if (aStretch && c == aStretch) { stretchImageObject(s, QString::fromStdString(s->extras[idx].name)); return; }
+	if (aStretch && c == aStretch) { stretchImageObject(s, QString::fromStdString(key)); return; }
+	if (c == aDel) {
+		if (base) sceneRemoveSurface(s);          // removes image + axes; window stays open
+		else sceneRemoveExtraAt(s, (size_t)idx);
+		return;
+	}
+	if (base) return;                             // Stack order / Drape: greyed for the base image
 	ExtraObj &ex = s->extras[idx];            // vector unchanged during exec -> index still valid
 	const double step = imageStackStep(s);
-	if (c == aDel) { sceneRemoveExtraAt(s, (size_t)idx); return; }
 	if (c == aDrape) {
 		ex.draped = !ex.draped;
 		imageRebuildActor(s, ex);
@@ -1385,6 +1408,12 @@ static void imageObjectMenu(Scene *s, vtkProp3D *actor, const QPoint &g) {
 	}
 	rebuildSceneObjects(s);
 	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+}
+
+// An image EXTRA's handle (by its actor): the one image menu above.
+static void imageObjectMenu(Scene *s, vtkProp3D *actor, const QPoint &g) {
+	const int idx = extraIndexOfActor(s, actor);
+	if (idx >= 0) imageHandleMenu(s, idx, g);
 }
 
 // ---- UNIFIED draw-order pile (base relief + GRIDS + VECTORS) --------------------------------
@@ -3470,43 +3499,8 @@ static void rebuildSceneObjects(Scene *s) {
 	} else if (s->drape) {                                  // bare image (view_image) group — header IS the image handle
 		const QString nm = s->surfName.empty() ? QString("Image") : QString::fromStdString(s->surfName);
 		vtkProp3D *dp = s->drape;
-		std::function<void(const QPoint&)> imgMenu = [s, nm](const QPoint &g) {   // primary image props: Save + Remove
-			QMenu m(s->widget);
-			// Percentile histogram stretch -> new 8-bit image row. Re-derives from the FULL-PRECISION
-			// (UInt16) source stashed host-side, so it is offered ONLY when there is one ("" = this
-			// window's primary image) — see imageObjectMenu above, same rule, same set.
-			QAction *aStretch = s->imgHasOrig.count(std::string())
-			                    ? m.addAction("Auto histogram stretch (new image)") : nullptr;
-			// Binarize / Shape detector / K-means classification are NOT here — they belong to the
-			// Image menu, which opens them (and reopens a parked one) just as well.
-			QAction *aHisto    = g_showImageHisto ? m.addAction("Show Histogram")  : nullptr;
-			QAction *aEnhance  = g_enhanceReopen ? m.addAction("Image Enhance")    : nullptr;
-			QAction *aResize   = g_showImageResize ? m.addAction("Image resize…")  : nullptr;
-			// Same entry the extra-image handles carry (imageObjectMenu), for the window's OWN image:
-			// a mask is a mask whichever door it came in by.
-			QAction *aDigit    = s->maskNames.count(std::string()) ? m.addAction("Digitize whites") : nullptr;
-			m.addSeparator();
-			const PhotoCraftActs pc = photoCraftItems(m);
-			QAction *aSave = m.addAction("Save image…");
-			QAction *aClip = m.addAction("Copy to Clipboard");
-			// Same move a grid row offers, for the window's own image: re-open it in a fresh iGMT
-			// window, then drop it from here (moveObjectToNewWindow — the one function for both kinds).
-			QAction *aMove = m.addAction("Move to new window");
-			m.addSeparator();
-			QAction *aRem  = m.addAction("Remove"); // removes image + axes; window stays open
-			QAction *c = m.exec(g);
-			if (!c) return;
-			if (photoCraftChosen(c, pc, s, "image", QString())) return;     // "" = the window's own image
-			if (aStretch && c == aStretch) stretchImageObject(s, nm);
-			else if (aDigit && c == aDigit) digitizeWhitesUI(s, std::string());
-			else if (aHisto && c == aHisto) g_showImageHisto(s, "");
-			else if (aEnhance && c == aEnhance) g_enhanceReopen(s, "");
-			else if (aResize && c == aResize) g_showImageResize(s, "");
-			else if (c == aSave) saveObjectDialog(s, "image", nm);
-			else if (c == aClip) copyViewToClipboardUI(s);
-			else if (c == aMove) { if (moveObjectToNewWindow(s, "image", "")) sceneRemoveSurface(s); }
-			else if (c == aRem) sceneRemoveSurface(s);
-		};
+		// The window's own image: THE image menu, the same one every other image handle opens.
+		std::function<void(const QPoint&)> imgMenu = [s](const QPoint &g) { imageHandleMenu(s, -1, g); };
 		const bool imgVis   = dp->GetVisibility() != 0;
 		const bool imgGrpOn = imgVis || s->baseAxes.shown || (s->palette.n > 0 && s->palette.show);
 		beginGroupHandle(nm, IC_Image, imgGrpOn,

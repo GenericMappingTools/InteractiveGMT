@@ -475,6 +475,9 @@ function read_mtl_lines(fname::String, mtl::String="")::Union{Nothing, Vector{St
 	((ind = findfirst("_B", _fname)) === nothing) && return nothing
 	if (mtl == "")
 		mtl = joinpath(pato, _fname[1:ind[1]] * "MTL.txt")
+		# A Level-2 band (…_T1_SR_B5.TIF, …_T1_ST_B10.TIF): its MTL is …_T1_MTL.txt, without the SR/ST.
+		(!isfile(mtl) && occursin(r"_(SR|ST)_B\d+"i, _fname)) &&
+			(mtl = joinpath(pato, replace(_fname, r"_(SR|ST)_B\d+.*$"i => "_MTL.txt")))
 		if (!isfile(mtl))
 			lst = filter(x -> endswith(x, "MTL.txt"), readdir((pato == "") ? "." : pato))
 			(length(lst) == 1 && length(_fname) >= 16 && startswith(lst[1], _fname[1:16])) && (mtl = joinpath(pato, lst[1]))
@@ -488,8 +491,13 @@ function parse_mtl(mtl::Vector{<:AbstractString}, band::Int)::MTL_short
 	# Parse the 'mtl' string vector and extract the info relevant for 'band'
 	# Make this a separate function so it can be called from read_mtl() or from the
 	# MTL metadata stored in a cube file created with cutcube().
+	# The calibration keys are looked up in the LEVEL1_RADIOMETRIC_RESCALING group when there is one:
+	# a Level-2 MTL ALSO carries REFLECTANCE_MULT/ADD_BAND_n in its surface-reflectance group (Level-2
+	# scaling, listed first), and the first match used to be that one.
+	i_l1 = findfirst(l -> strip(l) == "GROUP = LEVEL1_RADIOMETRIC_RESCALING", mtl)
 	function get_par(str::String)::Float64
-		ind = findfirst(l -> occursin(str, l), mtl)
+		from = (i_l1 !== nothing && occursin(r"^(RADIANCE|REFLECTANCE)_(MULT|ADD)_", str)) ? i_l1 : 1
+		ind = findnext(l -> occursin(str, l), mtl, from)
 		(ind === nothing) && error("Parameter $str not found in the MTL data")
 		parse(Float64, split(mtl[ind], "=")[2])
 	end
@@ -510,10 +518,20 @@ end
 
 # ----------------------------------------------------------------------------------------------------------
 function helper1_sats(fname::String, band_layer::Int)
-	I = ((band_layer == 0) ? gmtread(fname) : gmtread(fname, layer=band_layer, layout="TRB"))::GMT.GMTimage{UInt16, 2}
+	# "TRB" for a single band file too, as for a cube layer: the plain reader's image label does not
+	# describe its memory, and the grid built on it (`mat2grid(o, I)`) came out upside down.
+	I = ((band_layer == 0) ? gmtread(fname, layout="TRB") : gmtread(fname, layer=band_layer, layout="TRB"))::GMT.GMTimage{UInt16, 2}
 	indNaN = isnodata(I)::AbstractMatrix{Bool}
 	o = Matrix{Float32}(undef, size(I))
 	return I, indNaN, o
+end
+
+function _nraster(fname::String)::Int
+	GMT.ressurectGDAL()
+	ds = GMT.Gdal.unsafe_read(fname)
+	n = GMT.Gdal.nraster(ds)
+	GMT.Gdal.GDALClose(ds.ptr)
+	return n
 end
 
 function parse_lsat8_file(fname::String; band::Int=0, layer::Int=0, mtl::String="")::Tuple{Int, MTL_short, Int}
@@ -678,6 +696,8 @@ end
 function dn2aux(fname::String, reflect::Bool; band::Int=0, bandname::String="", bandnames::String="", mtl::String="", save::String="")
 	# Most of dn2reflectance & dn2radiance codes are similar, so gather it here under a common function.
 	bnd = band
+	# A single band file names its band itself (…_B5.TIF): only a CUBE is read band by band below.
+	(bnd == 0 && bandname == "" && bandnames == "" && _nraster(fname) == 1) && (bnd = read_mtl(fname, mtl).band)
 	if (bnd != 0)			# Else fish band from bandname
 		_band_layer, _pars, n_bands = parse_lsat8_file(fname, band=bnd, mtl=mtl)
 		(_band_layer == 0 && n_bands == 1) && (bnd = _pars.band)

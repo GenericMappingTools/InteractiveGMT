@@ -4461,14 +4461,19 @@ public:
 		// directly (same "selected" convention as the grdsample dialog above): Field is locked to
 		// "In memory grid", and its native rows/cols (scene->gnx/gny, the full-res data layer) seed
 		// the Rows/Cols boxes + suggested-size lists immediately, with no Browse round-trip needed.
-		if (scene && scene->surf && !scene->emptyStart && !scene->imageOnly) {
+		if (sceneHasGrid(scene)) {
 			useSelected = true;
 			fieldEdit->setText("In memory grid");
 			fieldEdit->setReadOnly(true);
 			fieldEdit->setEnabled(false);   // grayed
 			if (fieldBrowse) fieldBrowse->setEnabled(false);
-			if (scene->gnx > 1 && scene->gny > 1) {
-				nativeNx = scene->gnx; nativeNy = scene->gny;
+			// The base relief's dims, or — when the window's grid is a computed/added layer (an image
+			// window holding a calculator result) — that layer's, through the active-grid resolver.
+			const bool baseGrid = scene->surf && !scene->emptyStart && !scene->imageOnly;
+			const ActiveGrid ag = baseGrid ? ActiveGrid() : resolveActiveGrid(scene, false);
+			const int gnx = baseGrid ? scene->gnx : ag.nx, gny = baseGrid ? scene->gny : ag.ny;
+			if (gnx > 1 && gny > 1) {
+				nativeNx = gnx; nativeNy = gny;
 				int sugX = suggestedSize(nativeNx), sugY = suggestedSize(nativeNy);
 				if (colsEdit) colsEdit->setText(QString::number(sugX));
 				if (rowsEdit) rowsEdit->setText(QString::number(sugY));
@@ -5107,7 +5112,7 @@ public:
 
 		// No grid in this window -> "the grid loaded in this window" is not an option; force the file
 		// row (grayed radio, never hidden, so the dialog keeps one size).
-		const bool haveMemGrid = (scene && scene->surf && !scene->emptyStart && !scene->imageOnly);
+		const bool haveMemGrid = sceneHasGrid(scene);
 		if (!haveMemGrid) {
 			rbTopMem->setEnabled(false);
 			rbTopFile->setChecked(true);
@@ -5460,7 +5465,7 @@ public:
 		auto *computeBtn = d->findChild<QPushButton *>("btn_compute");
 		auto *closeBtn   = d->findChild<QPushButton *>("btn_close");
 
-		const bool haveMemGrid = (scene && scene->surf && !scene->emptyStart && !scene->imageOnly);
+		const bool haveMemGrid = sceneHasGrid(scene);
 		if (!haveMemGrid) {
 			rbInMem->setEnabled(false);          // grayed, never hidden: the dialog keeps one size
 			rbInFile->setChecked(true);
@@ -7422,7 +7427,7 @@ public:
 				QMessageBox::warning(d, "Error", "grdgradient: callback not registered (rebuild/restart needed?).");
 				return;
 			}
-			if (!(scn && scn->surf && !scn->emptyStart && !scn->imageOnly)) {
+			if (!sceneHasGrid(scn)) {
 				QMessageBox::warning(d, "Error", "grdgradient works on the grid loaded in this window, "
 				                                 "and this window has none.");
 				return;
@@ -9417,13 +9422,26 @@ static void binarizeReopen(Scene *scene, const char *name) {
 	else delete w;
 }
 // Same for "Adjust Contrast" — its X button hides it, and this is how it comes back.
+// THE way an Image Enhance dialog is opened — the Image menu and every image handle come through here.
+// The window's existing dialog is brought back ONLY when it was built for THIS image, and then its
+// histograms are re-read (a Load Bands "RGB composition" is replaced under the same name). A dialog
+// built for another image is not this one's: its histograms (one band vs R/G/B) are that image's,
+// so it is deleted and a new one is built for the image asked for.
 static void enhanceReopen(Scene *scene, const char *name) {
+	const QString want = QString::fromUtf8(name ? name : "");
 	auto it = g_enhanceDlgs.find(scene);
 	if (it != g_enhanceDlgs.end() && it->second->dlg) {
-		it->second->unpark();   // parked? the row goes away and the SAME dialog comes back
-		return;
+		ImageEnhanceDialog *old = it->second;
+		const int nbWas = old->nbands;
+		if (old->srcName == want && old->send("init;" + want) && old->nbands == nbWas) {
+			old->unpark();      // parked? the row goes away and the SAME dialog comes back
+			return;
+		}
+		old->reallyClose = true;
+		unparkTool(scene, old->dlg);
+		old->dlg->deleteLater();   // destroyed -> Julia's state and the object go with it
 	}
-	auto *w = new ImageEnhanceDialog(scene ? scene->win : nullptr, scene, QString::fromUtf8(name ? name : ""));
+	auto *w = new ImageEnhanceDialog(scene ? scene->win : nullptr, scene, want);
 	if (w->dlg && w->ready) w->dlg->show();
 	else delete w;
 }
@@ -14932,6 +14950,31 @@ static void rsOpenL2With(Scene *s, const QString &file) {
 	it->second->refresh();
 }
 
+// An image handle's "Landsat calibration…": the calibration dialog opened (or brought back) on THAT
+// image's file. Only Julia knows which file an image came from, so the image's NAME goes with the
+// init request (obj=) and Julia puts its file in the File box. Waits for the handle's menu to be
+// gone first, as openRemoteSDialog does.
+static const bool g_rsCalibrateHook = [] {
+	g_rsCalibrateImage = [](Scene *s, const char *name) {
+		const QString nm = QString::fromUtf8(name ? name : "");
+		auto tries = std::make_shared<int>(0);
+		auto step = std::make_shared<std::function<void()>>();
+		*step = [s, nm, tries, step]() {
+			if (!sceneAlive(s) || !s->win) return;
+			if (QApplication::activePopupWidget() && ++*tries < 30) {
+				QTimer::singleShot(30, s->win, *step);
+				return;
+			}
+			openRemoteSDialogNow(s->win, s, "calibration");
+			auto it = g_remotesDlgs.find({s, "calibration"});
+			if (it == g_remotesDlgs.end() || !it->second || !it->second->dlg) return;
+			it->second->request("init", false, QString(), "obj=" + nm + "\n");
+		};
+		if (sceneAlive(s) && s->win) QTimer::singleShot(0, s->win, *step);
+	};
+	return true;
+}();
+
 static void openRemoteSDialog(QWidget *win, Scene *s, const std::string &tool) {
 	// Self-rescheduling until no popup holds the input grab (~1 s of tries at most, then it opens
 	// anyway — never silently give up on the user's click).
@@ -16095,7 +16138,7 @@ public:
 		dlg->setWindowModality(Qt::NonModal);
 		dlg->setWindowTitle("gravfft");
 		QDialog *d = dlg;
-		hasGrid = (scene && scene->surf && !scene->emptyStart && !scene->imageOnly);
+		hasGrid = sceneHasGrid(scene);
 
 		tabs        = d->findChild<QTabWidget *>("tabs_mode");
 		fieldCb     = d->findChild<QComboBox *>("cb_field");
@@ -32301,15 +32344,8 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// entry 1 (image_enhance.m) is ported so far; 2 (image_adjust.m) and 3 (ice_m.m) are placeholders.
 	mImage->addSeparator();
 	QMenu *mEnhance = mImage->addMenu("Image Enhance");
-	QAction *aEnh1 = mEnhance->addAction("1 - Indexed and RGB", [win, s]() {
-		auto it = g_enhanceDlgs.find(s);                     // already open? just bring it forward
-		if (it != g_enhanceDlgs.end() && it->second->dlg) {
-			it->second->unpark();   // parked? the row goes away and the SAME dialog comes back
-			return;
-		}
-		auto *w = new ImageEnhanceDialog(win, s, displayedImageName(s));
-		if (w->dlg && w->ready) w->dlg->show();
-		else delete w;
+	QAction *aEnh1 = mEnhance->addAction("1 - Indexed and RGB", [s]() {
+		enhanceReopen(s, displayedImageName(s).toUtf8().constData());   // the image on display
 	});
 	QAction *aEnh2 = mEnhance->addAction("2 - Indexed only");
 	QAction *aEnh3 = mEnhance->addAction("Image Color Editor (Indexed and RGB)");
@@ -33593,7 +33629,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		if (w->dlg) w->dlg->show();
 	});
 	mGMT->addAction("grdfilter", [win, s]() {
-		if (!s->surf || s->emptyStart || s->imageOnly) {
+		if (!sceneHasGrid(s)) {
 			QMessageBox::warning(win, "grdfilter", "Load a grid into this window first.");
 			return;
 		}
@@ -33631,7 +33667,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		if (w->dlg) w->dlg->show();
 	});
 	mGMT->addAction("grdtrend", [win, s]() {
-		if (!s->surf || s->emptyStart || s->imageOnly) {
+		if (!sceneHasGrid(s)) {
 			QMessageBox::warning(win, "grdtrend", "Load a grid into this window first.");
 			return;
 		}
@@ -33639,7 +33675,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		if (w->dlg) w->dlg->show();
 	});
 	mGMT->addAction("grdfft", [win, s]() {
-		if (!s->surf || s->emptyStart || s->imageOnly) {
+		if (!sceneHasGrid(s)) {
 			QMessageBox::warning(win, "grdfft", "Load a grid into this window first.");
 			return;
 		}
@@ -33647,7 +33683,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		if (w->dlg) w->dlg->show();
 	});
 	mGMT->addAction("grdhisteq", [win, s]() {
-		if (!s->surf || s->emptyStart || s->imageOnly) {
+		if (!sceneHasGrid(s)) {
 			QMessageBox::warning(win, "grdhisteq", "Load a grid into this window first.");
 			return;
 		}
@@ -33655,7 +33691,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		if (w->dlg) w->dlg->show();
 	});
 	mGMT->addAction("grdfill", [win, s]() {
-		if (!s->surf || s->emptyStart || s->imageOnly) {
+		if (!sceneHasGrid(s)) {
 			QMessageBox::warning(win, "grdfill", "Load a grid into this window first.");
 			return;
 		}
@@ -33681,7 +33717,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// gravfft, talwani2d, talwani3d, gravprisms, gmtflexure and grdflexure are NOT here: they live in
 	// Geophysics > Gravity (below), with the rest of the potential-field tools.
 	mGMT->addAction("grdrotater", [win, s]() {
-		if (!s->surf || s->emptyStart || s->imageOnly) {
+		if (!sceneHasGrid(s)) {
 			QMessageBox::warning(win, "grdrotater", "Load a grid into this window first.");
 			return;
 		}
@@ -33695,7 +33731,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		if (w->dlg) w->dlg->show();
 	});
 	mGMT->addAction("grdvolume", [win, s]() {
-		if (!s->surf || s->emptyStart || s->imageOnly) {
+		if (!sceneHasGrid(s)) {
 			QMessageBox::warning(win, "grdvolume", "Load a grid into this window first.");
 			return;
 		}
@@ -33734,7 +33770,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// with a grid loaded — offer it only then, like the rest of the grid-modifying tools.
 	mGridTools->addSeparator();
 	mGridTools->addAction("Clip Grid…", [win, s]() {
-		if (!s->surf || s->emptyStart || s->imageOnly) {
+		if (!sceneHasGrid(s)) {
 			QMessageBox::warning(win, "Clip Grid", "Load a grid into this window first.");
 			return;
 		}
@@ -33761,7 +33797,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 
 	QMenu *mContours = mGridTools->addMenu("Contours");
 	auto needGrid = [win, s]() {
-		if (!s->surf || s->emptyStart || s->imageOnly) {
+		if (!sceneHasGrid(s)) {
 			QMessageBox::warning(win, "Contours", "Load a grid into this window first.");
 			return false;
 		}
@@ -33792,12 +33828,9 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	});
 
 	// "Grid calculator" (port of Mirone src_figs/grid_calculator.m): combine the window's grids with
-	// an arithmetic expression. Needs at least the base grid to have something to list.
+	// an arithmetic expression. Opens on ANY window: one-band images (a Landsat band) are operands too,
+	// and with nothing listed the grids come in through its own "Load Grid".
 	mGridTools->addAction("Grid calculator…", [win, s]() {
-		if (!s->surf || s->emptyStart || s->imageOnly) {
-			QMessageBox::warning(win, "Grid calculator", "Load a grid into this window first.");
-			return;
-		}
 		auto *w = new GridCalculatorDialog(win, s);
 		if (w->dlg) w->dlg->show();
 	});
@@ -33807,7 +33840,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// The chooser is deps/ui/multiscale.ui, loaded at RUNTIME (multiscaleAsk below) — a modal
 	// one-shot like the .m's, whose only job is to hand (method, window) to Julia's _on_multiscale.
 	mGridTools->addAction("Terrain Modeling…", [win, s]() {
-		if (!s->surf || s->emptyStart || s->imageOnly) {
+		if (!sceneHasGrid(s)) {
 			QMessageBox::warning(win, "Terrain Modeling", "Load a grid into this window first.");
 			return;
 		}
@@ -33837,7 +33870,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// carries %1 = the scene pointer and %2 = the chosen p.
 	mGridTools->addSeparator();
 	auto runCsapsTool = [win, s](const char *title, const char *busy, const char *jlFmt) {
-		if (!s->surf || s->emptyStart || s->imageOnly) {
+		if (!sceneHasGrid(s)) {
 			QMessageBox::warning(win, title, "Load a grid into this window first.");
 			return;
 		}

@@ -59,11 +59,28 @@ _rs_status(io::IOBuffer, v::String) = println(io, "status=", replace(v, '\n' => 
 # The source file box: prefilled from the window on `init`, and it must name a file that exists.
 function _rs_file!(io::IOBuffer, d::Dict{String,String}, scene::Ptr{Cvoid}, w::String = "p_file")::String
 	f = _rs_get(d, w)
-	if isempty(f) && _rs_get(d, "what") == "init"
-		f = _rs_window_file(scene)
-		isempty(f) || _rs_set(io, w, f)
+	# Opened from an image's own Scene Objects handle (obj=<its name>): THAT image's file, whatever the
+	# box held. An image with no file of its own (a band taken out of a stack) falls back to the window's.
+	obj = haskey(d, "obj") && w == "p_file"
+	if obj || (isempty(f) && _rs_get(d, "what") == "init")
+		g = obj ? _image_source_file(scene, _rs_get(d, "obj")) : ""
+		isempty(g) && (g = _rs_window_file(scene))
+		if !isempty(g)
+			f = g
+			_rs_set(io, w, f)
+		end
 	end
 	return f
+end
+
+# The file an image of this window was read from ("" = the primary image), from the window's own
+# provenance log — the record Save Session reads. "" when it came from no file.
+function _image_source_file(scene::Ptr{Cvoid}, name::AbstractString)::String
+	for r in get(_SESSION_LOG, scene, ElementRecipe[])
+		r.origin === :file && r.kind in (:image, :dropimage) || continue
+		(r.name == name || (isempty(name) && r.kind === :image)) && return String(r.source)
+	end
+	return ""
 end
 
 function _rs_need_file(f::String, what::String)::String

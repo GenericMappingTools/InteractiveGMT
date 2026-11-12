@@ -133,3 +133,65 @@ end
 	@test R.findscenes(-8, 36, start="2021-09-07T17:00:00", sat=:aqua, day=true, duration=-2, oc=1, tle=tle) ==
 	      ["AQUA_MODIS.20210906T131001.L2.OC.NRT.nc", "AQUA_MODIS.20210907T135001.L2.OC.NRT.nc"]
 end
+
+# An image handle's "Landsat calibration…" sends obj=<its name>: the File box gets THAT image's file
+# (from the window's provenance log), whatever it held; an image with no file falls back to the window's.
+@testitem "RemoteS: calibration opened from an image handle takes that image's file" tags=[:unit, :remotes] begin
+	IG = InteractiveGMT
+	scene = Ptr{Cvoid}(UInt(0x51EDCA1E))
+	b4 = raw"C:\data\LC09_L1TP_204033_20240101_20240102_02_T1_B4.TIF"
+	b5 = raw"C:\data\LC09_L1TP_204033_20240101_20240102_02_T1_B5.TIF"
+	IG._session_record!(scene, :image, :file, b4; name = "B4")
+	IG._session_record!(scene, :dropimage, :file, b5; name = "B5")
+	try
+		@test IG._image_source_file(scene, "B5") == b5
+		@test IG._image_source_file(scene, "")   == b4          # "" = the window's primary image
+		@test IG._image_source_file(scene, "nope") == ""
+		io = IOBuffer()
+		d = Dict("what" => "init", "p_file" => "something else", "obj" => "B5")
+		@test IG._rs_file!(io, d, scene) == b5
+		@test occursin("set:p_file=" * b5, String(take!(io)))
+	finally
+		IG._session_reset!(scene)
+	end
+end
+
+
+# A Landsat Level-2 MTL lists REFLECTANCE_MULT/ADD_BAND_n TWICE: its Level-2 scaling first, then the
+# Level-1 rescaling. The TOA calibration takes the Level-1 numbers, and the MTL is found from the
+# Level-2 band's own name (…_T1_SR_B5.TIF -> …_T1_MTL.txt).
+@testitem "RemoteS: calibration reads the Level-1 rescaling from a Level-2 MTL" tags=[:unit, :remotes] begin
+	RS = InteractiveGMT.RemoteS
+	dir = mktempdir()
+	stem = "LC09_L2SP_204033_20260702_20260703_02_T1"
+	write(joinpath(dir, stem * "_MTL.txt"), """
+	GROUP = LANDSAT_METADATA_FILE
+	  GROUP = LEVEL2_SURFACE_REFLECTANCE_PARAMETERS
+	    REFLECTANCE_MULT_BAND_5 = 2.75e-05
+	    REFLECTANCE_ADD_BAND_5 = -0.2
+	  END_GROUP = LEVEL2_SURFACE_REFLECTANCE_PARAMETERS
+	  GROUP = IMAGE_ATTRIBUTES
+	    SUN_AZIMUTH = 120.0
+	    SUN_ELEVATION = 60.0
+	    EARTH_SUN_DISTANCE = 1.0
+	  END_GROUP = IMAGE_ATTRIBUTES
+	  GROUP = LEVEL1_MIN_MAX_RADIANCE
+	    RADIANCE_MAXIMUM_BAND_5 = 400.0
+	  END_GROUP = LEVEL1_MIN_MAX_RADIANCE
+	  GROUP = LEVEL1_MIN_MAX_REFLECTANCE
+	    REFLECTANCE_MAXIMUM_BAND_5 = 1.2
+	  END_GROUP = LEVEL1_MIN_MAX_REFLECTANCE
+	  GROUP = LEVEL1_RADIOMETRIC_RESCALING
+	    RADIANCE_MULT_BAND_5 = 5.9248E-03
+	    RADIANCE_ADD_BAND_5 = -29.62
+	    REFLECTANCE_MULT_BAND_5 = 2.0000E-05
+	    REFLECTANCE_ADD_BAND_5 = -0.100000
+	  END_GROUP = LEVEL1_RADIOMETRIC_RESCALING
+	END_GROUP = LANDSAT_METADATA_FILE
+	""")
+	p = RS.read_mtl(joinpath(dir, stem * "_SR_B5.TIF"))
+	@test p.band == 5
+	@test (p.reflect_mul, p.reflect_add) == (2.0e-5, -0.1)
+	@test (p.rad_mul, p.rad_add) == (5.9248e-3, -29.62)
+	@test (p.rad_max, p.reflect_max) == (400.0, 1.2)
+end
