@@ -2691,6 +2691,8 @@ static QuadNode *buildQuadNode(int i0, int i1, int j0, int j1, int level,
 	n->step = step;
 	n->cx = x0 + 0.5 * (i0 + i1) * dx;
 	n->cy = y0 + 0.5 * (j0 + j1) * dy;
+	n->hx = 0.5 * (i1 - i0) * std::abs(dx);
+	n->hy = 0.5 * (j1 - j0) * std::abs(dy);
 	n->worldSpacing = std::max(std::abs(dx), std::abs(dy)) * step;
 	const int im = (i0 + i1) / 2, jm = (j0 + j1) / 2;
 	if (step == 1 || im <= i0 || jm <= j0) { n->leaf = true; n->step = 1; return n; }
@@ -2849,14 +2851,28 @@ static void evictLRU(Scene *s) {
 	}
 }
 
-// NO FRUSTUM CULL HERE, and that is a measured decision, not an oversight. Skipping the subtrees
-// whose box is off screen looks like the obvious win -- the screen-space-error test below is a
-// function of DISTANCE alone, so a tile just outside the viewport scores as "too coarse" exactly
-// like the one being looked at. It was built, A/B'd on earth_relief_06m_g over ten zoom steps, and
-// came out inside the noise (73/87 ms culled vs 100/66 ms not): the SSE test already bounds the
-// working set, both runs converged on the same resident geometry, and culling only added a way for
-// a viewport change that does not touch the camera to leave a hole. The zoom stall was never here
-// -- see makeGridCTF (10_geometry.cpp) for where the time actually went.
+// THE VIEW-FRUSTUM CULL. The screen-space-error test below is a function of DISTANCE alone, and in the
+// flat 2-D view (PARALLEL projection) not even that: `px = gap*vpH / (2*parallelScale)` is the same for
+// every node of the grid. So zooming in told EVERY tile -- the whole grid, the 99 % off screen included
+// -- that it was too coarse, and the whole pyramid was meshed at full resolution. Measured 2026-11-12
+// on a 7731x7841 Landsat reflectance (NaN fill -> pixelCells, 4 vertices per node): 25.8 GB resident at
+// a 1/16 zoom, 11.6 s for that one step, and the window frozen. (The cull was once A/B'd and dropped as
+// "inside the noise" -- on a PERSPECTIVE view, where distance already bounds the work.)
+// A node whose box lies wholly outside the camera frustum is drawn at its OWN level and not refined:
+// one coarse tile stands for it, so a viewport change that does not touch the camera can never expose
+// a hole, and the work follows what is on screen. `fr` = the 6 frustum planes (a,b,c,d; normals
+// inward, vtkCamera::GetFrustumPlanes) in world coords, or nullptr = no cull (the globe bends tiles
+// off the flat world this box lives in). `zHalfW` = the layer's half z span in SCALED world.
+static bool lodFrustum(Scene *s, double fr[24]);   // below: the planes of THIS window's camera, or false
+static bool lodBoxOutside(const double *fr, double x0, double x1, double y0, double y1, double z0, double z1) {
+	for (int p = 0; p < 6; ++p) {
+		const double a = fr[4*p], b = fr[4*p+1], c = fr[4*p+2], d = fr[4*p+3];
+		// the box corner farthest along the inward normal: if even it is outside, the whole box is
+		const double x = (a >= 0) ? x1 : x0, y = (b >= 0) ? y1 : y0, z = (c >= 0) ? z1 : z0;
+		if (a*x + b*y + c*z + d < 0) return true;
+	}
+	return false;
+}
 // THE LOD DECISION, ONCE, for every grid pyramid in the window — the base's tiles and each grid extra's
 // alike. `zmidW` is the layer's mid-height in SCALED world (its own z range x its own z scale), `xfac`
 // the window's x aspect. `show(n)` puts a node's tile on screen at this LOD, `drop(n)` takes it off; the
@@ -2870,9 +2886,18 @@ static void dropSubtreeG(QuadNode *n, Drop &drop) {
 template <class Show, class Drop>
 static void refineNodeG(QuadNode *n, const double camPos[3], double vpH, double tanHalfFov, double parScale,
                         bool parallel, double tau, double zmidW, double xfac, uint64_t frame,
-                        Show &show, Drop &drop) {
+                        Show &show, Drop &drop, const double *fr = nullptr, double zHalfW = 0.0) {
 	// node centre in SCALED world (the layer's transform applies xfac on X, its z scale on Z)
 	const double pc[3] = { n->cx * xfac, n->cy, zmidW };
+	if (fr && !n->leaf) {
+		const double ax = std::abs(xfac), pad = 1e-6 * (n->hx * ax + n->hy + zHalfW) + 1e-12;
+		if (lodBoxOutside(fr, (n->cx - n->hx) * ax - pad, (n->cx + n->hx) * ax + pad,
+		                  n->cy - n->hy - pad, n->cy + n->hy + pad, zmidW - zHalfW - pad, zmidW + zHalfW + pad)) {
+			show(n); n->lastUsed = frame;                               // off screen: one coarse tile
+			for (int k = 0; k < 4; ++k) dropSubtreeG(n->child[k], drop);
+			return;
+		}
+	}
 	const double sp = n->worldSpacing * std::max(xfac, 1.0);       // scaled node gap
 	double px;
 	if (parallel) {
@@ -2890,8 +2915,22 @@ static void refineNodeG(QuadNode *n, const double camPos[3], double vpH, double 
 	else {
 		drop(n);                                                    // too coarse -> recurse
 		for (int k = 0; k < 4; ++k)
-			refineNodeG(n->child[k], camPos, vpH, tanHalfFov, parScale, parallel, tau, zmidW, xfac, frame, show, drop);
+			refineNodeG(n->child[k], camPos, vpH, tanHalfFov, parScale, parallel, tau, zmidW, xfac, frame, show, drop,
+			            fr, zHalfW);
 	}
+}
+
+static bool lodFrustum(Scene *s, double fr[24]) {
+	if (!s || !s->ren || s->globe) return false;
+	vtkCamera *cam = s->ren->GetActiveCamera();
+	if (!cam) return false;
+	// The aspect from the renderer's own PIXEL size: GetTiledAspectRatio() came back 0/0 here, and with it
+	// all four side planes were NaN -- every box test false, i.e. no cull at all (measured 2026-11-12).
+	const int *sz = s->ren->GetSize();
+	if (!sz || sz[0] <= 0 || sz[1] <= 0) return false;
+	cam->GetFrustumPlanes((double)sz[0] / (double)sz[1], fr);
+	for (int k = 0; k < 24; ++k) if (!std::isfinite(fr[k])) return false;   // never cull on a bad plane
+	return true;
 }
 
 static void refineNode(Scene *s, QuadNode *n, vtkCamera *cam, const double camPos[3],
@@ -2900,7 +2939,11 @@ static void refineNode(Scene *s, QuadNode *n, vtkCamera *cam, const double camPo
 	auto show = [s](QuadNode *q) { ensureNodeActor(s, q); };
 	auto drop = [s](QuadNode *q) { dropNodeActor(s, q); };
 	const double zmid = 0.5 * (s->zmin + s->zmax) * s->zfac * s->ve;
-	refineNodeG(n, camPos, vpH, tanHalfFov, parScale, parallel, tau, zmid, s->xfac, s->lodFrame, show, drop);
+	const double zhalf = std::abs(0.5 * (s->zmax - s->zmin) * s->zfac * s->ve);
+	double fr[24];
+	const bool cull = lodFrustum(s, fr);
+	refineNodeG(n, camPos, vpH, tanHalfFov, parScale, parallel, tau, zmid, s->xfac, s->lodFrame, show, drop,
+	            cull ? fr : nullptr, zhalf);
 }
 
 // Release every cached tile in a subtree. The LOD cache is keyed to the GEOMETRY, so when the z it
@@ -3077,13 +3120,25 @@ static bool refineExtraLod(Scene *s, ExtraObj &ex) {
 		q->inScene = true;
 	};
 	auto drop = [](QuadNode *q) { q->inScene = false; };
-	const double zmid = 0.5 * (ex.zmin + ex.zmax) * sceneZRefForExtra(s, ex) * ex.ve;
+	const double zref = sceneZRefForExtra(s, ex) * ex.ve;
+	const double zmid = 0.5 * (ex.zmin + ex.zmax) * zref;
+	const double zhalf = std::abs(0.5 * (ex.zmax - ex.zmin) * zref);
+	double fr[24];
+	const bool cull = lodFrustum(s, fr);
 	refineNodeG(ex.lodRoot, camPos, vpH, tanHalf, cam->GetParallelScale(), parallel, /*tau=*/4.0,
-	            zmid, s->xfac, ex.lodFrame, show, drop);
+	            zmid, s->xfac, ex.lodFrame, show, drop, cull ? fr : nullptr, zhalf);
 
 	std::vector<QuadNode *> shown;
 	collectTiles(ex.lodRoot, shown, true);
 	const bool changed = (shown != ex.lodShown);
+	static const bool traceX = envFlag("IGMT_LOD_TRACE");
+	if (traceX) {
+		vtkIdType npts = 0; for (QuadNode *q : shown) npts += q->tilePD ? q->tilePD->GetNumberOfPoints() : 0;
+		fprintf(stdout, "[lodX] %s: cull=%d parallel=%d pscale=%.1f shown=%zu pts=%lld changed=%d bytes=%.1f MB\n",
+		        ex.name.c_str(), (int)cull, (int)parallel, cam->GetParallelScale(), shown.size(), (long long)npts,
+		        (int)changed, ex.lodBytes / 1048576.0);
+		fflush(stdout);
+	}
 	if (changed) {
 		vtkNew<vtkAppendPolyData> app;
 		for (QuadNode *q : shown) app->AddInputData(q->tilePD);

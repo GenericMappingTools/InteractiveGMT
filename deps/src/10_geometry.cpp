@@ -3547,6 +3547,7 @@ struct QuadNode {
 	int step = 1;
 	bool leaf = true;
 	double cx = 0, cy = 0;            // region centre (true coords)
+	double hx = 0, hy = 0;            // region half-extents (true coords): the box the view-frustum test uses
 	double worldSpacing = 0;          // true-coord node gap at this node's step
 	QuadNode *child[4] = { nullptr, nullptr, nullptr, nullptr };
 	vtkSmartPointer<vtkActor> actor;  // built geometry; null = not resident (nothing cached)
