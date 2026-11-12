@@ -8521,30 +8521,39 @@ GMTVTK_API int gmtvtk_colorbar_labels_test(void *handle, const char *group, cons
 	if (!row) return -1;
 	int result = -2;
 	const QString x = QString::fromUtf8(xl ? xl : ""), y = QString::fromUtf8(yl ? yl : "");
-	QTimer::singleShot(50, [&result, x, y]() {                 // inside the menu's exec
-		auto *m = qobject_cast<QMenu *>(QApplication::activePopupWidget());
-		QAction *pick = nullptr;
-		if (m) for (QAction *a : m->actions()) if (a->text() == "Labels…") pick = a;
-		if (!pick) { if (m) m->close(); return; }
-		result = -3;
-		QTimer::singleShot(50, [&result, x, y]() {             // inside the dialog's exec
-			auto *d = qobject_cast<QDialog *>(QApplication::activeModalWidget());
-			if (!d) return;
-			const QList<QLineEdit *> e = d->findChildren<QLineEdit *>();
-			if (e.size() < 2) { d->reject(); return; }
-			e[0]->setText(x);
-			e[1]->setText(y);
-			result = 1;
-			d->accept();
+	// The real gesture, tried until it goes through: with other GUI tests running beside this one
+	// (the parallel runner), another window taking the focus closes the row's popup menu before the
+	// timer reaches it, and one try came back -2 (no menu found). A missed try changed nothing (the
+	// labels are written only on the dialog's OK), so trying again is safe.
+	for (int attempt = 0; attempt < 10 && result != 1; ++attempt) {
+		result = -2;
+		QTimer::singleShot(50, [&result, x, y]() {             // inside the menu's exec
+			auto *m = qobject_cast<QMenu *>(QApplication::activePopupWidget());
+			QAction *pick = nullptr;
+			if (m) for (QAction *a : m->actions()) if (a->text() == "Labels…") pick = a;
+			if (!pick) { if (m) m->close(); return; }
+			result = -3;
+			QTimer::singleShot(50, [&result, x, y]() {         // inside the dialog's exec
+				auto *d = qobject_cast<QDialog *>(QApplication::activeModalWidget());
+				if (!d) return;
+				const QList<QLineEdit *> e = d->findChildren<QLineEdit *>();
+				if (e.size() < 2) { d->reject(); return; }
+				e[0]->setText(x);
+				e[1]->setText(y);
+				result = 1;
+				d->accept();
+			});
+			m->close();
+			pick->trigger();
 		});
-		m->close();
-		pick->trigger();
-	});
-	const QPoint c = row->rect().center();
-	QMouseEvent press(QEvent::MouseButtonPress, QPointF(c), row->mapToGlobal(QPointF(c)),
-	                  Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
-	QApplication::sendEvent(row, &press);
-	QApplication::processEvents();
+		const QPoint c = row->rect().center();
+		QMouseEvent press(QEvent::MouseButtonPress, QPointF(c), row->mapToGlobal(QPointF(c)),
+		                  Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+		QApplication::sendEvent(row, &press);
+		QApplication::processEvents();
+		// A try whose menu vanished leaves its timer behind: let it fire on nothing before the next.
+		if (result != 1) { QElapsedTimer w; w.start(); while (w.elapsed() < 150) QApplication::processEvents(); }
+	}
 	return result;
 }
 
