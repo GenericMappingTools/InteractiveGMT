@@ -13,6 +13,8 @@ struct MTL_short
 	K2::Float64
 	level2::Bool		# Level-2 product: reflect_mul/add scale SURFACE reflectance (already sun-corrected)
 	rad_per_refl::Float64	# RADIANCE_MULT / Level-1 REFLECTANCE_MULT: L = rho_TOA * sin(sun_elev) * rad_per_refl
+	temp_mul::Float64		# Level-2 ST_B10: T(K) = DN * temp_mul + temp_add. 0 = not a Level-2 thermal band
+	temp_add::Float64
 end
 
 const Lsat8_desc = Dict{Int,String}(
@@ -523,7 +525,18 @@ function parse_mtl(mtl::Vector{<:AbstractString}, band::Int)::MTL_short
 		(ind === nothing) && error("Parameter $key not found in the MTL data")
 		rad_per_refl = rad_mul / parse(Float64, split(mtl[ind], "=")[2])
 	end
-	MTL_short(band, rad_mul, rad_add, rad_max, reflect_mul, reflect_add, reflect_max, sun_azim, sun_elev, sun_dist, K1, K2, level2, rad_per_refl)
+	# A Level-2 thermal band (…_ST_B10.TIF) is NOT Level-1 DNs: it is surface temperature already, stored
+	# as T(K) = DN * TEMPERATURE_MULT_BAND_ST_B10 + TEMPERATURE_ADD_BAND_ST_B10 (LEVEL2_SURFACE_TEMPERATURE_
+	# PARAMETERS). Taking those DNs through the Level-1 radiance + K1/K2 inversion gave ~35-45 C too hot.
+	temp_mul, temp_add = 0.0, 0.0
+	if (band >= 10)
+		ind = findfirst(l -> occursin("TEMPERATURE_MULT_BAND_ST_B$(band)", l), mtl)
+		if (ind !== nothing)
+			temp_mul = parse(Float64, split(mtl[ind], "=")[2])
+			temp_add = get_par("TEMPERATURE_ADD_BAND_ST_B$(band)")
+		end
+	end
+	MTL_short(band, rad_mul, rad_add, rad_max, reflect_mul, reflect_add, reflect_max, sun_azim, sun_elev, sun_dist, K1, K2, level2, rad_per_refl, temp_mul, temp_add)
 end
 
 # ----------------------------------------------------------------------------------------------------------
@@ -622,6 +635,7 @@ T = dn2temperature(cube, band=10)
 ```
 """
 function dn2temperature(fname::String; band::Int=0, mtl::String="", save::String="")
+	_is_trad(fname) && return _trad_out(_trad2(fname, mtl, true), save)
 	band_layer, pars, = parse_lsat8_file(fname, band=band, mtl=mtl)
 	(pars.band < 10) && throw(ArgumentError("Brightness temperature is only for bands 10 or 11. Not this one: $(pars.band)"))
 	I, indNaN, o = helper1_sats(fname, band_layer)
@@ -632,9 +646,59 @@ function dn2temperature(fname::String; band::Int=0, mtl::String="", save::String
 end
 
 function _dn2temperature!(o::Matrix{Float32}, dn::AbstractMatrix{UInt16}, indNaN::AbstractMatrix{Bool}, pars::MTL_short)
+	if (pars.temp_mul != 0.0)		# Level-2 ST band: the DN IS the temperature, linearly scaled
+		tm, ta = pars.temp_mul, pars.temp_add - 273.15
+		@inbounds Threads.@threads for k = 1:length(o)
+			o[k] = indNaN[k] ? NaN32 : dn[k] * tm + ta
+		end
+		return nothing
+	end
 	K1, K2, mul, add = pars.K1, pars.K2, pars.rad_mul, pars.rad_add
 	@inbounds Threads.@threads for k = 1:length(o)
 		o[k] = indNaN[k] ? NaN32 : K2 / (log(K1 / (dn[k] * mul + add) + 1.0)) - 273.15
+	end
+	return nothing
+end
+
+# ----------------------------------------------------------------------------------------------------------
+# Landsat Collection 2 Level-2 `…_ST_TRAD.TIF`: band 10's thermal radiance at the sensor (the product's
+# thermal band set; Landsat 9 L2 ships no B11). INT16, W/(m² sr µm) = DN * 0.001, fill -9999. The scale is
+# not in the MTL nor in the file: it is the USGS Landsat 8-9 Collection 2 Level-2 Science Product Guide's.
+# Temperature is the brightness temperature of band 10, T = K2 / ln(K1/L + 1), K1/K2 of BAND_10 from the MTL.
+const TRAD_SCALE = 0.001
+_is_trad(fname::String)::Bool = occursin(r"_ST_TRAD\.TIF$"i, basename(fname))
+
+function _trad2(fname::String, mtl::String, temperature::Bool)::GMTgrid
+	if (mtl == "")
+		pato, _fname = splitdir(fname)
+		mtl = joinpath(pato, replace(_fname, r"_ST_TRAD.*$"i => "_MTL.txt"))
+	end
+	isfile(mtl) || error("The MTL file of $(basename(fname)) was not found. Pass it with `mtl=`.")
+	pars = parse_mtl(readlines(mtl), 10)
+	G = gmtread(fname, layout="TRB")::GMTgrid
+	z = G.z
+	K1, K2 = pars.K1, pars.K2
+	@inbounds Threads.@threads for k = 1:length(z)
+		v = z[k]
+		z[k] = (isnan(v) || v == -9999) ? NaN32 :
+		       temperature ? K2 / log(K1 / (v * TRAD_SCALE) + 1.0) - 273.15 : v * TRAD_SCALE
+	end
+	G.nodata = NaN
+	GMT.setgrdminmax!(G)
+	return G
+end
+
+function _trad_out(G::GMTgrid, save::String)
+	(save != "") && (gdaltranslate(G, dest=save); return nothing)
+	return G
+end
+
+# Level-2 ST band -> radiance at sensor: T(K) = DN*temp_mul + temp_add, then the inverse of the K1/K2
+# relation dn2temperature uses on Level-1, L = K1 / (exp(K2/T) - 1).
+function _st2radiance!(o::Matrix{Float32}, dn::AbstractMatrix{UInt16}, indNaN::AbstractMatrix{Bool}, pars::MTL_short)
+	K1, K2, tm, ta = pars.K1, pars.K2, pars.temp_mul, pars.temp_add
+	@inbounds Threads.@threads for k = 1:length(o)
+		o[k] = indNaN[k] ? NaN32 : K1 / (exp(K2 / (dn[k] * tm + ta)) - 1.0)
 	end
 	return nothing
 end
@@ -672,6 +736,7 @@ R = dn2radiance("LC08_L1TP_204033_20210525_20210529_02_T1_B2.TIF")
 ```
 """
 function dn2radiance(fname::String; band::Int=0, bandname::String="", bandnames::String="", mtl::String="", save::String="")
+	_is_trad(fname) && return _trad_out(_trad2(fname, mtl, false), save)
 	dn2aux(fname, false; band=band, bandname=bandname, bandnames=bandnames, mtl=mtl, save=save)
 end
 
@@ -698,7 +763,11 @@ function _dn2one(fname::String, reflect::Bool, band::Int, bandname::String, band
 	band_layer, pars = helper_dns(fname, band, bandname, bandnames, mtl)
 	(reflect && pars.band >= 10) && error("Computing Reflectance for Thermal bands is not defined.")
 	I, indNaN, o = helper1_sats(fname, band_layer)
-	(!reflect && pars.band >= 10) && return helper_dns_op(I, pars.rad_mul, pars.rad_add, indNaN, o)
+	if (!reflect && pars.band >= 10)
+		pars.temp_mul == 0.0 && return helper_dns_op(I, pars.rad_mul, pars.rad_add, indNaN, o)
+		_st2radiance!(o, I.image, indNaN, pars)	# Level-2 ST band: its DNs are temperature, not L1 counts
+		return mat2grid(o, I)
+	end
 	s_elev = sin(pars.sun_elev * pi/180)
 	if (reflect)
 		# A Level-2 SR band is already sun-corrected: dividing by sin(sun elevation) again inflated it ~10 %.

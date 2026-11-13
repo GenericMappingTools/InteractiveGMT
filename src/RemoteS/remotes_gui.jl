@@ -94,11 +94,25 @@ end
 _rs_empty(scene::Ptr{Cvoid})::Bool = ccall(_fn(:gmtvtk_has_surface), Cint, (Ptr{Cvoid},), scene) == 0
 
 # A grid: the canonical grid tail (replace a same-named result, promote an empty window, adopt).
-_rs_deliver(scene::Ptr{Cvoid}, G::GMTgrid, name::String, recipe::String)::Bool =
-	_gm3d_deliver(scene, G, name, "", false, recipe) != 0
+# `flat = true`: a product computed from Landsat / Sentinel bands (UInt16 DN arrays) — radiance,
+# reflectance, temperature, an index, a SAR amplitude — is a picture of a measured quantity, not a
+# relief, so it is NOT shaded at birth. Its look is set to "none" through the ONE look setter the
+# Shading dock uses (aimed at the just-adopted, i.e. active, layer), so the user can still light it.
+function _rs_deliver(scene::Ptr{Cvoid}, G::GMTgrid, name::String, recipe::String; flat::Bool = false)::Bool
+	_gm3d_deliver(scene, G, name, "", false, recipe) != 0 || return false
+	flat && _rs_unshade_active(scene)
+	return true
+end
+
+# The active layer (the one just adopted) on the "none" relief look; keepModel=1 so no other layer's
+# loaded Illumination model is dropped.
+_rs_unshade_active(scene::Ptr{Cvoid}) =
+	ccall(_fn(:gmtvtk_set_relief_look_h), Cvoid, (Ptr{Cvoid}, Cint, Cint), scene, Cint(0), Cint(1))
 
 # An image: replace a same-named result, add, then the one derived-variable transition.
-function _rs_deliver(scene::Ptr{Cvoid}, I::GMTimage, name::String, recipe::String)::Bool
+# (`flat` is accepted so a caller whose result may be a grid OR an image passes it either way: an
+# image is never relief-shaded.)
+function _rs_deliver(scene::Ptr{Cvoid}, I::GMTimage, name::String, recipe::String; flat::Bool = false)::Bool
 	ccall(_fn(:gmtvtk_remove_image_h), Cint, (Ptr{Cvoid}, Cstring), scene, name)
 	_forget_object!(scene, :image, name)
 	_add_image_to_scene(scene, I, name; promote = _rs_empty(scene))
@@ -183,7 +197,7 @@ function _rs_indices(scene::Ptr{Cvoid}, d::Dict{String,String}, io::IOBuffer)::B
 	           haskey(Dict(kw), :mask) ? " mask $(Dict(kw)[:mask] > 0 ? "≥" : "<") $(Dict(kw)[:threshold])" :
 	                                     " ≥ $(Dict(kw)[:threshold])"
 	name = "$(ix)$(what_out) — $(splitext(basename(file))[1])"
-	_rs_deliver(scene, O, name, "RemoteS.$(lowercase(ix))(\"$(basename(file))\", layers=$(layers))")
+	_rs_deliver(scene, O, name, "RemoteS.$(lowercase(ix))(\"$(basename(file))\", layers=$(layers))"; flat = true)
 	_rs_status(io, "$(name) added.")
 	return true
 end
@@ -250,7 +264,7 @@ function _rs_calibration(scene::Ptr{Cvoid}, d::Dict{String,String}, io::IOBuffer
 	                                        (RS.dn2temperature(file; band = band, mtl = mtl), "Brightness temperature")
 	G isa GMTgrid || error("got a $(typeof(G)), not a grid")
 	name = "$(tag)$(band > 0 ? " B$(band)" : "") — $(splitext(basename(file))[1])"
-	_rs_deliver(scene, G, name, "RemoteS $(tag) of \"$(basename(file))\"")
+	_rs_deliver(scene, G, name, "RemoteS $(tag) of \"$(basename(file))\""; flat = true)
 	_rs_status(io, "$(name) added.")
 	return true
 end
@@ -1121,7 +1135,7 @@ function _rs_hls_compute(scene::Ptr{Cvoid}, d::Dict{String,String}, io::IOBuffer
 		# Each date its own grid, in time order: the last date is the one left showing.
 		for (t, p, G) in zip(r.time, r.product, r.grids)
 			nm = "$(ix) $(GMT.Dates.Date(t)) $(p) — $(src) $(r.tile)"
-			_rs_deliver(scene, G, nm, "RemoteS.$(fn)([$W, $E, $S, $N]; from=\"$from\", to=\"$to\", index=\"$ix\")")
+			_rs_deliver(scene, G, nm, "RemoteS.$(fn)([$W, $E, $S, $N]; from=\"$from\", to=\"$to\", index=\"$ix\")"; flat = true)
 		end
 		_rs_status(io, "$(length(r.grids)) clear date(s) on tile $(r.tile), each added as its own grid.")
 	else
@@ -1135,6 +1149,7 @@ function _rs_hls_compute(scene::Ptr{Cvoid}, d::Dict{String,String}, io::IOBuffer
 			cname = "$(ix) $(src) $(r.tile) $(GMT.Dates.Date(first(r.time)))…$(GMT.Dates.Date(last(r.time)))"
 			_load_cube_element(scene, cube, cname, true)
 			_adopt_derived!(scene, cname, r.grids[1])
+			_rs_unshade_active(scene)
 		end
 		_rs_status(io, "$(length(r.grids)) clear date(s) on tile $(r.tile): $(prefix)_*.tif, $(basename(cube)) " *
 		               "and $(prefix)_series.csv written to $(outdir); the cube is open.")

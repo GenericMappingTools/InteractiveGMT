@@ -686,7 +686,7 @@ function _rs_s1(scene::Ptr{Cvoid}, d::Dict{String,String}, io::IOBuffer)::Bool
 	name = "$(what_) — $(_s1_sat(p)) $(GMT.Dates.format(p.t0, "yyyy-mm-dd HH:MM")) track $(p.track) $(_s1_orb(p))"
 	recipe = "Sentinel-1 $(basename(f)): $(what_) " * (warp ? "warped to $(inc) deg (gdalwarp -tps -r average)" :
 	                                                          "in its radar geometry, pixels as stored")
-	_rs_deliver(scene, G, name, recipe)
+	_rs_deliver(scene, G, name, recipe; flat = true)
 	_rs_status(io, "$(name) added." * (sigma && !db ?
 	           " GDAL offers no calibrated (SIGMA0) band for this product: these are the uncalibrated values." : ""))
 	return true
