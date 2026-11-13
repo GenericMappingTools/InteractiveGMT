@@ -1756,8 +1756,48 @@ function _update_image_pixels!(scene::Ptr{Cvoid}, name, I::GMTimage)::Bool
 	return ok != 0
 end
 
+# THE PIXEL VALUES UNDER THE CURSOR. An image wider than 8 bits (a 16-bit Landsat band, a Bool mask) is
+# DRAWN from an 8-bit copy, so the colour on screen is not its value: the hover readout must print its
+# DN, which only the original holds. The viewer is handed those values once, when the image enters the
+# window, in the TEXTURE'S own order (row 0 = south, west -> east, bands fastest) over the image's own
+# range -- read through `_pixaccess`, THE accessor that knows every layout quirk, so the C++ side
+# indexes it exactly like the texture and never has to know a layout. The viewer keeps them on the
+# image's own object, so removing the image frees them.
+function _push_image_dn(scene::Ptr{Cvoid}, name::String, I::GMTimage)
+	haskey(_LIB_FNS, :gmtvtk_image_set_dn_h) || return
+	eltype(I.image) <: Union{UInt8,UInt16,Bool} || return     # (a 32-bit image: rgb readout as before)
+	S   = I.image
+	d3  = ndims(S) == 3
+	nb  = d3 ? size(S, 3) : 1
+	lay = I.layout
+	rowmajor = length(lay) >= 2 && lay[2] == 'R'
+	nlon, nlat = rowmajor ? (size(S, 1), size(S, 2)) : (size(S, 2), size(S, 1))
+	pix = _pixaccess(S, lay, d3, nb, rowmajor, nlon, nlat)
+	buf = Vector{UInt16}(undef, nlon * nlat * nb)
+	_dn_fill!(buf, pix, nlon, nlat, nb, _north_first(lay, rowmajor))
+	ir = I.range
+	ccall(_fn(:gmtvtk_image_set_dn_h), Cvoid,
+	      (Ptr{Cvoid}, Cstring, Ptr{UInt16}, Cint, Cint, Cint, Cdouble, Cdouble, Cdouble, Cdouble),
+	      scene, name, buf, Cint(nlon), Cint(nlat), Cint(nb), ir[1], ir[2], ir[3], ir[4])
+	return
+end
+
+# Function barrier (same reason as `_db_fill!`, drape.jl): `pix`'s concrete type is only known here.
+function _dn_fill!(buf, pix, nlon, nlat, nb, north_first)
+	k = 1
+	@inbounds for orow in 0:nlat-1                 # row 0 = SOUTH, as the texture
+		lat = north_first ? (nlat - orow) : (orow + 1)
+		for lon in 1:nlon, b in 1:nb
+			buf[k] = UInt16(pix(lat, lon, b))
+			k += 1
+		end
+	end
+	return nothing
+end
+
 # Add a dropped image as a flat textured plane in the window (promote = reuse the empty launcher).
 function _add_image_to_scene(scene::Ptr{Cvoid}, I::GMTimage, name; promote=false, source="", record=true)
+	Iorig = I                                      # the values, before any 8-bit display copy replaces I
 	# A non-8-bit raster (e.g. a 16-bit Landsat/Sentinel surface-reflectance band) reads as a
 	# UInt16 GMTimage; the drape/texture path is UInt8-only and would trunc-error on any pixel
 	# > 255 (`InexactError: trunc(UInt8, …)`). Contrast-stretch it to an 8-bit grey image first.
@@ -1791,6 +1831,8 @@ function _add_image_to_scene(scene::Ptr{Cvoid}, I::GMTimage, name; promote=false
 		  C_NULL, C_NULL, Cint(0), img, Cint(iw), Cint(ih), Cint(ibands), Cint(1), String(name), Cint(0))
 	ok == 0 && @warn "drop: window is closed; image not added"
 	ok != 0 && _remember_object!(scene, :image, name, I)  # Scene Objects "Save…" / File>Save can write it
+	# drawn from an 8-bit copy -> the readout gets the real values (DN), see `_push_image_dn`
+	(ok != 0 && Iorig !== I) && _push_image_dn(scene, String(name), Iorig)
 	# An INDEXED image's colormap IS its legend: hand the used entries over so the image's group gets a
 	# discrete Color Bar row (one block per pixel value). The pixels stay indices — only the texture
 	# was expanded, inside `_pixaccess_img` above.

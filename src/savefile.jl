@@ -512,6 +512,36 @@ function _commit_derived_image!(scene::Ptr{Cvoid}, Iout::GMTimage, name::String)
 	return
 end
 
+# A MASK IS A BOOLEAN IMAGE: every pixel 0 or 1, element type Bool. Every tool that produces one
+# (Grid calculator logical expression, Binarize, Flood fill, Classification "as mask", a Bool grid put
+# into a window from the Workspace) lands it HERE, never as a 0/255 picture. `_bool_mask` turns a
+# tool's 0/non-0 image into one (same buffer order, same georef: `mat2img(mat, M)` copies M's layout).
+_bool_mask(M::GMTimage{Bool})::GMTimage{Bool} = M
+_bool_mask(M::GMTimage)::GMTimage{Bool} = GMT.mat2img(map(!=(zero(eltype(M.image))), M.image), M)
+
+# THE door for a mask: the derived-image door above (or, in a window with nothing in it yet, the same
+# add + transition with the window promoted), then the row's object put back to the Bool mask. The
+# image add draws anything wider than 8 bits from an 8-bit copy and registers THAT copy as the row's
+# object, keeping the original aside as a source to re-stretch -- right for a 16-bit band, wrong for a
+# mask: Save, the Workspace, the Grid calculator and every image tool would get 0/255 bytes, and true/
+# false has no histogram to stretch. The readout gets the 0/1 values from the add itself.
+function _commit_mask!(scene::Ptr{Cvoid}, M::GMTimage, name::String)::Cint
+	I = _bool_mask(M)
+	if ccall(_fn(:gmtvtk_has_surface), Cint, (Ptr{Cvoid},), scene) != 0
+		_commit_derived_image!(scene, I, name)
+	else
+		_add_image_to_scene(scene, I, name; promote=true) ||
+			(_viewer_log_error(scene, "$name: window closed, mask not added"); return Cint(0))
+		_adopt_derived!(scene, name, I)
+	end
+	_forget_object!(scene, :image, name)
+	_remember_object!(scene, :image, name, I)
+	origs = get(_IMG_ORIG, scene, nothing)
+	origs === nothing || delete!(origs, name)
+	ccall(_fn(:gmtvtk_image_set_has_orig_h), Cvoid, (Ptr{Cvoid}, Cstring, Cint), scene, name, Cint(0))
+	return Cint(1)
+end
+
 function _register_img_stretch()
 	fptr = @cfunction((s,c)->Base.invokelatest(_on_img_stretch,s,c), Cvoid, (Ptr{Cvoid}, Cstring))
 	ccall(_fn(:gmtvtk_set_img_stretch_callback), Cvoid, (Ptr{Cvoid},), fptr)

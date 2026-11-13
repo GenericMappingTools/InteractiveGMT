@@ -806,8 +806,33 @@ struct ExternShade {
 	std::string owner;
 };
 
+// An image's PIXEL VALUES (DN) for the hover readout: an image wider than 8 bits is drawn from an 8-bit
+// copy, so the colour on screen is not its value. Handed over by the host (drop.jl `_push_image_dn`)
+// in the texture's own order -- row 0 = south, west -> east, bands fastest -- spanning [x0,x1]x[y0,y1],
+// the same box the texture covers. Empty (nx == 0) for an 8-bit image: its readout is the colour.
+struct ImgDN {
+	std::vector<uint16_t> v;
+	int nx = 0, ny = 0, nb = 0;
+	double x0 = 0.0, x1 = 0.0, y0 = 0.0, y1 = 0.0;
+	// The values at (x,y) into `out` ("1234" or "12 34 56"); false outside the image.
+	bool at(double x, double y, QString &out) const {
+		if (nx <= 0 || ny <= 0 || nb <= 0 || x1 == x0 || y1 == y0) return false;
+		const double fx = (x - std::min(x0, x1)) / std::abs(x1 - x0), fy = (y - std::min(y0, y1)) / std::abs(y1 - y0);
+		if (fx < 0.0 || fx > 1.0 || fy < 0.0 || fy > 1.0) return false;
+		const int ix = std::min(nx - 1, (int)(fx * nx)), iy = std::min(ny - 1, (int)(fy * ny));
+		const size_t k = ((size_t)iy * nx + ix) * nb;
+		out.clear();
+		for (int b = 0; b < nb; ++b) {
+			if (b) out += ' ';
+			out += QString::number(v[k + b]);
+		}
+		return true;
+	}
+};
+
 struct ExtraObj {
 	vtkSmartPointer<vtkActor> actor;
+	ImgDN dn;                                // an image's pixel values for the readout (see ImgDN)
 	// This raster's OWN axes (Raster-own-axes law above). Built when the extra is adopted; torn
 	// down with it. NEVER shared with, and never driven by, any other handle in the window.
 	AxesSet ax;
@@ -1568,6 +1593,7 @@ struct Scene {
 	// the frame is rebuilt instead of being left wrapped around the shape of a layer that is gone.
 	double globeFrameZ0 = 0.0, globeFrameZ1 = 0.0, globeFrameVE = -1.0;
 	bool   imageOnly = false;   // loaded as a bare image (no elevation): readout shows pixel colour, not z
+	ImgDN  baseDN;              // the PRIMARY image's pixel values, when it is wider than 8 bits (see ImgDN)
 	PaletteLegend palette;      // the PRIMARY image's class legend, when that image is indexed (see
 	                            // PaletteLegend); an extra/derived image carries its own on its ExtraObj
 	// Images whose FULL-PRECISION (UInt16) source the host still holds (_IMG_ORIG, savefile.jl), by
@@ -2236,6 +2262,7 @@ static double veOfActor(Scene *s, vtkProp3D *a) {
 // does, asked by TAG rather than by actor, because an axes set is not one of its layer's actors -- it
 // is the frame drawn around it -- and a tag outlives that layer's actors being rebuilt.
 static int activeOwnerTag(Scene *s);   // 50_scene.cpp -- the ACTIVE grid's tag, kAxesOwnerBase if none
+static bool sceneHasVisibleGrid(Scene *s);   // 50_scene.cpp -- resolveActiveGrid found a VISIBLE grid layer
 
 static double veOfOwner(Scene *s, int owner) {
 	if (!s) return 1.0;
@@ -6875,7 +6902,21 @@ static void onMouseMove(vtkObject*, unsigned long, void *clientData, void* /*cd*
 				.arg(rdX, 0, 'f', 3).arg(rdY, 0, 'f', 3)
 				.arg(s->globe ? rdZ : ((zsc != 0.0) ? w[2] / zsc : 0.0), 0, 'f', 3).arg(s->ve, 0, 'f', 2));
 	} else if (hit) {
-		if (s->imageOnly && !s->gridAdopted) {
+		// An image wider than 8 bits (a 16-bit band, a mask) is drawn from an 8-bit copy: its readout is
+		// its own VALUE (DN), never the colour of that copy. The topmost visible such image under the
+		// cursor answers (extras are drawn over the base, the later over the earlier).
+		QString dn;
+		bool haveDN = false;
+		if ((s->imageOnly && !s->gridAdopted) || !sceneHasVisibleGrid(s)) {
+			for (auto it = s->extras.rbegin(); !haveDN && it != s->extras.rend(); ++it)
+				if (it->isImage && it->actor && it->actor->GetVisibility() && it->dn.at(rdX, rdY, dn)) haveDN = true;
+			if (!haveDN && surfProp(s) && surfProp(s)->GetVisibility() && s->baseDN.at(rdX, rdY, dn))
+				haveDN = true;
+		}
+		if (haveDN) {
+			s->win->statusBar()->showMessage(QString("x = %1    y = %2    DN = %3")
+				.arg(rdX, 0, 'f', 3).arg(rdY, 0, 'f', 3).arg(dn));
+		} else if (s->imageOnly && !s->gridAdopted) {
 			// Bare image: no elevation -> show the pixel COLOUR under the cursor instead of z.
 			// Read it straight from the framebuffer (the drape is unlit, so the pixel is the
 			// image's true albedo). p is bottom-up display pixels, matching GetPixelData.

@@ -347,6 +347,38 @@ end
 		@test R !== nothing && size(R.z) == size(f.G.z)
 		@test abs(sum(R.z) / length(R.z)) < abs(sum(f.G.z) / length(f.G.z))
 		@test occursin("grid calculator", R.command)      # the recipe is stamped on the result
+		# A LOGICAL expression is a mask: a Bool image on the base grid's own geometry, not a 0/1 grid.
+		mexpr = "($base > 0) & ($base < 1e9)"
+		@test GmtModules.send(IG._on_gridcalc, f.h, ["expr=$mexpr", "base=$base"]) == 1
+		IG._pump_once()
+		Mi = IG._find_object_exact(f.h, :image, mexpr)              # the ROW'S object: the mask itself
+		@test Mi isa IG.GMTimage{Bool,2}
+		@test !haskey(get(IG._IMG_ORIG, f.h, Dict()), mexpr)        # not an 8-bit copy of a "wider" source
+		@test Mi.x == f.G.x && Mi.y == f.G.y && Mi.inc == f.G.inc && Mi.registration == f.G.registration
+		@test count(Mi.image) == count(z -> z > 0, f.G.z)
+		@test !(mexpr in GmtModules.names(f.h))                         # never ALSO a grid
+	finally
+		ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), f.h)
+	end
+end
+
+@testitem "grid calculator dialog parks: X, minimise, Esc, Close; Delete" tags=[:gui] setup=[GmtModules, GmtvtkTest] begin
+	IG = InteractiveGMT
+	_test_fn = GmtvtkTest._test_fn
+	f = viz(GmtModules.grid())
+	parked() = ccall(_test_fn(:gmtvtk_gridcalc_parked_test), Cint, (Ptr{Cvoid},), f.h)
+	opened() = ccall(_test_fn(:gmtvtk_gridcalc_open_dialog_test), Cint, (Ptr{Cvoid},), f.h)
+	leave(how) = ccall(_test_fn(:gmtvtk_gridcalc_leave_dialog_test), Cvoid, (Ptr{Cvoid}, Cint), f.h, how)
+	try
+		@test opened() == 1 && parked() == 0
+		for how in (0, 1, 2, 3)                        # the X, minimise, Esc, the Close button
+			leave(how)
+			@test parked() == 1
+			@test opened() == 1 && parked() == 0       # the menu brings the SAME one back
+		end
+		leave(0)
+		@test ccall(_test_fn(:gmtvtk_gridcalc_delete_dialog_test), Cint, (Ptr{Cvoid},), f.h) == 1
+		@test parked() == -1                           # Delete really destroys it
 	finally
 		ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), f.h)
 	end
@@ -560,6 +592,68 @@ end
 		@test ccall(GmtvtkTest._test_fn(:gmtvtk_interp_options_roundtrip_test), Cint,
 		            (Ptr{Cvoid}, Cstring, Cstring, Cstring, Ptr{UInt8}, Cint), h, "mbgrid", "scale", "3", buf, Cint(256)) == 1
 		@test unsafe_string(pointer(buf)) == "3"
+	finally
+		ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), h)
+	end
+end
+
+# A MASK IS A BOOLEAN IMAGE (0/1), whichever tool made it, and what the window shows is what Info and the
+# readout describe: a mask on screen is reported as the Bool image it is, and an image wider than 8 bits
+# reads out its own values (DN), never the colour of the 8-bit copy it is drawn from.
+@testitem "masks are Bool images; Info and the readout describe the image on screen" tags=[:gui] setup=[GmtModules, GmtvtkTest] begin
+	IG = InteractiveGMT
+	_test_fn = GmtvtkTest._test_fn
+	pump(n = 10) = for _ in 1:n; IG._pump_once(); sleep(0.03); end
+	hover(h, x, y) = (buf = zeros(UInt8, 1024);
+		ccall(_test_fn(:gmtvtk_hover_readout_test), Cint, (Ptr{Cvoid}, Cdouble, Cdouble, Ptr{UInt8}, Cint),
+		      h, x, y, buf, Cint(length(buf)));
+		GC.@preserve buf unsafe_string(pointer(buf)))
+	info(h) = mktemp() do path, io
+		redirect_stdout(() -> IG._info_text(IG._FIGREG[h], "grdinfo"), io)
+		flush(io);  read(path, String)
+	end
+	# z = 100*row + col (row 1 = south), so every node says where it is
+	G = IG.GMT.mat2grid(Float32[100iy + ix for iy in 1:10, ix in 1:20], x = collect(1.0:20.0), y = collect(1.0:10.0))
+	f = viz(G; title = "ZZmasklaw")
+	pump()
+	try
+		# the Grid calculator: a logical expression -> a Bool mask, which is then what the window shows
+		expr = "(Surface > 500) & (Surface < 900)"
+		@test GmtModules.send(IG._on_gridcalc, f.h, ["expr=$expr", "base=Surface"]) == 1
+		pump()
+		@test IG._active_element(f.h) == (2, expr)                     # the viewer: the mask is on screen
+		r = info(f.h)
+		@test occursin("GMTimage", r) && occursin("Bool", r)           # Info describes THE MASK...
+		@test !occursin("grid", lowercase(first(split(r, '\n'))))      # ...never the hidden grid under it
+		@test occursin("DN = 1", hover(f.h, 7.0, 6.0))                 # node 607: inside the condition
+		@test occursin("DN = 0", hover(f.h, 7.0, 2.0))                 # node 207: outside it
+
+		# Binarize / Flood fill / Classification hand over a 0/255 picture: it lands as a Bool mask
+		M8 = IG.GMT.mat2img(map(v -> v > 1000 ? 0xff : 0x00, IG._zmat(G)), G)
+		@test IG._commit_mask!(f.h, M8, "ZZbytes mask") == 1
+		pump()
+		Mb = IG._find_object_exact(f.h, :image, "ZZbytes mask")
+		@test Mb isa IG.GMTimage{Bool,2} && count(Mb.image) == count(>(1000), G.z)
+		@test !haskey(get(IG._IMG_ORIG, f.h, Dict()), "ZZbytes mask")   # not a stretch source
+	finally
+		ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), f.h)
+	end
+
+	# a 16-bit band (a Landsat DN raster): read as a UInt16 GMTimage, its readout is the DN under the cursor
+	d = mktempdir()
+	tif = joinpath(d, "band16.tif")
+	IG.GMT.gdaltranslate(G .+ 1000f0, ["-ot", "UInt16", "-of", "GTiff"], dest = tif)
+	w = IG.iview()
+	h = getfield(w, :h)
+	pump()
+	try
+		IG._open_spec_into(h, tif, basename(tif), true)
+		pump()
+		B = IG._info_image(h, IG._FIGREG[h])
+		@test B isa IG.GMTimage{UInt16}                               # the band, not its 8-bit copy
+		@test occursin("UInt16", info(h))
+		@test occursin("DN = 1407", hover(h, 7.0, 4.0))              # node (col 7, row 4) = 1000 + 407
+		@test occursin("DN = 1912", hover(h, 12.0, 9.0))
 	finally
 		ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), h)
 	end

@@ -11830,12 +11830,65 @@ static bool multiscaleAsk(QWidget *parent, int &method, int &nWin) {
 // the loaded-file paths to Julia (_on_gridcalc), which evaluates it element-wise and adds the result
 // as a NEW derived grid (SACRED_LAW derived-variable display law).
 // ============================================================================================
+// PARKED like every tool window (the Contours dialog above is the model): the X, the Close button,
+// minimise and Esc hide it into this window's Scene Objects, with its expression and its "Load Grid"
+// entries intact; the row brings it back (Show) or destroys it (Delete). Re-picking the menu entry
+// brings back the SAME dialog (g_gridCalcDlgs), never a second one.
+class GridCalculatorDialog;
+static std::map<Scene *, GridCalculatorDialog *> g_gridCalcDlgs;   // one per window, alive while parked
+
 class GridCalculatorDialog {
 public:
 	QDialog *dlg = nullptr;
 	Scene *scn = nullptr;
 	QPlainTextEdit *cmdEdit = nullptr;
 	QListWidget *listBox = nullptr;
+	bool reallyClose = false;  // set by the parked row's "Delete": let the next close through
+
+	// Every way back in (double-click, the row's checkbox, its "Show"). The window's grids may have
+	// changed while it was parked, so the list is asked for again.
+	void unpark() {
+		if (!dlg) return;
+		unparkTool(scn, dlg);
+		fillList();
+		dlg->setWindowState(dlg->windowState() & ~Qt::WindowMinimized);
+		dlg->showNormal();
+		dlg->raise();
+		dlg->activateWindow();
+	}
+
+	// The parked row's menu: properties button and context menu are the same lambda.
+	std::function<void(const QPoint &)> parkedMenu() {
+		return [this](const QPoint &g) {
+			QMenu m;
+			QAction *aShow = m.addAction("Show");
+			m.addSeparator();
+			QAction *aDel  = m.addAction("Delete");
+			QAction *pick  = m.exec(g);
+			if (pick == aShow) unpark();
+			else if (pick == aDel) {
+				reallyClose = true;
+				unparkTool(scn, dlg);
+				dlg->deleteLater();          // destroyed -> the row and this object go with it
+			}
+		};
+	}
+
+	// Hide and leave the handle: the ONE way out for the X, Close, minimise and Esc. Idempotent.
+	void park() {
+		if (!dlg || reallyClose || !sceneAlive(scn)) return;
+		dlg->hide();
+		GridCalculatorDialog *c = this;
+		parkTool(scn, dlg, "Grid calculator", IC_Surface,
+		         "Parked Grid calculator — double-click to bring it back, click for Show / Delete",
+		         [c]() { c->unpark(); }, parkedMenu());
+	}
+
+	// Registry entry dropped by VALUE: when the viewer window goes the Scene may already be gone.
+	~GridCalculatorDialog() {
+		for (auto it = g_gridCalcDlgs.begin(); it != g_gridCalcDlgs.end(); )
+			it = (it->second == this) ? g_gridCalcDlgs.erase(it) : std::next(it);
+	}
 
 	explicit GridCalculatorDialog(QWidget *parent, Scene *scene) : scn(scene) {
 		QUiLoader loader;
@@ -11847,11 +11900,37 @@ public:
 		dlg = qobject_cast<QDialog *>(loader.load(&f, parent));
 		f.close();
 		if (!dlg) { qWarning("GridCalculatorDialog: QUiLoader failed to load the .ui"); return; }
-		dlg->setAttribute(Qt::WA_DeleteOnClose);
-		dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint);
+		// No WA_DeleteOnClose: a close PARKS (the dialog has to survive it). The minimise button parks too.
+		dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint | Qt::WindowMinimizeButtonHint);
 		dlg->setWindowModality(Qt::NonModal);
 		dlg->setWindowTitle("Grid calculator");
 		QDialog *d = dlg;
+		g_gridCalcDlgs[scn] = this;
+
+		struct CloseParks : QObject {
+			GridCalculatorDialog *gc;
+			CloseParks(QObject *parent, GridCalculatorDialog *c) : QObject(parent), gc(c) {}
+			bool eventFilter(QObject *o, QEvent *e) override {
+				if (e->type() == QEvent::Close && gc) {
+					if (!gc->reallyClose && sceneAlive(gc->scn)) {
+						e->ignore();
+						gc->park();
+						return true;
+					}
+					gc->dlg->deleteLater();      // a real close (Delete, or no window to park in)
+				}
+				// Esc parks too, and is consumed: QDialog's reject() would hide it with no Close event
+				if (e->type() == QEvent::KeyPress && gc &&
+				    static_cast<QKeyEvent *>(e)->key() == Qt::Key_Escape) {
+					if (sceneAlive(gc->scn)) gc->park();
+					else gc->dlg->close();
+					return true;
+				}
+				return QObject::eventFilter(o, e);
+			}
+		};
+		dlg->installEventFilter(new CloseParks(dlg, this));
+		parkOnMinimise(dlg, [this]() { park(); });   // the shared handler (50_scene.cpp)
 
 		cmdEdit = d->findChild<QPlainTextEdit *>("edit_command");
 		listBox = d->findChild<QListWidget *>("listbox_inArrays");
@@ -11928,7 +12007,10 @@ public:
 		addManualButton(d, "grdmath");     // the green ? disk, lower-left as in every other dialog
 		fillList();
 
-		QObject::connect(d, &QObject::destroyed, d, [this]() { delete this; });
+		QObject::connect(d, &QObject::destroyed, d, [this]() {
+			unparkTool(scn, dlg);              // never leave a row pointing at a dead window (no-op if none)
+			delete this;
+		});
 	}
 
 	// The Scene Objects label of this window's base grid — the name Julia knows it by is "" (it is the
@@ -12000,6 +12082,16 @@ public:
 		                             "Compute failed — see this window's Errors console for details.");
 	}
 };
+
+// The menu entry (and its test hook): the parked dialog back if this window has one, else a new one.
+static int openGridCalcDialog(QWidget *win, Scene *s) {
+	auto it = g_gridCalcDlgs.find(s);
+	if (it != g_gridCalcDlgs.end() && it->second && it->second->dlg) { it->second->unpark(); return 1; }
+	auto *w = new GridCalculatorDialog(win, s);
+	if (!w->dlg) { delete w; return 0; }
+	w->dlg->show();
+	return 1;
+}
 
 // ============================================================================================
 // grdtrend (GMT menu) — fit a low-order polynomial trend to the window's grid. Layout is Mirone's
@@ -33888,10 +33980,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// "Grid calculator" (port of Mirone src_figs/grid_calculator.m): combine the window's grids with
 	// an arithmetic expression. Opens on ANY window: one-band images (a Landsat band) are operands too,
 	// and with nothing listed the grids come in through its own "Load Grid".
-	mGridTools->addAction("Grid calculator…", [win, s]() {
-		auto *w = new GridCalculatorDialog(win, s);
-		if (w->dlg) w->dlg->show();
-	});
+	mGridTools->addAction("Grid calculator…", [win, s]() { openGridCalcDialog(win, s); });
 
 	// "Terrain Modeling" (port of Mirone src_figs/multiscale.m + the mirblock.c MEX behind it): pick
 	// a moving-window method and a window size, and the chosen quantity is computed for every node.

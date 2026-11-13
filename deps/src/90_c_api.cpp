@@ -4953,6 +4953,25 @@ GMTVTK_API void gmtvtk_image_set_has_orig_h(void *handle, const char *name, int 
 	imageFlagSet(s, s->imgHasOrig, name ? name : "", on != 0);
 }
 
+// The pixel VALUES (DN) of an image drawn from an 8-bit copy, for the hover readout (see ImgDN). `buf`
+// = nx*ny*nb values, row 0 = south, west -> east, bands fastest, spanning [x0,x1]x[y0,y1]; copied, so
+// the host's buffer is free once this returns. Kept on the image's OWN object (the extra, or the
+// primary), so it goes when the image does. `buf` NULL clears it.
+GMTVTK_API void gmtvtk_image_set_dn_h(void *handle, const char *name, const uint16_t *buf, int nx, int ny,
+                                      int nb, double x0, double x1, double y0, double y1) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s)) return;
+	bool isPrimary = false;
+	ExtraObj *ex = imageExtraByName(s, name ? name : "", isPrimary);
+	ImgDN *d = ex ? &ex->dn : (isPrimary ? &s->baseDN : nullptr);
+	if (!d) return;
+	*d = ImgDN{};
+	if (!buf || nx <= 0 || ny <= 0 || nb <= 0) return;
+	d->v.assign(buf, buf + (size_t)nx * ny * nb);
+	d->nx = nx;  d->ny = ny;  d->nb = nb;
+	d->x0 = x0;  d->x1 = x1;  d->y0 = y0;  d->y1 = y1;
+}
+
 // Is this image genuine 3-band RGB? Only such an image offers "Explore RGB", which splits it into
 // its colour components (Mirone hides the entry for anything else). The viewer cannot tell — every
 // image arrives as an RGBA texture, grey and indexed ones expanded on the way — so Julia says.
@@ -5802,9 +5821,10 @@ GMTVTK_API int gmtvtk_workspace_show_h(void *handle) {
 	QDockWidget *dock = s->win->findChild<QDockWidget*>(kWsDockName);
 	auto *tree = dock ? qobject_cast<QTreeWidget*>(dock->widget()) : nullptr;
 	if (!tree) return -1;
+	// variable rows, inside the "This window" / "Julia session" groups (a group row carries no kind)
 	int n = 0;
-	for (int i = 0; i < tree->topLevelItemCount(); ++i)
-		if (!tree->topLevelItem(i)->data(0, Qt::UserRole).toString().isEmpty()) ++n;
+	for (QTreeWidgetItemIterator it(tree); *it; ++it)
+		if (!(*it)->data(0, Qt::UserRole).toString().isEmpty()) ++n;
 	return n;
 }
 
@@ -8495,6 +8515,42 @@ GMTVTK_API const char *gmtvtk_active_grid_name_h(void *handle) {
 	Scene *s = static_cast<Scene *>(handle);
 	out = sceneAlive(s) ? activeGridName(s) : std::string();
 	return out.c_str();
+}
+
+// WHAT THE WINDOW IS SHOWING, of any kind -- what Info ("i") describes. The visible grid layer when
+// there is one (resolveActiveGrid, the readout's and colour bar's resolver); otherwise the TOPMOST
+// VISIBLE IMAGE, by the image pile's own rule (greatest zpos, later extras win a tie -- as
+// resolveActivePalette), then the primary image. Returns 1 = grid, 2 = image, 0 = nothing on screen;
+// `out` gets its Scene Objects name ("" = the base surface, as gmtvtk_active_grid_name_h).
+GMTVTK_API int gmtvtk_active_element_h(void *handle, char *out, int cap) {
+	if (out && cap > 0) out[0] = '\0';
+	Scene *s = static_cast<Scene *>(handle);
+	if (!sceneAlive(s)) return 0;
+	auto put = [out, cap](const std::string &nm) {
+		if (out && cap > 0) {
+			const int n = std::min<int>((int)nm.size(), cap - 1);
+			memcpy(out, nm.data(), n);
+			out[n] = '\0';
+		}
+	};
+	if (sceneHasVisibleGrid(s)) {
+		put(activeGridName(s));
+		return 1;
+	}
+	const ExtraObj *best = nullptr;
+	for (auto &ex : s->extras) {
+		if (!ex.isImage || !ex.actor || !ex.actor->GetVisibility()) continue;
+		if (!best || ex.zpos >= best->zpos) best = &ex;
+	}
+	if (best) {
+		put(best->name);
+		return 2;
+	}
+	if (s->imageOnly && surfProp(s) && surfProp(s)->GetVisibility()) {
+		put(s->surfName);
+		return 2;
+	}
+	return 0;
 }
 
 // The CRS selector (73_crsselect.cpp): its one data callback (src/crsselect.jl). nullptr to detach.
@@ -11454,6 +11510,52 @@ GMTVTK_API int gmtvtk_grdblend_delete_dialog_test(void *handle) {
 	testDeleteParkedDialog(&g);
 	return blendTestDlg(handle) == nullptr ? 1 : 0;
 }
+// ---- Grid calculator (GridCalculatorDialog): the same open / leave / parked / delete shape ------
+static GridCalculatorDialog *gridCalcTestDlg(void *handle) {
+	auto it = g_gridCalcDlgs.find(static_cast<Scene *>(handle));
+	return (it == g_gridCalcDlgs.end()) ? nullptr : it->second;
+}
+GMTVTK_API int gmtvtk_gridcalc_open_dialog_test(void *handle) {
+	ensureApp();
+	Scene *s = static_cast<Scene *>(handle);
+	if (!s || !s->win) return 0;
+	testBorrowScene(s);
+	const int ok = openGridCalcDialog(s->win, s);
+	QApplication::processEvents();
+	return ok;
+}
+// how: 0 = the X (close), 1 = minimise, 2 = Esc, 3 = the dialog's own Close button.
+GMTVTK_API void gmtvtk_gridcalc_leave_dialog_test(void *handle, int how) {
+	GridCalculatorDialog *g = gridCalcTestDlg(handle);
+	if (!g || !g->dlg) return;
+	if (how == 1) g->dlg->setWindowState(g->dlg->windowState() | Qt::WindowMinimized);
+	else if (how == 2) {
+		QKeyEvent esc(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+		QApplication::sendEvent(g->dlg, &esc);
+	}
+	else if (how == 3) {
+		if (auto *b = g->dlg->findChild<QPushButton *>("push_close")) b->click();
+	}
+	else g->dlg->close();
+	QApplication::processEvents();
+}
+// 1 = parked (hidden + a Scene Objects row), 0 = on screen, -1 = no dialog.
+GMTVTK_API int gmtvtk_gridcalc_parked_test(void *handle) {
+	Scene *s = static_cast<Scene *>(handle);
+	GridCalculatorDialog *g = gridCalcTestDlg(handle);
+	if (!g || !g->dlg) return -1;
+	const bool hidden = !g->dlg->isVisible();
+	bool row = false;
+	if (s) for (auto &pt : s->parkedTools) if (pt.win == g->dlg) row = true;
+	return (hidden && row) ? 1 : 0;
+}
+GMTVTK_API int gmtvtk_gridcalc_delete_dialog_test(void *handle) {
+	GridCalculatorDialog *g = gridCalcTestDlg(handle);
+	if (!g) return 0;
+	testDeleteParkedDialog(&g);
+	return gridCalcTestDlg(handle) == nullptr ? 1 : 0;
+}
+
 // Put `paths` (newline-separated) on the map through the dialog's own header read (the Julia
 // callback, as Scan and Add... do). Returns how many boxes the map holds.
 GMTVTK_API int gmtvtk_grdblend_feed_test(void *handle, const char *paths) {

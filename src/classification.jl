@@ -244,7 +244,7 @@ function _on_classify(scene::Ptr{Cvoid}, dlg::Ptr{Cvoid}, cparams::Cstring)::Cin
 			end
 			lbl = join(sort(classes) .- 1, ",")
 			if asmask                                          # "Isolate as mask": the union, binary
-				_commit_derived_image!(scene, _ff_mask_image(sel, st.src), "$src (class $lbl mask)")
+				_commit_mask!(scene, _ff_mask_image(sel, st.src), "$src (class $lbl mask)")
 			else                                               # "Isolate as color"
 				_commit_derived_image!(scene, _km_isolate_color(sel, rgb, st.src), "$src (class $lbl)")
 			end

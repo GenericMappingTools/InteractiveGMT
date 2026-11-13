@@ -1,0 +1,6 @@
+# Test-item discovery scope (TestItemRunner and the VS Code test explorer read this file).
+# The installer build keeps a full copy of the package under deps/build/installer_depot. Its test/
+# holds a second, STALE `@testmodule GmtvtkTest`, and discovery is breadth-first, so that copy was the
+# one loaded: every test hook added after the copy was made failed as "missing symbol". Items were
+# already limited to this checkout's test/ (runtests.jl `_progress_filter`); setup modules are now too.
+exclude = ["/deps/build/"]

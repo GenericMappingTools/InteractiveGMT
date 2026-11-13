@@ -15,10 +15,10 @@
 	fold() = ccall(_test_fn(:gmtvtk_workspace_fold_test), Cint, (Ptr{Cvoid},), fig.h)
 	pump()
 	# the test runner is a script host: its globals (made before the first window) are hidden...
-	@test IG._ws_listing(true) isa String && !isempty(PROGRAM_FILE)
+	@test IG._ws_listing(fig.h, true) isa String && !isempty(PROGRAM_FILE)
 	push!(IG._WS_BASE, :ws_hostglobal)
 	Core.eval(Main, :(ws_hostglobal = 1))
-	@test !occursin("ws_hostglobal\t", IG._ws_listing(true))
+	@test !occursin("ws_hostglobal\t", IG._ws_listing(fig.h, true))
 	# ...but these were made on purpose by this test, so they must show
 	setdiff!(IG._WS_BASE, (:ws_G, :ws_I, :ws_M, :ws_x))
 	try
@@ -87,7 +87,7 @@
 		ccall(IG._fn(:gmtvtk_workspace_show_h), Cint, (Ptr{Cvoid},), fig.h)
 		@test fold() < 0                 # it was open, so this press folds it again
 		fold()
-		L = IG._ws_listing(true)
+		L = IG._ws_listing(fig.h, true)
 		@test occursin("ws_G\t\t20×10\t", L) && occursin("\tgrid\t1\t", L)
 		@test occursin("ws_I\t\t7×12×3\t", L) && occursin("\timage\t3\t", L)
 		@test occursin("ws_x\t3.5\t", L)
@@ -130,7 +130,7 @@
 		end)
 		# (read in the latest world: the type and its methods were defined just above, inside this item)
 		@test Base.invokelatest(IG.GMT.isdataframe, Base.invokelatest(getglobal, Main, :ws_DF))
-		L = Base.invokelatest(IG._ws_listing, true)
+		L = Base.invokelatest(IG._ws_listing, fig.h, true)
 		@test occursin("ws_DF\t\t3×3\t", L) && occursin("\tdataframe\t", L)
 		@test ask(fig.h, "table\tws_DF") == 0
 		pump()
@@ -167,5 +167,60 @@
 		Core.eval(Main, :(ws_G = ws_I = ws_M = ws_x = ws_B = ws_hostglobal = ws_v = ws_D = ws_DF = nothing))
 		ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), fig.h)
 		pump()
+	end
+end
+
+# The window's grids and images are variables too: each Scene Objects raster is bound to a Julia name
+# (listed under "This window"), so the console computes with it -- a mask from a condition, shown back.
+@testitem "workspace: a window's rasters are variables (mask by a condition)" tags=[:gui] setup=[GmtvtkTest] begin
+	IG = InteractiveGMT
+	pump(n = 10) = for _ in 1:n; sleep(0.05); end
+	G = IG.GMT.mat2grid(Float32[100iy + ix for iy in 1:10, ix in 1:20], x = collect(1.0:20.0), y = collect(1.0:10.0))
+	fig = IG.viz(G; title = "ZZwsscene")
+	pump()
+	ERRB = zeros(UInt8, 4096)
+	bound(h) = Dict(t[2] => s for (s, t) in IG._WS_BOUND if t[1] == h)
+	try
+		L = Base.invokelatest(IG._ws_listing, fig.h, true)
+		b = bound(fig.h)
+		@test length(b) == 1
+		base = only(keys(b)); sym = b[base]
+		@test Base.invokelatest(getglobal, Main, sym) === G          # the window's own object, no copy
+		@test occursin("$(sym)\t\t20×10\t", L) && endswith(first(filter(l -> startswith(l, "$(sym)\t"), split(L, '\n'))), "\t$base")
+
+		# a condition in the console -> a mask grid, shown into the window under its own name
+		Core.eval(Main, :(ws_mask = $sym .> 500))
+		M = Base.invokelatest(getglobal, Main, :ws_mask)
+		@test M isa IG.GMTgrid && sum(M.z) == count(>(500), G.z) > 0
+		@test IG._on_workspace(fig.h, Base.unsafe_convert(Cstring, "here\tws_mask"), Ptr{UInt8}(C_NULL), Cint(0),
+		                       pointer(ERRB), Cint(length(ERRB))) == 0
+		pump()
+		Base.invokelatest(IG._ws_listing, fig.h, true)
+		b = bound(fig.h)
+		# A MASK IS A BOOLEAN IMAGE: the logical grid entered the window as one (a new object), so its
+		# row has its own variable, and the user's `ws_mask` (the Bool grid) is left as it was
+		@test haskey(b, "ws_mask")
+		mrow = Base.invokelatest(getglobal, Main, b["ws_mask"])
+		@test mrow isa IG.GMTimage{Bool,2} && count(mrow.image) == count(>(500), G.z)
+		@test Base.invokelatest(getglobal, Main, :ws_mask) === M
+
+		# its row removed: the row's variable is released, the user's own is never touched
+		ccall(IG._fn(:gmtvtk_remove_image_h), Cint, (Ptr{Cvoid}, Cstring), fig.h, "ws_mask")
+		pump()
+		Base.invokelatest(IG._ws_listing, fig.h, true)
+		@test !haskey(bound(fig.h), "ws_mask") && Base.invokelatest(getglobal, Main, :ws_mask) === M
+
+		# the window closed: the name the panel made is released (holds nothing, not listed)
+		ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), fig.h)
+		pump(20)
+		fig2 = IG.viz(G; title = "ZZwsscene2")
+		pump()
+		L2 = Base.invokelatest(IG._ws_listing, fig2.h, true)
+		@test Base.invokelatest(getglobal, Main, sym) === nothing || haskey(IG._WS_BOUND, sym)
+		@test !(sym in keys(IG._WS_BOUND)) || IG._WS_BOUND[sym][1] == fig2.h
+		ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), fig2.h)
+		pump()
+	finally
+		Core.eval(Main, :(ws_mask = nothing))
 	end
 end

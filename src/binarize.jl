@@ -444,8 +444,9 @@ _bin_name(st::_BinState, what::AbstractString) =
 # rides along because every image here was built with mat2img(mat, I).
 function _bin_commit!(st::_BinState, applyOrig::Bool, useAlpha::Bool)
 	if !applyOrig
-		Iout = st.mask
-		name = _bin_name(st, "mask")
+		# THE MASK IS A BOOLEAN IMAGE (0/1): the 0/255 working copy is only the dialog's preview.
+		_commit_mask!(st.scene, st.mask, _bin_name(st, "mask"))
+		return
 	else
 		Iout = _bin_masked_image(st, useAlpha)
 		name = _bin_name(st, useAlpha ? "masked, alpha" : "masked")

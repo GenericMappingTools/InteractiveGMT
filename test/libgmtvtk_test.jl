@@ -103,6 +103,9 @@ const _TEST_SYMBOLS = (
 	:gmtvtk_landmask_open_dialog_test, :gmtvtk_landmask_leave_dialog_test,
 	:gmtvtk_landmask_parked_test, :gmtvtk_landmask_delete_dialog_test,
 	:gmtvtk_ttt_open_dialog_test, :gmtvtk_ttt_leave_dialog_test, :gmtvtk_ttt_parked_test, :gmtvtk_ttt_delete_dialog_test, :gmtvtk_ttt_place_source_test, :gmtvtk_ttt_src_fill_test,
+	:gmtvtk_gridcalc_open_dialog_test, :gmtvtk_gridcalc_leave_dialog_test, :gmtvtk_gridcalc_parked_test,
+	:gmtvtk_gridcalc_delete_dialog_test,
+	:gmtvtk_hover_readout_test,       # the status-bar readout after a genuine mouse move over (x,y)
 	:gmtvtk_grdblend_open_dialog_test, :gmtvtk_grdblend_leave_dialog_test, :gmtvtk_grdblend_parked_test,
 	:gmtvtk_grdblend_delete_dialog_test, :gmtvtk_grdblend_feed_test, :gmtvtk_grdblend_pick_test,
 	:gmtvtk_grdblend_region_test, :gmtvtk_grdblend_scan_test, :gmtvtk_grdblend_key_test,

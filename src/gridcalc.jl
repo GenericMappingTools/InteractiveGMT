@@ -217,6 +217,22 @@ function _gridcalc_eval(objs::Vector{Tuple{String,GMTgrid}}, files::Dict{String,
 	return z
 end
 
+# A LOGICAL expression (a comparison, `&`, `|`, `!` — anything whose result is true/false per node) is
+# a MASK, and comes back as one: a Bool image, not a 0/1 Float32 grid. It sits on the reference grid's
+# own geometry (`mat2img(mask, ref)` copies its x/y, increments, registration and CRS) and its buffer
+# is the result as it lies, in `ref`'s element order (see `_gridcalc_eval`): a row-major `ref` holds its
+# z as (ny,nx) dims over x-fastest memory, which an image of that layout describes as (nx,ny) -- the same
+# bytes, only the dims change (the reverse of `_gc_image_grid`, so a mask is an operand again).
+function _gc_mask_image(z::AbstractMatrix{Bool}, ref::GMTgrid)::GMTimage
+	nx, ny = _grid_dims(ref)
+	rowmajor = length(ref.layout) >= 2 && ref.layout[2] == 'R'
+	m = Vector{Bool}(vec(z))                          # a BitMatrix is not an Array: unpack once
+	return GMT.mat2img(rowmajor ? reshape(m, nx, ny) : reshape(m, ny, nx), ref)
+end
+
+# A Bool GRID (what `G .> 100` gives in the console) is the same mask on a grid's nodes.
+_gc_mask_image(G::GMTgrid{Bool,2})::GMTimage = _gc_mask_image(G.z, G)
+
 # C callback (Compute button): `cparams` is the newline-separated "key=value" block described in
 # 30_app.cpp's JuliaGridCalcFn — expr / base / file1…fileN.
 # Returns Cint 1 on success, 0 on failure — the dialog turns this into its own modal answer.
@@ -235,9 +251,10 @@ function _on_gridcalc(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		objs = _gc_with_reference(_gridcalc_objects(scene, _get(d, "base")), files, expr)
 
 		z = _gridcalc_eval(objs, files, expr)
+		title = length(expr) <= 60 ? String(expr) : String(expr)[1:60] * "…"
+		eltype(z) == Bool && return _commit_mask!(scene, _gc_mask_image(z, objs[1][2]), title)
 		G = GMT.mat2grid(Float32.(z), objs[1][2])
 		_grid_command!(G, "InteractiveGMT grid calculator: " * String(expr))
-		title = length(expr) <= 60 ? String(expr) : String(expr)[1:60] * "…"
 		return _gm3d_deliver(scene, G, title, "", false, "gridcalc")
 	catch e
 		_tool_failed(scene, "Grid calculator", e)

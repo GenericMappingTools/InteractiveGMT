@@ -25,6 +25,12 @@ static bool g_wsBusy = false;          // an action is running: the 1 s refresh 
 struct WsItem : public QTreeWidgetItem {
 	using QTreeWidgetItem::QTreeWidgetItem;
 	bool operator<(const QTreeWidgetItem &o) const override {
+		// the two groups ("This window", "Julia session") keep their order whichever way the rows sort
+		const QVariant ra = data(0, Qt::UserRole + 4), rb = o.data(0, Qt::UserRole + 4);
+		if (ra.isValid() && rb.isValid()) {
+			const bool desc = treeWidget() && treeWidget()->header()->sortIndicatorOrder() == Qt::DescendingOrder;
+			return desc ? ra.toInt() > rb.toInt() : ra.toInt() < rb.toInt();
+		}
 		const int c = treeWidget() ? treeWidget()->sortColumn() : 0;
 		if (c == 4) return data(4, Qt::UserRole).toDouble() < o.data(4, Qt::UserRole).toDouble();
 		return QTreeWidgetItem::operator<(o);
@@ -70,6 +76,12 @@ static void wsRefresh(Scene *s, QTreeWidget *tree, bool force) {
 
 	const QString cur = tree->currentItem() ? tree->currentItem()->text(0) : QString();
 	const int scroll = tree->verticalScrollBar()->value();
+	// the two groups keep the open/closed state the user left them in
+	for (int g = 0; g < tree->topLevelItemCount(); ++g) {
+		QTreeWidgetItem *gi = tree->topLevelItem(g);
+		const QString key = gi->data(0, Qt::UserRole + 3).toString();
+		if (!key.isEmpty()) tree->setProperty(("igWsFold_" + key).toUtf8().constData(), !gi->isExpanded());
+	}
 	tree->setUpdatesEnabled(false);
 	tree->setSortingEnabled(false);
 	tree->clear();
@@ -78,19 +90,51 @@ static void wsRefresh(Scene *s, QTreeWidget *tree, bool force) {
 		it->setFlags(Qt::NoItemFlags);
 	}
 	else {
-		// name \t value \t size \t type \t bytes \t kind \t bands \t nbytes
+		// Two groups: the grids and images of THIS window's Scene Objects (bound to Julia variables by
+		// workspace.jl, so the console computes with them by name), then the rest of the session.
+		auto group = [tree](const QString &key, const QString &title, int rank, const QString &tip) {
+			auto *g = new WsItem(tree, {title});
+			g->setData(0, Qt::UserRole + 3, key);
+			g->setData(0, Qt::UserRole + 4, rank);
+			g->setFlags(Qt::ItemIsEnabled);
+			g->setFirstColumnSpanned(true);
+			QFont f = g->font(0);
+			f.setBold(true);
+			g->setFont(0, f);
+			g->setToolTip(0, tip);
+			return g;
+		};
+		QTreeWidgetItem *gScene = nullptr, *gJulia = nullptr;
+		// name \t value \t size \t type \t bytes \t kind \t bands \t nbytes \t origin
 		for (const QString &line : txt.split('\n', Qt::SkipEmptyParts)) {
 			const QStringList f = line.split('\t');
 			if (f.size() < 8) continue;
-			auto *it = new WsItem(tree, {f[0], f[1], f[2], f[3], f[4]});
+			const QString origin = f.value(8);
+			QTreeWidgetItem *parent;
+			if (!origin.isEmpty()) {
+				if (!gScene) gScene = group("scene", "This window", 0,
+					"The grids and images of this window's Scene Objects. Each one is a Julia variable "
+					"of that name: use it in the console (mask = name .> 100).");
+				parent = gScene;
+			}
+			else {
+				if (!gJulia) gJulia = group("julia", "Julia session", 1, "The variables of the Julia session (Main).");
+				parent = gJulia;
+			}
+			auto *it = new WsItem(parent, {f[0], f[1], f[2], f[3], f[4]});
 			it->setData(0, Qt::UserRole, f[5]);
 			it->setData(0, Qt::UserRole + 1, f[6].toInt());
+			it->setData(0, Qt::UserRole + 2, origin);
 			it->setData(4, Qt::UserRole, f[7].toDouble());
+			it->setToolTip(0, origin.isEmpty() ? f[0] : QString("%1 = Scene Objects \"%2\"").arg(f[0], origin));
 			it->setToolTip(1, f[1]);
 			it->setToolTip(3, f[3]);
 			it->setTextAlignment(4, Qt::AlignRight | Qt::AlignVCenter);
 			if (f[0] == cur) tree->setCurrentItem(it);
 		}
+		for (QTreeWidgetItem *g : {gScene, gJulia})
+			if (g) g->setExpanded(!tree->property(("igWsFold_" + g->data(0, Qt::UserRole + 3).toString())
+			                                          .toUtf8().constData()).toBool());
 	}
 	tree->setSortingEnabled(true);
 	for (int c = 0; c < tree->columnCount(); ++c) tree->resizeColumnToContents(c);
@@ -146,6 +190,7 @@ static void wsMenu(Scene *s, QTreeWidget *tree, const QPoint &p) {
 	if (it && !kind.isEmpty()) {
 		const QString name = it->text(0);
 		const int nb = it->data(0, Qt::UserRole + 1).toInt();
+		const bool inWindow = !it->data(0, Qt::UserRole + 2).toString().isEmpty();   // already shown here
 		QAction *def = nullptr;
 		// The first, plain-words option: "Plot it" for a series (X,Y tool), "See it" for anything that
 		// is a picture or a solid (a new window, through the same door as "...in a new window").
@@ -168,7 +213,8 @@ static void wsMenu(Scene *s, QTreeWidget *tree, const QPoint &p) {
 				wsAct(s, tree, "table", name, kind == "image" ? "1" : QString());
 			});
 		if (kind == "grid" || kind == "image" || kind == "matrix") {
-			m.addAction("Show as image in this window", [s, tree, name]() { wsAct(s, tree, "here", name); });
+			if (!inWindow)
+				m.addAction("Show as image in this window", [s, tree, name]() { wsAct(s, tree, "here", name); });
 			m.addAction("Show as image in a new window", [s, tree, name]() { wsAct(s, tree, "new", name); });
 		}
 		else if (kind == "dataset") {
@@ -280,7 +326,7 @@ static void workspaceShow(Scene *s) {
 		QTreeWidget *tree = new QTreeWidget(dock);
 		tree->setColumnCount(5);
 		tree->setHeaderLabels({"Name", "Value", "Size", "Type", "Bytes"});
-		tree->setRootIsDecorated(false);
+		tree->setRootIsDecorated(true);             // the "This window" / "Julia session" groups
 		tree->setUniformRowHeights(true);
 		tree->setAlternatingRowColors(true);
 		tree->setSortingEnabled(true);

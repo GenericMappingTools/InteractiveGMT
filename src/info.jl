@@ -13,6 +13,30 @@ _info_object(fig::QtFigure) = fig.G
 _info_object(fig::QtImage)  = fig.I
 _info_object(::Any)         = nothing
 
+# The window's image AS IT IS, not as it is drawn: the object its row holds (a Bool mask stays Bool),
+# and for a 16-bit band the full-precision original the image add stashed beside its 8-bit display
+# copy -- the same (key, original) pair Auto histogram stretch reads (savefile.jl `_on_img_stretch`).
+function _info_image(h::Ptr{Cvoid}, fig, name::AbstractString = "")
+	h == C_NULL && return _info_object(fig)
+	if isempty(name)
+		key, I = _find_object_named(h, :image)
+		I isa GMTimage || return _info_object(fig)
+	else                                           # a NAMED image: that one, or nothing (no fallback)
+		key, I = String(name), _find_object_exact(h, :image, name)
+		I isa GMTimage || return nothing
+	end
+	d = get(_IMG_ORIG, h, nothing)
+	return d === nothing ? I : get(d, key, I)
+end
+
+# The viewer's answer to "what is this window showing": (1, grid name) / (2, image name) / (0, "").
+function _active_element(h::Ptr{Cvoid})
+	(h == C_NULL || !haskey(_LIB_FNS, :gmtvtk_active_element_h)) && return 0, ""
+	buf = zeros(UInt8, 4096)
+	k = ccall(_fn(:gmtvtk_active_element_h), Cint, (Ptr{Cvoid}, Ptr{UInt8}, Cint), h, buf, Cint(length(buf)))
+	return Int(k), GC.@preserve buf unsafe_string(pointer(buf))
+end
+
 # THE REPORT IS ABOUT THE DATA FILE, when there is one — and about nothing else. What sits in memory
 # is not what the file holds: GMT.jl reads every integer raster into a Float32 grid, so reporting the
 # in-memory object says "Float32" about an Int16 GeoTIFF, which is the one thing an Info button must
@@ -37,6 +61,18 @@ end
 # One report, whichever reporter and whichever source — the ONE place that decides file-or-object, so
 # the toolbar button and a Scene Objects row can never answer differently.
 function _info_report(obj, path::AbstractString, mode::AbstractString)::Nothing
+	# AN IMAGE IS NOT A GRID. grdinfo reads any raster it is pointed at as a grid -- a UInt16 Landsat
+	# band came back as a Float grid report, and the in-memory image object it cannot read at all ("not
+	# a GRID container type"). The grid reporter's slot therefore describes an image as the image it
+	# is: GMT's own image header (GMTimage, its element type -- UInt16 for a band --, bands, georef).
+	if obj isa GMTimage && mode != "gdalinfo"
+		try
+			GMT.info(obj, false)                      # prints; the console door captures stdout
+		catch e
+			print("info failed: ", sprint(showerror, e))
+		end
+		return nothing
+	end
 	src = isempty(path) ? obj : path
 	local r
 	try
@@ -67,9 +103,19 @@ _info_to_string(x) = sprint(show, MIME("text/plain"), x)
 # only the fallback for a window with no grid layer at all (an image).
 function _info_text(fig, mode::AbstractString)::Nothing
 	h = try _fig_handle(fig) catch; C_NULL end
-	name = h == C_NULL ? "" : _active_grid_name(h)
+	# WHAT IS ON SCREEN, asked of the viewer (gmtvtk_active_element_h): the visible grid, else the
+	# topmost visible image. Asking for "the grid" first answered with a HIDDEN grid whenever the window
+	# showed only an image -- a mask just computed from a grid unchecks that grid, and Info went on
+	# describing it.
+	kind, ename = _active_element(h)
+	if kind == 2
+		I = _info_image(h, fig, ename)
+		I === nothing && (print("No image named \"$ename\" found."); return nothing)
+		return _info_report(I, _info_source_file(h, ename), mode)
+	end
+	name = kind == 1 ? ename : (h == C_NULL ? "" : _active_grid_name(h))
 	G = h == C_NULL ? nothing : _active_grid(h, name)
-	obj = G === nothing ? _info_object(fig) : G
+	obj = G === nothing ? _info_image(h, fig) : G
 	if obj === nothing
 		print("No grid or image in this window.")
 		return nothing

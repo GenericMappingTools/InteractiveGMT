@@ -352,7 +352,7 @@ function _on_floodfill(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 			elseif mode == 2                             # mask: the OR of every colour (line 606-610)
 				acc = masks[1]
 				for k = 2:length(masks)  acc = acc .| masks[k]  end
-				_commit_derived_image!(scene, _ff_mask_image(_ff_clean(acc), I), "$src (segmentation mask)")
+				_commit_mask!(scene, _ff_mask_image(_ff_clean(acc), I), "$src (segmentation mask)")
 			else                                         # ONE image, each colour painted back into it
 				out = fill(bg, size(P))
 				for m in masks, k = 1:size(P, 3), c = 1:size(P, 2), r = 1:size(P, 1)
@@ -375,7 +375,7 @@ function _on_floodfill(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 			# must still show/hide/die together under one master row.
 			_ff_draw_shapes(scene, D, "Colour 1", "$src (shapes)")
 		elseif mode == 2                                 # radio_mask
-			_commit_derived_image!(scene, _ff_mask_image(_ff_clean(mask), I), "$src (segmentation mask)")
+			_commit_mask!(scene, _ff_mask_image(_ff_clean(mask), I), "$src (segmentation mask)")
 		else                                             # radio_colorSegment
 			_commit_derived_image!(scene, _ff_segment_image(P, _ff_clean(mask), bg, I),
 			                       "$src (color segmentation)")

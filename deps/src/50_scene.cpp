@@ -1624,6 +1624,12 @@ static int activeOwnerTag(Scene *s) {
 	return (ag.valid && ag.tag >= 0) ? ag.tag : kAxesOwnerBase;
 }
 
+// Is any grid layer ON SCREEN? Same resolver, visible face. When none is, the window shows images only
+// (a derived mask adopted with everything else unchecked): the readout and Info are about the image.
+static bool sceneHasVisibleGrid(Scene *s) {
+	return s && resolveActiveGrid(s).valid;
+}
+
 static double activeVE(Scene *s) {
 	const double *p = activeVEPtr(s);
 	return (p && *p > 0.0) ? *p : 1.0;
@@ -2086,6 +2092,7 @@ static void sceneRemoveSurface(Scene *s) {
 	// own name (empty for an unnamed base surface).
 	if (g_juliaForget)
 		g_juliaForget(s, s->imageOnly ? "image" : "grid", s->surfName.c_str());
+	s->baseDN = ImgDN{};                 // its pixel values (readout) go with it
 	// LOD quad-tree observer + tile cache
 	if (s->lodCmd && s->ren->GetActiveCamera())
 		s->ren->GetActiveCamera()->RemoveObserver(s->lodCmd);
