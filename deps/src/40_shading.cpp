@@ -525,7 +525,10 @@ static void dayNightImageLayer(Scene *s, ExtraObj &ex) {
 	if (!sa) return;
 	int dims[3];  src->GetDimensions(dims);
 	const int W = dims[0], H = dims[1], nc = sa->GetNumberOfComponents();
-	if (W < 1 || H < 1 || nc < 3) return;
+	// 3+ bands = colour; 1 band = a grey picture kept at one byte per pixel (its value IS its grey, so
+	// darkening the value darkens the colour). 2 bands (grey + alpha) likewise on the first.
+	if (W < 1 || H < 1 || nc < 1) return;
+	const int ncol = std::min(nc, 3) == 2 ? 1 : std::min(nc, 3);   // colour channels to darken
 	vtkNew<vtkImageData> dst;
 	dst->DeepCopy(src);
 	vtkUnsignedCharArray *da = vtkUnsignedCharArray::SafeDownCast(dst->GetPointData()->GetScalars());
@@ -543,9 +546,7 @@ static void dayNightImageLayer(Scene *s, ExtraObj &ex) {
 			const double f = dayNightFactor(s, ex.bx0 + i * dx, lat);
 			if (f >= 1.0) continue;
 			unsigned char *p = row + (vtkIdType)i * nc;
-			p[0] = (unsigned char)(p[0] * f + 0.5);
-			p[1] = (unsigned char)(p[1] * f + 0.5);
-			p[2] = (unsigned char)(p[2] * f + 0.5);
+			for (int c = 0; c < ncol; ++c) p[c] = (unsigned char)(p[c] * f + 0.5);
 		}
 	}
 	});
@@ -881,7 +882,12 @@ static bool aquaBakeNodes(Scene *s, std::vector<unsigned char> &out) {
 			return;
 		}
 		const ExternShade &E = (sd == 1) ? s->shadeInLand : s->shadeIn;
-		const std::vector<float> &Z = (sd == 1) ? s->aquaBathyZ : s->gridZ;
+		// THIS side's surface, read where it lies: the land side's bathymetry (Aquamoto's own column-major
+		// copy) or the water side's stage (the window's grid, in the layout its host buffer has).
+		const float *Zp = (sd == 1) ? s->aquaBathyZ.data() : s->gridZ.data();
+		const size_t Zn = (sd == 1) ? s->aquaBathyZ.size() : s->gridZ.size();
+		const int    Zl = (sd == 1) ? 0 : s->gridZ.layout();
+		const GridLay ZL = gridLay(nx, ny, Zl);
 		if (haveExternRGB(E) && E.nx == nx && E.ny == ny) {     // METHOD 1: the render, as it is
 			o.resize(np * 4);
 			for (size_t i = 0; i < np; ++i) {
@@ -890,7 +896,7 @@ static bool aquaBakeNodes(Scene *s, std::vector<unsigned char> &out) {
 			dayNightAquaPass(s, o.data(), nx, ny);          // the night reaches a render as it reaches a bake
 			return;
 		}
-		if (Z.size() != np) { o.assign(base, base + np * 4); return; }   // no surface: its colours verbatim
+		if (Zn != np) { o.assign(base, base + np * 4); return; }   // no surface: its colours verbatim
 		const AquaSideShade &own = (sd == 1) ? s->aquaLandShade : s->aquaWaterShade;
 		const AquaSideShade A = own.valid ? own : snapshotShade(s);
 		// THIS SIDE's own z range, over its own nodes -> its own axis mapping, exactly what a plain grid
@@ -900,12 +906,12 @@ static bool aquaBakeNodes(Scene *s, std::vector<unsigned char> &out) {
 			for (int iy = 0; iy < ny; ++iy) {
 				const bool land = haveMask && s->aquaLandMask[(size_t)iy * nx + ix] != 0;
 				if (land != (sd == 1)) continue;
-				const double v = Z[(size_t)ix * ny + iy];
+				const double v = ZL.at(Zp, ix, iy);
 				if (std::isfinite(v)) { lo = std::min(lo, v);  hi = std::max(hi, v); }
 			}
 		const double zf = (hi > lo) ? sceneZRefFor(s, lo, hi, s->gx0, s->gx1, s->gy0, s->gy1) : 0.0;
-		bakeLayerRGBA(s, Z.data(), nx, ny, s->gx0, s->gy0, dx, dy, nullptr, 0.0, 1.0,
-		              s->gx0, s->gx1, s->gy0, s->gy1, nx, ny, o, base, /*zlayout=*/0, &A, &E, zf);
+		bakeLayerRGBA(s, Zp, nx, ny, s->gx0, s->gy0, dx, dy, nullptr, 0.0, 1.0,
+		              s->gx0, s->gx1, s->gy0, s->gy1, nx, ny, o, base, /*zlayout=*/Zl, &A, &E, zf);
 	};
 	std::vector<unsigned char> w, l;
 	side(0, w);
@@ -960,7 +966,8 @@ static void rebakeLayerImage(Scene *s) {
 	if (dims[0] != s->layerTexW || dims[1] != s->layerTexH) return;
 	std::vector<unsigned char> rgba;
 	bakeLayerRGBA(s, s->gridZ.data(), s->gnx, s->gny, s->gx0, s->gy0, s->gdx, s->gdy, ctf,
-	              s->zmin, s->zmax, s->gx0, s->gx1, s->gy0, s->gy1, s->layerTexW, s->layerTexH, rgba);
+	              s->zmin, s->zmax, s->gx0, s->gx1, s->gy0, s->gy1, s->layerTexW, s->layerTexH, rgba,
+	              nullptr, s->gridZ.layout());
 	if (rgba.size() != (size_t)dims[0] * dims[1] * 4) return;
 	memcpy(id->GetScalarPointer(), rgba.data(), rgba.size());
 	id->Modified(); tx->Modified();
@@ -1000,7 +1007,7 @@ static void refineLayerDetail(Scene *s) {
 	int txW, txH; layerTexSize(wnx, wny, txW, txH);
 	std::vector<unsigned char> rgba;
 	bakeLayerRGBA(s, s->gridZ.data(), s->gnx, s->gny, s->gx0, s->gy0, s->gdx, s->gdy, ctf,
-	              s->zmin, s->zmax, W, E, S, N, txW, txH, rgba);
+	              s->zmin, s->zmax, W, E, S, N, txW, txH, rgba, nullptr, s->gridZ.layout());
 	vtkSmartPointer<vtkImageData> id = vtkSmartPointer<vtkImageData>::New();
 	id->SetDimensions(txW, txH, 1);
 	id->AllocateScalars(VTK_UNSIGNED_CHAR, 4);
@@ -1302,8 +1309,15 @@ static void hillshadeMapper(Scene *s, vtkActor *act) {
 			return;
 		}
 	}
-	vtkDataArray *nrm = pd->GetPointData()->GetNormals();
-	vtkDataArray *zs  = pd->GetPointData()->GetScalars();
+	// A grid geometry coloured PER CELL (makeGridTile's NaN squares: value and normal on the square,
+	// corners shared -- see markPixelCells) is shaded per cell: the SAME loop below, run over its
+	// squares instead of its vertices, each square sampled at its own centre (its node). Every other
+	// geometry is shaded per vertex, as it always was.
+	const bool perCell = isPixelCells(pd);
+	vtkDataSetAttributes *att = perCell ? static_cast<vtkDataSetAttributes*>(pd->GetCellData())
+	                                    : static_cast<vtkDataSetAttributes*>(pd->GetPointData());
+	vtkDataArray *nrm = att->GetNormals();
+	vtkDataArray *zs  = att->GetScalars();
 	// Prefer the actor's OWN mapper LUT (a dropped grid extra carries its own CPT); fall back to the
 	// scene's primary LUT. For the primary surface/tiles these are the same object, so this is a no-op
 	// there but lets an extra grid hillshade with its true colours instead of the canvas LUT.
@@ -1319,7 +1333,7 @@ static void hillshadeMapper(Scene *s, vtkActor *act) {
 	// normaliser: see makeReliefLight. Each layer lights like terrain from its own numbers.
 	const ReliefLight L = makeReliefLight(s, lookOfActor(s, act), lzf, lve);
 
-	const vtkIdType n = pd->GetNumberOfPoints();
+	const vtkIdType n = perCell ? pd->GetNumberOfCells() : pd->GetNumberOfPoints();
 	// Map EVERY z to its CPT colour in one serial batch: vtkScalarsToColors::MapValue is NOT
 	// thread-safe (returns a pointer into a shared internal buffer), so it can't be called from the
 	// parallel loop. MapScalars is a vectorised, thread-safe alternative that returns an owned RGBA
@@ -1330,7 +1344,7 @@ static void hillshadeMapper(Scene *s, vtkActor *act) {
 	const int mc = mapped->GetNumberOfComponents();      // RGBA = 4
 	// The land bar's own lookup, same shape, same indexing (see aquaLandColors). Dropped if it did not
 	// come back with one tuple per point -- a colour taken from the wrong index is worse than one bar.
-	const bool twoBar = landCol && landCol->GetNumberOfTuples() == pd->GetNumberOfPoints() &&
+	const bool twoBar = !perCell && landCol && landCol->GetNumberOfTuples() == pd->GetNumberOfPoints() &&
 	                    isLand.size() == (size_t)pd->GetNumberOfPoints();
 	const int lc = twoBar ? landCol->GetNumberOfComponents() : 0;
 	// Hillshade tool: an externally computed reflectance, sampled at each point's TRUE-coord (x,y).
@@ -1346,7 +1360,7 @@ static void hillshadeMapper(Scene *s, vtkActor *act) {
 	const bool aqua = twoBar;
 	// Method 7's occlusion and cast shadows (reliefOcclusion), from THIS layer's own grid: the base's
 	// s->gridZ, or the extra's own. Both are stored column-major ("BCB", layout 0).
-	const std::vector<float> *gz = &s->gridZ;
+	const GridZ *gz = &s->gridZ;   // THIS layer's own grid, read where it lies
 	int gnx = s->gnx, gny = s->gny;
 	double ggx0 = s->gx0, ggy0 = s->gy0, gdx = s->gdx, gdy = s->gdy;
 	for (auto &ex : s->extras)
@@ -1357,8 +1371,7 @@ static void hillshadeMapper(Scene *s, vtkActor *act) {
 			break;
 		}
 	const bool haveGrid = gnx > 1 && gny > 1 && gdx != 0.0 && gdy != 0.0 && gz->size() == (size_t)gnx * gny;
-	const GridLay glay = gridLay(gnx, gny, 0);
-	auto Zg = [&](int ix, int iy) -> double { return glay.at(gz->data(), ix, iy); };
+	auto Zg = [&](int ix, int iy) -> double { return gz->at(ix, iy); };
 	double zTop = std::numeric_limits<double>::quiet_NaN();
 	if (pbrB && haveGrid && s->bakeShadows) zTop = gridTopZ(gnx, gny, Zg);
 	const BakeOcclusion occ = (pbrB && haveGrid) ? makeBakeOcclusion(s, L, zTop) : BakeOcclusion();
@@ -1367,6 +1380,26 @@ static void hillshadeMapper(Scene *s, vtkActor *act) {
 	// where it is on the Earth, and by method 7's occlusion. Same array, one reason more to fetch it.
 	vtkPoints *pts = (ext || dnOn || occOn) ? pd->GetPoints() : nullptr;
 	if ((ext || dnOn || occOn) && !pts) return;
+	// Where element i stands: a vertex, or -- per cell -- the square's centre, i.e. its node. Centres
+	// are taken once, serially (cell traversal is not thread-safe), and only when something samples
+	// by position.
+	std::vector<double> ctr;
+	if (perCell && pts) {
+		ctr.resize((size_t)n * 2);
+		vtkNew<vtkIdList> ids;
+		vtkCellArray *polys = pd->GetPolys();
+		for (vtkIdType c = 0; c < n && polys; ++c) {
+			polys->GetCellAtId(c, ids);
+			double sx = 0.0, sy = 0.0;
+			const vtkIdType k = ids->GetNumberOfIds();
+			for (vtkIdType q = 0; q < k; ++q) { double p[3]; pts->GetPoint(ids->GetId(q), p); sx += p[0]; sy += p[1]; }
+			ctr[2 * c] = k ? sx / k : 0.0;  ctr[2 * c + 1] = k ? sy / k : 0.0;
+		}
+	}
+	auto posOf = [&](vtkIdType i, double p[3]) {
+		if (perCell) { p[0] = ctr[2 * i]; p[1] = ctr[2 * i + 1]; p[2] = 0.0; }
+		else         pts->GetPoint(i, p);
+	};
 	vtkSmartPointer<vtkUnsignedCharArray> col = vtkSmartPointer<vtkUnsignedCharArray>::New();
 	col->SetName("hillshade");
 	col->SetNumberOfComponents(3);
@@ -1388,14 +1421,14 @@ static void hillshadeMapper(Scene *s, vtkActor *act) {
 			// colours only (see above)
 		}
 		else if (ext || lk.useHillshade) {
-			if (ext) { double p[3]; pts->GetPoint(i, p); ei = externShadeAt(*extE, p[0], p[1]); }
+			if (ext) { double p[3]; posOf(i, p); ei = externShadeAt(*extE, p[0], p[1]); }
 			if (lk.useHillshade)                                         // colour only when the look is unlit
 				applyReliefShade(L, nv, c, std::isnan(ei) ? nullptr : &ei);  // SHARED shade (extern / grdimage / Lambert)
 		}
 		else if (pbrB) {                                                 // method 7: the SHARED PBR shade
 			double ao = 1.0, sunVis = 1.0;
 			if (occOn) {
-				double p[3]; pts->GetPoint(i, p);
+				double p[3]; posOf(i, p);
 				int ix = (int)std::lround((p[0] - ggx0) / gdx), iy = (int)std::lround((p[1] - ggy0) / gdy);
 				ix = ix < 0 ? 0 : (ix > gnx - 1 ? gnx - 1 : ix);
 				iy = iy < 0 ? 0 : (iy > gny - 1 ? gny - 1 : iy);
@@ -1406,7 +1439,7 @@ static void hillshadeMapper(Scene *s, vtkActor *act) {
 		// …and THEN the night, as the second factor on whatever colour the lines above decided. Never
 		// instead of them: with no relief shade selected the CPT colour is what this layer looks like
 		// in daylight, and this multiply is the whole of the change.
-		if (dnOn) { double pw[3]; pts->GetPoint(i, pw); applyDayNight(dayNightFactor(s, pw[0], pw[1]), c); }
+		if (dnOn) { double pw[3]; posOf(i, pw); applyDayNight(dayNightFactor(s, pw[0], pw[1]), c); }
 		col->SetTypedComponent(i, 0, (unsigned char)(c[0] * 255.0 + 0.5));
 		col->SetTypedComponent(i, 1, (unsigned char)(c[1] * 255.0 + 0.5));
 		col->SetTypedComponent(i, 2, (unsigned char)(c[2] * 255.0 + 0.5));
@@ -1419,8 +1452,9 @@ static void hillshadeMapper(Scene *s, vtkActor *act) {
 		        (long long)n);
 		fflush(stdout);
 	}
-	pd->GetPointData()->AddArray(col);
-	m->SetScalarModeToUsePointFieldData();
+	att->AddArray(col);                             // per vertex, or per square (perCell)
+	if (perCell) m->SetScalarModeToUseCellFieldData();
+	else         m->SetScalarModeToUsePointFieldData();
 	m->SelectColorArray("hillshade");
 	m->SetColorModeToDirectScalars();               // use the baked RGB verbatim (no LUT)
 	m->ScalarVisibilityOn();
@@ -1618,7 +1652,28 @@ static void applyShading(Scene *s) {
 	} else {
 		chain = vtkSmartPointer<vtkRenderStepsPass>::New();
 	}
-	if (s->useSSAO) {
+	// WHICH EFFECT PASSES THIS WINDOW REALLY RUNS. Each keeps full-window GPU buffers (SSAO the biggest:
+	// float colour + position + normal + depth), which on an integrated GPU are SYSTEM memory -- measured
+	// ~336 MB for an EMPTY window at 2503x1879 (2026-11-13). So: none in a window with nothing to draw,
+	// no SSAO in the flat 2-D map unless asked for there (Scene::ssaoIn2D), and a pass that drops out is
+	// RELEASED, not kept: its buffers otherwise stayed allocated for the life of the window.
+	const bool content = !s->emptyStart;
+	const bool doSSAO  = content && s->useSSAO && (!s->flat2d || s->ssaoIn2D);
+	const bool doTone  = content && s->useTone;
+	const bool doFXAA  = content && s->useFXAA;
+	auto releasePass = [s](auto &pass) {
+		if (!pass) return;
+		if (s->widget && s->widget->renderWindow()) {
+			s->widget->makeCurrent();                        // its buffers live in this window's context
+			pass->ReleaseGraphicsResources(s->widget->renderWindow());
+			s->widget->doneCurrent();
+		}
+		pass = nullptr;
+	};
+	if (!doSSAO) releasePass(s->ssao);
+	if (!doTone) releasePass(s->tone);
+	if (!doFXAA) releasePass(s->fxaa);
+	if (doSSAO) {
 		if (!s->ssao) s->ssao = vtkSmartPointer<vtkSSAOPass>::New();
 		s->ssao->SetRadius(s->ssaoRadius);
 		s->ssao->SetBias(s->ssaoBias);
@@ -1627,13 +1682,13 @@ static void applyShading(Scene *s) {
 		s->ssao->SetDelegatePass(chain);
 		chain = s->ssao;
 	}
-	if (s->useTone) {
+	if (doTone) {
 		if (!s->tone) s->tone = vtkSmartPointer<vtkToneMappingPass>::New();
 		s->tone->SetToneMappingType(vtkToneMappingPass::NeutralPBR);
 		s->tone->SetDelegatePass(chain);
 		chain = s->tone;
 	}
-	if (s->useFXAA) {
+	if (doFXAA) {
 		if (!s->fxaa) s->fxaa = vtkSmartPointer<vtkOpenGLFXAAPass>::New();
 		s->fxaa->SetDelegatePass(chain);
 		chain = s->fxaa;

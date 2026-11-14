@@ -120,6 +120,9 @@ end
 	G = GMT.mat2grid(Float32[sin(2pi*i/32) + 0.4cos(2pi*j/50) + 0.01i for j in 1:97, i in 1:143];
 	                 x = collect(1.0:143), y = collect(1.0:97))
 	fig = IG.iview(G);  sleep(2)
+	# CLOSED by this item (`finally`): a window left standing is redrawn by every later pump in the shard
+	# (measured 2026-11-13: it and its FFT dialog stayed alive for the rest of the run).
+	try
 	GmtvtkTest.register_fftstuff_test()                    # the test dll keeps its own callback slot
 	GmtvtkTest.scene_adopt(fig.h)                          # ... and its own idea of which scenes live
 
@@ -150,4 +153,8 @@ end
 	@test GmtvtkTest.fft_park(fig.h, true) == 1
 	@test occursin("FFT tool", GmtvtkTest.objrows(fig.h))
 	@test GmtvtkTest.fft_park(fig.h, false) == 0
+	finally
+		GmtvtkTest.fft_close(fig.h)   # its tool first: opened by the test dll, not the window's to close
+		close(fig)
+	end
 end

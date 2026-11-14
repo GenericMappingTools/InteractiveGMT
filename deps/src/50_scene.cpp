@@ -50,15 +50,15 @@ static QDialog *showInfoText(QWidget *parent, const QString &title, const QStrin
 // `dx`/`dy` <= 0 (the usual case) derive the spacing from the extent; a caller that already knows the
 // grid's own increment (gmtvtk_set_layer_image) passes it verbatim.
 // `zlayout`!=0 says the CALLER's buffer is "TRB" (row-major, north first — what
-// `gmtread(..., layout="TRB")` returns); gridCopyToCM stores it in the canonical column-major order
-// every Scene-side consumer below reads, WITHOUT the host ever transposing a matrix.
+// `gmtread(..., layout="TRB")` returns); the Scene keeps THAT buffer (GridZ: pinned by the host) and
+// every consumer reads it through GridLay -- no copy, no transposition.
 static void sceneSetGridLayer(Scene *s, const float *z, int nx, int ny,
                               double x0, double x1, double y0, double y1,
                               double dx = 0.0, double dy = 0.0, int zlayout = 0,
                               bool placeholder = false) {   // true = an image plane's flat z, not data
 	if (!s || !z || nx < 1 || ny < 1) return;
 	s->gridPlaceholder = placeholder;
-	gridCopyToCM(s->gridZ, z, nx, ny, zlayout);   // column-major z[i*ny+j], the view_grid layout
+	s->gridZ.set(z, nx, ny, zlayout);   // the host's buffer, read where it lies (GridZ) -- never a copy
 	s->gnx = nx; s->gny = ny;
 	s->gx0 = x0; s->gx1 = x1; s->gy0 = y0; s->gy1 = y1;
 	s->gdx = (dx > 0.0) ? dx : ((nx > 1) ? (x1 - x0) / (nx - 1) : 0.0);
@@ -1018,8 +1018,8 @@ static vtkSmartPointer<vtkPolyData> imageDrapePD(Scene *s, ExtraObj &ex) {
 		for (int i = 0; i < nx; ++i) {
 			const double x = s->gx0 + (i0 + i) * dx;
 			// Straight NODE read (not an interpolation): the surface's own vertex value, so the two
-			// meshes share their vertices exactly. Column-major z[i*gny + j], the gridZ layout.
-			const float zf = s->gridZ[(size_t)(i0 + i) * s->gny + (j0 + j)];
+			// meshes share their vertices exactly, read where it lies (GridZ::at).
+			const float zf = s->gridZ.at(i0 + i, j0 + j);
 			const bool good = !std::isnan(zf);
 			ok[(size_t)j * nx + i] = good ? 1 : 0;
 			pts->InsertNextPoint(x, y, good ? (double)zf : 0.0);
@@ -1174,6 +1174,29 @@ static void sceneRemoveExtraAt(Scene *s, size_t idx) {
 	                                 // "removal undoes what add did"): the old window-level cube left
 	                                 // a stale box behind that no row could ever clear again.
 	const bool wasGrid = !ex.isImage;
+	// THE HEIGHT FIELD THIS GRID LENT THE WINDOW goes back too ("removal undoes what add did"). On an
+	// image window the first grid added is ADOPTED as the window's own readout height field
+	// (gmtvtk_add_surface_h: sceneSetGridLayer + gridAdopted, and the image canvas hidden). Removing the
+	// grid used to leave all of that standing: the window kept the deleted grid's full z (measured
+	// 2026-11-13: a 242 MB Landsat temperature stayed pinned after its row was removed) and the canvas
+	// hidden. The role passes to the next grid layer still there, or the window gets its own flat image
+	// footprint back (the 2x2 placeholder an image window is opened with) and its canvas.
+	if (wasGrid && s->gridAdopted && !ex.gridZ.empty() && s->gridZ.data() == ex.gridZ.data()) {
+		ExtraObj *next = nullptr;
+		for (auto &o : s->extras)
+			if (&o != &ex && !o.isImage && !o.isMesh && !o.gridZ.empty()) { next = &o; break; }
+		if (next)
+			sceneSetGridLayer(s, next->gridZ.data(), next->gnx, next->gny, next->gx0, next->gx1, next->gy0, next->gy1,
+			                  0.0, 0.0, next->gridZ.layout());
+		else {
+			const float flat[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+			sceneSetGridLayer(s, flat, 2, 2, s->x0, s->x1, s->y0, s->y1, 0.0, 0.0, 0, /*placeholder=*/true);
+			s->gridAdopted = false;
+			// The canvas itself comes back through sceneAfterObjectRemoved (below) -- the ONE restore,
+			// which brings the whole base layer back, axes included. Showing just its actor here made
+			// that restore think something was already visible and skip the axes.
+		}
+	}
 	// Julia keeps the LIVE GMTgrid/GMTimage behind this row in its own registry (_SCENE_OBJS,
 	// savefile.jl). Deleting the actor here without saying so left that object alive and still
 	// resolvable: a tool that looks an object up by kind (Binarize, Adjust Contrast, Save…) would
@@ -1497,7 +1520,7 @@ static void destroyColorbar(Scene *s) {
 // is visible (every grid hidden) -> caller hides the colorbar and clears the readout routing.
 struct ActiveGrid {
 	bool   valid = false;
-	const std::vector<float> *z = nullptr;
+	const GridZ *z = nullptr;
 	int    nx = 0, ny = 0;
 	double x0 = 0, x1 = 1, y0 = 0, y1 = 1, zmin = 0, zmax = 1;
 	int    geog = 0;           // this layer's OWN x,y kind (lon/lat vs cartesian) — drives the axis NAMES
@@ -2096,7 +2119,7 @@ static void sceneRemoveSurface(Scene *s) {
 	// LOD quad-tree observer + tile cache
 	if (s->lodCmd && s->ren->GetActiveCamera())
 		s->ren->GetActiveCamera()->RemoveObserver(s->lodCmd);
-	s->lodCmd = nullptr; s->quadRoot = nullptr; s->tiles.clear();
+	s->lodCmd = nullptr; baseLodFree(s);   // the pyramid and its cached tiles, really released
 	// Primary surface actors (tiled or single) + image drape
 	if (s->surfGroup) s->ren->RemoveActor(s->surfGroup);
 	if (s->surf)      s->ren->RemoveActor(s->surf);

@@ -41,7 +41,7 @@ const _TEST_SYMBOLS = (
 	:gmtvtk_fault_add_test, :gmtvtk_fault_apply_test, :gmtvtk_fault_plane_test, :gmtvtk_poly_edit_add_test,
 	:gmtvtk_settings_format_test, :gmtvtk_axesprops_open_test, :gmtvtk_axesprops_tabmask_test, :gmtvtk_axesprops_apply_test, :gmtvtk_axesprops_counts_test, :gmtvtk_toplevel_grab_test, :gmtvtk_workspace_fold_test, :gmtvtk_toplevel_widget_test, :gmtvtk_window_widths_test, :gmtvtk_paint_count_test, :gmtvtk_table_plot_test, :gmtvtk_toplevel_width_test,
 	:gmtvtk_set_flat2d_test, :gmtvtk_objrows_test, :gmtvtk_objtree_test, :gmtvtk_xyplot_mark_test, :gmtvtk_profile_marker_test,
-	:gmtvtk_fft_dialog_test, :gmtvtk_interp_options_roundtrip_test, :gmtvtk_profile_begin_test, :gmtvtk_profile_drag_test, :gmtvtk_objects_rebuild_test, :gmtvtk_transplant_cands_test, :gmtvtk_active_grid_name_test, :gmtvtk_fft_sizes_test, :gmtvtk_fft_park_test, :gmtvtk_scene_adopt_test,
+	:gmtvtk_fft_dialog_test, :gmtvtk_fft_close_test, :gmtvtk_interp_options_roundtrip_test, :gmtvtk_profile_begin_test, :gmtvtk_profile_drag_test, :gmtvtk_objects_rebuild_test, :gmtvtk_transplant_cands_test, :gmtvtk_active_grid_name_test, :gmtvtk_fft_sizes_test, :gmtvtk_fft_park_test, :gmtvtk_scene_adopt_test,
 	:gmtvtk_ecmwf_dialog_test,
 	:gmtvtk_set_fftstuff_callback,
 	:gmtvtk_fault_open_dialog_test, :gmtvtk_fault_close_dialog_test, :gmtvtk_trace_zbounds_test,
@@ -122,6 +122,8 @@ const _TEST_SYMBOLS = (
 	:gmtvtk_console_history_test,     # the Julia console driven with real key presses
 	:gmtvtk_set_ui_dir,               # ditto: the .ui directory is a file-static override per dll.
 	:gmtvtk_tile_mesh_test,           # the grid mesh's NaN contract, counted off makeGridTile's output
+	:gmtvtk_lod_stats_test,           # the base tile pyramid as it stands: tiles, stand-ins, points, bytes, bounds
+	:gmtvtk_set_grid_pin_callbacks,   # NOT test-only -- mirrored: a grid handle released inside this dll unpins too
 	:gmtvtk_cloud_select_box_test,    # a Shift+left-drag box over a point cloud (rbAreaPick), as the mouse ends one
 	:gmtvtk_line_menu_click_test,     # a line's right-click menu, its item clicked with the mouse (under the menu's grab)
 	:gmtvtk_combo_index_test,         # a dialog combo's current index
@@ -165,6 +167,9 @@ function _load_test_library()
 	let uidir = joinpath(InteractiveGMT._PKGROOT, "deps", "ui")
 		isdir(uidir) && ccall(_TEST_FNS[:gmtvtk_set_ui_dir], Cvoid, (Cstring,), uidir)
 	end
+	# The grid pin/unpin pair is a file-static too: a grid handle that dies inside THIS dll (a test hook
+	# removing a layer) must release its host pin like one dying in the production library.
+	InteractiveGMT._register_grid_pin(s -> _TEST_FNS[s])
 	return
 end
 
@@ -230,6 +235,9 @@ scene_adopt(scene::Ptr{Cvoid}) =
 	ccall(_test_fn(:gmtvtk_scene_adopt_test), Cint, (Ptr{Cvoid},), scene)
 
 # Minimise the FFT dialog (parking it in Scene Objects) or bring it back: 1 = parked, 0 = showing.
+# Close the FFT tool this dll opened on `scene` (it is not the production window's to close). 1 = gone.
+fft_close(scene::Ptr{Cvoid}) = ccall(_test_fn(:gmtvtk_fft_close_test), Cint, (Ptr{Cvoid},), scene)
+
 fft_park(scene::Ptr{Cvoid}, park::Bool) =
 	ccall(_test_fn(:gmtvtk_fft_park_test), Cint, (Ptr{Cvoid}, Cint), scene, park ? Cint(1) : Cint(0))
 
@@ -292,7 +300,7 @@ function _register_ceuler_test()
 	return
 end
 
-export _test_fn, register_fftstuff_test, register_crs_select_test, fft_open, fft_click, fft_sizes, fft_park, scene_adopt, objrows,
+export _test_fn, register_fftstuff_test, register_crs_select_test, fft_open, fft_click, fft_sizes, fft_park, fft_close, scene_adopt, objrows,
 	_register_faultgeom_test, _register_euler_test, _register_ceuler_test, _register_console_eval_test
 
 end

@@ -233,6 +233,31 @@ end
 # A Bool GRID (what `G .> 100` gives in the console) is the same mask on a grid's nodes.
 _gc_mask_image(G::GMTgrid{Bool,2})::GMTimage = _gc_mask_image(G.z, G)
 
+# Does `expr` use a UInt16 band — a window image whose original is UInt16, or a "Load Grid" file
+# GDAL stores as UInt16 (a Landsat / Sentinel band .TIF)? A name counts when it occurs in `expr`.
+function _gc_from_uint16(scene::Ptr{Cvoid}, basenm::AbstractString, files::Dict{String,String},
+                         expr::AbstractString)::Bool
+	origs = get(_IMG_ORIG, scene, Dict{String,GMTimage}())
+	for (kind, nm, data) in get(_SCENE_OBJS, scene, Tuple{Symbol,String,Any}[])
+		(kind === :image && data isa GMTimage) || continue
+		label = isempty(nm) ? String(basenm) : nm
+		(!isempty(label) && occursin(label, expr) && eltype(get(origs, nm, data).image) == UInt16) && return true
+	end
+	for (nm, path) in files
+		occursin(nm, expr) || continue
+		t = try
+			ds = GMT.Gdal.unsafe_read(path)
+			tt = GMT.Gdal.GDALGetRasterDataType(GMT.Gdal.GDALGetRasterBand(ds.ptr, 1))
+			GMT.Gdal.GDALClose(ds.ptr)
+			tt
+		catch
+			UInt32(0)
+		end
+		t == GMT.Gdal.GDT_UInt16 && return true
+	end
+	return false
+end
+
 # C callback (Compute button): `cparams` is the newline-separated "key=value" block described in
 # 30_app.cpp's JuliaGridCalcFn — expr / base / file1…fileN.
 # Returns Cint 1 on success, 0 on failure — the dialog turns this into its own modal answer.
@@ -255,7 +280,11 @@ function _on_gridcalc(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		eltype(z) == Bool && return _commit_mask!(scene, _gc_mask_image(z, objs[1][2]), title)
 		G = GMT.mat2grid(Float32.(z), objs[1][2])
 		_grid_command!(G, "InteractiveGMT grid calculator: " * String(expr))
-		return _gm3d_deliver(scene, G, title, "", false, "gridcalc")
+		ok = _gm3d_deliver(scene, G, title, "", false, "gridcalc")
+		# Computed from a Landsat / Sentinel band (UInt16 DNs): a measured quantity, not a relief —
+		# born unshaded, the same rule as every RemoteS product (`_unshade_grid!`).
+		(ok != 0 && _gc_from_uint16(scene, _get(d, "base"), files, expr)) && _unshade_grid!(scene, title)
+		return ok
 	catch e
 		_tool_failed(scene, "Grid calculator", e)
 		return Cint(0)

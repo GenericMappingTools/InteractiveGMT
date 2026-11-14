@@ -96,18 +96,19 @@ _rs_empty(scene::Ptr{Cvoid})::Bool = ccall(_fn(:gmtvtk_has_surface), Cint, (Ptr{
 # A grid: the canonical grid tail (replace a same-named result, promote an empty window, adopt).
 # `flat = true`: a product computed from Landsat / Sentinel bands (UInt16 DN arrays) — radiance,
 # reflectance, temperature, an index, a SAR amplitude — is a picture of a measured quantity, not a
-# relief, so it is NOT shaded at birth. Its look is set to "none" through the ONE look setter the
-# Shading dock uses (aimed at the just-adopted, i.e. active, layer), so the user can still light it.
+# relief, so it is NOT shaded at birth (`_unshade_grid!`). The user can still light it.
 function _rs_deliver(scene::Ptr{Cvoid}, G::GMTgrid, name::String, recipe::String; flat::Bool = false)::Bool
 	_gm3d_deliver(scene, G, name, "", false, recipe) != 0 || return false
-	flat && _rs_unshade_active(scene)
+	flat && _unshade_grid!(scene, name)
 	return true
 end
 
-# The active layer (the one just adopted) on the "none" relief look; keepModel=1 so no other layer's
-# loaded Illumination model is dropped.
-_rs_unshade_active(scene::Ptr{Cvoid}) =
-	ccall(_fn(:gmtvtk_set_relief_look_h), Cvoid, (Ptr{Cvoid}, Cint, Cint), scene, Cint(0), Cint(1))
+# NO light on the grid called `name`: the Illumination tool's own "Remove illumination" act on that
+# grid (`_hs_push_named`, empty reflectance, model -1 -> its `noShade`: unlit, plain CPT colour).
+# Relief look "none" alone is NOT this: it only drops the baked hillshade/PBR, and the 3-D surface
+# stays lit by the scene's lights — still shaded to the eye.
+_unshade_grid!(scene::Ptr{Cvoid}, name::AbstractString) =
+	_hs_push_named(scene, name, Matrix{Float32}(undef, 0, 0), 0.0, 0.0, 0.0, 0.0, -1)
 
 # An image: replace a same-named result, add, then the one derived-variable transition.
 # (`flat` is accepted so a caller whose result may be a grid OR an image passes it either way: an
@@ -1145,11 +1146,12 @@ function _rs_hls_compute(scene::Ptr{Cvoid}, d::Dict{String,String}, io::IOBuffer
 		# z range) and then made what the window shows. Its slider is its "Cube layers…" item.
 		if _rs_empty(scene)
 			_on_drop(scene, cube)
+			_unshade_grid!(scene, "")				# "" = the window's base: the cube just opened
 		else
 			cname = "$(ix) $(src) $(r.tile) $(GMT.Dates.Date(first(r.time)))…$(GMT.Dates.Date(last(r.time)))"
 			_load_cube_element(scene, cube, cname, true)
 			_adopt_derived!(scene, cname, r.grids[1])
-			_rs_unshade_active(scene)
+			_unshade_grid!(scene, cname)
 		end
 		_rs_status(io, "$(length(r.grids)) clear date(s) on tile $(r.tile): $(prefix)_*.tif, $(basename(cube)) " *
 		               "and $(prefix)_series.csv written to $(outdir); the cube is open.")

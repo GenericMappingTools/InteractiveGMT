@@ -298,6 +298,75 @@ function _dtb_fill!(buf, pix, nlon, nlat, comps, nb, north_first, gx0, gy0, cdx,
 	return nothing
 end
 
+# A ONE-BAND GREY image's texture at ONE BYTE PER PIXEL — the value itself, an index into the grey ramp
+# — instead of the RGBA expansion `_drape_to_bbox` makes (4 bytes per pixel, the same value three times
+# plus an opaque alpha). The viewer draws a 1-component texture as grey, so the picture is identical;
+# the texture, its C++ copy and its GPU copy are a QUARTER of the size (user's order, 2026-11-13: a
+# Landsat band opened at +0.84 GB, 242 MB of RGBA held three times). SAME canvas and SAME pixel picks
+# as `_drape_to_bbox` over the image's own footprint, so it lands on exactly the same texels.
+# `nothing` when the image is not a plain one-band grey picture (a colour map, RGB, alpha): those keep
+# `_drape_to_bbox`.
+function _grey_texture(I)
+	(ndims(I.image) == 2 || size(I.image, 3) == 1) || return nothing
+	eltype(I.image) === UInt8 || return nothing
+	# An INDEXED image whose palette is the plain grey ramp (entry i = grey i, opaque) — what a 16-bit
+	# band gets from `_stretch_to_u8` — is the same picture: its index IS its grey. Read the indices
+	# themselves (`_pixaccess`, not the palette-expanding `_pixaccess_img`). Any other palette keeps
+	# the RGBA path.
+	if _img_is_indexed(I)
+		_grey_ramp_palette(I) || return nothing
+		S = I.image;  lay = I.layout
+		rowmajor = length(lay) >= 2 && lay[2] == 'R'
+		nlon_i, nlat_i = rowmajor ? (size(S, 1), size(S, 2)) : (size(S, 2), size(S, 1))
+		nb  = 1
+		pix = _pixaccess(S, lay, false, 1, rowmajor, nlon_i, nlat_i)   # the raw INDEX (= its grey)
+	else
+		pix, nb, nlon_i, nlat_i, rowmajor = _pixaccess_img(I)
+	end
+	nb == 1 || return nothing
+	north_first = _north_first(I.layout, rowmajor)
+	ir = I.range
+	ix0, ix1, iy0, iy1 = ir[1], ir[2], ir[3], ir[4]
+	dxi = (ix1 - ix0) / nlon_i
+	dyi = (iy1 - iy0) / nlat_i
+	nlon = clamp(round(Int, (ix1 - ix0) / dxi), 16, 8192)       # `_drape_to_bbox`'s canvas, own bbox
+	nlat = clamp(round(Int, (iy1 - iy0) / dyi), 16, 8192)
+	buf = Vector{UInt8}(undef, nlat * nlon)
+	_grey_fill!(buf, pix, nlon, nlat, north_first, ix0, iy0, (ix1 - ix0) / nlon, (iy1 - iy0) / nlat,
+	            ix0, ix1, iy0, iy1, nlon_i, nlat_i)
+	return buf, nlon, nlat, 1
+end
+
+# Is this indexed image's palette the identity grey ramp — entry i (0-based) = (i, i, i), opaque?
+function _grey_ramp_palette(I)::Bool
+	L = try _img_palette(I) catch; return false end
+	for r in 1:size(L, 1)
+		v = UInt8(r - 1)
+		(L[r, 1] == v && L[r, 2] == v && L[r, 3] == v) || return false
+		(size(L, 2) >= 4 && L[r, 4] != 0xff) && return false
+	end
+	return true
+end
+
+# `_dtb_fill!`'s loop, one byte out per pixel (function barrier for the same reason, see there).
+function _grey_fill!(buf, pix, nlon, nlat, north_first, gx0, gy0, cdx, cdy, ix0, ix1, iy0, iy1, nlon_i, nlat_i)
+	k = 1
+	@inbounds for orow in 0:nlat-1                     # row 0 = SOUTH
+		yc = gy0 + (orow + 0.5) * cdy
+		fy = (yc - iy0) / (iy1 - iy0)
+		ilat_s = clamp(floor(Int, fy * nlat_i) + 1, 1, nlat_i)
+		lat = north_first ? (nlat_i - ilat_s + 1) : ilat_s
+		for col in 1:nlon                              # west -> east
+			xc = gx0 + (col - 0.5) * cdx
+			fx = (xc - ix0) / (ix1 - ix0)
+			ilon = clamp(floor(Int, fx * nlon_i) + 1, 1, nlon_i)
+			buf[k] = pix(lat, ilon, 1)
+			k += 1
+		end
+	end
+	return nothing
+end
+
 # Bilinear sample of grid G at (x,y) -> z, so a 2-D GMTdataset (x,y only) overlay sits ON the
 # surface. G.z is ny x nx (dim1 = y row, dim2 = x col), y ascending; node spacing from the data
 # range. Out-of-range (x,y) clamps to the nearest edge cell.

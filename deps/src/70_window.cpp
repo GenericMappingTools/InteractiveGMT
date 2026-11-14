@@ -2766,7 +2766,8 @@ static void ensureNodeActor(Scene *s, QuadNode *n) {
 	auto tpd = makeGridTile(s->gridZ.data(), s->gnx, s->gny,
 							n->i0, n->i1, n->j0, n->j1, s->gx0, s->gdx, s->gy0, s->gdy, s->zmin, n->step,
 							s->aquaWindow,
-							/*pixelCells=*/s->gridHasNaN && !s->aquaWindow);   // NaNs: each node its own square
+							/*pixelCells=*/s->gridHasNaN && !s->aquaWindow,   // NaNs: each node its own square
+							s->gridZ.layout());                                 // read where it lies
 	vtkNew<vtkPolyDataMapper> m; m->SetInputData(tpd);
 	configureGridMapper(m, s->surfLut, s->zmin, s->zmax, s->surfCtfRange);
 	auto a = vtkSmartPointer<vtkActor>::New(); a->SetMapper(m);
@@ -2789,7 +2790,7 @@ static void ensureNodeActor(Scene *s, QuadNode *n) {
 	n->styleGen = s->styleGen;                   // freshly baked under the current shading state
 	const vtkIdType npts = tpd->GetPoints()->GetNumberOfPoints();
 	const vtkIdType ncel = tpd->GetPolys()->GetNumberOfCells();
-	n->bytes = (size_t)npts * (12 + 4 + 12) + (size_t)ncel * 20;   // pts + z + normal + quad ids
+	n->bytes = lodTileBytes(npts, ncel);
 	n->actor = a;
 	n->inScene = true;
 	s->surfGroup->AddPart(a);
@@ -2816,28 +2817,76 @@ static void dropNodeActor(Scene *s, QuadNode *n) {
 	n->inScene = false;
 }
 
-// Actually RELEASE a node's geometry. Only the LRU evictor calls this — refinement never does, or
-// the cache above could not survive a zoom.
+// The node's OFF-SCREEN STAND-IN (QuadNode::cActor), on / off screen. The same tile builder, mapper
+// set-up and surface style as ensureNodeActor's full tile -- only the sampling step differs
+// (lodCoarseStep) -- so a stand-in is the same surface, just coarse. Never tested for detail: it is
+// only ever shown for a node that is wholly off screen.
+static void ensureNodeCoarse(Scene *s, QuadNode *n) {
+	if (n->cActor) {
+		if (!n->cInScene) {
+			s->surfGroup->AddPart(n->cActor); s->tiles.push_back(n->cActor); n->cInScene = true;
+			if (n->cStyleGen != s->styleGen) { applySurfStyle(s, n->cActor); n->cStyleGen = s->styleGen; }
+		}
+		return;
+	}
+	auto tpd = makeGridTile(s->gridZ.data(), s->gnx, s->gny,
+	                        n->i0, n->i1, n->j0, n->j1, s->gx0, s->gdx, s->gy0, s->gdy, s->zmin, lodCoarseStep(n),
+	                        s->aquaWindow, /*pixelCells=*/s->gridHasNaN && !s->aquaWindow, s->gridZ.layout());
+	vtkNew<vtkPolyDataMapper> m; m->SetInputData(tpd);
+	configureGridMapper(m, s->surfLut, s->zmin, s->zmax, s->surfCtfRange);
+	auto a = vtkSmartPointer<vtkActor>::New(); a->SetMapper(m);
+	a->GetProperty()->SetEdgeColor(0.12, 0.12, 0.12); a->GetProperty()->SetLineWidth(1.0);
+	a->GetProperty()->SetEdgeVisibility(s->surfEdges);
+	applySurfStyle(s, a);
+	n->cStyleGen = s->styleGen;
+	n->cBytes = lodTileBytes(tpd->GetPoints() ? tpd->GetPoints()->GetNumberOfPoints() : 0,
+	                         tpd->GetPolys() ? tpd->GetPolys()->GetNumberOfCells() : 0);
+	n->cActor = a;
+	n->cInScene = true;
+	s->surfGroup->AddPart(a);
+	s->tiles.push_back(a);
+	if (s->globe) { globeAttachActor(s, a, true); a->SetScale(1.0, 1.0, 1.0); }
+	s->lodResidentBytes += n->cBytes;
+}
+static void dropNodeCoarse(Scene *s, QuadNode *n) {
+	if (!n->cActor || !n->cInScene) return;
+	s->surfGroup->RemovePart(n->cActor);
+	for (size_t k = 0; k < s->tiles.size(); ++k)
+		if (s->tiles[k] == n->cActor) { s->tiles.erase(s->tiles.begin() + k); break; }
+	n->cInScene = false;
+}
+
+// Actually RELEASE a node's geometry -- its full tile AND its off-screen stand-in. Only the LRU
+// evictor and the "z changed" purge call this; refinement never does, or the cache above could not
+// survive a zoom.
 static void freeNodeActor(Scene *s, QuadNode *n) {
-	if (!n->actor) return;
-	dropNodeActor(s, n);
-	// The globe hook is keyed by the actor pointer, so it has to go WITH the actor: leaving it behind
-	// would keep the tile's transform filter alive and, worse, let a future actor allocated at the same
-	// address inherit a hook that was never installed on it.
-	s->globeHooks.erase(n->actor.Get());
-	s->lodResidentBytes = (s->lodResidentBytes >= n->bytes) ? s->lodResidentBytes - n->bytes : 0;
-	n->actor = nullptr; n->bytes = 0;
+	if (n->actor) {
+		dropNodeActor(s, n);
+		// The globe hook is keyed by the actor pointer, so it has to go WITH the actor: leaving it behind
+		// would keep the tile's transform filter alive and, worse, let a future actor allocated at the same
+		// address inherit a hook that was never installed on it.
+		s->globeHooks.erase(n->actor.Get());
+		s->lodResidentBytes = (s->lodResidentBytes >= n->bytes) ? s->lodResidentBytes - n->bytes : 0;
+		n->actor = nullptr; n->bytes = 0;
+	}
+	if (n->cActor) {
+		dropNodeCoarse(s, n);
+		s->globeHooks.erase(n->cActor.Get());
+		s->lodResidentBytes = (s->lodResidentBytes >= n->cBytes) ? s->lodResidentBytes - n->cBytes : 0;
+		n->cActor = nullptr; n->cBytes = 0;
+	}
 }
 
 static void dropSubtree(Scene *s, QuadNode *n) {
 	if (!n) return;
 	dropNodeActor(s, n);
+	dropNodeCoarse(s, n);
 	for (int k = 0; k < 4; ++k) dropSubtree(s, n->child[k]);
 }
 
 static void collectResident(QuadNode *n, std::vector<QuadNode*> &out) {
 	if (!n) return;
-	if (n->actor) out.push_back(n);
+	if (n->actor || n->cActor) out.push_back(n);
 	for (int k = 0; k < 4; ++k) collectResident(n->child[k], out);
 }
 
@@ -2883,17 +2932,23 @@ static void dropSubtreeG(QuadNode *n, Drop &drop) {
 	drop(n);
 	for (int k = 0; k < 4; ++k) dropSubtreeG(n->child[k], drop);
 }
-template <class Show, class Drop>
+// `show(n)` = n's full tile on screen (and its stand-in off), `showOff(n)` = n's off-screen stand-in on
+// screen (and its full tile off), `drop(n)` = both off.
+template <class Show, class ShowOff, class Drop>
 static void refineNodeG(QuadNode *n, const double camPos[3], double vpH, double tanHalfFov, double parScale,
                         bool parallel, double tau, double zmidW, double xfac, uint64_t frame,
-                        Show &show, Drop &drop, const double *fr = nullptr, double zHalfW = 0.0) {
+                        Show &show, ShowOff &showOff, Drop &drop, const double *fr = nullptr, double zHalfW = 0.0) {
 	// node centre in SCALED world (the layer's transform applies xfac on X, its z scale on Z)
 	const double pc[3] = { n->cx * xfac, n->cy, zmidW };
-	if (fr && !n->leaf) {
+	if (fr) {
 		const double ax = std::abs(xfac), pad = 1e-6 * (n->hx * ax + n->hy + zHalfW) + 1e-12;
 		if (lodBoxOutside(fr, (n->cx - n->hx) * ax - pad, (n->cx + n->hx) * ax + pad,
 		                  n->cy - n->hy - pad, n->cy + n->hy + pad, zmidW - zHalfW - pad, zmidW + zHalfW + pad)) {
-			show(n); n->lastUsed = frame;                               // off screen: one coarse tile
+			// OFF SCREEN: its tiny stand-in, not its full tile. It used to be the node's own full tile
+			// (up to 513x513 samples, 4 vertices per node on a grid with NaNs) -- and every refine level
+			// on the way down leaves ~3 such siblings, so a 16x zoom on a Landsat-size grid meshed 40
+			// full tiles / 33 M points for ~0.24 M nodes on screen (measured 2026-11-13).
+			showOff(n); n->lastUsed = frame;
 			for (int k = 0; k < 4; ++k) dropSubtreeG(n->child[k], drop);
 			return;
 		}
@@ -2915,8 +2970,8 @@ static void refineNodeG(QuadNode *n, const double camPos[3], double vpH, double 
 	else {
 		drop(n);                                                    // too coarse -> recurse
 		for (int k = 0; k < 4; ++k)
-			refineNodeG(n->child[k], camPos, vpH, tanHalfFov, parScale, parallel, tau, zmidW, xfac, frame, show, drop,
-			            fr, zHalfW);
+			refineNodeG(n->child[k], camPos, vpH, tanHalfFov, parScale, parallel, tau, zmidW, xfac, frame, show, showOff,
+			            drop, fr, zHalfW);
 	}
 }
 
@@ -2936,13 +2991,14 @@ static bool lodFrustum(Scene *s, double fr[24]) {
 static void refineNode(Scene *s, QuadNode *n, vtkCamera *cam, const double camPos[3],
 					   double vpH, double tanHalfFov, double parScale, bool parallel, double tau) {
 	(void)cam;
-	auto show = [s](QuadNode *q) { ensureNodeActor(s, q); };
-	auto drop = [s](QuadNode *q) { dropNodeActor(s, q); };
+	auto show    = [s](QuadNode *q) { dropNodeCoarse(s, q); ensureNodeActor(s, q); };
+	auto showOff = [s](QuadNode *q) { dropNodeActor(s, q);  ensureNodeCoarse(s, q); };
+	auto drop    = [s](QuadNode *q) { dropNodeActor(s, q);  dropNodeCoarse(s, q); };
 	const double zmid = 0.5 * (s->zmin + s->zmax) * s->zfac * s->ve;
 	const double zhalf = std::abs(0.5 * (s->zmax - s->zmin) * s->zfac * s->ve);
 	double fr[24];
 	const bool cull = lodFrustum(s, fr);
-	refineNodeG(n, camPos, vpH, tanHalfFov, parScale, parallel, tau, zmid, s->xfac, s->lodFrame, show, drop,
+	refineNodeG(n, camPos, vpH, tanHalfFov, parScale, parallel, tau, zmid, s->xfac, s->lodFrame, show, showOff, drop,
 	            cull ? fr : nullptr, zhalf);
 }
 
@@ -2982,12 +3038,10 @@ static bool sceneUpdateBaseGridZ(Scene *s, const float *z, int nx, int ny,
 	if (s->gx0 != x0 || s->gx1 != x1 || s->gy0 != y0 || s->gy1 != y1)   return false;
 	if (!name || !name[0] || s->surfName != name)                       return false;   // different object -> real rebuild
 
-	gridCopyToCM(s->gridZ, z, nx, ny, zlayout);          // THE one copy (grid memory-layout law)
+	s->gridZ.set(z, nx, ny, zlayout);          // the host's buffer, read where it lies -- never a copy
 	double zmin = 1e30, zmax = -1e30;
-	for (size_t k = 0, ntot = (size_t)nx * (size_t)ny; k < ntot; ++k) {
-		const float zz = s->gridZ[k];
+	for (const float zz : s->gridZ)           // order-free scan of the raw storage
 		if (!std::isnan(zz)) { if (zz < zmin) zmin = zz; if (zz > zmax) zmax = zz; }
-	}
 	if (zmin > zmax) { zmin = 0.0; zmax = 1.0; }
 	s->zmin = zmin; s->zmax = zmax;
 
@@ -3026,6 +3080,8 @@ static void refineQuadtree(Scene *s) {
 	const double tanHalf = std::tan(vtkMath::RadiansFromDegrees(cam->GetViewAngle() * 0.5));
 	static const bool traceOnce = (g_lodTrace = envFlag("IGMT_LOD_TRACE"));  (void)traceOnce;
 	s->lodFrame++;
+	s->lodDirty = false;                                  // this pass fits the camera as it is now…
+	s->lodVp[0] = sz ? sz[0] : 0;  s->lodVp[1] = sz ? sz[1] : 0;   // …and this viewport
 	// NO PER-PASS CELL CAP. There used to be one ("~600 k sampled cells per pass: enough that an
 	// ordinary zoom finishes in one go"), and that number was picked from timings taken on ONE
 	// machine. It only ever did anything on a machine SLOWER than that one, and what it did there was
@@ -3067,8 +3123,20 @@ static void refineQuadtree(Scene *s) {
 	}
 }
 
+// The camera moved: the BASE pyramid owes a re-fit, done ONCE at the next render (refineBaseLodIfDue,
+// from AxisLabelCB) -- never here, where every intermediate camera state of a build or a reframe would
+// mesh tiles for a view that is never drawn (see Scene::lodDirty).
 static void onLodCamera(vtkObject*, unsigned long, void *cd, void*) {
-	refineQuadtree(static_cast<Scene*>(cd));               // the BASE surface's tile pyramid
+	static_cast<Scene*>(cd)->lodDirty = true;
+}
+
+// Re-fit the BASE pyramid if the camera moved or the viewport was resized since its last pass. Called
+// from the render's StartEvent (AxisLabelCB), beside refineExtraLods: ONE door for every pyramid.
+static void refineBaseLodIfDue(Scene *s) {
+	if (!s || !s->quadRoot || !s->surfGroup || !s->ren) return;
+	const int *sz = s->ren->GetSize();
+	const bool resized = sz && (sz[0] != s->lodVp[0] || sz[1] != s->lodVp[1]);
+	if (s->lodDirty || resized) refineQuadtree(s);
 }
 
 // ── A GRID EXTRA'S PYRAMID ─────────────────────────────────────────────────────────────────────────
@@ -3083,16 +3151,43 @@ static void quadFreeTree(QuadNode *n) {
 	for (int k = 0; k < 4; ++k) quadFreeTree(n->child[k]);
 	delete n;
 }
+// RELEASE THE BASE PYRAMID: every node, every cached tile (full and stand-in), their globe hooks, and the
+// resident-bytes count. Both base teardowns (buildSceneContent's rebuild, the surface removal) used to
+// just null `quadRoot`, leaking the whole tree with every tile it had cached -- up to the cache budget
+// per rebuild -- and leaving lodResidentBytes counting tiles that no longer existed. The tiles leave
+// the scene with the assembly the caller removes; nothing here touches the assembly.
+static void baseLodFreeNodes(Scene *s, QuadNode *n) {
+	if (!n) return;
+	if (n->actor)  s->globeHooks.erase(n->actor.Get());
+	if (n->cActor) s->globeHooks.erase(n->cActor.Get());
+	for (int k = 0; k < 4; ++k) baseLodFreeNodes(s, n->child[k]);
+}
+static void baseLodFree(Scene *s) {
+	if (!s) return;
+	baseLodFreeNodes(s, s->quadRoot);
+	quadFreeTree(s->quadRoot);
+	s->quadRoot = nullptr;
+	s->tiles.clear();
+	s->lodResidentBytes = 0;
+}
 static void extraLodFree(ExtraObj &ex) {
 	quadFreeTree(ex.lodRoot);
 	ex.lodRoot = nullptr;
 	ex.lodShown.clear();
 	ex.lodBytes = 0;
 }
-static void collectTiles(QuadNode *n, std::vector<QuadNode *> &out, bool shownOnly) {
+// Every node holding tile geometry (full or stand-in), for the eviction pass.
+static void collectTiles(QuadNode *n, std::vector<QuadNode *> &out) {
 	if (!n) return;
-	if (n->tilePD && (!shownOnly || n->inScene)) out.push_back(n);
-	for (int k = 0; k < 4; ++k) collectTiles(n->child[k], out, shownOnly);
+	if (n->tilePD || n->cTilePD) out.push_back(n);
+	for (int k = 0; k < 4; ++k) collectTiles(n->child[k], out);
+}
+// The geometries ON SCREEN, in tree order: a node's full tile or its off-screen stand-in.
+static void collectShownPD(QuadNode *n, std::vector<vtkPolyData *> &out) {
+	if (!n) return;
+	if (n->inScene && n->tilePD)       out.push_back(n->tilePD.Get());
+	else if (n->cInScene && n->cTilePD) out.push_back(n->cTilePD.Get());
+	for (int k = 0; k < 4; ++k) collectShownPD(n->child[k], out);
 }
 
 // Re-fit ONE grid extra's tiles to the current camera. Returns true when what it shows changed.
@@ -3111,29 +3206,36 @@ static bool refineExtraLod(Scene *s, ExtraObj &ex) {
 	auto show = [&](QuadNode *q) {
 		if (!q->tilePD) {
 			q->tilePD = makeGridTile(ex.gridZ.data(), ex.gnx, ex.gny, q->i0, q->i1, q->j0, q->j1,
-			                         ex.gx0, dx, ex.gy0, dy, ex.zmin, q->step, s->aquaWindow, pix);
-			const vtkIdType npts = q->tilePD->GetNumberOfPoints();
-			const vtkIdType ncel = q->tilePD->GetNumberOfCells();
-			q->bytes = (size_t)npts * (12 + 4 + 12) + (size_t)ncel * 20;   // as ensureNodeActor counts it
+			                         ex.gx0, dx, ex.gy0, dy, ex.zmin, q->step, s->aquaWindow, pix, ex.gridZ.layout());
+			q->bytes = lodTileBytes(q->tilePD->GetNumberOfPoints(), q->tilePD->GetNumberOfCells());
 			ex.lodBytes += q->bytes;
 		}
-		q->inScene = true;
+		q->inScene = true;  q->cInScene = false;
 	};
-	auto drop = [](QuadNode *q) { q->inScene = false; };
+	auto showOff = [&](QuadNode *q) {                // the off-screen stand-in (see QuadNode::cTilePD)
+		if (!q->cTilePD) {
+			q->cTilePD = makeGridTile(ex.gridZ.data(), ex.gnx, ex.gny, q->i0, q->i1, q->j0, q->j1,
+			                          ex.gx0, dx, ex.gy0, dy, ex.zmin, lodCoarseStep(q), s->aquaWindow, pix, ex.gridZ.layout());
+			q->cBytes = lodTileBytes(q->cTilePD->GetNumberOfPoints(), q->cTilePD->GetNumberOfCells());
+			ex.lodBytes += q->cBytes;
+		}
+		q->cInScene = true;  q->inScene = false;
+	};
+	auto drop = [](QuadNode *q) { q->inScene = false;  q->cInScene = false; };
 	const double zref = sceneZRefForExtra(s, ex) * ex.ve;
 	const double zmid = 0.5 * (ex.zmin + ex.zmax) * zref;
 	const double zhalf = std::abs(0.5 * (ex.zmax - ex.zmin) * zref);
 	double fr[24];
 	const bool cull = lodFrustum(s, fr);
 	refineNodeG(ex.lodRoot, camPos, vpH, tanHalf, cam->GetParallelScale(), parallel, /*tau=*/4.0,
-	            zmid, s->xfac, ex.lodFrame, show, drop, cull ? fr : nullptr, zhalf);
+	            zmid, s->xfac, ex.lodFrame, show, showOff, drop, cull ? fr : nullptr, zhalf);
 
-	std::vector<QuadNode *> shown;
-	collectTiles(ex.lodRoot, shown, true);
+	std::vector<vtkPolyData *> shown;
+	collectShownPD(ex.lodRoot, shown);
 	const bool changed = (shown != ex.lodShown);
 	static const bool traceX = envFlag("IGMT_LOD_TRACE");
 	if (traceX) {
-		vtkIdType npts = 0; for (QuadNode *q : shown) npts += q->tilePD ? q->tilePD->GetNumberOfPoints() : 0;
+		vtkIdType npts = 0; for (vtkPolyData *pd : shown) npts += pd->GetNumberOfPoints();
 		fprintf(stdout, "[lodX] %s: cull=%d parallel=%d pscale=%.1f shown=%zu pts=%lld changed=%d bytes=%.1f MB\n",
 		        ex.name.c_str(), (int)cull, (int)parallel, cam->GetParallelScale(), shown.size(), (long long)npts,
 		        (int)changed, ex.lodBytes / 1048576.0);
@@ -3141,10 +3243,11 @@ static bool refineExtraLod(Scene *s, ExtraObj &ex) {
 	}
 	if (changed) {
 		vtkNew<vtkAppendPolyData> app;
-		for (QuadNode *q : shown) app->AddInputData(q->tilePD);
+		for (vtkPolyData *pd : shown) app->AddInputData(pd);
 		if (!shown.empty()) {
 			app->Update();
 			ex.lodPD->ShallowCopy(app->GetOutput());
+			if (isPixelCells(shown.front())) markPixelCells(ex.lodPD);   // the append drops field data
 		}
 		else
 			ex.lodPD->Initialize();
@@ -3155,13 +3258,18 @@ static bool refineExtraLod(Scene *s, ExtraObj &ex) {
 	// Off-screen tiles are kept for a quick zoom back, up to the same budget the base's tiles use.
 	if (ex.lodBytes > s->lodBudgetBytes) {
 		std::vector<QuadNode *> res;
-		collectTiles(ex.lodRoot, res, false);
+		collectTiles(ex.lodRoot, res);
 		std::sort(res.begin(), res.end(), [](QuadNode *a, QuadNode *b) { return a->lastUsed < b->lastUsed; });
 		for (QuadNode *q : res) {
 			if (ex.lodBytes <= s->lodBudgetBytes) break;
-			if (q->inScene) continue;                // never evict a tile on screen
-			ex.lodBytes = (ex.lodBytes >= q->bytes) ? ex.lodBytes - q->bytes : 0;
-			q->tilePD = nullptr; q->bytes = 0;
+			if (q->tilePD && !q->inScene) {          // never evict a tile on screen
+				ex.lodBytes = (ex.lodBytes >= q->bytes) ? ex.lodBytes - q->bytes : 0;
+				q->tilePD = nullptr; q->bytes = 0;
+			}
+			if (q->cTilePD && !q->cInScene) {
+				ex.lodBytes = (ex.lodBytes >= q->cBytes) ? ex.lodBytes - q->cBytes : 0;
+				q->cTilePD = nullptr; q->cBytes = 0;
+			}
 		}
 	}
 	return changed;
@@ -3224,7 +3332,7 @@ static void rebuildLayerFromStored(Scene *s, ExtraObj *ex, bool asImage) {
 	if (!s) return;
 	if (!ex) { rebuildBaseFromStored(s, asImage); return; }
 	if (ex->gridZ.empty() || ex->gnx < 2 || ex->gny < 2 || ex->cz.size() < 2) return;
-	const std::vector<float>  z    = ex->gridZ;       // COPIES: the removal below frees the originals
+	const GridZ z = ex->gridZ;   // a HANDLE (shares the host pin): the removal below cannot free the buffer
 	const std::vector<double> cz   = ex->cz;
 	const std::vector<double> crgb = ex->crgb;
 	const int    nx = ex->gnx, ny = ex->gny, geog = ex->geog, nc = (int)cz.size();
@@ -3232,8 +3340,8 @@ static void rebuildLayerFromStored(Scene *s, ExtraObj *ex, bool asImage) {
 	const std::string nm = ex->name;
 	const bool showBar = ex->showBar;                 // THIS layer's own colour-bar intent, carried across
 	gmtvtk_remove_grid_h(s, nm.c_str());              // the ONE removal path (actor, axes, rows, colorbar)
-	if (asImage) gmtvtk_show_layer_image_h (s, z.data(), nx, ny, x0, x1, y0, y1, geog, cz.data(), crgb.data(), nc, nm.c_str(), /*zlayout=*/0);
-	else         gmtvtk_replace_base_grid_h(s, z.data(), nx, ny, x0, x1, y0, y1, geog, cz.data(), crgb.data(), nc, nm.c_str(), /*zlayout=*/0);
+	if (asImage) gmtvtk_show_layer_image_h(s, z.data(), nx, ny, x0, x1, y0, y1, geog, cz.data(), crgb.data(), nc, nm.c_str(), /*zlayout=*/z.layout());
+	else         gmtvtk_replace_base_grid_h(s, z.data(), nx, ny, x0, x1, y0, y1, geog, cz.data(), crgb.data(), nc, nm.c_str(), /*zlayout=*/z.layout());
 	// The layer that owned the colour bar was just removed and rebuilt as the window's surface, so the
 	// bar has to be re-derived for whatever is active NOW — through the same refreshGridColorbar every
 	// other add / hide / restack ends in. The bar belongs to the LAYER, so the layer's own intent moves
@@ -3245,7 +3353,7 @@ static void rebuildLayerFromStored(Scene *s, ExtraObj *ex, bool asImage) {
 
 static void rebuildBaseFromStored(Scene *s, bool asImage) {
 	if (!s || s->gridZ.empty() || s->gnx < 2 || s->gny < 2 || s->baseCz.size() < 2) return;
-	const std::vector<float>  z    = s->gridZ;         // COPY: the callees reassign s->gridZ from this pointer
+	const GridZ z = s->gridZ;    // a HANDLE (shares the host pin): the callees reassign s->gridZ from it
 	const std::vector<double> cz   = s->baseCz;
 	const std::vector<double> crgb = s->baseCrgb;
 	const int nc = (int)cz.size();
@@ -3256,17 +3364,17 @@ static void rebuildBaseFromStored(Scene *s, bool asImage) {
 		// + per-side bakeAquaShade). A plain grid uses the normal flat-image bake.
 		if ((int)s->aquaBaseRGBA.size() == s->gnx * s->gny * 4) {
 			showLayerImageTail(s, s->aquaBaseRGBA.data(), s->gnx, s->gny, z.data(), s->gnx, s->gny,
-			                   s->gx0, s->gx1, s->gy0, s->gy1, s->baseGeog, cz.data(), crgb.data(), nc, nm.c_str(), true);
+			                   s->gx0, s->gx1, s->gy0, s->gy1, s->baseGeog, cz.data(), crgb.data(), nc, nm.c_str(), true, z.layout());
 			return;
 		}
-		gmtvtk_show_layer_image_h(s, z.data(), s->gnx, s->gny, s->gx0, s->gx1, s->gy0, s->gy1, s->baseGeog, cz.data(), crgb.data(), nc, nm.c_str(), /*zlayout=*/0);
+		gmtvtk_show_layer_image_h(s, z.data(), s->gnx, s->gny, s->gx0, s->gx1, s->gy0, s->gy1, s->baseGeog, cz.data(), crgb.data(), nc, nm.c_str(), /*zlayout=*/z.layout());
 	} else {
 		// 3-D SURFACE. SACRED LAW: the same operation uses the same function -- a tsunami warps + hillshades
 		// through the EXACT builder every grid uses (gmtvtk_replace_base_grid_h -> hillshadeMapper), no
 		// special case. Drop the custom-texture flag so it shades as a plain grid; the stored composite
 		// (aquaBaseRGBA) survives, so re-checking "Shaded image (2-D)" restores the flat blend above.
 		s->customLayerTexture = false;
-		gmtvtk_replace_base_grid_h(s, z.data(), s->gnx, s->gny, s->gx0, s->gx1, s->gy0, s->gy1, s->baseGeog, cz.data(), crgb.data(), nc, nm.c_str(), /*zlayout=*/0);
+		gmtvtk_replace_base_grid_h(s, z.data(), s->gnx, s->gny, s->gx0, s->gx1, s->gy0, s->gy1, s->baseGeog, cz.data(), crgb.data(), nc, nm.c_str(), /*zlayout=*/z.layout());
 	}
 }
 
@@ -6735,6 +6843,8 @@ public:
 			// mapping, occlusion and shadows over pixels that are already lit.
 			const bool winPasses = (model == 1) && !composited;
 			scn->useSSAO    = winPasses && cbSSAOx->isChecked();
+			// ticked WHILE in the flat 2-D map = asked for there (Scene::ssaoIn2D); unticked there = not
+			if (scn->flat2d) scn->ssaoIn2D = scn->useSSAO;
 			scn->useTone    = winPasses && cbTonex->isChecked();
 			scn->useFXAA    = winPasses && cbFXAAx->isChecked();
 			scn->useShadows = winPasses && cbShadowx->isChecked();
@@ -8295,7 +8405,19 @@ static bool actorDisplayedRGB(vtkActor *act, std::vector<unsigned char> &out, in
 			if (auto *sc = vtkUnsignedCharArray::SafeDownCast(id->GetPointData()->GetScalars())) {
 				nb = sc->GetNumberOfComponents();
 				const unsigned char *p = sc->GetPointer(0);
-				out.assign(p, p + static_cast<size_t>(sc->GetNumberOfTuples()) * nb);
+				const size_t n = static_cast<size_t>(sc->GetNumberOfTuples());
+				if (nb == 1) {
+					// A one-band grey picture is kept at ONE byte per pixel (Julia `_grey_texture`) and
+					// drawn grey: what is ON SCREEN is that value as R=G=B, opaque — exactly the RGBA every
+					// reader of this used to get, so none of them sees a difference.
+					out.resize(n * 4);
+					for (size_t k = 0; k < n; ++k) {
+						out[4*k] = out[4*k+1] = out[4*k+2] = p[k];  out[4*k+3] = 255;
+					}
+					nb = 4;
+					return !out.empty();
+				}
+				out.assign(p, p + n * nb);
 				return !out.empty();
 			}
 		}
@@ -28971,7 +29093,7 @@ static void buildSceneContent(Scene *s, vtkSmartPointer<vtkPolyData> pd,
 	// once, for every element type (SACRED_LAW.md: same operation, same function).
 	disableGizmo(s);
 	if (s->lodCmd && s->ren->GetActiveCamera()) s->ren->GetActiveCamera()->RemoveObserver(s->lodCmd);
-	s->lodCmd = nullptr; s->quadRoot = nullptr; s->tiles.clear();
+	s->lodCmd = nullptr; baseLodFree(s);   // the old pyramid and its cached tiles, really released
 	if (s->surfGroup) s->ren->RemoveActor(s->surfGroup);
 	if (s->surf)      s->ren->RemoveActor(s->surf);
 	if (s->drape)     s->ren->RemoveActor(s->drape);
@@ -29106,6 +29228,7 @@ static void buildSceneContent(Scene *s, vtkSmartPointer<vtkPolyData> pd,
 		vtkNew<vtkTexture> tex;
 		tex->SetInputData(tex_img);
 		tex->InterpolateOn();
+		tex->SetColorModeToDirectScalars();   // the bytes AS THEY ARE (no RGBA copy of a 1-band picture: see gmtvtk_add_surface_h)
 
 		// Image overlay. The canvas spans the WHOLE grid bbox with alpha 0 outside the
 		// image footprint, so only the grid ∩ image area is painted; the CPT-coloured

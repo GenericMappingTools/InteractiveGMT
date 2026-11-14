@@ -45,7 +45,9 @@ end
 	@test r.on_nan == 0                    # no square stands on a NaN node
 	@test r.invented == 0                  # every square wears its own node's value
 	@test r.nan_cells == 0
-	@test r.points == 4 * r.cells
+	# the squares SHARE their corners (one lattice, value and normal on the square): one point per corner
+	# of the (nx x ny) node squares, never four private vertices per square (memory fix, 2026-11-13)
+	@test r.points == (size(Z, 1) + 1) * (size(Z, 2) + 1)
 end
 
 @testitem "NaN mesh: a coarse tile samples, it never fills (step 4)" tags=[:gui, :nan] setup=[GmtvtkTest, NanMeshFixture] begin

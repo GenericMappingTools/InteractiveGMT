@@ -783,6 +783,119 @@ struct LayerShade {
 	double opacity = 1.0;             // THIS layer's opacity (gmtvtk_layer_opacity_h); every tile inherits it
 };
 
+// GridLay: how to read ANY of GMT's four grid memory layouts with (ix, iy), iy counted from the SOUTH.
+// `zlayout` is the layout string's first two characters as 2 bits: bit0 row-major, bit1 north-first
+// ("BCB" = 0, "TRB" = 3). This is the ONE place a layout is resolved (SACRED_LAW.md): a builder that
+// needs a z value calls GridLay::at, never raw index maths.
+struct GridLay {
+	size_t     off;      // element offset of (ix=0, iy=0) = the SW corner
+	ptrdiff_t  sx, sy;   // element stride per +1 in x / +1 in y (northwards)
+	inline float at(const float *z, int ix, int iy) const {
+		return z[(ptrdiff_t)off + (ptrdiff_t)ix * sx + (ptrdiff_t)iy * sy];
+	}
+};
+static inline GridLay gridLay(int nx, int ny, int zlayout) {
+	const bool rowmajor = (zlayout & 1) != 0, northFirst = (zlayout & 2) != 0;
+	if (rowmajor)
+		return northFirst ? GridLay{ (size_t)(ny - 1) * (size_t)nx,  1, -(ptrdiff_t)nx }
+		                  : GridLay{ 0,                              1,  (ptrdiff_t)nx };
+	return northFirst ? GridLay{ (size_t)(ny - 1), (ptrdiff_t)ny, -1 }
+	                  : GridLay{ 0,                (ptrdiff_t)ny,  1 };
+}
+
+// THE HOST'S PIN ON A GRID BUFFER. A grid handed over by Julia is READ WHERE IT LIES, in the layout it
+// has (GMT.jl/GDAL hand row-major "TRB") -- never copied (user's order, 2026-11-13: "each side holding a
+// copy" doubled every grid; a Landsat temperature grid of 242 MB cost 484). Julia keeps the array alive
+// for as long as C++ holds it: `g_juliaGridPin(ptr)` is asked when C++ adopts a buffer -- it answers a
+// pin id (Julia now holds the array strongly) or 0 (not a buffer Julia offered: then C++ keeps a copy
+// of its own). The pin is shared by every copy of the handle (GridZ below) and released ONCE, by the
+// last one, through `g_juliaGridUnpin(id)`. Registered by the host (gmtvtk_set_grid_pin_callbacks).
+typedef uint64_t(*JuliaGridPinFn)(const void *ptr);
+typedef void(*JuliaGridUnpinFn)(uint64_t id);
+static JuliaGridPinFn   g_juliaGridPin   = nullptr;
+static JuliaGridUnpinFn g_juliaGridUnpin = nullptr;
+struct GridPin {
+	uint64_t id = 0;
+	explicit GridPin(uint64_t i) : id(i) {}
+	~GridPin() { if (id && g_juliaGridUnpin) g_juliaGridUnpin(id); }
+	GridPin(const GridPin &) = delete;
+	GridPin &operator=(const GridPin &) = delete;
+};
+
+// A LAYER'S Z: the one handle every Scene-side consumer reads a grid through. Either BORROWED (a pinned
+// host buffer, in the layout the host has it: `code`) or OWNED (a column-major copy, ONLY for buffers
+// the host did not offer -- C++-internal grids, test buffers). Read with at(ix, iy); `[k]` keeps the
+// old index k = ix*ny + iy working; `data()`/`layout()` hand the raw buffer + its layout code to a
+// builder that resolves it through GridLay. begin()/end() walk the raw storage (order-free uses only:
+// NaN scans, min/max).
+struct GridZ {
+	const float *p = nullptr;          // the values: the host's buffer, or own.data()
+	std::vector<float> own;            // owned storage (column-major), empty when borrowed
+	std::shared_ptr<GridPin> pin;      // the host's pin on p (borrowed); the last copy releases it
+	GridLay lay{ 0, 1, 1 };
+	int nx = 0, ny = 0, code = 0;
+
+	GridZ() = default;
+	GridZ(const GridZ &o) { *this = o; }
+	GridZ(GridZ &&o) noexcept { *this = std::move(o); }
+	GridZ &operator=(const GridZ &o) {
+		if (this == &o) return *this;
+		const bool owned = o.p && !o.own.empty() && o.p == o.own.data();
+		own = o.own;  pin = o.pin;  lay = o.lay;  nx = o.nx;  ny = o.ny;  code = o.code;
+		p = owned ? own.data() : o.p;
+		return *this;
+	}
+	GridZ &operator=(GridZ &&o) noexcept {
+		if (this == &o) return *this;
+		const bool owned = o.p && !o.own.empty() && o.p == o.own.data();
+		own = std::move(o.own);  pin = std::move(o.pin);  lay = o.lay;  nx = o.nx;  ny = o.ny;  code = o.code;
+		p = owned ? own.data() : o.p;
+		o.p = nullptr;  o.nx = o.ny = 0;  o.code = 0;
+		return *this;
+	}
+
+	bool   empty() const { return !p || nx <= 0 || ny <= 0; }
+	size_t size()  const { return empty() ? 0 : (size_t)nx * (size_t)ny; }
+	float  at(int ix, int iy) const { return lay.at(p, ix, iy); }
+	float  operator[](size_t k) const { return at((int)(k / (size_t)ny), (int)(k % (size_t)ny)); }
+	const float *data()   const { return p; }
+	int          layout() const { return code; }
+	const float *begin()  const { return p; }
+	const float *end()    const { return p + size(); }
+	void clear() {
+		p = nullptr;  own.clear();  own.shrink_to_fit();  pin.reset();
+		nx = ny = 0;  code = 0;  lay = GridLay{ 0, 1, 1 };
+	}
+	// Take the grid `z` (nx x ny, layout `zlayout`). Borrowed when the host pins it; otherwise copied
+	// into own storage, column-major. Safe when `z` is this handle's own buffer (the new pin, or the
+	// copy, is made before the old storage goes).
+	void set(const float *z, int nx_, int ny_, int zlayout) {
+		const uint64_t id = (z && g_juliaGridPin) ? g_juliaGridPin(z) : 0;
+		if (id) {
+			auto np = std::make_shared<GridPin>(id);
+			own.clear();  own.shrink_to_fit();
+			pin = std::move(np);  p = z;  code = zlayout;
+		}
+		else {
+			std::vector<float> cm((size_t)nx_ * (size_t)ny_);
+			if (!zlayout) std::copy(z, z + cm.size(), cm.begin());
+			else {
+				const GridLay l = gridLay(nx_, ny_, zlayout);
+				for (int ix = 0; ix < nx_; ++ix)
+					for (int iy = 0; iy < ny_; ++iy) cm[(size_t)ix * ny_ + iy] = l.at(z, ix, iy);
+			}
+			own = std::move(cm);  pin.reset();  p = own.data();  code = 0;
+		}
+		nx = nx_;  ny = ny_;  lay = gridLay(nx, ny, code);
+	}
+	// A column-major COPY, for the few consumers that must keep a plain vector of their own.
+	std::vector<float> toCM() const {
+		std::vector<float> v(size());
+		for (int ix = 0; ix < nx; ++ix) for (int iy = 0; iy < ny; ++iy) v[(size_t)ix * ny + iy] = at(ix, iy);
+		return v;
+	}
+};
+
 // ONE external-reflectance store: a per-node intensity grid computed by GMT in Julia (the
 // "Illumination (Hillshade)" tool, src/hillshade.jl) over a true-coord box, sampled by WORLD
 // position. A window normally has one (Scene::shadeIn). An Aquamoto layer has TWO -- see
@@ -810,21 +923,44 @@ struct ExternShade {
 // copy, so the colour on screen is not its value. Handed over by the host (drop.jl `_push_image_dn`)
 // in the texture's own order -- row 0 = south, west -> east, bands fastest -- spanning [x0,x1]x[y0,y1],
 // the same box the texture covers. Empty (nx == 0) for an 8-bit image: its readout is the colour.
+//
+// READ WHERE IT LIES (user's order, 2026-11-14): the values are the host's own image array, pinned
+// (GridPin, the same pin a grid takes), addressed by element strides -- value (ix, iy south-first,
+// band b) is element `off + ix*sx + iy*sy + b*sb` of `esize`-byte integers (1: UInt8/Bool, 2: UInt16).
+// It used to be a COPY of that array (a Landsat band: 121 MB more, for every 16-bit image opened).
+// A buffer the host did not offer is copied into `own` (canonical order), as before.
 struct ImgDN {
-	std::vector<uint16_t> v;
+	const void *p = nullptr;
+	int esize = 2;                          // bytes per value: 1 or 2
+	long long off = 0, sx = 0, sy = 0, sb = 0;
+	std::vector<uint16_t> own;              // a copy, only when the host's buffer could not be pinned
+	std::shared_ptr<GridPin> pin;           // the host's pin on p
 	int nx = 0, ny = 0, nb = 0;
 	double x0 = 0.0, x1 = 0.0, y0 = 0.0, y1 = 0.0;
+	ImgDN() = default;
+	ImgDN(const ImgDN &o) { *this = o; }
+	ImgDN &operator=(const ImgDN &o) {         // an OWNED copy must point at its own buffer, not o's
+		if (this == &o) return *this;
+		const bool owned = o.p && !o.own.empty() && o.p == static_cast<const void *>(o.own.data());
+		own = o.own;  pin = o.pin;  esize = o.esize;  off = o.off;  sx = o.sx;  sy = o.sy;  sb = o.sb;
+		nx = o.nx;  ny = o.ny;  nb = o.nb;  x0 = o.x0;  x1 = o.x1;  y0 = o.y0;  y1 = o.y1;
+		p = owned ? static_cast<const void *>(own.data()) : o.p;
+		return *this;
+	}
+	unsigned value(int ix, int iy, int b) const {
+		const long long k = off + ix * sx + iy * sy + b * sb;
+		return esize == 2 ? static_cast<const uint16_t *>(p)[k] : static_cast<const uint8_t *>(p)[k];
+	}
 	// The values at (x,y) into `out` ("1234" or "12 34 56"); false outside the image.
 	bool at(double x, double y, QString &out) const {
-		if (nx <= 0 || ny <= 0 || nb <= 0 || x1 == x0 || y1 == y0) return false;
+		if (!p || nx <= 0 || ny <= 0 || nb <= 0 || x1 == x0 || y1 == y0) return false;
 		const double fx = (x - std::min(x0, x1)) / std::abs(x1 - x0), fy = (y - std::min(y0, y1)) / std::abs(y1 - y0);
 		if (fx < 0.0 || fx > 1.0 || fy < 0.0 || fy > 1.0) return false;
 		const int ix = std::min(nx - 1, (int)(fx * nx)), iy = std::min(ny - 1, (int)(fy * ny));
-		const size_t k = ((size_t)iy * nx + ix) * nb;
 		out.clear();
 		for (int b = 0; b < nb; ++b) {
 			if (b) out += ' ';
-			out += QString::number(v[k + b]);
+			out += QString::number(value(ix, iy, b));
 		}
 		return true;
 	}
@@ -896,7 +1032,7 @@ struct ExtraObj {
 	// its own full-res z (for the hover/coordinate readout when it is the active/displayed grid) and its
 	// own LUT + z range (so the single rendered colorbar can be retargeted to it). Mirrors the base
 	// surface's Scene-level gridZ / surfLut / zmin-zmax. Empty for images.
-	std::vector<float> gridZ;                // full-res z, column-major z[i*gny+j] (same layout as base)
+	GridZ gridZ;                             // full-res z, read in place (GridZ: the host buffer, pinned)
 	int    gnx = 0, gny = 0;
 	double gx0 = 0, gx1 = 1, gy0 = 0, gy1 = 1;
 	double zmin = 0, zmax = 0;               // this grid's own z range (drives its colorbar)
@@ -913,7 +1049,10 @@ struct ExtraObj {
 	// Plain grids only (a draped grid keeps its single mesh, as the base's drape path does).
 	QuadNode *lodRoot = nullptr;             // owned; freed by extraLodFree when the layer is removed
 	vtkSmartPointer<vtkPolyData> lodPD;      // the actor's mapper input: the visible tiles, appended
-	std::vector<QuadNode *> lodShown;        // the tiles lodPD currently holds (change detector)
+	// The tile GEOMETRIES lodPD currently holds (change detector). Geometries, not nodes: a node can be
+	// shown by its full tile or by its off-screen stand-in (QuadNode::cTilePD), and a switch between the
+	// two is a change even though the set of nodes is the same.
+	std::vector<vtkPolyData *> lodShown;
 	uint64_t lodFrame = 0;                   // bumped each refine; tiles store lastUsed
 	size_t lodBytes = 0;                     // resident tile geometry, against Scene::lodBudgetBytes
 	vtkSmartPointer<vtkScalarsToColors> lut; // this grid's colour map (for the retargeted colorbar)
@@ -1410,7 +1549,7 @@ struct Scene {
 	// The grid's z kept once at full res, column-major z[i*gny + j] (GMT layout). Hover readout
 	// and profile cross-sections sample THIS (bilinear), so they stay full-res no matter what the
 	// render path draws (future tiled-LOD pyramid) — and need no vtkCellLocator over the surface.
-	std::vector<float> gridZ;
+	GridZ gridZ;                             // full-res z, read in place (GridZ: the host buffer, pinned)
 	int    gnx = 0, gny = 0;
 	double gx0 = 0, gx1 = 1, gy0 = 0, gy1 = 1;
 	double gdx = 0, gdy = 0;                          // true-coord node spacing (tile build + SSE)
@@ -1420,7 +1559,7 @@ struct Scene {
 	// topmost VISIBLE one; it drives the hover/coordinate readout and is the only grid whose colorbar is
 	// shown. These point the readout at the active grid's data layer (null -> use the base gridZ above).
 	// resolveActiveGrid()/refreshGridColorbar() (50_scene.cpp) set them on every add / toggle / restack.
-	const std::vector<float> *actZ = nullptr;
+	const GridZ *actZ = nullptr;
 	int    actNx = 0, actNy = 0;
 	double actX0 = 0, actX1 = 1, actY0 = 0, actY1 = 1;
 	// The colorbar's CURRENT display range — decoupled from zmin/zmax (which stay the base relief's range
@@ -1482,8 +1621,21 @@ struct Scene {
 	int      captureScale = 2;
 	uint64_t lodFrame = 0;                            // bumped each refine; tiles store lastUsed
 	size_t   lodResidentBytes = 0;                    // approx resident tile geometry bytes
-	size_t   lodBudgetBytes = (size_t)1 << 30;        // ~1 GiB cap; LRU-evict offscreen tiles past it
-	vtkSmartPointer<vtkCallbackCommand> lodCmd;       // camera-modified observer (drives refine)
+	// Cap on the OFF-SCREEN tile cache (LRU-evicted past it), per pyramid. Was 1 GiB: a grid that had
+	// once been zoomed kept up to a gigabyte of tiles nobody was looking at (measured 2026-11-13, Landsat
+	// 7721x7841: the window held ~1.9 GB over the grid it showed). 256 MiB still holds several zoom
+	// levels of a full-screen view, which is what the cache is for (zoom in, out, in without re-meshing).
+	size_t   lodBudgetBytes = (size_t)256 << 20;
+	vtkSmartPointer<vtkCallbackCommand> lodCmd;       // camera-modified observer: marks the LOD dirty
+	// THE BASE PYRAMID IS RE-FITTED AT RENDER TIME (AxisLabelCB, the render's StartEvent -- the door the
+	// grid extras' pyramids already use), not inside every camera Modified event. A window build or a
+	// reframe moves the camera through several intermediate states (ResetCamera, position, zoom,
+	// parallel scale...), and refining at each one meshed tiles for views that were never drawn:
+	// 40 tiles / 9.5 M cells / 1.1 s / ~1 GB on a Landsat-size grid, for a final view that needed one.
+	// `lodDirty` = the camera moved since the last pass; `lodVp` = the viewport size of that pass (a
+	// resize changes what is on screen without touching the camera).
+	bool     lodDirty = false;
+	int      lodVp[2] = { 0, 0 };
 	// MESHING BUDGET PER CAMERA EVENT. Refinement runs inside the camera callback, i.e. before the
 	// frame is allowed to finish, so a zoom that crosses a level threshold used to mesh that ENTIRE
 	// level -- hundreds of makeGridTile calls -- with the UI frozen until the last one. The budget
@@ -1727,6 +1879,10 @@ struct Scene {
 	LayerShade look;
 	double lightIntensity = 1.0, fillIntensity = 0.35, envIntensity = 1.0;
 	bool   useSSAO = true, useTone = true, useFXAA = true, useIBL = false;
+	// SSAO IN THE FLAT 2-D MAP is off unless the user turned it on WHILE in 2-D (the Illumination
+	// dialog's SSAO box). It darkens creases of a relief seen from the side; on a map seen straight down
+	// it barely shows, and its buffers are the biggest of a window's (user's order, 2026-11-13).
+	bool   ssaoIn2D = false;
 	bool   useShadows = false;        // sun cast-shadows (terrain self-shadowing) — OFF by default (opt-in; mutually exclusive with useHillshade)
 	int    shadowRes  = 2048;         // shadow depth-map resolution (higher = crisper shadow edges)
 	// METHOD 7's own copies of three of those passes. The flat-image bake cannot run through VTK's
@@ -3590,7 +3746,30 @@ struct QuadNode {
 	long     styleGen = 0;
 	uint64_t lastUsed = 0;
 	size_t   bytes = 0;
+	// THE OFF-SCREEN STAND-IN. A node whose box lies wholly outside the camera frustum is drawn by a
+	// TINY tile over the same box (lodCoarseStep: ~kLodCoarseSpan samples a side) instead of its full
+	// up-to-513x513 one: the surface keeps covering the whole grid -- so its bounds, the axes, the VE
+	// and the camera fit that read them are unchanged, and a resize never exposes a hole -- at a few
+	// thousandths of the cost. Kept apart from `actor`/`tilePD` so a node that goes off screen and
+	// comes back still finds its full tile in the cache. Same lifecycle flags as the full tile.
+	vtkSmartPointer<vtkActor>    cActor;   // base pyramid
+	vtkSmartPointer<vtkPolyData> cTilePD;  // grid extra's pyramid
+	bool     cInScene  = false;
+	long     cStyleGen = 0;
+	size_t   cBytes    = 0;
 };
+static const int kLodCoarseSpan = 32;   // samples per side of an off-screen stand-in tile
+static inline int lodCoarseStep(const QuadNode *n) {
+	const int span = std::max(n->i1 - n->i0, n->j1 - n->j0);
+	return std::max(n->step, (span + kLodCoarseSpan - 1) / kLodCoarseSpan);
+}
+// Resident bytes of one tile as it really sits in memory: points (float xyz 12) + z scalar 4 + normal
+// 12 + the mapper's per-point RGBA colours 4 + the bakes' per-point colour 3, and per quad cell the
+// 32/64-bit connectivity (4 ids + offset). The old count (28 B/pt) left the colours out, so the cache
+// held more than its budget said.
+static inline size_t lodTileBytes(vtkIdType npts, vtkIdType ncel) {
+	return (size_t)npts * (12 + 4 + 12 + 4 + 3) + (size_t)ncel * 40;
+}
 
 // Show / hide the Profile dock — THE door every path that fills the Profile panel goes through
 // (Ctrl+drag track, a plotted series, Delete profile). Its status-bar button comes and goes with it:
@@ -3904,21 +4083,7 @@ makeGridCTF(const Scene *s, const double *cz, const double *crgb, int ncolor) {
 // element strides, so every consumer indexes by (ix, iy) with iy counted from the SOUTH and no
 // layout costs a copy. This is the ONE place a layout is resolved (SACRED_LAW.md): a builder that
 // needs a z value calls GridLay::at, never raw index maths.
-struct GridLay {
-	size_t     off;      // element offset of (ix=0, iy=0) = the SW corner
-	ptrdiff_t  sx, sy;   // element stride per +1 in x / +1 in y (northwards)
-	inline float at(const float *z, int ix, int iy) const {
-		return z[(ptrdiff_t)off + (ptrdiff_t)ix * sx + (ptrdiff_t)iy * sy];
-	}
-};
-static inline GridLay gridLay(int nx, int ny, int zlayout) {
-	const bool rowmajor = (zlayout & 1) != 0, northFirst = (zlayout & 2) != 0;
-	if (rowmajor)
-		return northFirst ? GridLay{ (size_t)(ny - 1) * (size_t)nx,  1, -(ptrdiff_t)nx }
-		                  : GridLay{ 0,                              1,  (ptrdiff_t)nx };
-	return northFirst ? GridLay{ (size_t)(ny - 1), (ptrdiff_t)ny, -1 }
-	                  : GridLay{ 0,                (ptrdiff_t)ny,  1 };
-}
+// (GridLay / gridLay: defined near the top of this file, beside GridZ.)
 
 // Fill `dst` with the grid in the CANONICAL column-major z[ix*ny+iy] order every Scene-side consumer
 // (hover readout, profile, tiles, the flat-image / crop bakes) reads. This is NOT an added copy: the
@@ -4158,6 +4323,19 @@ static vtkSmartPointer<vtkPolyData> makeGridFromArray(const float *z, int nx, in
 	return pd;
 }
 
+// A grid geometry coloured PER CELL (makeGridTile's pixelCells squares: value + normal on the square,
+// corners shared). Marked in field data so the one shading bake can tell it from a mesh that merely
+// carries a per-face z (those are not grid tiles and are not relief-shaded). A vtkAppendPolyData does
+// not carry field data across, so a layer's appended tiles are re-marked after the append.
+static void markPixelCells(vtkPolyData *pd) {
+	if (!pd || !pd->GetFieldData()) return;
+	vtkNew<vtkUnsignedCharArray> f;  f->SetName("igmtPixelCells");  f->InsertNextValue(1);
+	pd->GetFieldData()->AddArray(f);
+}
+static bool isPixelCells(vtkPolyData *pd) {
+	return pd && pd->GetFieldData() && pd->GetFieldData()->GetAbstractArray("igmtPixelCells") != nullptr;
+}
+
 // Build ONE tile of a grid: the inclusive node block [i0..i1] x [j0..j1] of the full column-major
 // z[i*ny + j], as a small quad polydata with baked per-vertex normals (z-scalar for CPT colour).
 // Adjacent tiles SHARE their boundary row/col (i1 == next i0) so the seam has no gap. Normals are
@@ -4170,8 +4348,10 @@ static vtkSmartPointer<vtkPolyData> makeGridTile(const float *z, int nx, int ny,
 												 double fillZ,       // NaN nodes' geometry z (grid floor) -> painted flat hole
 												 int step = 1,       // step>1 -> coarse LOD tile (sub-sampled)
 												 bool holeRim = false,    // Scene::aquaWindow: tsunami NaN-hole rim
-												 bool pixelCells = false) { // grid with NaNs: each node its own square
+												 bool pixelCells = false,  // grid with NaNs: each node its own square
+												 int zlayout = 0) {        // GridLay code of z: the buffer is read WHERE IT LIES
 	if (step < 1) step = 1;
+	const GridLay ZL = gridLay(nx, ny, zlayout);   // THE layout resolver: z is never re-ordered
 	// Sampled global indices for this tile, ALWAYS including the far edge i1/j1 so a coarse tile
 	// still spans its whole region and meets neighbours. step=1 -> every node (full res).
 	std::vector<int> xs, ys;
@@ -4193,15 +4373,19 @@ static vtkSmartPointer<vtkPolyData> makeGridTile(const float *z, int nx, int ny,
 		auto Zp = [&](int a, int b) -> float {
 			a = a < 0 ? 0 : (a > nx - 1 ? nx - 1 : a);
 			b = b < 0 ? 0 : (b > ny - 1 ? ny - 1 : b);
-			return z[(vtkIdType)a * ny + b];
+			return ZL.at(z, a, b);
 		};
+		//
+		// SHARED CORNERS, VALUE AND NORMAL ON THE SQUARE. Every square used to own four private vertices,
+		// each repeating the square's value and normal: 4 x (xyz + z + normal + colours) per node. But a
+		// corner's height is the mean of the real nodes that meet there -- the SAME number for every square
+		// that touches it -- so the corners are one lattice the squares share, and the per-square value and
+		// normal live where they belong, on the cell. Same squares, same colours, same light, about a
+		// third of the memory (measured 2026-11-13: the 4-vertex tiles were most of a Landsat window's
+		// footprint). The field-data flag `igmtPixelCells` tells the shading bake (hillshadeMapper) that
+		// this geometry is coloured per CELL; nothing else needs to know.
 		const int nxs = (xs.back() == nx - 1) ? tw : tw - 1;
 		const int nys = (ys.back() == ny - 1) ? th : th - 1;
-		vtkNew<vtkPoints>     ppts;  ppts->SetDataTypeToFloat(); ppts->Allocate((vtkIdType)nxs * nys * 4);
-		vtkNew<vtkFloatArray> pval;  pval->SetName("z");         pval->Allocate((vtkIdType)nxs * nys * 4);
-		vtkNew<vtkFloatArray> pnrm;  pnrm->SetNumberOfComponents(3); pnrm->SetName("Normals");
-		pnrm->Allocate((vtkIdType)nxs * nys * 12);
-		vtkNew<vtkCellArray>  pcells;
 		// the mean of the real nodes among (a0|a1) x (b0|b1): the height of the corner they share
 		auto cornerZ = [&](int a0, int a1, int b0, int b1, float self) -> float {
 			const float v[4] = { Zp(a0, b0), Zp(a1, b0), Zp(a0, b1), Zp(a1, b1) };
@@ -4209,18 +4393,49 @@ static vtkSmartPointer<vtkPolyData> makeGridTile(const float *z, int nx, int ny,
 			for (float w : v) if (!std::isnan(w)) { acc += w; ++n; }
 			return n ? (float)(acc / n) : self;
 		};
+		// Corner lattice: column c in 0..nxs, row r in 0..nys. Corner c is the LEFT edge of square c and
+		// the RIGHT edge of square c-1 -- the very x both squares used to put there on their own. Its
+		// height takes the sampled columns on either side of it (the previous code took (i-s, i) on a
+		// square's left and (i, i+s) on its right, which is the same pair wherever the sampling is
+		// regular; at the one irregular gap -- the last interval before a grid's final node at a coarse
+		// step -- the two squares used to disagree there and left a hairline step).
+		const int ncx = nxs + 1, ncy = nys + 1;
+		auto cornerX = [&](int c) -> double {
+			if (c < nxs) return x0 + (xs[c] - 0.5) * dx;
+			const int i = xs[nxs - 1];
+			const int in = (nxs < tw) ? xs[nxs] : i + 1;
+			return x0 + ((xs.back() == nx - 1 && nxs == tw) ? (i + 0.5) : (in - 0.5)) * dx;
+		};
+		auto cornerY = [&](int r) -> double {
+			if (r < nys) return y0 + (ys[r] - 0.5) * dy;
+			const int j = ys[nys - 1];
+			const int jn = (nys < th) ? ys[nys] : j + 1;
+			return y0 + ((ys.back() == ny - 1 && nys == th) ? (j + 0.5) : (jn - 0.5)) * dy;
+		};
+		auto sideL = [&](int c) { return (c > 0) ? xs[c - 1] : xs[0] - step; };          // sampled column left of corner c
+		auto sideR = [&](int c) { return (c < tw) ? xs[c] : xs[tw - 1] + step; };        // …and right of it
+		auto sideD = [&](int r) { return (r > 0) ? ys[r - 1] : ys[0] - step; };
+		auto sideU = [&](int r) { return (r < th) ? ys[r] : ys[th - 1] + step; };
+		vtkNew<vtkPoints> ppts;  ppts->SetDataTypeToFloat();  ppts->SetNumberOfPoints((vtkIdType)ncx * ncy);
+		for (int r = 0; r < ncy; ++r) {
+			const double yc = cornerY(r);
+			const int bD = sideD(r), bU = sideU(r);
+			for (int c = 0; c < ncx; ++c)
+				ppts->SetPoint((vtkIdType)r * ncx + c, cornerX(c), yc,
+				               cornerZ(sideL(c), sideR(c), bD, bU, (float)fillZ));
+		}
+		vtkNew<vtkFloatArray> cval;  cval->SetName("z");  cval->Allocate((vtkIdType)nxs * nys);
+		vtkNew<vtkFloatArray> cnrm;  cnrm->SetNumberOfComponents(3);  cnrm->SetName("Normals");
+		cnrm->Allocate((vtkIdType)nxs * nys * 3);
+		vtkNew<vtkCellArray>  pcells;
+		pcells->Use32BitStorage();               // a tile has far fewer than 2^31 points
+		pcells->AllocateEstimate((vtkIdType)nxs * nys, 4);
 		for (int jj = 0; jj < nys; ++jj) {
 			const int j = ys[jj];
-			const int jn = (jj + 1 < th) ? ys[jj + 1] : j + 1;              // next sampled row (or one past)
-			const double yb = y0 + (j - 0.5) * dy;                          // square: [j - 1/2, jn - 1/2]
-			const double yt = y0 + ((ys.back() == ny - 1 && jj == nys - 1) ? (j + 0.5) : (jn - 0.5)) * dy;
 			for (int ii = 0; ii < nxs; ++ii) {
 				const int i = xs[ii];
-				const float zc = z[(vtkIdType)i * ny + j];
+				const float zc = ZL.at(z, i, j);
 				if (std::isnan(zc)) continue;                               // a NaN node is no square
-				const int in = (ii + 1 < tw) ? xs[ii + 1] : i + 1;
-				const double xl = x0 + (i - 0.5) * dx;
-				const double xr = x0 + ((xs.back() == nx - 1 && ii == nxs - 1) ? (i + 0.5) : (in - 0.5)) * dx;
 				// normal from the node's REAL full-res neighbours, one-sided by a hole
 				const int il = i > 0 ? i - 1 : i, ir = i < nx - 1 ? i + 1 : i;
 				const int jd = j > 0 ? j - 1 : j, ju = j < ny - 1 ? j + 1 : j;
@@ -4235,26 +4450,19 @@ static vtkSmartPointer<vtkPolyData> makeGridTile(const float *z, int nx, int ny,
 				double vx = -gx, vy = -gy, vz = 1.0;
 				const double inv = 1.0 / std::sqrt(vx*vx + vy*vy + vz*vz);
 				vx *= inv; vy *= inv; vz *= inv;
-				const int s = step;
-				const float zsw = cornerZ(i - s, i, j - s, j, zc), zse = cornerZ(i, i + s, j - s, j, zc);
-				const float zne = cornerZ(i, i + s, j, j + s, zc), znw = cornerZ(i - s, i, j, j + s, zc);
-				const vtkIdType id0 = ppts->InsertNextPoint(xl, yb, zsw);
-				ppts->InsertNextPoint(xr, yb, zse);
-				ppts->InsertNextPoint(xr, yt, zne);
-				ppts->InsertNextPoint(xl, yt, znw);
-				for (int k = 0; k < 4; ++k) {
-					pval->InsertNextValue(zc);                              // the square wears ITS value
-					pnrm->InsertNextTuple3(vx, vy, vz);
-				}
-				const vtkIdType quad[4] = { id0, id0 + 1, id0 + 2, id0 + 3 };
+				const vtkIdType sw = (vtkIdType)jj * ncx + ii;
+				const vtkIdType quad[4] = { sw, sw + 1, sw + ncx + 1, sw + ncx };   // SW, SE, NE, NW
 				pcells->InsertNextCell(4, quad);
+				cval->InsertNextValue(zc);                                  // the square wears ITS value
+				cnrm->InsertNextTuple3(vx, vy, vz);
 			}
 		}
 		vtkSmartPointer<vtkPolyData> ppd = vtkSmartPointer<vtkPolyData>::New();
 		ppd->SetPoints(ppts);
 		ppd->SetPolys(pcells);
-		ppd->GetPointData()->SetScalars(pval);
-		ppd->GetPointData()->SetNormals(pnrm);
+		ppd->GetCellData()->SetScalars(cval);
+		ppd->GetCellData()->SetNormals(cnrm);
+		markPixelCells(ppd);
 		return ppd;
 	}
 
@@ -4266,7 +4474,7 @@ static vtkSmartPointer<vtkPolyData> makeGridTile(const float *z, int nx, int ny,
 	// Which vertices sample no data at all -- outside a tsunami window the cell test below reads THIS,
 	// because a coarse vertex may stand in for a real node of its block (see `si`/`sj`).
 	std::vector<char> vtxNaN((size_t)tw * th, 0);
-	auto Z = [&](int a, int b) -> float { return z[(vtkIdType)a * ny + b]; };   // full-res node value
+	auto Z = [&](int a, int b) -> float { return ZL.at(z, a, b); };   // full-res node value
 	for (int jj = 0; jj < th; ++jj) {
 		const int j = ys[jj]; const double y = y0 + j * dy;
 		for (int ii = 0; ii < tw; ++ii) {
@@ -4275,7 +4483,7 @@ static vtkSmartPointer<vtkPolyData> makeGridTile(const float *z, int nx, int ny,
 			// borrowed from another node. What a NaN node cannot carry, the cell rule below handles by
 			// drawing only between REAL nodes.
 			const int si = i, sj = j;
-			const float zz = z[(vtkIdType)i * ny + j];
+			const float zz = ZL.at(z, i, j);
 			vtxNaN[(size_t)jj * tw + ii] = std::isnan(zz) ? 1 : 0;
 			// NaN node. On the RIM of a hole (data among its full-res neighbours) it takes their MEAN,
 			// in geometry and in scalar alike -- the same rule makeGridFromArray uses, and for the same
@@ -4291,7 +4499,7 @@ static vtkSmartPointer<vtkPolyData> makeGridTile(const float *z, int nx, int ny,
 						if (!di && !dj) continue;
 						const int ii2 = i + di, jj2 = j + dj;
 						if (ii2 < 0 || ii2 >= nx || jj2 < 0 || jj2 >= ny) continue;
-						const float v = z[(vtkIdType)ii2 * ny + jj2];
+						const float v = ZL.at(z, ii2, jj2);
 						if (!std::isnan(v)) { acc += v; ++n; }
 					}
 				if (n) zrim = (float)(acc / n);
@@ -4329,8 +4537,8 @@ static vtkSmartPointer<vtkPolyData> makeGridTile(const float *z, int nx, int ny,
 				nxv = (float)(vx*inv); nyv = (float)(vy*inv); nzv = (float)(vz*inv);
 			}
 			else if (!std::isnan(zz)) {
-				const float zl = z[(vtkIdType)il*ny + sj],  zr = z[(vtkIdType)ir*ny + sj];
-				const float zb = z[(vtkIdType)si*ny + jdF], zt = z[(vtkIdType)si*ny + juF];
+				const float zl = ZL.at(z, il, sj),  zr = ZL.at(z, ir, sj);
+				const float zb = ZL.at(z, si, jdF), zt = ZL.at(z, si, juF);
 				if (!std::isnan(zl) && !std::isnan(zr) && !std::isnan(zb) && !std::isnan(zt)) {
 					const double ddx = (ir - il) * dx, ddy = (juF - jdF) * dy;   // full-res spans too
 					const double gx = ddx != 0.0 ? (zr - zl) / ddx : 0.0;
@@ -4359,10 +4567,10 @@ static vtkSmartPointer<vtkPolyData> makeGridTile(const float *z, int nx, int ny,
 			// no geometry, so no light can reach it). The sampled corner nodes are the ones actually
 			// meshed at this LOD step, so a coarse tile's hole follows what it draws.
 			if (holeRim) {   // tsunami: the hole's RIM is kept, dropped only when ALL FOUR corners are NaN
-				const int nanN = (int)std::isnan(z[(vtkIdType)xs[ii  ]*ny + ys[jj  ]]) +
-				                 (int)std::isnan(z[(vtkIdType)xs[ii+1]*ny + ys[jj  ]]) +
-				                 (int)std::isnan(z[(vtkIdType)xs[ii+1]*ny + ys[jj+1]]) +
-				                 (int)std::isnan(z[(vtkIdType)xs[ii  ]*ny + ys[jj+1]]);
+				const int nanN = (int)std::isnan(ZL.at(z, xs[ii  ], ys[jj  ])) +
+				                 (int)std::isnan(ZL.at(z, xs[ii+1], ys[jj  ])) +
+				                 (int)std::isnan(ZL.at(z, xs[ii+1], ys[jj+1])) +
+				                 (int)std::isnan(ZL.at(z, xs[ii  ], ys[jj+1]));
 				if (nanN == 4) continue;
 			}
 			else {
@@ -5876,10 +6084,13 @@ static void syncClipToVisible(Scene *s) {
 }
 
 static void refineExtraLods(Scene *s);   // 70_window.cpp: every visible grid extra's zoom pyramid
+static void refineBaseLodIfDue(Scene *s); // 70_window.cpp: the base's pyramid, when the camera/viewport moved
+static void baseLodFree(Scene *s);        // 70_window.cpp: release the base's pyramid and its cached tiles
 static void extraLodFree(ExtraObj &ex);  // 70_window.cpp: release it (layer removal)
 
 static void AxisLabelCB(vtkObject*, unsigned long, void *cd, void*) {
 	Scene *s = static_cast<Scene*>(cd);
+	refineBaseLodIfDue(s);                     // the base's tiles for THIS frame's camera (not per camera event)
 	refineExtraLods(s);                        // a grid opened second sharpens on zoom like the first
 	rebuildAxisLabels(s);
 	nanPlaneUpdate(s);                         // each grid's NaN backdrop follows ITS grid's checkbox, like its axes
@@ -6632,7 +6843,7 @@ static bool profileHitAt(Scene *s, int dx, int dy) {
 // or when any of the four corners is NaN (so callers skip it). O(1), no locator, render-LOD
 // independent — the basis for full-res hover + profile under the tiled-LOD render path.
 static double sampleGrid(const float *Z, int nx, int ny, double gx0, double gx1, double gy0, double gy1,
-                         double x, double y) {
+                         double x, double y, int zlayout = 0) {   // zlayout: GridLay code of Z
 	if (!Z || nx < 2 || ny < 2)
 		return std::numeric_limits<double>::quiet_NaN();
 	const double dx = (gx1 - gx0) / (nx - 1);
@@ -6644,10 +6855,11 @@ static double sampleGrid(const float *Z, int nx, int ny, double gx0, double gx1,
 		return std::numeric_limits<double>::quiet_NaN();
 	const int i0 = std::min((int)fx, nx - 2), j0 = std::min((int)fy, ny - 2);
 	const double tx = fx - i0, ty = fy - j0;
-	const double z00 = Z[(size_t)i0     * ny + j0    ];   // column-major: Z[i*ny + j]
-	const double z10 = Z[(size_t)(i0+1) * ny + j0    ];
-	const double z01 = Z[(size_t)i0     * ny + j0 + 1];
-	const double z11 = Z[(size_t)(i0+1) * ny + j0 + 1];
+	const GridLay L = gridLay(nx, ny, zlayout);
+	const double z00 = L.at(Z, i0,     j0    );   // read where it lies (GridLay)
+	const double z10 = L.at(Z, i0 + 1, j0    );
+	const double z01 = L.at(Z, i0,     j0 + 1);
+	const double z11 = L.at(Z, i0 + 1, j0 + 1);
 	if (std::isnan(z00) || std::isnan(z10) || std::isnan(z01) || std::isnan(z11))
 		return std::numeric_limits<double>::quiet_NaN();
 	return (1-tx)*(1-ty)*z00 + tx*(1-ty)*z10 + (1-tx)*ty*z01 + tx*ty*z11;
@@ -6656,14 +6868,14 @@ static double sampleGrid(const float *Z, int nx, int ny, double gx0, double gx1,
 // Base relief data layer (profiles / cross-sections sample THIS — unchanged by multi-grid routing).
 static double sampleZ(const Scene *s, double x, double y) {
 	if (s->gridZ.empty()) return std::numeric_limits<double>::quiet_NaN();
-	return sampleGrid(s->gridZ.data(), s->gnx, s->gny, s->gx0, s->gx1, s->gy0, s->gy1, x, y);
+	return sampleGrid(s->gridZ.data(), s->gnx, s->gny, s->gx0, s->gx1, s->gy0, s->gy1, x, y, s->gridZ.layout());
 }
 
 // ACTIVE grid data layer — what the hover/coordinate readout reports. Falls back to the base relief
 // when no dropped grid is active (actZ null), so a single-grid window behaves exactly as before.
 static double sampleActiveZ(const Scene *s, double x, double y) {
 	if (s->actZ && !s->actZ->empty())
-		return sampleGrid(s->actZ->data(), s->actNx, s->actNy, s->actX0, s->actX1, s->actY0, s->actY1, x, y);
+		return sampleGrid(s->actZ->data(), s->actNx, s->actNy, s->actX0, s->actX1, s->actY0, s->actY1, x, y, s->actZ->layout());
 	return sampleZ(s, x, y);
 }
 
@@ -7062,9 +7274,9 @@ bool sceneGridRowSeries(Scene *s, double yData, double x0, double x1,
 	ib = std::max(ia, std::min(s->gnx - 1, ib));
 	xs.reserve(size_t(ib - ia + 1));
 	zs.reserve(size_t(ib - ia + 1));
-	for (int ix = ia; ix <= ib; ++ix) {                       // gridZ is column-major z[ix*gny + iy]
+	for (int ix = ia; ix <= ib; ++ix) {                       // gridZ read where it lies (GridZ::at)
 		xs.push_back(s->gx0 + ix * dx);
-		zs.push_back(double(s->gridZ[size_t(ix) * size_t(s->gny) + size_t(iy)]));
+		zs.push_back(double(s->gridZ.at(ix, iy)));
 	}
 	return xs.size() >= 2;
 }

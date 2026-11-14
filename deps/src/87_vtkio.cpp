@@ -548,7 +548,7 @@ static vtkSmartPointer<vtkPolyData> vtkioReadGlyphModel(const std::string &path,
 
 // The grid layer the Save request names: empty name = the window's base relief, otherwise the
 // matching extra. Fills the caller's pointers with that layer's own data. false = no such grid.
-static bool vtkioResolveGrid(Scene *s, const std::string &name, const std::vector<float> *&z,
+static bool vtkioResolveGrid(Scene *s, const std::string &name, const GridZ *&z,
                              int &nx, int &ny, double &x0, double &x1, double &y0, double &y1) {
 	if (!s) return false;
 	if (name.empty() || name == s->surfName) {
@@ -567,7 +567,7 @@ static bool vtkioResolveGrid(Scene *s, const std::string &name, const std::vecto
 }
 
 // A grid layer as a vtkImageData: one float point-scalar array named after the layer, x fastest.
-static vtkSmartPointer<vtkImageData> vtkioGridToImage(const std::vector<float> &z, int nx, int ny,
+static vtkSmartPointer<vtkImageData> vtkioGridToImage(const GridZ &z, int nx, int ny,
                                                       double x0, double x1, double y0, double y1,
                                                       const std::string &name) {
 	vtkNew<vtkImageData> im;
@@ -580,7 +580,7 @@ static vtkSmartPointer<vtkImageData> vtkioGridToImage(const std::vector<float> &
 	arr->SetNumberOfTuples((vtkIdType)nx * ny);
 	for (int j = 0; j < ny; ++j)
 		for (int i = 0; i < nx; ++i)
-			arr->SetValue((vtkIdType)j * nx + i, z[(size_t)i * ny + j]);   // GMT column-major -> VTK x-fastest
+			arr->SetValue((vtkIdType)j * nx + i, z.at(i, j));   // the layer, read where it lies -> VTK x-fastest
 	im->GetPointData()->SetScalars(arr);
 	return im;
 }
@@ -625,7 +625,7 @@ static vtkSmartPointer<vtkImageData> vtkioResolveImage(Scene *s, const std::stri
 // ("vtk_vti" / "vtk_vtp" / "vtk_legacy"). false + `err` when there is nothing of that shape to write.
 static bool vtkioSaveObject(Scene *s, const std::string &name, const std::string &code,
                             const std::string &path, std::string &err) {
-	const std::vector<float> *z = nullptr;
+	const GridZ *z = nullptr;
 	int nx = 0, ny = 0;
 	double x0 = 0, x1 = 0, y0 = 0, y1 = 0;
 	const bool haveGrid = vtkioResolveGrid(s, name, z, nx, ny, x0, x1, y0, y1);
@@ -692,7 +692,7 @@ static void saveGridPictureDialog(Scene *s, const QString &name) {
 		return;
 	}
 	const std::string nm = name.toStdString();
-	const std::vector<float> *z = nullptr;
+	const GridZ *z = nullptr;
 	int nx = 0, ny = 0, w = 0, h = 0;
 	double x0 = 0, x1 = 0, y0 = 0, y1 = 0;
 	unsigned char *rgb = nullptr;

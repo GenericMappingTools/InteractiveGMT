@@ -3328,7 +3328,7 @@ static MbGrdVizHost mbgrdvizViewerHost() {
 		if (!ag.valid)
 			return false;
 		const bool base = ag.z == &s->gridZ;
-		g.z = *ag.z;                             // column-major, row 0 = south: the tool's own layout
+		g.z = ag.z->toCM();                      // column-major, row 0 = south: the tool's own layout
 		g.nx = ag.nx;
 		g.ny = ag.ny;
 		g.x0 = ag.x0;
@@ -4836,6 +4836,13 @@ GMTVTK_API void gmtvtk_set_forget_callback(JuliaForgetFn fn) {
 	g_juliaForget = fn;
 }
 
+// ONE COPY OF A GRID: the host's pin / unpin pair (GridZ, 10_geometry.cpp). With them registered a grid
+// handed over is kept where it lies; without them (nullptr) every grid is copied, as it used to be.
+GMTVTK_API void gmtvtk_set_grid_pin_callbacks(JuliaGridPinFn pin, JuliaGridUnpinFn unpin) {
+	g_juliaGridPin   = pin;
+	g_juliaGridUnpin = unpin;
+}
+
 // Register the "Image Enhance -> 1 - Indexed and RGB" callback (port of Mirone src_figs/image_enhance.m).
 // fn(scene, dlg, params) with params = "op;args" (see JuliaImageEnhanceFn, 30_app.cpp). Returns 1/0.
 // nullptr to detach.
@@ -4967,9 +4974,44 @@ GMTVTK_API void gmtvtk_image_set_dn_h(void *handle, const char *name, const uint
 	if (!d) return;
 	*d = ImgDN{};
 	if (!buf || nx <= 0 || ny <= 0 || nb <= 0) return;
-	d->v.assign(buf, buf + (size_t)nx * ny * nb);
+	d->own.assign(buf, buf + (size_t)nx * ny * nb);
+	d->p = d->own.data();  d->esize = 2;
+	d->off = 0;  d->sx = nb;  d->sy = (long long)nx * nb;  d->sb = 1;   // row 0 south, bands fastest
 	d->nx = nx;  d->ny = ny;  d->nb = nb;
 	d->x0 = x0;  d->x1 = x1;  d->y0 = y0;  d->y1 = y1;
+}
+
+// The same pixel values, READ WHERE THEY LIE: `p` is the host's own image array (`esize`-byte integers,
+// 1 = UInt8/Bool, 2 = UInt16), value (ix, iy south-first, band b) at element off + ix*sx + iy*sy + b*sb.
+// The host is asked to pin it (g_juliaGridPin, the grid pin); refused, the values are copied into the
+// canonical order instead, so the readout works either way. `p` NULL clears it.
+GMTVTK_API void gmtvtk_image_set_dn_view_h(void *handle, const char *name, const void *p, int esize,
+                                           int nx, int ny, int nb, long long off, long long sx, long long sy,
+                                           long long sb, double x0, double x1, double y0, double y1) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s)) return;
+	bool isPrimary = false;
+	ExtraObj *ex = imageExtraByName(s, name ? name : "", isPrimary);
+	ImgDN *d = ex ? &ex->dn : (isPrimary ? &s->baseDN : nullptr);
+	if (!d) return;
+	*d = ImgDN{};
+	if (!p || nx <= 0 || ny <= 0 || nb <= 0 || (esize != 1 && esize != 2)) return;
+	d->nx = nx;  d->ny = ny;  d->nb = nb;
+	d->x0 = x0;  d->x1 = x1;  d->y0 = y0;  d->y1 = y1;
+	const uint64_t id = g_juliaGridPin ? g_juliaGridPin(p) : 0;
+	if (id) {
+		d->pin = std::make_shared<GridPin>(id);
+		d->p = p;  d->esize = esize;  d->off = off;  d->sx = sx;  d->sy = sy;  d->sb = sb;
+		return;
+	}
+	ImgDN src;  src.p = p;  src.esize = esize;  src.off = off;  src.sx = sx;  src.sy = sy;  src.sb = sb;
+	d->own.resize((size_t)nx * ny * nb);
+	for (int iy = 0; iy < ny; ++iy)
+		for (int ix = 0; ix < nx; ++ix)
+			for (int b = 0; b < nb; ++b)
+				d->own[((size_t)iy * nx + ix) * nb + b] = (uint16_t)src.value(ix, iy, b);
+	d->p = d->own.data();  d->esize = 2;
+	d->off = 0;  d->sx = nb;  d->sy = (long long)nx * nb;  d->sb = 1;
 }
 
 // Is this image genuine 3-band RGB? Only such an image offers "Explore RGB", which splits it into
@@ -5030,7 +5072,7 @@ GMTVTK_API int gmtvtk_image_set_pixels_h(void *handle, const char *name, const u
 	tex_img->SetDimensions(iw, ih, 1);
 	tex_img->AllocateScalars(VTK_UNSIGNED_CHAR, ibands);
 	memcpy(tex_img->GetScalarPointer(), img, (size_t)iw * ih * ibands);
-	tx->SetInputData(tex_img); tx->InterpolateOn(); tx->Modified();
+	tx->SetInputData(tex_img); tx->InterpolateOn(); tx->SetColorModeToDirectScalars(); tx->Modified();
 	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 	return 1;
 }
@@ -9976,6 +10018,23 @@ GMTVTK_API int gmtvtk_fft_park_test(void *handle, int park) {
 	return it.value()->dlg->isVisible() ? 0 : 1;
 }
 
+// test hook: CLOSE the FFT tool opened on `scene` by THIS dll (gmtvtk_fft_dialog_test). It is parentless
+// and lives in this dll's own registry, so the production library's window teardown never sees it: a
+// test that only closes its window left the dialog standing for the rest of the shard (2026-11-13).
+// The dialog's own X: close() -> WA_DeleteOnClose -> its destroyed handler drops the registry entry.
+// Returns 1 when no FFT tool is left for `scene`.
+GMTVTK_API int gmtvtk_fft_close_test(void *handle) {
+	Scene *s = static_cast<Scene *>(handle);
+	if (!s) return 0;
+	auto it = FFTStuffDialog::registry().find(s);
+	if (it != FFTStuffDialog::registry().end() && it.value()->dlg) {
+		it.value()->dlg->close();
+		QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+		QApplication::processEvents();
+	}
+	return FFTStuffDialog::registry().contains(s) ? 0 : 1;
+}
+
 // test hook: what the FFT tool's size boxes ended up holding (rows, cols) — the numbers every
 // transform is then run at. out[0] = rows, out[1] = cols.
 GMTVTK_API int gmtvtk_fft_sizes_test(void *handle, int *out2) {
@@ -12932,20 +12991,25 @@ GMTVTK_API int gmtvtk_aqua_side_rgb_test(void *scene, int side, double *out3) {
 			if (!m) continue;
 			if (m->GetNumberOfInputConnections(0) > 0) m->Update();
 			vtkPolyData *p = vtkPolyData::SafeDownCast(m->GetInput());
-			if (!p || !p->GetPointData()->GetArray("hillshade")) continue;
+			// A NaN-grid tile keeps its baked colour PER SQUARE (isPixelCells), every other surface per vertex.
+			if (!p || !(isPixelCells(p) ? p->GetCellData() : static_cast<vtkDataSetAttributes*>(p->GetPointData()))
+			               ->GetArray("hillshade")) continue;
 			if (p->GetNumberOfPoints() > bestN) { bestN = p->GetNumberOfPoints(); best = p; }
 		}
 		for (int once = 0; best && once == 0; ++once) {
 			vtkPolyData *pd = best;
+			const bool perCell = isPixelCells(pd);
 			std::vector<unsigned char> isLand;
-			vtkSmartPointer<vtkUnsignedCharArray> lc = aquaLandColors(s, pd, isLand);
+			vtkSmartPointer<vtkUnsignedCharArray> lc = perCell ? nullptr : aquaLandColors(s, pd, isLand);
 			// A PLAIN GRID WINDOW (no two-sided layer) has no side split: `side` is ignored and every
 			// node counts. That is what makes a standalone half-window directly comparable with the
-			// same half inside the composite — the point of the whole measurement.
+			// same half inside the composite — the point of the whole measurement. (Per square or per
+			// vertex is the same mean: a square's four vertices used to repeat its one colour.)
 			const bool split = lc && isLand.size() == (size_t)pd->GetNumberOfPoints();
-			vtkUnsignedCharArray *col =
-				vtkUnsignedCharArray::SafeDownCast(pd->GetPointData()->GetArray("hillshade"));
-			if (!col || col->GetNumberOfTuples() != pd->GetNumberOfPoints()) continue;
+			vtkUnsignedCharArray *col = vtkUnsignedCharArray::SafeDownCast(
+				perCell ? pd->GetCellData()->GetArray("hillshade") : pd->GetPointData()->GetArray("hillshade"));
+			const vtkIdType want_n = perCell ? pd->GetNumberOfCells() : pd->GetNumberOfPoints();
+			if (!col || col->GetNumberOfTuples() != want_n) continue;
 			for (vtkIdType i = 0; i < col->GetNumberOfTuples(); ++i) {
 				if (split && (isLand[(size_t)i] != 0 ? 1 : 0) != want) continue;
 				sum[0] += col->GetTypedComponent(i, 0);
@@ -13112,13 +13176,25 @@ GMTVTK_API int gmtvtk_probe_shade_test(void *scene, double lon, double lat, doub
 		if (!pd) { if (m->GetNumberOfInputConnections(0) > 0) m->Update();
 		           pd = vtkPolyData::SafeDownCast(m->GetInput()); }
 		if (!pd || !pd->GetPoints()) continue;
-		vtkDataArray *col = pd->GetPointData()->GetArray("hillshade");
+		// A NaN-grid tile is coloured PER SQUARE (isPixelCells): its baked colour is a cell array and a
+		// square stands at its centre. Otherwise per vertex, as before.
+		const bool perCell = isPixelCells(pd);
+		vtkDataArray *col = perCell ? pd->GetCellData()->GetArray("hillshade")
+		                            : pd->GetPointData()->GetArray("hillshade");
 		if (!col) continue;
 		vtkPoints *P = pd->GetPoints();
-		const vtkIdType n = P->GetNumberOfPoints();
+		const vtkIdType n = perCell ? pd->GetNumberOfCells() : P->GetNumberOfPoints();
 		const double gx = (s->xfac != 0.0) ? s->xfac : 1.0;
+		vtkNew<vtkIdList> cids;
 		for (vtkIdType i = 0; i < n; ++i) {
-			double p[3];  P->GetPoint(i, p);
+			double p[3] = { 0.0, 0.0, 0.0 };
+			if (perCell) {
+				pd->GetCellPoints(i, cids);
+				const vtkIdType k = cids->GetNumberOfIds();
+				for (vtkIdType q = 0; q < k; ++q) { double c[3]; P->GetPoint(cids->GetId(q), c); p[0] += c[0]; p[1] += c[1]; }
+				if (k) { p[0] /= k; p[1] /= k; }
+			}
+			else P->GetPoint(i, p);
 			const double dl = p[0] / gx - lon, dt = p[1] - lat;
 			const double d2 = dl*dl + dt*dt;
 			if (d2 < best) {
@@ -13166,19 +13242,28 @@ GMTVTK_API int gmtvtk_tile_mesh_test(const float *z, int nx, int ny, int step, i
 		return z[(vtkIdType)i * ny + j];
 	};
 	vtkDataArray *sc = pd->GetPointData()->GetScalars();
+	// A NaN-grid tile carries its value PER SQUARE (cell scalars, corners shared -- makeGridTile's
+	// pixelCells branch). Every vertex of a square then "carries" the square's own value: the same
+	// contract as when each square owned four vertices repeating it, read where it now lives.
+	vtkDataArray *csc = pd->GetCellData() ? pd->GetCellData()->GetScalars() : nullptr;
 	vtkCellArray *polys = pd->GetPolys();
 	double nCells = 0, nNaNCell = 0, nOnNaN = 0, nInvented = 0;
 	std::vector<char> covered((size_t)nx * ny, 0);
 	vtkNew<vtkIdList> ids;
+	vtkIdType cid = -1;
 	polys->InitTraversal();
 	while (polys->GetNextCell(ids)) {
-		++nCells;
+		++nCells;  ++cid;
 		double cx = 0.0, cy = 0.0; bool hasNaN = false;
 		const vtkIdType np = ids->GetNumberOfIds();
+		auto valAt = [&](vtkIdType k) -> double {
+			if (csc && !sc) return csc->GetTuple1(cid);
+			return sc ? sc->GetTuple1(ids->GetId(k)) : 0.0;
+		};
 		for (vtkIdType k = 0; k < np; ++k) {
 			double p[3]; pd->GetPoint(ids->GetId(k), p);
 			cx += p[0]; cy += p[1];
-			const double v = sc ? sc->GetTuple1(ids->GetId(k)) : 0.0;
+			const double v = valAt(k);
 			if (std::isnan(v)) hasNaN = true;
 			if (!pixelCells) {
 				// corner mesh: a point sits ON a node, and must carry that node's own value
@@ -13204,7 +13289,7 @@ GMTVTK_API int gmtvtk_tile_mesh_test(const float *z, int nx, int ny, int step, i
 			ci = (int)std::lround(b[0] + 0.5);  cj = (int)std::lround(b[2] + 0.5);
 			const float own = Zn(ci, cj);
 			for (vtkIdType k = 0; k < np; ++k) {
-				const double v = sc ? sc->GetTuple1(ids->GetId(k)) : 0.0;
+				const double v = valAt(k);
 				if (!(std::fabs(v - own) <= 1e-5 * (1.0 + std::fabs(own)))) { ++nInvented; break; }
 			}
 		}
@@ -13754,6 +13839,37 @@ GMTVTK_API int gmtvtk_view_press_test(void *scene, double x, double y, double z)
 	const bool used = polygonHandlePress(s, 0, (int)std::lround(d[0]), (int)std::lround(d[1]), false);
 	QApplication::processEvents();
 	return used ? 1 : 0;
+}
+
+// test hook: THE BASE PYRAMID AS IT STANDS, counted off the tree (never inferred from code):
+//   out[0] full tiles on screen         out[1] off-screen stand-ins on screen
+//   out[2] points of everything on screen (both kinds)
+//   out[3] resident tile bytes (lodResidentBytes, on screen + cached)   out[4] its budget
+//   out[5..10] the tile assembly's bounds (xmin,xmax,ymin,ymax,zmin,zmax) -- what the axes, VE and the
+//   camera fit read (surfGetBounds), so coverage of the whole grid is checked where it matters.
+// Returns 1, or 0 when the window has no tiled base surface.
+static void lodStatsWalk(QuadNode *n, double *out) {
+	if (!n) return;
+	if (n->inScene && n->actor) {
+		out[0] += 1;
+		if (auto *pd = vtkPolyData::SafeDownCast(n->actor->GetMapper()->GetInput())) out[2] += pd->GetNumberOfPoints();
+	}
+	if (n->cInScene && n->cActor) {
+		out[1] += 1;
+		if (auto *pd = vtkPolyData::SafeDownCast(n->cActor->GetMapper()->GetInput())) out[2] += pd->GetNumberOfPoints();
+	}
+	for (int k = 0; k < 4; ++k) lodStatsWalk(n->child[k], out);
+}
+GMTVTK_API int gmtvtk_lod_stats_test(void *scene, double *out11) {
+	Scene *s = static_cast<Scene*>(scene);
+	if (!s || !out11 || !s->quadRoot || !s->surfGroup) return 0;
+	for (int k = 0; k < 11; ++k) out11[k] = 0.0;
+	lodStatsWalk(s->quadRoot, out11);
+	out11[3] = (double)s->lodResidentBytes;
+	out11[4] = (double)s->lodBudgetBytes;
+	double b[6]; s->surfGroup->GetBounds(b);
+	for (int k = 0; k < 6; ++k) out11[5 + k] = b[k];
+	return 1;
 }
 #endif // GMTVTK_TEST_API
 
@@ -14642,7 +14758,7 @@ GMTVTK_API int gmtvtk_capture_rect_databaked(void *handle, double w, double e, d
 	int txW, txH; layerTexSize(wnx, wny, txW, txH);
 	std::vector<unsigned char> rgba;
 	bakeLayerRGBA(s, s->gridZ.data(), s->gnx, s->gny, s->gx0, s->gy0, s->gdx, s->gdy, ctf,
-	              s->zmin, s->zmax, w, e, south, north, txW, txH, rgba);
+	              s->zmin, s->zmax, w, e, south, north, txW, txH, rgba, nullptr, s->gridZ.layout());
 	if (rgba.size() != (size_t)txW * txH * 4) return 0;
 	unsigned char *buf = new unsigned char[(size_t)txW * txH * 3];
 	for (size_t i = 0, n = (size_t)txW * txH; i < n; ++i) {           // drop alpha; flip row 0 south -> row 0 north
@@ -14676,7 +14792,7 @@ GMTVTK_API int gmtvtk_grid_picture_h(void *handle, const char *name, unsigned ch
 			vtkColorTransferFunction *ctf = vtkColorTransferFunction::SafeDownCast(s->surfLut);
 			if (!ctf) return 0;
 			bakeLayerRGBA(s, s->gridZ.data(), nx, ny, s->gx0, s->gy0, s->gdx, s->gdy, ctf,
-			              s->zmin, s->zmax, s->gx0, s->gx1, s->gy0, s->gy1, nx, ny, px);
+			              s->zmin, s->zmax, s->gx0, s->gx1, s->gy0, s->gy1, nx, ny, px, nullptr, s->gridZ.layout());
 		}
 	}
 	else {
@@ -14691,7 +14807,7 @@ GMTVTK_API int gmtvtk_grid_picture_h(void *handle, const char *name, unsigned ch
 		const AquaSideShade A = snapshotShade(s);
 		const double zf = (ex->zmax > ex->zmin) ? sceneZRefFor(s, ex->zmin, ex->zmax, ex->gx0, ex->gx1, ex->gy0, ex->gy1) : 0.0;
 		bakeLayerRGBA(s, ex->gridZ.data(), nx, ny, ex->gx0, ex->gy0, dx, dy, ctf, ex->zmin, ex->zmax,
-		              ex->gx0, ex->gx1, ex->gy0, ex->gy1, nx, ny, px, nullptr, /*zlayout=*/0, &A, &ex->shadeIn, zf);
+		              ex->gx0, ex->gx1, ex->gy0, ex->gy1, nx, ny, px, nullptr, ex->gridZ.layout(), &A, &ex->shadeIn, zf);
 	}
 	if (px.size() != (size_t)nx * ny * 4) return 0;
 	unsigned char *buf = new unsigned char[(size_t)nx * ny * 3];
@@ -15409,14 +15525,13 @@ GMTVTK_API int gmtvtk_add_surface_h(void *handle, const float *z, int nx, int ny
 	// A draped grid (hasImg) keeps makeGridFromArray: it needs texture coords, and the base's drape
 	// path uses that same builder too. The layer's z is copied ONCE here and moved into ex.gridZ below.
 	const bool plainGrid = !hasImg;
-	std::vector<float> cm;
 	vtkSmartPointer<vtkPolyData> pd;
 	if (plainGrid) {
-		gridCopyToCM(cm, z, nx, ny, zlayout);        // THE one copy (grid memory-layout law)
+		ex.gridZ.set(z, nx, ny, zlayout);            // the host's buffer, read where it lies -- never a copy
 		zmin = 1e30; zmax = -1e30;
-		for (float v : cm) if (!std::isnan(v)) { if (v < zmin) zmin = v; if (v > zmax) zmax = v; }
+		for (float v : ex.gridZ) if (!std::isnan(v)) { if (v < zmin) zmin = v; if (v > zmax) zmax = v; }
 		if (zmin > zmax) { zmin = 0.0; zmax = 1.0; }
-		for (float v : cm) if (std::isnan(v)) { ex.gridHasNaN = true; break; }
+		for (float v : ex.gridZ) if (std::isnan(v)) { ex.gridHasNaN = true; break; }
 		const double dx = (x1 - x0) / (nx - 1), dy = (y1 - y0) / (ny - 1);   // sceneSetGridLayer's spacing
 		ex.lodRoot = buildQuadNode(0, nx - 1, 0, ny - 1, 0, x0, dx, y0, dy);   // the base's own pyramid
 		ex.lodPD = vtkSmartPointer<vtkPolyData>::New();                       // tiles land here (refineExtraLod)
@@ -15440,6 +15555,11 @@ GMTVTK_API int gmtvtk_add_surface_h(void *handle, const float *z, int nx, int ny
 		memcpy(tex_img->GetScalarPointer(), img, (size_t)iw * ih * ibands);
 		ex.tex = vtkSmartPointer<vtkTexture>::New();
 		ex.tex->SetInputData(tex_img); ex.tex->InterpolateOn();
+		// THE BYTES AS THEY ARE. In its default colour mode a vtkTexture maps a ONE-component texture
+		// through a lookup table into a full RGBA copy it keeps, and uploads that: measured 2026-11-14, a
+		// 15 MB grey band cost +150-200 MB (4000x4000), a Landsat band ~9x its size. Direct scalars upload
+		// the byte itself (drawn as grey); for 3/4-band textures it is what default already did.
+		ex.tex->SetColorModeToDirectScalars();
 		ex.isImage = true;
 		ex.bx0 = x0; ex.bx1 = x1; ex.by0 = y0; ex.by1 = y1;
 		ex.zpos = imageTopZ(s);                    // default: clear of everything on screen, never at z=0
@@ -15483,8 +15603,7 @@ GMTVTK_API int gmtvtk_add_surface_h(void *handle, const float *z, int nx, int ny
 		// Make this dropped grid a FULL layer: keep its full-res z (readout source when it is the active
 		// grid) and its own LUT + z range (so the colorbar can be retargeted to it). applyGridStacking()
 		// below puts it on top -> refreshGridColorbar() makes it the active grid + shows its colorbar.
-		if (plainGrid) ex.gridZ = std::move(cm);      // already copied once, above
-		else           gridCopyToCM(ex.gridZ, z, nx, ny, zlayout);
+		if (!plainGrid) ex.gridZ.set(z, nx, ny, zlayout);   // a plain grid's was taken above
 		if (!plainGrid)
 			for (float v : ex.gridZ) if (std::isnan(v)) { ex.gridHasNaN = true; break; }
 		ex.gnx = nx; ex.gny = ny;
@@ -15506,7 +15625,7 @@ GMTVTK_API int gmtvtk_add_surface_h(void *handle, const float *z, int nx, int ny
 			tex_img->SetDimensions(iw, ih, 1);
 			tex_img->AllocateScalars(VTK_UNSIGNED_CHAR, ibands);
 			memcpy(tex_img->GetScalarPointer(), img, (size_t)iw * ih * ibands);
-			vtkNew<vtkTexture> tex; tex->SetInputData(tex_img); tex->InterpolateOn();
+			vtkNew<vtkTexture> tex; tex->SetInputData(tex_img); tex->InterpolateOn(); tex->SetColorModeToDirectScalars();
 			vtkNew<vtkPolyDataMapper> dmap;
 			dmap->SetInputConnection(norms->GetOutputPort());
 			dmap->ScalarVisibilityOff();
@@ -15800,7 +15919,7 @@ static int showLayerImageTail(Scene *s, const unsigned char *rgba, int txW, int 
 		if (id && dims[0] == txW && dims[1] == txH) {
 			memcpy(id->GetScalarPointer(), rgba, (size_t)txW * txH * 4);
 			id->Modified(); tx->Modified();
-			gridCopyToCM(s->gridZ, z, nx, ny, zlayout);   // hover now reads the NEW layer's z
+			s->gridZ.set(z, nx, ny, zlayout);   // hover now reads the NEW layer's z, where it lies
 			s->zmin = cz[0]; s->zmax = cz[ncolor - 1];
 			if (name && name[0]) s->surfName = name;
 			s->customLayerTexture = isCustom;

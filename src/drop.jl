@@ -1579,6 +1579,7 @@ end
 # right only for a square grid). Column-major grids keep using `size(z)`, which is exact for them.
 function _grid_zbuf(G::GMTgrid)
 	z = eltype(G.z) === Float32 ? G.z : Float32.(G.z)   # no copy when it is already Float32
+	_zoffer!(z)                                         # the viewer may keep THIS buffer (no copy): see _ZPINS
 	nx, ny = _grid_dims(G)
 	code = _grid_layout_code(G)
 	# SAFETY NET, and the only place a grid is ever re-ordered. A viewer library that predates the
@@ -1591,6 +1592,59 @@ function _grid_zbuf(G::GMTgrid)
 		return zc, Cint(size(zc, 2)), Cint(size(zc, 1)), Cint(0)
 	end
 	return z, Cint(nx), Cint(ny), code
+end
+
+# ONE COPY OF A GRID, NOT TWO. The viewer keeps the very buffer `_grid_zbuf` hands it and reads it in
+# place, in the layout it has (C++ GridZ, 10_geometry.cpp) -- it used to copy every grid into a vector
+# of its own, so each grid cost twice its size (user's order, 2026-11-13). For that, Julia must keep the
+# array alive as long as C++ holds it:
+#   * `_grid_zbuf` OFFERS the buffer (a WEAK reference keyed by its data pointer -- an offer the viewer
+#     never takes costs nothing and keeps nothing alive);
+#   * while the ccall that hands it over runs (the array is rooted by the ccall), C++ asks
+#     `_on_grid_pin(ptr)`; the offer becomes a PIN (a strong reference under a fresh id) and the id is
+#     C++'s to hold. A pointer nobody offered answers 0, and C++ keeps a copy of its own as before;
+#   * C++ calls `_on_grid_unpin(id)` when the last handle holding that buffer goes (layer removed,
+#     window closed, z replaced). A buffer under several pins is held until the last one goes.
+const _ZOFFER   = Dict{UInt,WeakRef}()            # data pointer -> offered array (weak)
+const _ZPINS    = Dict{UInt64,Tuple{UInt,Any}}()   # pin id -> (data pointer, array)  (strong)
+const _ZBYPTR   = Dict{UInt,Any}()                 # data pointer -> array, while any pin holds it
+const _ZPIN_SEQ = Ref{UInt64}(0)
+
+function _zoffer!(z::Array{<:Union{Float32,UInt8,UInt16,Bool}})
+	length(_ZOFFER) > 64 && filter!(kv -> kv.second.value !== nothing, _ZOFFER)   # drop dead offers
+	_ZOFFER[UInt(pointer(z))] = WeakRef(z)
+	return z
+end
+_zoffer!(z) = z          # not a dense array of a type the viewer reads: nothing to lend, it copies
+
+function _on_grid_pin(ptr::Ptr{Cvoid})::UInt64
+	p = UInt(ptr)
+	a = get(_ZBYPTR, p, nothing)                   # already pinned (a second handle on the same buffer)
+	if a === nothing
+		w = get(_ZOFFER, p, nothing)
+		a = w === nothing ? nothing : w.value
+		a === nothing && return UInt64(0)          # not ours to lend: the viewer copies it
+	end
+	id = (_ZPIN_SEQ[] += 1)
+	_ZPINS[id] = (p, a)
+	_ZBYPTR[p] = a
+	return id
+end
+
+function _on_grid_unpin(id::UInt64)::Cvoid
+	t = pop!(_ZPINS, id, nothing)
+	t === nothing && return
+	p = t[1]
+	any(v -> v[1] == p, values(_ZPINS)) || delete!(_ZBYPTR, p)
+	return
+end
+
+# Registered at library load (libgmtvtk.jl `_load_library`), before any grid can be handed over.
+function _register_grid_pin(sym::Function = _fn)
+	pin   = @cfunction(p -> Base.invokelatest(_on_grid_pin, p)::UInt64, UInt64, (Ptr{Cvoid},))
+	unpin = @cfunction(i -> (Base.invokelatest(_on_grid_unpin, i); nothing), Cvoid, (UInt64,))
+	ccall(sym(:gmtvtk_set_grid_pin_callbacks), Cvoid, (Ptr{Cvoid}, Ptr{Cvoid}), pin, unpin)
+	return
 end
 
 # A grid's z as a Julia (ny, nx) matrix, row 1 = SOUTH — for Julia-side maths that indexes z[iy,ix].
@@ -1772,10 +1826,31 @@ function _push_image_dn(scene::Ptr{Cvoid}, name::String, I::GMTimage)
 	lay = I.layout
 	rowmajor = length(lay) >= 2 && lay[2] == 'R'
 	nlon, nlat = rowmajor ? (size(S, 1), size(S, 2)) : (size(S, 2), size(S, 1))
+	ir = I.range
+	# READ WHERE IT LIES: the viewer keeps THIS array (pinned, `_ZPINS`) and reads it through strides,
+	# instead of a 2-byte copy of every value (a Landsat band: 121 MB, user's order 2026-11-14). The
+	# strides say exactly what `_pixaccess` says: value (ix from the west, iy from the SOUTH, band b) is
+	# element off + ix*sx + iy*sy + b*sb, for every layout -- 2-D or banded, row- or column-major,
+	# band-planar or pixel-interleaved ('P'), north- or south-first.
+	if S isa Array && haskey(_LIB_FNS, :gmtvtk_image_set_dn_view_h)
+		pixinter = d3 && length(lay) >= 3 && lay[3] == 'P'
+		slon, slat, sb = pixinter ? (rowmajor ? (nb, nb * nlon, 1) : (nb * nlat, nb, 1)) :
+		                 d3       ? (rowmajor ? (1, nlon, nlon * nlat) : (nlat, 1, nlat * nlon)) :
+		                            (rowmajor ? (1, nlon, 0) : (nlat, 1, 0))
+		nf  = _north_first(lay, rowmajor)
+		off = nf ? (nlat - 1) * slat : 0
+		sy  = nf ? -slat : slat
+		_zoffer!(S)
+		GC.@preserve S ccall(_fn(:gmtvtk_image_set_dn_view_h), Cvoid,
+		      (Ptr{Cvoid}, Cstring, Ptr{Cvoid}, Cint, Cint, Cint, Cint, Clonglong, Clonglong, Clonglong, Clonglong,
+		       Cdouble, Cdouble, Cdouble, Cdouble),
+		      scene, name, pointer(S), Cint(sizeof(eltype(S))), Cint(nlon), Cint(nlat), Cint(nb),
+		      off, slon, sy, sb, ir[1], ir[2], ir[3], ir[4])
+		return
+	end
 	pix = _pixaccess(S, lay, d3, nb, rowmajor, nlon, nlat)
 	buf = Vector{UInt16}(undef, nlon * nlat * nb)
 	_dn_fill!(buf, pix, nlon, nlat, nb, _north_first(lay, rowmajor))
-	ir = I.range
 	ccall(_fn(:gmtvtk_image_set_dn_h), Cvoid,
 	      (Ptr{Cvoid}, Cstring, Ptr{UInt16}, Cint, Cint, Cint, Cdouble, Cdouble, Cdouble, Cdouble),
 	      scene, name, buf, Cint(nlon), Cint(nlat), Cint(nb), ir[1], ir[2], ir[3], ir[4])
@@ -1813,7 +1888,10 @@ function _add_image_to_scene(scene::Ptr{Cvoid}, I::GMTimage, name; promote=false
 	ir = I.range
 	z = zeros(Float32, 2, 2)
 	fillu = (UInt8(200), UInt8(200), UInt8(200))
-	img, iw, ih, ibands = _drape_to_bbox(I, ir[1], ir[2], ir[3], ir[4]; outside=:transparent, fill=fillu)
+	# A one-band grey picture goes over at ONE byte per pixel (`_grey_texture`); anything else as RGBA.
+	gt = _grey_texture(I)
+	img, iw, ih, ibands = gt !== nothing ? gt :
+		_drape_to_bbox(I, ir[1], ir[2], ir[3], ir[4]; outside=:transparent, fill=fillu)
 	# guessgeog (not isgeog): a plain lon/lat image with no embedded proj still reads geographic via
 	# the lon/lat-range heuristic, so geographic axes + the Geography menu activate (set_crs below).
 	geog = _isgeographic(I)

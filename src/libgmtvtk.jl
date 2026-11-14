@@ -206,9 +206,10 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_set_image_histo_callback, :gmtvtk_histo_set_counts, :gmtvtk_histo_set_bands,
 	:gmtvtk_set_image_enhance_callback, :gmtvtk_enhance_set_band, :gmtvtk_enhance_set_auto_limits, :gmtvtk_enhance_set_data_range,
 	:gmtvtk_set_rgb_scatter_callback, :gmtvtk_set_forget_callback,
+	:gmtvtk_set_grid_pin_callbacks,   # the viewer keeps grid buffers in place; Julia pins them (drop.jl _ZPINS)
 	:gmtvtk_set_image_resize_callback, :gmtvtk_resize_set_size, :gmtvtk_set_floodfill_callback,
 	:gmtvtk_set_classify_callback, :gmtvtk_classify_set_classes,
-	:gmtvtk_image_set_palette_h, :gmtvtk_image_set_has_orig_h, :gmtvtk_image_set_dn_h, :gmtvtk_active_element_h,
+	:gmtvtk_image_set_palette_h, :gmtvtk_image_set_has_orig_h, :gmtvtk_image_set_dn_h, :gmtvtk_image_set_dn_view_h, :gmtvtk_active_element_h,
 	:gmtvtk_set_image_flip_callback, :gmtvtk_image_set_pixels_h, :gmtvtk_image_set_alpha_mask_h, :gmtvtk_set_shade_intensity_named_h,
 	:gmtvtk_set_rgbexplore_callback, :gmtvtk_rgbexp_set_thumbs, :gmtvtk_image_set_rgb_h,
 	:gmtvtk_set_mask_flag_h, :gmtvtk_image_probe_h, :gmtvtk_scene_row_click_h, :gmtvtk_scene_child_row_click_h, :gmtvtk_layer_opacity_h,
@@ -599,6 +600,9 @@ function _load_library()
 	let uidir = joinpath(_PKGROOT, "deps", "ui")
 		isdir(uidir) && ccall(_fn(:gmtvtk_set_ui_dir), Cvoid, (Cstring,), uidir)
 	end
+	# ONE COPY OF A GRID: the viewer keeps the buffers it is handed and asks us to pin them (drop.jl
+	# `_ZPINS`). Wired here, at load, so even the first grid of the first window is read in place.
+	_register_grid_pin()
 	# Help > About: which GMT this session runs on. GMT.jl knows it (GMTver, and isJLL for
 	# GMT_jll vs a system-wide install), the viewer does not.
 	try

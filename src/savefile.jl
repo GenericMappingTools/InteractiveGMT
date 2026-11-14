@@ -400,6 +400,14 @@ function _forget_window!(scene::Ptr{Cvoid})
 		delete!(d, scene)
 	end
 	delete!(_BM1_SCENES, scene)          # a Set, not a Dict -- same purge, its own call
+	# THE CLOSED VIEWER'S OWN FIGURE in `_FIGREG` -- and ONLY that: a viewer figure whose own handle is
+	# this window. The keyspace rule above still holds (an X,Y plot is registered under its own XYPlot*
+	# and is never touched here), and this callback runs while the dying window still owns its address,
+	# so nothing new can live there yet. Left in, the figure kept its grid alive for the rest of the
+	# session: a closed Landsat-size temperature window held 231 MB (measured 2026-11-13). Its buffers
+	# are not the C++ side's: every grid is copied there (gridCopyToCM), never pointed into.
+	fig = get(_FIGREG, scene, nothing)
+	(fig isa Union{QtFigure,QtPoints,QtFV,QtImage,QtEmpty} && getfield(fig, :h) == scene) && delete!(_FIGREG, scene)
 	# THE BASE MAP TILES ALREADY ON THE WINDOW (basemap.jl's "already here -> ignore"). Pure Julia
 	# strings. Left behind, the next window opened at the same address took a closed window's tiles for
 	# its own and silently refused to add them (test-scene-gui.jl "basemap on populated window", after

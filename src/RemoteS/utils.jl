@@ -544,10 +544,20 @@ function helper1_sats(fname::String, band_layer::Int)
 	# "TRB" for a single band file too, as for a cube layer: the plain reader's image label does not
 	# describe its memory, and the grid built on it (`mat2grid(o, I)`) came out upside down.
 	I = ((band_layer == 0) ? gmtread(fname, layout="TRB") : gmtread(fname, layer=band_layer, layout="TRB"))::GMT.GMTimage{UInt16, 2}
-	indNaN = isnodata(I)::AbstractMatrix{Bool}
+	indNaN = _DNZero(I.image)          # "no data" = DN 0 (what isnodata(I) tests), asked per pixel: no mask array
 	o = Matrix{Float32}(undef, size(I))
 	return I, indNaN, o
 end
+
+# The no-data mask of a band WITHOUT building it: element k is `dn[k] == 0`, exactly GMT.isnodata's test.
+# The kernels read it like the Bool matrix isnodata returned, which for a Landsat band was 60 MB of
+# temporary per computation (memory work, 2026-11-13).
+struct _DNZero{A<:AbstractArray} <: AbstractMatrix{Bool}
+	a::A
+end
+Base.size(m::_DNZero) = (size(m.a, 1), size(m.a, 2))
+Base.IndexStyle(::Type{<:_DNZero}) = IndexLinear()
+Base.@propagate_inbounds Base.getindex(m::_DNZero, k::Int) = m.a[k] == 0
 
 function _nraster(fname::String)::Int
 	GMT.ressurectGDAL()
