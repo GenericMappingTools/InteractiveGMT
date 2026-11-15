@@ -205,6 +205,31 @@ end
 _plugin_has_module(p::GmtPlugin, api::Ptr{Cvoid})::Bool =
 	api != C_NULL && GMT.GMT_Call_Module(api, p.probe, GMT.GMT_MODULE_EXIST, C_NULL) == 0
 
+# THE FILE GMT WOULD LOAD plugin `name` FROM — found WITHOUT loading anything. GMT_MODULE_EXIST (above)
+# answers by LoadLibrary-ing GMT's plugins one after the other until one has the module, so asking it
+# at start-up loaded every plugin in the folder: GMTSAR included, which used to cost 229 MB of
+# committed memory on load (a 240 MB global in its XML reader), all for a session that never runs a
+# GMTSAR module. GMT itself loads the plugin when one of its modules is first called. Looked up where
+# GMT looks: the GMT_CUSTOM_LIBS entries (a library, or a directory), then GMT's own plugin directory.
+# "" = GMT has no such plugin.
+function _gmt_plugin_file(name::String)::String
+	api = GMT.G_API[]
+	api == C_NULL && return ""
+	ext = Sys.iswindows() ? ".dll" : Sys.isapple() ? ".dylib" : ".so"
+	cands = String[]
+	for e in split(GMT.gmtlib_getparameter(api, "GMT_CUSTOM_LIBS"), ',')
+		e = String(strip(e))
+		isempty(e) && continue
+		push!(cands, isdir(e) ? joinpath(e, name * ext) : e)
+	end
+	buf = zeros(UInt8, 4096)
+	GMT.GMT_Get_Default(api, "API_PLUGINDIR", buf) == 0 && push!(cands, joinpath(unsafe_string(pointer(buf)), name * ext))
+	for c in cands
+		(isfile(c) && startswith(lowercase(basename(c)), name)) && return c
+	end
+	return ""
+end
+
 # Has this process loaded library `name` from directory `dir`? (dllist may report the resolved path,
 # so the directory is matched both as given and resolved.)
 function _plugin_loaded(name::String, dir::String)::Bool
@@ -235,7 +260,9 @@ function _plugin_push_ready(p::GmtPlugin)
 	haskey(_LIB_FNS, :gmtvtk_set_plugin_state) || return nothing   # viewer not loaded / not rebuilt yet
 	haskey(_LIB_FNS, :gmtvtk_set_plugin_offered) &&
 		ccall(_fn(:gmtvtk_set_plugin_offered), Cvoid, (Cint, Cint), p.id, _plugin_applies() ? 1 : 0)
-	state = !_plugin_applies() ? (_plugin_has_module(p, GMT.G_API[]) ? 3 : 0) :
+	# Not offered here: whether GMT HAS the plugin is a file lookup, never a GMT_MODULE_EXIST probe (that
+	# loads every plugin GMT knows, see _gmt_plugin_file).
+	state = !_plugin_applies() ? (isempty(_gmt_plugin_file(p.name)) ? 0 : 3) :
 	        !p.ready[] ? 0 : p.update[] ? 2 : 1
 	ccall(_fn(:gmtvtk_set_plugin_state), Cvoid, (Cint, Cint), p.id, state)
 	return nothing

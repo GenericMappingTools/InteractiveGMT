@@ -54,17 +54,17 @@ _mbedit_click(x::Int, y::Int) = ccall(_fn(:gmtvtk_mbedit_click), Cint, (Cint, Ci
 _mbedit_save_png(path::String) = ccall(_fn(:gmtvtk_mbedit_save_png), Cint, (Cstring,), path) == 1
 _mbedit_close() = ccall(_fn(:gmtvtk_mbedit_close), Cint, ()) == 1
 
-# THE MBIO IS THE ONE GMT LOADS. Only GMT finds MB-System: it loads the MB-System supplement it is
-# configured with (GMT_CUSTOM_LIBS, or its own plugins), and that supplement brings its own MBIO into
-# the process. So GMT is asked for an MB-System module (GMT_MODULE_EXIST loads the supplement that
-# holds it), and the MBIO is then the loaded library exporting MBIO's own `mb_read_init` -- no library
-# name of ours anywhere. "" = GMT has no MB-System.
-const _MB_GMT_MODULES = ("mbswath", "mbcontour", "mbgrdtiff")   # the MB-System supplement's GMT modules
-
-function _mbio_from_gmt()::String
-	api = GMT.G_API[]
-	api == C_NULL && return ""
-	any(m -> GMT.GMT_Call_Module(api, m, GMT.GMT_MODULE_EXIST, C_NULL) == 0, _MB_GMT_MODULES) || return ""
+# THE MBIO IS THE ONE GMT'S MB-SYSTEM SUPPLEMENT BRINGS. GMT finds MB-System: it is the "mbsystem"
+# plugin in GMT_CUSTOM_LIBS or in GMT's own plugin directory (gmtplugin.jl `_gmt_plugin_file`, a file
+# lookup that loads nothing), and the MBIO is the library exporting MBIO's own `mb_read_init` that the
+# plugin pulls into the process. "" = GMT has no MB-System.
+#
+# Asked at the FIRST WINDOW (the viewer's MB tools read the answer when they open), so it must not
+# leave anything behind: it used to ask GMT_MODULE_EXIST, which loads GMT's plugins one by one until
+# one has the module -- GMTSAR first, alphabetically -- for a session that may never touch either.
+# Now only the MB-System plugin is opened, just long enough to see where its MBIO came from, and
+# released again unless it was already loaded. GMT loads it for real when an MB module is called.
+function _mbio_loaded()::String
 	for lib in Libdl.dllist()
 		h = Libdl.dlopen(lib; throw_error = false)          # already in the process: only a refcount
 		h === nothing && continue
@@ -73,6 +73,20 @@ function _mbio_from_gmt()::String
 		has && return lib
 	end
 	return ""
+end
+
+function _mbio_from_gmt()::String
+	lib = _mbio_loaded()                                   # an MB tool, or GMT, already brought it in
+	isempty(lib) || return lib
+	f = _gmt_plugin_file("mbsystem")
+	isempty(f) && return ""
+	h = Libdl.dlopen(f; throw_error = false)
+	h === nothing && return ""
+	try
+		return _mbio_loaded()
+	finally
+		Libdl.dlclose(h)                                   # leave the process as it was
+	end
 end
 
 # Hand it to the viewer's ONE MBIO loader (mbedit_window.cpp), once, at the first window.
