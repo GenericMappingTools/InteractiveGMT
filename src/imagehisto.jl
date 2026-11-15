@@ -15,12 +15,21 @@
 # own data, not from the bytes on screen, which lie twice: a 16-bit image is DISPLAYED as an 8-bit
 # copy (`_add_image_to_scene` stretches it; the original is stashed in `_IMG_ORIG`), and a one-band
 # picture is drawn as an RGBA texture, so its bytes read as three identical "R/G/B" bands.
+#
+# `displayed` = 1 is the dialog's "Show it in 0-255" window: the histogram of the 8-bit copy the
+# window DISPLAYS (the scene object), skipping the stashed original. With `displayed` = 0 and a
+# stashed wider original, the dialog is told to offer that button.
 function _on_image_histo(scene::Ptr{Cvoid}, dlg::Ptr{Cvoid}, px::Ptr{UInt8}, npix::Cint, nb::Cint,
-                         cname::Cstring)::Cint
+                         cname::Cstring, displayed::Cint)::Cint
 	try
 		name = cname == C_NULL ? "" : unsafe_string(cname)
-		I = get(get(_IMG_ORIG, scene, Dict{String,GMTimage}()), name, nothing)
-		I === nothing && (I = _find_object_exact(scene, :image, name))
+		O = displayed != 0 ? nothing : get(get(_IMG_ORIG, scene, Dict{String,GMTimage}()), name, nothing)
+		if O isa GMTimage
+			r = _image_histo_data(dlg, O)
+			ccall(_fn(:gmtvtk_histo_offer_display8), Cvoid, (Ptr{Cvoid},), dlg)
+			return r
+		end
+		I = _find_object_exact(scene, :image, name)
 		I isa GMTimage && return _image_histo_data(dlg, I)
 		(px == C_NULL || npix <= 0 || nb <= 0) && return Cint(0)
 		A = unsafe_wrap(Array, px, (Int(nb), Int(npix)))
@@ -143,8 +152,8 @@ end
 # expensive of the ~79 registrations. Behind invokelatest the body compiles on the first actual
 # histogram instead, where the user is already waiting for a computation.
 function _register_image_histo()
-	cb = @cfunction((s, d, p, n, b, nm) -> Base.invokelatest(_on_image_histo, s, d, p, n, b, nm)::Cint,
-	                Cint, (Ptr{Cvoid}, Ptr{Cvoid}, Ptr{UInt8}, Cint, Cint, Cstring))
+	cb = @cfunction((s, d, p, n, b, nm, dp) -> Base.invokelatest(_on_image_histo, s, d, p, n, b, nm, dp)::Cint,
+	                Cint, (Ptr{Cvoid}, Ptr{Cvoid}, Ptr{UInt8}, Cint, Cint, Cstring, Cint))
 	ccall(_fn(:gmtvtk_set_image_histo_callback), Cvoid, (Ptr{Cvoid},), cb)
 	return nothing
 end

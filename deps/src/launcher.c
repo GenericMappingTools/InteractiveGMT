@@ -860,6 +860,7 @@ static char g_fail[MAXP];      /* startup died: LOG: <path> plus this run's erro
 static int  g_failed;          /* set by whichever splash loop saw it, read back in run() */
 #ifdef _WIN32
 static HANDLE g_child;         /* the julia we spawned - kept so its death is a signal */
+static char   g_julia_log[MAXP];   /* julia's stdout+stderr (spawn_julia): where a crash trace lands */
 #endif
 
 /* THE CAPTION IS NOT FIXED. Precompiling GMT.jl and precompiling InteractiveGMT are minutes-long
@@ -1809,6 +1810,13 @@ static void report_startup_failure(const char *root, const char *julia)
 	if (!log[0]) joinp(log, sizeof(log), root, "iview_app.log");
 	/* Nothing from Julia: it died before its own catch could run (which is how the child-handle
 	 * signal gets here). The tail of the log is then the best evidence there is. */
+#ifdef _WIN32
+	/* ... and julia's own stderr comes before it: a crash during startup put its trace THERE. */
+	if (!txt[0] && g_julia_log[0]) {
+		read_tail(g_julia_log, txt, sizeof(txt));
+		if (txt[0]) snprintf(log, sizeof(log), "%s", g_julia_log);
+	}
+#endif
 	if (!txt[0]) read_tail(log, txt, sizeof(txt));
 	if (!txt[0])
 		snprintf(txt, sizeof(txt),
@@ -1819,6 +1827,54 @@ static void report_startup_failure(const char *root, const char *julia)
 	error_popup("iGMT", msg);
 	delete_file(g_fail);
 }
+
+#ifdef _WIN32
+/* THE WINDOW IS UP: stay with julia until it exits, and if it did not exit cleanly, SHOW WHY.
+ *
+ * Nothing may take iGMT down without a stack trace (user's order, 2026-11-15). A crash in native
+ * code — GMT's grdimage, VTK, the viewer — is not catchable from Julia: its signal handler prints
+ * the trace to stderr and the process ends, the window vanishing with it. spawn_julia() pointed that
+ * stderr at g_julia_log, so the trace is on disk; this puts it in the scrollable Copy/OK box.
+ * Exit code 0 = the user closed iGMT: the log is deleted and nothing is shown. Any other code: the
+ * tail of the log from Julia's crash banner on ("Please submit a bug report..." / "Exception:" /
+ * "signal (" / "ERROR:"), or the plain tail when no banner is there. The log is kept as evidence. */
+static void watch_julia(const char *julia)
+{
+	static char buf[24000];
+	char msg[26000];
+	DWORD code = 0;
+	const char *start, *p;
+	static const char *marks[] = { "Please submit a bug report", "Exception:", "signal (", "ERROR:" };
+	size_t i;
+
+	if (!g_child) return;
+	WaitForSingleObject(g_child, INFINITE);
+	if (!GetExitCodeProcess(g_child, &code)) code = 1;
+	CloseHandle(g_child);
+	g_child = NULL;
+	if (code == 0) {
+		if (g_julia_log[0]) delete_file(g_julia_log);
+		return;
+	}
+	buf[0] = 0;
+	if (g_julia_log[0]) read_tail(g_julia_log, buf, sizeof(buf));
+	start = buf;
+	for (i = 0; i < sizeof(marks) / sizeof(marks[0]); i++) {
+		const char *last = NULL;
+		for (p = strstr(buf, marks[i]); p; p = strstr(p + 1, marks[i])) last = p;
+		if (last) {
+			while (last > buf && last[-1] != '\n') last--;   /* from the start of that line */
+			start = last;
+			break;
+		}
+	}
+	if (!start[0]) start = "Julia wrote nothing before it died.";
+	snprintf(msg, sizeof(msg),
+	         "iGMT crashed (julia exit code 0x%08lX).\n\n%s\n\nJulia used: %s\nFull log: %s",
+	         (unsigned long)code, start, julia, g_julia_log[0] ? g_julia_log : "(none)");
+	error_popup("iGMT crashed", msg);
+}
+#endif
 
 /* --------------------------------------------------------------------------------- spawning */
 
@@ -1846,6 +1902,7 @@ static int spawn_julia(const char *julia, const char *root, int nfiles, char **f
 	STARTUPINFOW si;
 	PROCESS_INFORMATION pi;
 	wchar_t *wcmd, *wdir;
+	HANDLE hlog = INVALID_HANDLE_VALUE, hnul = INVALID_HANDLE_VALUE;
 	int i;
 	BOOL ok;
 
@@ -1867,11 +1924,41 @@ static int spawn_julia(const char *julia, const char *root, int nfiles, char **f
 	 * never appears. iview_app.jl hides its own console on startup, so only the viewer remains. */
 	si.wShowWindow = SW_SHOWMINNOACTIVE;
 
+	/* JULIA'S STDOUT + STDERR GO TO A FILE, not to the console iview_app.jl hides. A hard crash (an
+	 * access violation in GMT, VTK, the viewer) is reported by Julia's own signal handler, which
+	 * prints the stack trace to stderr and dies: into a hidden console that was the trace thrown
+	 * away with the window. In this file it survives, and watch_julia() puts it on screen. One file
+	 * per launch (named for this launcher's pid), so a second iGMT never truncates the first's. */
+	{
+		SECURITY_ATTRIBUTES sa;
+		wchar_t *wlog;
+		sa.nLength = sizeof(sa);
+		sa.lpSecurityDescriptor = NULL;
+		sa.bInheritHandle = TRUE;
+		snprintf(proj, sizeof(proj), "igmt_julia_%lu.log", (unsigned long)GetCurrentProcessId());
+		temp_file_path(proj, g_julia_log, sizeof(g_julia_log));
+		wlog = wide(g_julia_log);
+		hlog = CreateFileW(wlog, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, &sa,
+		                   CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+		free(wlog);
+		hnul = CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, &sa, OPEN_EXISTING, 0, NULL);
+		if (hlog != INVALID_HANDLE_VALUE && hnul != INVALID_HANDLE_VALUE) {
+			si.dwFlags |= STARTF_USESTDHANDLES;
+			si.hStdInput  = hnul;
+			si.hStdOutput = hlog;
+			si.hStdError  = hlog;
+		}
+		else g_julia_log[0] = 0;              /* no log: the old console behaviour, nothing worse */
+	}
+
 	wcmd = wide(cmd);
 	wdir = wide(root);
-	ok = CreateProcessW(NULL, wcmd, NULL, NULL, FALSE, CREATE_NEW_CONSOLE, NULL, wdir, &si, &pi);
+	ok = CreateProcessW(NULL, wcmd, NULL, NULL, (si.dwFlags & STARTF_USESTDHANDLES) ? TRUE : FALSE,
+	                    CREATE_NEW_CONSOLE, NULL, wdir, &si, &pi);
 	free(wcmd);
 	free(wdir);
+	if (hlog != INVALID_HANDLE_VALUE) CloseHandle(hlog);   /* the child holds its own copies */
+	if (hnul != INVALID_HANDLE_VALUE) CloseHandle(hnul);
 	if (!ok) return -1;
 	CloseHandle(pi.hThread);
 	g_child = pi.hProcess;      /* NOT closed: its exit is how a too-early death is noticed */
@@ -2357,6 +2444,7 @@ static int run(int argc, char **argv)
 	}
 #ifdef _WIN32
 	julia_old_remove();         /* the window is up: an updated Julia works, the old one goes */
+	watch_julia(julia);         /* ... and stay with it: a crash puts its stack trace on screen */
 #endif
 	return 0;
 }

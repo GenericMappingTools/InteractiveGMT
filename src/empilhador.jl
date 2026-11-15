@@ -67,6 +67,9 @@ Stack a collection of 2-D grids (or MODIS/VIIRS/SeaWiFS L2 scenes) into a single
   none. They land on the cube's `v_unit` and on the netCDF `<dim>#units` attribute.
 - `progress`: A `f(k, n, name)` callback, called before each file is read. The GUI uses it to walk
   its list box; the default prints nothing.
+- `order`: List-file form only. A vector of column-1 names (as written in the list file) giving the
+  stacking order; listed files not named in it follow, in their list-file order. When the list file
+  carries no times of its own (layers numbered 1..n), the numbering follows the new order.
 
 ### List file format
 Column 1 is the file name (absolute, relative, or bare if it sits next to the list file).
@@ -96,7 +99,36 @@ function empilhador(listfile::String; kwargs...)
 	d = KW(kwargs)
 	fname = _emp_wildcard_list(listfile)		# 'path/*.nc ? -sst4 [-R..]' -> a real list file
 	names, times, sds, opts = _emp_parse_list(fname)
+	if haskey(d, :order)
+		names, times, sds = _emp_reorder(names, times, sds, string.(pop!(d, :order)), dirname(fname))
+	end
 	return _emp_core(names, times, sds, opts, d)
+end
+
+"""
+    _emp_reorder(names, times, sds, order, pato) -> (names, times, sds)
+
+Put a parsed list in the order the user dragged it into (the dialog's list box). `order` holds the
+column-1 names as the list file writes them; each is resolved against the list file's folder the
+same way `_emp_parse_list` does, so it matches the parsed `names`. Names not in `order` (an
+`>include`d file, say) keep their relative order after the ordered ones. Implicit times (1..n, no
+second column) are renumbered so layer k is still numbered k.
+"""
+function _emp_reorder(names::Vector{String}, times::Vector{String}, sds::Vector{String},
+                      order::Vector{String}, pato::String)
+	implicit = times == [string(k) for k = 1:length(names)]
+	used = falses(length(names))
+	idx = Int[]
+	for o in order
+		nm = (dirname(o) == "" && !isempty(pato)) ? joinpath(pato, o) : o
+		i = findfirst(k -> !used[k] && normpath(names[k]) == normpath(nm), eachindex(names))
+		(i === nothing) && continue
+		used[i] = true;		push!(idx, i)
+	end
+	append!(idx, findall(!, used))
+	names, times, sds = names[idx], times[idx], sds[idx]
+	implicit && (times = [string(k) for k = 1:length(names)])
+	return names, times, sds
 end
 
 function empilhador(fnames::Vector{String}; kwargs...)
@@ -1422,12 +1454,13 @@ function _emp_params(s::AbstractString)
 	return d
 end
 
-# The files picked one by one, in the order the dialog listed them (file0=, file1=, ...).
-function _emp_file_list(d::Dict{String,String})
+# The files picked one by one, in the order the dialog listed them (file0=, file1=, ...). With
+# key="order", the list-file names in the order the user dragged them to (order0=, order1=, ...).
+function _emp_file_list(d::Dict{String,String}, key::String="file")
 	names = String[]
 	k = 0
-	while haskey(d, "file$k")
-		push!(names, d["file$k"]);		k += 1
+	while haskey(d, "$key$k")
+		push!(names, d["$key$k"]);		k += 1
 	end
 	return names
 end
@@ -1483,6 +1516,8 @@ function _on_empilhador(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		if !isempty(files)
 			empilhador(files; kw...)
 		else
+			ord = _emp_file_list(p, "order")		# the list box's order, when the user dragged rows
+			!isempty(ord) && (kw[:order] = ord)
 			empilhador(get(p, "list", ""); kw...)
 		end
 		println("Empilhador: wrote ", out)

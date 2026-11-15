@@ -4830,6 +4830,14 @@ GMTVTK_API void gmtvtk_histo_set_bands(void *dlg, int nbands, double lo, double 
 	if (hi > lo) ih->setXRange(lo, hi);
 }
 
+// The histogram just pushed into `dlg` was of a wider-than-8-bit image's own values, and the window
+// displays an 8-bit copy of it: reveal the dialog's "Show it in 0-255" button. Same synchronous
+// contract as gmtvtk_histo_set_counts.
+GMTVTK_API void gmtvtk_histo_offer_display8(void *dlg) {
+	if (!dlg) return;
+	reinterpret_cast<ImageHistoDialog *>(dlg)->offerDisplay8();
+}
+
 // Register the row-removed callback. fn(scene, kind, name) drops the live grid/image Julia keeps
 // behind a Scene Objects row that was just deleted (see JuliaForgetFn, 30_app.cpp). nullptr to detach.
 GMTVTK_API void gmtvtk_set_forget_callback(JuliaForgetFn fn) {
@@ -14732,6 +14740,79 @@ GMTVTK_API int gmtvtk_capture_rect_rgb(void *handle, double w, double e, double 
 	for (auto *p : hiddenProp)     p->SetVisibility(1);
 	s->widget->renderWindow()->Render();
 	return ok ? 1 : 0;
+}
+
+// ONE RASTER LAYER's displayed pixels: gmtvtk_capture_rect_rgb (unchanged, the one screen grab) with
+// every OTHER raster of the window hidden for the shot. `name` is the layer's name exactly as
+// gmtvtk_raster_layers_h lists it (swipeLayers, the same walk).
+//
+// Why: the GMT.jl script export draws a window's raster pile layer by layer, each from ITS displayed
+// pixels. A plain rectangle grab is the COMPOSITE of everything over that rectangle, so on a tsunami
+// session (bathymetry + Okada + nested grids, all checked) the full-region layer's picture already held
+// every nested grid, and each nested grid's picture held the finer ones — GMT then drew every nest two,
+// three, four times, at screen resolution and pixel-snapped, i.e. repeated and out of place. A layer's
+// picture is that layer and nothing else.
+//
+// RGBA, not RGB. The pixel rect is the bbox projected and snapped to whole screen pixels, so it overhangs
+// the layer by a pixel or two, and a NaN node is a hole in the mesh: with every other raster hidden,
+// both show the window BACKGROUND, which GMT then painted over the layer below as white bands. So the
+// shot is taken twice, over black and over white, and coverage solved from the pair (a = 1-(W-B),
+// F = B/a) — the same two-matte identity captureViewRGBA (50_scene.cpp) uses. Background = alpha 0.
+// Returns 1 on success, 0 when no layer has that name or the rectangle is off screen.
+GMTVTK_API int gmtvtk_capture_layer_rect_rgba(void *handle, const char *name, double w, double e, double south,
+                                              double north, unsigned char **outRgba, int *outW, int *outH) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !s->widget || !s->ren || !name || !outRgba || !outW || !outH) return 0;
+	const std::string nm = name;
+	const std::vector<SwipeLayer> layers = swipeLayers(s);
+	bool found = false;
+	for (const SwipeLayer &L : layers) if (L.name == nm) { found = true; break; }
+	if (!found) return 0;
+	std::vector<vtkProp*> hidden;
+	auto hide = [&](vtkProp *p) {
+		if (p && p->GetVisibility()) { p->SetVisibility(0); hidden.push_back(p); }
+	};
+	for (const SwipeLayer &L : layers) {
+		if (L.name == nm) continue;
+		hide(L.prop);
+		for (vtkActor *a : L.actors) hide(a);
+	}
+	double bg[3], bg2[3];
+	s->ren->GetBackground(bg);
+	s->ren->GetBackground2(bg2);
+	const int hadGradient = s->ren->GetGradientBackground();
+	s->ren->GradientBackgroundOff();
+	unsigned char *pB = nullptr, *pW = nullptr;
+	int wB = 0, hB = 0, wW = 0, hW = 0;
+	s->ren->SetBackground(0.0, 0.0, 0.0);
+	const int okB = gmtvtk_capture_rect_rgb(handle, w, e, south, north, &pB, &wB, &hB);
+	s->ren->SetBackground(1.0, 1.0, 1.0);
+	const int okW = gmtvtk_capture_rect_rgb(handle, w, e, south, north, &pW, &wW, &hW);
+	s->ren->SetBackground(bg);                    // the window goes back exactly as it was
+	s->ren->SetBackground2(bg2);
+	if (hadGradient) s->ren->GradientBackgroundOn();
+	for (vtkProp *p : hidden) p->SetVisibility(1);
+	s->widget->renderWindow()->Render();
+	int ok = 0;
+	if (okB && okW && pB && pW && wB == wW && hB == hW && wB > 0 && hB > 0) {
+		const size_t np = (size_t)wB * (size_t)hB;
+		unsigned char *po = new unsigned char[np * 4];
+		for (size_t i = 0; i < np; ++i) {
+			const unsigned char *B = pB + i * 3, *W = pW + i * 3;
+			int a = 0;
+			for (int c = 0; c < 3; ++c) a = std::max(a, 255 - (int(W[c]) - int(B[c])));
+			a = std::clamp(a, 0, 255);
+			po[i * 4 + 3] = (unsigned char)a;
+			for (int c = 0; c < 3; ++c)               // un-premultiply: F = B / a (white where a == 0)
+				po[i * 4 + c] = (a == 0) ? 255 :
+					(unsigned char)std::clamp((int)std::lround(255.0 * double(B[c]) / double(a)), 0, 255);
+		}
+		*outRgba = po; *outW = wB; *outH = hB;
+		ok = 1;
+	}
+	delete[] pB;
+	delete[] pW;
+	return ok;
 }
 
 // Capture the rectangle's picture straight FROM THE GRID DATA, at native data resolution, through

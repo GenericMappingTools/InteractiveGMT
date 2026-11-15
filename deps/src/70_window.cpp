@@ -8724,6 +8724,17 @@ public:
 	QDialog *dlg = nullptr;
 	HistoDataAxesWidget *ax[3] = { nullptr, nullptr, nullptr };
 	int rgbHeight = 0;                      // the .ui's height, which the three-axes layout uses
+	QPushButton *to8Btn = nullptr;          // "Show it in 0-255": only for a wider-than-8-bit image
+
+	// Julia histogrammed a wider-than-8-bit image's own values; the window displays an 8-bit copy of
+	// it. Reveal the button that opens a second histogram window of THAT copy, and grow the dialog by
+	// the button's height so the axes keep theirs.
+	void offerDisplay8() {
+		if (!to8Btn || to8Btn->isVisible()) return;
+		to8Btn->setVisible(true);
+		const int sp = dlg->layout() ? qMax(dlg->layout()->spacing(), 0) : 0;
+		dlg->resize(dlg->width(), dlg->height() + to8Btn->sizeHint().height() + sp);
+	}
 
 	// 256 grey levels for an 8-bit image; DN bins (any count) once Julia set a data range.
 	void setCounts(int band, const double *c, int n) {
@@ -8757,7 +8768,9 @@ public:
 // "Image -> Show Histogram". RGB display -> three stacked axes (R, G, B, top to bottom, tinted like
 // image_histo's plot_result). Single-band display -> image_histo's reshaped figure: axes2/axes3 gone
 // and the dialog shrunk to the one remaining plot (new_height = 400 - 275 + 40 = 165).
-static void showImageHistogram(QWidget *parent, Scene *s, const char *name) {
+// `displayed` = the "Show it in 0-255" window: the histogram of the 8-bit copy the window DISPLAYS,
+// counted by the same Julia function, instead of the image's own (16-bit) values.
+static void showImageHistogram(QWidget *parent, Scene *s, const char *name, bool displayed = false) {
 	if (!g_juliaImageHisto) {
 		QMessageBox::warning(parent, "Image histogram",
 		                     "Image histogram: callback not registered (rebuild/restart needed?).");
@@ -8783,8 +8796,9 @@ static void showImageHistogram(QWidget *parent, Scene *s, const char *name) {
 	f.close();
 	if (!d) return;
 	d->setAttribute(Qt::WA_DeleteOnClose);
-	d->setWindowTitle(label.isEmpty() ? QString("Image histogram")
-	                                  : QString("Image histogram — %1").arg(label));
+	d->setWindowTitle((label.isEmpty() ? QString("Image histogram")
+	                                   : QString("Image histogram — %1").arg(label))
+	                  + (displayed ? QString(" (displayed, 0-255)") : QString()));
 
 	auto *ih = new ImageHistoDialog;
 	ih->dlg = d;
@@ -8796,12 +8810,26 @@ static void showImageHistogram(QWidget *parent, Scene *s, const char *name) {
 	if (!ih->ax[0] || !ih->ax[1] || !ih->ax[2]) { delete ih; delete d; return; }
 	QObject::connect(d, &QObject::destroyed, d, [ih]() { delete ih; });
 
+	// "Show it in 0-255", under the axes. Built here, not in the delivered .ui, and hidden until Julia
+	// says the histogram it just counted was of wider-than-8-bit values (gmtvtk_histo_offer_display8).
+	if (!displayed && d->layout()) {
+		ih->to8Btn = new QPushButton("Show it in 0-255", d);
+		ih->to8Btn->setToolTip("Histogram of the image as the window displays it: its 8-bit (0-255) copy");
+		ih->to8Btn->setVisible(false);
+		d->layout()->addWidget(ih->to8Btn);
+		const QString nmCopy = label;
+		QObject::connect(ih->to8Btn, &QPushButton::clicked, d, [parent, s, nmCopy]() {
+			if (!sceneAlive(s)) return;
+			showImageHistogram(parent, s, nmCopy.toUtf8().constData(), true);
+		});
+	}
+
 	ih->rgbHeight = d->height();
 	ih->setBands(isRGB ? 3 : 1);
 	// Julia counts the bands and pushes them straight back into ih->ax[] — from the image's own data
 	// when the window holds it (gmtvtk_histo_set_bands), else from these displayed bytes.
 	const QByteArray nm = label.toUtf8();
-	g_juliaImageHisto(s, ih, px.data(), static_cast<int>(npix), nb, nm.constData());
+	g_juliaImageHisto(s, ih, px.data(), static_cast<int>(npix), nb, nm.constData(), displayed ? 1 : 0);
 	d->show();
 }
 
@@ -10723,7 +10751,8 @@ static const struct BinarizeHookInstaller {
 //
 // The list comes either from a list file (1, 2 or 3 columns, see GMT.jl's `empilhador` docstring)
 // typed/browsed into the top box, or from data files picked one by one — the browse button accepts
-// both and the list box always shows what will be stacked, in order.
+// both, and so does dragging files from Explorer / a file manager onto the list box (same takeFiles).
+// The list box always shows what will be stacked, in order.
 //
 // "L2 magic" reveals "Use config file"; checking THAT expands the dialog to the right with the four
 // L2 knobs (SST quality, bitflags, cell size, N cells), pre-filled from ~/.gmt/L2config.txt — exactly
@@ -10735,6 +10764,48 @@ static const struct BinarizeHookInstaller {
 // Only Compute runs anything (only-action-button-executes-dialog). The dialog stays open afterwards
 // so a second stack can be built without reopening it.
 // ============================================================================================
+
+// Accepts local files dragged from Explorer / a file manager onto the Empilhador list box and hands
+// their paths (in drop order, directories skipped) to the dialog. Installed on the list's viewport,
+// where Qt delivers item-view drag events; returning true keeps QListWidget's own internal-move
+// drop logic out of it.
+class EmpilhadorDropFilter : public QObject {
+public:
+	EmpilhadorDropFilter(std::function<void(const QStringList &)> fn, QObject *parent) : QObject(parent), onDrop(std::move(fn)) {}
+protected:
+	bool eventFilter(QObject *obj, QEvent *ev) override {
+		const QEvent::Type t = ev->type();
+		if (t == QEvent::DragEnter || t == QEvent::DragMove) {
+			auto *de = static_cast<QDragMoveEvent *>(ev);
+			if (!localFiles(de->mimeData()).isEmpty()) { de->acceptProposedAction(); return true; }
+		} else if (t == QEvent::Drop) {
+			auto *de = static_cast<QDropEvent *>(ev);
+			const QStringList sel = localFiles(de->mimeData());
+			if (!sel.isEmpty()) {
+				de->acceptProposedAction();
+				rememberStartDir(sel.first());
+				onDrop(sel);
+				return true;
+			}
+		}
+		return QObject::eventFilter(obj, ev);
+	}
+private:
+	std::function<void(const QStringList &)> onDrop;
+	static QStringList localFiles(const QMimeData *md) {
+		QStringList out;
+		if (!md || !md->hasUrls()) return out;
+		for (const QUrl &u : md->urls()) {
+			const QString f = u.toLocalFile();
+			if (!f.isEmpty() && QFileInfo(f).isFile()) out << f;
+		}
+		return out;
+	}
+};
+
+class EmpilhadorDialog;
+static std::map<Scene *, EmpilhadorDialog *> g_empilhadorDlgs;	// one per window, parked or open
+
 class EmpilhadorDialog {
 public:
 	QDialog *dlg = nullptr;
@@ -10747,6 +10818,50 @@ public:
 	QWidget *l2Extra;
 	int collapsedW = -1;			// width before "Use config file" ever expanded the dialog
 	QStringList oneByOne;			// files picked one by one (Mirone's OneByOneNameList)
+	QString shownList;				// list file whose names the list box shows ("" = one-by-one)
+	QStringList listOrder;			// its column-1 names in dragged order (empty = file's own order)
+	bool parked = false;
+	bool reallyClose = false;		// the parked row's Delete: the one close that is not a park
+
+	// PARKED LIKE EVERY TOOL WINDOW: close, minimise and Esc hide it into the Scene Objects of the
+	// window it was opened from (the shared parkTool / parkOnMinimise, 50_scene.cpp), and the row
+	// brings it back with its list, region and options intact.
+	void unpark() {
+		if (!dlg) return;
+		parked = false;
+		unparkTool(scn, dlg);
+		dlg->setWindowState(dlg->windowState() & ~Qt::WindowMinimized);
+		dlg->showNormal();
+		dlg->raise();
+		dlg->activateWindow();
+	}
+	std::function<void(const QPoint &)> parkedMenu() {
+		return [this](const QPoint &g) {
+			QMenu m;
+			QAction *aShow = m.addAction("Show");
+			m.addSeparator();
+			QAction *aDel = m.addAction("Delete");
+			QAction *pick = m.exec(g);
+			if (pick == aShow) unpark();
+			else if (pick == aDel) {
+				reallyClose = true;
+				unparkTool(scn, dlg);
+				dlg->deleteLater();
+			}
+		};
+	}
+	// Every way out (X, Minimise, Esc) lands here; idempotent so parking twice leaves one row. False
+	// when there is no window to park in: the close then really closes.
+	bool parkNow() {
+		if (reallyClose || !dlg || !scn || !sceneAlive(scn)) return false;
+		dlg->hide();
+		if (parked) return true;
+		parked = true;
+		parkTool(scn, dlg, "Empilhador", IC_Surface,
+		         "Closed Empilhador — double-click to bring it back, click for Show / Delete",
+		         [this]() { unpark(); }, parkedMenu());
+		return true;
+	}
 
 	explicit EmpilhadorDialog(QWidget *parent, Scene *scene) : scn(scene) {
 		QUiLoader loader;
@@ -10758,11 +10873,31 @@ public:
 		dlg = qobject_cast<QDialog *>(loader.load(&f, parent));
 		f.close();
 		if (!dlg) { qWarning("EmpilhadorDialog: QUiLoader failed to load the .ui"); return; }
-		dlg->setAttribute(Qt::WA_DeleteOnClose);
-		dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint);
+		// NOT WA_DeleteOnClose: a close parks, and the parked dialog must survive to come back. Only
+		// the row's Delete (reallyClose), the owning window going away (the dialog is its child), or
+		// a close with nowhere to park destroy it.
+		dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint | Qt::WindowMinimizeButtonHint);
 		dlg->setWindowModality(Qt::NonModal);
 		dlg->setWindowTitle("Empilhador");
 		QDialog *d = dlg;
+		g_empilhadorDlgs[scn] = this;
+
+		struct CloseParks : QObject {
+			EmpilhadorDialog *ed;
+			CloseParks(QObject *p, EmpilhadorDialog *e) : QObject(p), ed(e) {}
+			bool eventFilter(QObject *o, QEvent *e) override {
+				if (e->type() == QEvent::Close) {
+					if (ed->parkNow()) { e->ignore(); return true; }
+					ed->dlg->deleteLater();		// nowhere to park: a close is a close
+				}
+				return QObject::eventFilter(o, e);
+			}
+		};
+		d->installEventFilter(new CloseParks(d, this));
+		parkOnMinimise(d, [this]() { parkNow(); });		// the shared handler (50_scene.cpp)
+		QObject::connect(d, &QDialog::rejected, d, [this]() {	// Esc
+			if (!parkNow()) dlg->deleteLater();
+		});
 
 		namesEdit    = d->findChild<QLineEdit *>("namesLineEdit");
 		northEdit    = d->findChild<QLineEdit *>("northLineEdit");
@@ -10836,20 +10971,27 @@ public:
 				prefStartDir(), "List files (*.txt *.dat);;Data files (*.nc *.grd *.hdf *.h5 *.tif *.tiff *.L2*);;All files (*.*)");
 			if (sel.isEmpty()) return;
 			rememberStartDir(sel.first());
-			if (sel.size() == 1 && isListFile(sel.first())) {
-				oneByOne.clear();
-				if (namesEdit) namesEdit->setText(sel.first());
-				showListFile(sel.first());
-			} else {
-				if (namesEdit) namesEdit->clear();
-				for (const QString &s : sel) oneByOne << s;
-				if (fileList) {
-					fileList->clear();
-					for (const QString &s : oneByOne) fileList->addItem(QFileInfo(s).fileName());
-					tightenListRows(fileList);
-				}
-			}
+			takeFiles(sel);
 		});
+
+		// Drag-and-drop from Explorer / a file manager onto the list box: the alternative to typing a
+		// list name or a filter into the box above. Dropped paths go through takeFiles, the SAME
+		// function Browse feeds, so a drop and a pick can never mean different things.
+		if (fileList) {
+			auto *drop = new EmpilhadorDropFilter([this](const QStringList &sel) { takeFiles(sel); }, d);
+			fileList->setAcceptDrops(true);
+			fileList->viewport()->setAcceptDrops(true);
+			fileList->viewport()->installEventFilter(drop);
+			fileList->setToolTip("Drop files here (a list file, or the grids/scenes themselves),\n"
+			                     "or type a list name / filter in the box above.\n"
+			                     "Click-drag a row to change the stacking order.");
+			// Click-drag a row to reorder. Each row carries its own path in Qt::UserRole, so the
+			// stacking order is read back off the rows themselves after a move — never re-derived.
+			fileList->setDragEnabled(true);
+			fileList->setDragDropMode(QAbstractItemView::InternalMove);
+			fileList->setDefaultDropAction(Qt::MoveAction);
+			QObject::connect(fileList->model(), &QAbstractItemModel::rowsMoved, d, [this]() { rowsReordered(); });
+		}
 
 		// Typing a name (or a wildcard request) straight into the box and pressing Enter loads it.
 		if (namesEdit) QObject::connect(namesEdit, &QLineEdit::editingFinished, d, [this]() {
@@ -10861,7 +11003,49 @@ public:
 
 		if (computeBtn) QObject::connect(computeBtn, &QPushButton::clicked, d, [this, d]() { compute(d); });
 
-		QObject::connect(d, &QObject::destroyed, d, [this]() { delete this; });
+		QObject::connect(d, &QObject::destroyed, d, [this]() {
+			for (auto it = g_empilhadorDlgs.begin(); it != g_empilhadorDlgs.end(); )
+				it = (it->second == this) ? g_empilhadorDlgs.erase(it) : std::next(it);
+			delete this;
+		});
+	}
+
+	// Picked or dropped files. ONE list file -> it becomes the list (top box + its names shown);
+	// anything else is data, appended to the one-by-one list (Mirone's `bin` branch).
+	void takeFiles(const QStringList &sel) {
+		if (sel.isEmpty()) return;
+		if (sel.size() == 1 && isListFile(sel.first())) {
+			oneByOne.clear();
+			if (namesEdit) namesEdit->setText(sel.first());
+			showListFile(sel.first());
+		} else {
+			if (namesEdit) namesEdit->clear();
+			shownList.clear();
+			listOrder.clear();
+			for (const QString &s : sel) oneByOne << s;
+			if (fileList) {
+				fileList->clear();
+				for (const QString &s : oneByOne) addRow(QFileInfo(s).fileName(), s);
+				tightenListRows(fileList);
+			}
+		}
+	}
+
+	// One list row: the name shown, and the path it stands for (read back after a drag-reorder).
+	void addRow(const QString &shown, const QString &path) {
+		auto *it = new QListWidgetItem(shown);
+		it->setData(Qt::UserRole, path);
+		it->setToolTip(path);
+		fileList->addItem(it);
+	}
+
+	// A row was dragged to a new place. One-by-one files: the list itself is reordered. A list file:
+	// its column-1 names are sent along as order0=, order1=, ... and Julia stacks in that order.
+	void rowsReordered() {
+		QStringList now;
+		for (int k = 0; k < fileList->count(); ++k) now << fileList->item(k)->data(Qt::UserRole).toString();
+		if (shownList.isEmpty()) oneByOne = now;
+		else                     listOrder = now;
 	}
 
 	void setRegionEnabled(bool on) {
@@ -10890,13 +11074,16 @@ public:
 	void showListFile(const QString &path) {
 		if (!fileList) return;
 		fileList->clear();
+		shownList = path;
+		listOrder.clear();
 		QFile f(path);
 		if (!f.open(QFile::ReadOnly | QFile::Text)) return;
 		QTextStream ts(&f);
 		while (!ts.atEnd()) {
 			const QString ln = ts.readLine().trimmed();
 			if (ln.isEmpty() || ln.startsWith('#') || ln.startsWith('@') || ln.startsWith('>')) continue;
-			fileList->addItem(QFileInfo(ln.split(QRegularExpression("\\s+")).value(0)).fileName());
+			const QString col1 = ln.split(QRegularExpression("\\s+")).value(0);
+			addRow(QFileInfo(col1).fileName(), col1);	// column 1 as written: Julia resolves it
 		}
 		tightenListRows(fileList);
 	}
@@ -10943,7 +11130,8 @@ public:
 		                     : isVtk  ? "VTK format (*.vtk)"
 		                     : isTiff ? "(Geo)Tiff format (*.tiff *.tif)"
 		                              : "netCDF grid format (*.nc *.grd)";
-		const QString out = QFileDialog::getSaveFileName(d, "Output file", prefStartDir(), filter + ";;All files (*.*)");
+		const QString out = QFileDialog::getSaveFileName(d, "Output file", prefStartDir(isVrt ? "stack.vrt" : QString()),
+		                                                 filter + ";;All files (*.*)");
 		if (out.isEmpty()) return;
 		rememberStartDir(out);
 
@@ -10958,6 +11146,8 @@ public:
 		p += "out=" + out + "\n";
 		p += QString("fmt=%1\n").arg(fmt);
 		if (!list.isEmpty()) p += "list=" + list + "\n";
+		if (!list.isEmpty() && list == shownList)		// the box still names the list on show
+			for (int k = 0; k < listOrder.size(); ++k) p += QString("order%1=%2\n").arg(k).arg(listOrder[k]);
 		for (int k = 0; k < oneByOne.size(); ++k) p += QString("file%1=%2\n").arg(k).arg(oneByOne[k]);
 		if (regionChk && regionChk->isChecked()) {
 			bool ok[4];
@@ -33762,6 +33952,8 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// Empilhador (port of Mirone's empilhador.m): stack a list of grids, or of MODIS/VIIRS/SeaWiFS L2
 	// scenes, into one 3-D netCDF/VTK/multi-band TIFF/VRT. Non-modal, stays open for a second stack.
 	mTools->addAction("Empilhador", [win, s]() {
+		auto it = g_empilhadorDlgs.find(s);		// this window's dialog, parked or open: never a 2nd copy
+		if (it != g_empilhadorDlgs.end()) { it->second->unpark(); return; }
 		warmupTool("empilhador");
 		EmpilhadorDialog *e = new EmpilhadorDialog(win, s);
 		if (e->dlg) e->dlg->show();

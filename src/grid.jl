@@ -378,31 +378,41 @@ end
 # displayed picture — it comes back flat, without the lit surface. Anything whose job is "use the
 # displayed image" passes this.
 function _capture_rect_image(scene::Ptr{Cvoid}, w, e, s, n; coords::Bool=true, baked_only::Bool=false,
-                             prefer_screen::Bool=false)
+                             prefer_screen::Bool=false, layer::String="")
 	pRgb = Ref{Ptr{UInt8}}(C_NULL)
 	pW = Ref{Cint}(0); pH = Ref{Cint}(0)
-	_grab(sym) = ccall(_fn(sym), Cint,
-		(Ptr{Cvoid}, Cdouble, Cdouble, Cdouble, Cdouble, Ptr{Ptr{UInt8}}, Ptr{Cint}, Ptr{Cint}),
-		scene, Float64(w), Float64(e), Float64(s), Float64(n), pRgb, pW, pH)
+	# `layer`: the screen grab of ONE raster layer — the window's other rasters hidden for the shot
+	# (gmtvtk_capture_layer_rect_rgba). "" = the plain grab of whatever is on screen there.
+	_grab(sym) = (sym === :gmtvtk_capture_rect_rgb && !isempty(layer)) ?
+		ccall(_fn(:gmtvtk_capture_layer_rect_rgba), Cint,
+			(Ptr{Cvoid}, Cstring, Cdouble, Cdouble, Cdouble, Cdouble, Ptr{Ptr{UInt8}}, Ptr{Cint}, Ptr{Cint}),
+			scene, layer, Float64(w), Float64(e), Float64(s), Float64(n), pRgb, pW, pH) :
+		ccall(_fn(sym), Cint,
+			(Ptr{Cvoid}, Cdouble, Cdouble, Cdouble, Cdouble, Ptr{Ptr{UInt8}}, Ptr{Cint}, Ptr{Cint}),
+			scene, Float64(w), Float64(e), Float64(s), Float64(n), pRgb, pW, pH)
 	# Default order: the data-space bake (gmtvtk_capture_rect_databaked) first — native grid
 	# resolution, independent of the current render-window size / zoom — with the screen grab as the
 	# fallback (see the export's own doc, 90_c_api.cpp). `prefer_screen` reverses it.
 	first_sym, second_sym = prefer_screen ? (:gmtvtk_capture_rect_rgb, :gmtvtk_capture_rect_databaked) :
 	                                        (:gmtvtk_capture_rect_databaked, :gmtvtk_capture_rect_rgb)
+	used = first_sym
 	ok = _grab(first_sym)
 	(ok == 0 && baked_only) && return nothing
-	ok == 0 && (ok = _grab(second_sym))
+	ok == 0 && (used = second_sym; ok = _grab(second_sym))
 	ok == 0 && error("Roi Crop: rectangle isn't visible on screen, nothing to capture")
+	# The one-layer grab comes back RGBA: its 4th band is the layer's coverage (the background around
+	# and through it is alpha 0), carried in the image's own `alpha`.
+	nb = (used === :gmtvtk_capture_rect_rgb && !isempty(layer)) ? 4 : 3
 	try
-		view = unsafe_wrap(Array, pRgb[], (3, Int(pW[]), Int(pH[])))   # (band, col, row), C memory, borrowed
+		view = unsafe_wrap(Array, pRgb[], (nb, Int(pW[]), Int(pH[])))  # (band, col, row), C memory, borrowed
 		mat = permutedims(view, (3, 2, 1))                              # (row, col, band), owned copy
-		if coords
-			crs = _window_crs(scene)
-			return GMT.mat2img(mat; x=[Float64(w), Float64(e)], y=[Float64(s), Float64(n)],
-			                   proj4=crs.proj4, wkt=crs.wkt)
-		else
-			return GMT.mat2img(mat; x=[Float64(w), Float64(e)], y=[Float64(s), Float64(n)])
-		end
+		rgb = nb == 4 ? mat[:, :, 1:3] : mat
+		I = coords ? (crs = _window_crs(scene);
+		              GMT.mat2img(rgb; x=[Float64(w), Float64(e)], y=[Float64(s), Float64(n)],
+		                          proj4=crs.proj4, wkt=crs.wkt)) :
+		             GMT.mat2img(rgb; x=[Float64(w), Float64(e)], y=[Float64(s), Float64(n)])
+		nb == 4 && (I.alpha = mat[:, :, 4])                             # (row, col), like the bands
+		return I
 	finally
 		ccall(_fn(:gmtvtk_free_rgb), Cvoid, (Ptr{UInt8},), pRgb[])
 	end

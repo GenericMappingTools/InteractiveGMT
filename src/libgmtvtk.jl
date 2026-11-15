@@ -203,7 +203,7 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_set_vectorwizard_callback, :gmtvtk_vectorwizard_set_preview, :gmtvtk_vectorwizard_set_text,
 	:gmtvtk_overlay_set_filled_h, :gmtvtk_overlay_set_vwkey_h, :gmtvtk_grid_share_zscale_h,
 	:gmtvtk_overlay_set_tool_pick_h,     # a tool's guide line its dialog can be pointed at (src/swot.jl)
-	:gmtvtk_set_image_histo_callback, :gmtvtk_histo_set_counts, :gmtvtk_histo_set_bands,
+	:gmtvtk_set_image_histo_callback, :gmtvtk_histo_set_counts, :gmtvtk_histo_set_bands, :gmtvtk_histo_offer_display8,
 	:gmtvtk_set_image_enhance_callback, :gmtvtk_enhance_set_band, :gmtvtk_enhance_set_auto_limits, :gmtvtk_enhance_set_data_range,
 	:gmtvtk_set_rgb_scatter_callback, :gmtvtk_set_forget_callback,
 	:gmtvtk_set_grid_pin_callbacks,   # the viewer keeps grid buffers in place; Julia pins them (drop.jl _ZPINS)
@@ -329,6 +329,7 @@ const _LIB_SYMBOLS = (
 # A symbol graduates from here into `_LIB_SYMBOLS` once its C side is on master — at that point every
 # build really does have it, and a library without it really is stale.
 const _LIB_OPTIONAL = (
+	:gmtvtk_capture_layer_rect_rgba, # GMT.jl export: ONE raster layer's displayed pixels + coverage alpha (gmtscript.jl)
 	:gmtvtk_set_plugin_state,    # a GMT plugin: 0 install / 1 installed / 2 update available (gmtplugin.jl)
 	:gmtvtk_set_plugin_offered,  # is that plugin offered here (Windows: only with GMT_jll) (gmtplugin.jl)
 	:gmtvtk_set_craft_state,     # Plot with GMT.jl: VectorCraft / PhotoCraft install / edit / update (craftapps.jl)

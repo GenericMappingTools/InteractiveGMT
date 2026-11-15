@@ -199,6 +199,7 @@ function _script_zsize(ctx::ScriptCtx, st, stf)
 	return (isfinite(h) && h > 0) ? round(h; sigdigits=4) : nothing
 end
 
+
 # The projection kwarg. A geographic window gets the projection GMT.jl's OWN `guess_proj` picks for its
 # region (Mercator near the equator, an equidistant conic at mid latitudes, Robinson for the whole
 # Earth, a polar stereographic round a pole, …) — never one projection for every map. Written out as
@@ -476,6 +477,27 @@ function _script_rasterize!(ctx::ScriptCtx, r::ElementRecipe, disp, isgrid::Bool
 	# extent. NEVER return without an image — "GMT cannot draw this look" means USE THE DISPLAYED
 	# IMAGE, so there is no path from here back to a plain CPT render.
 	(x1 > x0 && y1 > y0) || ((x0, x1, y0, y1) = ctx.region)
+	# THIS LAYER's pixels and nothing else. A plain grab of the rectangle is the composite of the whole
+	# pile over it: on a tsunami session (bathymetry + Okada + nested grids) the full-region layer's
+	# picture already held every nest, each nest's held the finer ones, and GMT drew each nest again
+	# on top — repeated, at screen resolution, pixel-snapped out of place. The layer is named as the
+	# viewer lists it (`gmtvtk_raster_layers_h`), and the in-session image is taken by the very call
+	# the script text makes, so the two sinks cannot disagree.
+	layers = _script_raster_layers(ctx.scene)
+	k = _script_layer_of(layers, r)
+	if k !== nothing
+		lname = layers[k].name
+		I = try
+			_display_image(ctx.scene, x0, x1, y0, y1; layer=lname)
+		catch
+			nothing
+		end
+		if I !== nothing
+			var = _script_var!(ctx, "I", I)
+			ctx.needs_base64 = true
+			return DataBind(var, :capture, _script_capture_call(ctx.scene, x0, x1, y0, y1, lname))
+		end
+	end
 	# The data-space bake is preferred (georeferenced, camera-independent, so it can also serve as a
 	# 3-D drape texture); when there is none, the screen grab is used — which for a top-down display is
 	# already a map, and is in every case what is on screen.
@@ -516,6 +538,12 @@ function _script_rasterize!(ctx::ScriptCtx, r::ElementRecipe, disp, isgrid::Bool
 	return DataBind(var, :capture, _script_capture_call(ctx.scene, x0, x1, y0, y1))
 end
 
+# THE CLEAR COLOUR of a captured picture: pixels that are not the layer (GMT's corner fill around a
+# reprojected picture, the capture's own uncovered pixels) carry it, and the script's grdimage makes it
+# transparent with -Q. Never white: white is the band GMT painted over the layer below.
+const _SCRIPT_CLEAR_RGB = (0x01, 0x02, 0x03)
+const _SCRIPT_CLEAR = "1/2/3"
+
 """
 	_display_image(scene, w, e, s, n) -> GMTimage
 
@@ -534,11 +562,36 @@ TWO layouts were wrong here before, and the second only showed up on a NON-SQUAR
 This is the ONE place that turns displayed pixels into a plottable GMTimage. Both the in-session
 replay and the generated script call it, so neither can drift into a broken layout again.
 """
-function _display_image(scene::Ptr{Cvoid}, w, e, s, n)
+function _display_image(scene::Ptr{Cvoid}, w, e, s, n; layer::String="")
 	# THE DISPLAYED pixels: the screen grab, lighting and all — the same source File > Save Screenshot
 	# GeoTIFF writes, except nothing is written; the image is used.
-	I = _capture_rect_image(scene, w, e, s, n; coords=true, prefer_screen=true)
-	J = GMT.mat2img(permutedims(I.image, (2, 1, 3));          # (row,col,band) -> (col,row,band)
+	I = _capture_rect_image(scene, w, e, s, n; coords=true, prefer_screen=true, layer=layer)
+	img = I.image
+	# A one-layer grab carries its coverage (alpha). The pixel rect is the bbox snapped to whole screen
+	# pixels, so it overhangs the layer by a row/column or two of BACKGROUND — the white bands GMT drew
+	# over the layer below. Those edge rows/columns are CUT OFF here (an edge line whose pixels are
+	# mostly uncovered), so what remains is the layer exactly and the w/e/s/n georeference fits it.
+	# The alpha itself is NEVER handed to GMT: grdimage reprojecting an image that carries alpha
+	# (-JD on the tsunami session) crashed inside GMT (gmtlib_bcr_get_img, access violation).
+	# (GMT.jl's "no alpha" is a 1x1 placeholder, not an empty matrix: only a full-size alpha is coverage.)
+	if size(I.alpha) == (size(img, 1), size(img, 2))
+		A = I.alpha                                            # (row, col)
+		bad(v) = 2 * count(<(128), v) > length(v)
+		r0, r1, c0, c1 = 1, size(A, 1), 1, size(A, 2)
+		while r1 - r0 > 1 && bad(view(A, r0, c0:c1)); r0 += 1; end
+		while r1 - r0 > 1 && bad(view(A, r1, c0:c1)); r1 -= 1; end
+		while c1 - c0 > 1 && bad(view(A, r0:r1, c0)); c0 += 1; end
+		while c1 - c0 > 1 && bad(view(A, r0:r1, c1)); c1 -= 1; end
+		img = img[r0:r1, c0:c1, :]
+		# Whatever uncovered pixel is left (a corner, a NaN hole) takes the CLEAR colour, which the
+		# script's grdimage makes transparent (-Q, `_SCRIPT_CLEAR`) — never the white background.
+		A = view(A, r0:r1, c0:c1)
+		for j in axes(A, 2), i in axes(A, 1)
+			A[i, j] < 128 || continue
+			img[i, j, 1], img[i, j, 2], img[i, j, 3] = _SCRIPT_CLEAR_RGB
+		end
+	end
+	J = GMT.mat2img(permutedims(img, (2, 1, 3));              # (row,col,band) -> (col,row,band)
 	                x=[Float64(w), Float64(e)], y=[Float64(s), Float64(n)],
 	                proj4=I.proj4, wkt=I.wkt)
 	J.layout = "TRBa"                                          # band-planar, ROW-major, north-first
@@ -548,9 +601,12 @@ end
 # The call that builds that image in the generated script: the Scene address as an explicit pointer
 # literal plus the rectangle to take. The SAME function the live path runs — one way of getting the
 # picture, not two.
-_script_capture_call(scene::Ptr{Cvoid}, x0, x1, y0, y1)::String =
+# `layer` names ONE raster of the pile: the picture is then that layer alone (`_display_image`'s
+# `layer`), never the composite of everything stacked over its rectangle.
+_script_capture_call(scene::Ptr{Cvoid}, x0, x1, y0, y1, layer::String="")::String =
 	"InteractiveGMT._display_image(Ptr{Nothing}(UInt(" * string(UInt(scene)) * ")), " *
-	"$(_lit(Float64(x0))), $(_lit(Float64(x1))), $(_lit(Float64(y0))), $(_lit(Float64(y1))))"
+	"$(_lit(Float64(x0))), $(_lit(Float64(x1))), $(_lit(Float64(y0))), $(_lit(Float64(y1)))" *
+	(isempty(layer) ? ")" : "; layer=$(_lit(layer)))")
 
 # ── the 3-D BODY view modes: spherical (globe) and cubified (QSC cube) ───────────────────────
 # GMT has NO projection for either of these. They are not maps: the globe wraps lon/lat/z onto a
@@ -667,6 +723,13 @@ function _script_emit_raster!(ctx::ScriptCtx, r::ElementRecipe, obj, first::Bool
 			return _script_emit_raster_finish!(ctx, r, bl, :grdview, gbind.var, kw, first, isgrid, disp)
 		end
 		# Top-down (or an image): the capture IS the layer, so no grid/image data is bound at all.
+		# A lon/lat picture reprojected by guess_proj's projection comes out slightly turned, and GMT
+		# paints the corners of its output rectangle (outside the picture) in the NaN colour — the white
+		# wedges. That colour is set to a sentinel and made transparent (-Q); -D keeps GMT.jl treating
+		# the input as an image when -Q is given.
+		# The same colour marks a captured picture's own uncovered pixels (`_display_image`), so -Q is
+		# given for every captured picture, geographic or not.
+		push!(kw, :Q => _SCRIPT_CLEAR, :D => true, :par => (COLOR_NAN = _SCRIPT_CLEAR,))
 		bl = cptbind === nothing ? DataBind[shot] : DataBind[shot, cptbind]
 		return _script_emit_raster_finish!(ctx, r, bl, :grdimage, shot.var, kw, first, isgrid, disp)
 	end

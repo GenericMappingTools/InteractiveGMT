@@ -1153,9 +1153,12 @@ static JuliaVectorWizardFn g_juliaVectorWizard = nullptr;
 //   `name` the Scene Objects name of the displayed image, so Julia can count the IMAGE's own data
 //          instead (a 16-bit band is DISPLAYED as an 8-bit copy, a one-band picture as RGBA) and set
 //          the band count and X-axis data range with gmtvtk_histo_set_bands
+//   `displayed` 0 = the image's own data (a 16-bit band: its DNs; Julia then reveals the dialog's
+//          "Show it in 0-255" button with gmtvtk_histo_offer_display8); 1 = that button's window: the
+//          8-bit copy the window actually DISPLAYS
 // Returns 1 on success, 0 on failure. nullptr to detach.
 typedef int (*JuliaImageHistoFn)(void *scene, void *dlg, const unsigned char *px, int npix, int nb,
-                                 const char *name);
+                                 const char *name, int displayed);
 static JuliaImageHistoFn g_juliaImageHisto = nullptr;
 
 // "Image -> Image Enhance -> 1 - Indexed and RGB" (port of Mirone src_figs/image_enhance.m). The
@@ -1209,6 +1212,7 @@ static JuliaRgbScatterFn g_juliaRgbScatter = nullptr;
 // 70_window.cpp, loads deps/ui/empilhador.ui) hands a newline-separated "key=value" block to Julia
 // (_on_empilhador, src/empilhador.jl), which calls GMT.jl's `empilhador`:
 //   list=<the list file, or a wildcard request>      | file<i>=<path>   (files picked one by one)
+//   order<i>=<list-file column 1>  (only after the user drag-reordered a list file's rows)
 //   out=<output file>            fmt=netcdf|vtk|tiff|vrt
 //   region=<w/e/s/n>             (absent when "Use sub-region?" is off)
 //   l2=0|1   config=0|1   quality=<-2..2>   bitflags=0|1   inc=<cell size>   ncells=<n>
