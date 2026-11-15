@@ -8930,6 +8930,16 @@ public:
 			}
 		};
 	}
+	// Every way out (X, Minimise, Esc) lands here; parkTool replaces an existing row, so parking twice
+	// leaves one. False when there is nowhere to park (the window is gone, or the row's Delete).
+	bool parkNow() {
+		if (reallyClose || !dlg || !sceneAlive(scn)) return false;
+		dlg->hide();
+		parkTool(scn, dlg, "Adjust Contrast", IC_Image,
+		         "Closed Adjust Contrast dialog — double-click to bring it back, click for Show / Delete",
+		         [this]() { unpark(); }, parkedMenu());
+		return true;
+	}
 	// By VALUE, not by `scn`: when the viewer window is torn down the Scene may already be gone.
 	~ImageEnhanceDialog() {
 		for (auto it = g_enhanceDlgs.begin(); it != g_enhanceDlgs.end(); )
@@ -9024,27 +9034,27 @@ public:
 		ax[2] = static_cast<EnhanceAxesWidget *>(d->findChild<QWidget *>("axes3"));
 		if (!ax[0] || !ax[1] || !ax[2]) { delete d; dlg = nullptr; return; }
 
-		// The X button PARKS instead of closing. WA_DeleteOnClose is deliberately NOT set, and the
-		// close event is swallowed outright — only the parked row's "Delete" (which sets reallyClose)
-		// ever lets one through, so the dialog and its per-band windows survive being closed.
+		// The X button, Minimise and Esc all PARK instead of closing (parkNow). WA_DeleteOnClose is
+		// deliberately NOT set, and the close event is swallowed outright — only the parked row's
+		// "Delete" (which sets reallyClose) ever lets one through, so the dialog and its per-band
+		// windows survive being closed.
+		d->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint | Qt::WindowMinimizeButtonHint);
 		struct CloseParks : QObject {
 			ImageEnhanceDialog *ed;
 			CloseParks(QObject *parent, ImageEnhanceDialog *e) : QObject(parent), ed(e) {}
 			bool eventFilter(QObject *o, QEvent *e) override {
-				if (e->type() == QEvent::Close && ed && !ed->reallyClose && sceneAlive(ed->scn)) {
+				if (e->type() == QEvent::Close && ed && ed->parkNow()) {
 					e->ignore();
-					ed->dlg->hide();
-					ImageEnhanceDialog *h = ed;   // a lambda cannot capture a member of the enclosing class
-					parkTool(h->scn, h->dlg, "Adjust Contrast", IC_Image,
-					         "Closed Adjust Contrast dialog — double-click to bring it back, click for Show / Delete",
-					         [h]() { h->unpark(); }, h->parkedMenu());
-					unfoldSceneObjects(ed->scn);   // a handle nobody can see is no handle at all
 					return true;
 				}
 				return QObject::eventFilter(o, e);
 			}
 		};
 		d->installEventFilter(new CloseParks(d, this));
+		parkOnMinimise(d, [this]() { parkNow(); });		// the shared handler (50_scene.cpp)
+		QObject::connect(d, &QDialog::rejected, d, [this]() {	// Esc
+			if (!parkNow()) dlg->deleteLater();
+		});
 
 		eMinRange = d->findChild<QLineEdit *>("edit_minRange");
 		eMaxRange = d->findChild<QLineEdit *>("edit_maxRange");
@@ -9057,17 +9067,14 @@ public:
 		rBand[1]  = d->findChild<QRadioButton *>("radio_G");
 		rBand[2]  = d->findChild<QRadioButton *>("radio_B");
 		stat      = d->findChild<QLabel *>("text_stat");
-		// The pressed button MUST stay marked so the user can see what was pushed. A focus ring is NOT
-		// enough: the Windows style barely paints one, and any op that adds a scene element pulls the
-		// activation away and takes the ring with it. So the four action buttons are CHECKABLE and
-		// mutually exclusive — the last one pressed stays visibly down, whatever the focus does.
-		// (Same device as the Binarize dialog's five method buttons.)
-		auto *actionGroup = new QButtonGroup(d);
-		actionGroup->setExclusive(true);
+		// The three action buttons (Contrast Stretch, Decorrelation Stretch, ScaterPlot) stay DOWN while
+		// their work runs and come back UP when it is finished (user order, 2026-11-15). They are
+		// checkable for that: the click checks the button, `toggled` repaints it down at once (the op
+		// that follows blocks the event loop), and the last-connected slot below unchecks it.
 		for (QPushButton *b : d->findChildren<QPushButton *>()) {
 			b->setAutoDefault(false);  b->setDefault(false);  b->setFocusPolicy(Qt::StrongFocus);
 			b->setCheckable(true);
-			actionGroup->addButton(b);
+			QObject::connect(b, &QPushButton::toggled, d, [b](bool on) { if (on) b->repaint(); });
 		}
 
 		const QColor tint[3] = { QColor(255, 124, 117), QColor(120, 255, 114), QColor(119, 119, 255) };
@@ -9130,10 +9137,11 @@ public:
 			});
 
 		// Connected LAST on purpose: Qt runs slots in connection order, so this fires AFTER the op
-		// above has run (and after any scene rebuild it triggered stole the activation) and puts the
-		// mark back on the button that was actually pressed.
+		// above has finished (and after any scene rebuild it triggered stole the activation): the
+		// button comes back up, and the dialog gets the activation back.
 		for (QPushButton *b : d->findChildren<QPushButton *>())
 			QObject::connect(b, &QPushButton::clicked, d, [this, b]() {
+				b->setChecked(false);
 				if (dlg) dlg->activateWindow();
 				b->setFocus(Qt::TabFocusReason);
 			});

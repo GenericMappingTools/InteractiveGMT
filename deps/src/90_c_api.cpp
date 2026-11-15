@@ -8567,6 +8567,16 @@ GMTVTK_API const char *gmtvtk_active_grid_name_h(void *handle) {
 	return out.c_str();
 }
 
+// The PRIMARY surface's Scene Objects name (s->surfName; "" for an unnamed base or no window). The
+// row-removed callback asks it to tell the base row from an extra: the base is not in the host's
+// object registry, its data lives in the window's figure.
+GMTVTK_API const char *gmtvtk_base_name_h(void *handle) {
+	static std::string out;
+	Scene *s = static_cast<Scene *>(handle);
+	out = sceneAlive(s) ? s->surfName : std::string();
+	return out.c_str();
+}
+
 // WHAT THE WINDOW IS SHOWING, of any kind -- what Info ("i") describes. The visible grid layer when
 // there is one (resolveActiveGrid, the readout's and colour bar's resolver); otherwise the TOPMOST
 // VISIBLE IMAGE, by the image pile's own rule (greatest zpos, later extras win a tie -- as

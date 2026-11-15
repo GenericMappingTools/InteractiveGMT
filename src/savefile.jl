@@ -348,6 +348,7 @@ function _on_forget(scene::Ptr{Cvoid}, ckind::Cstring, cname::Cstring)::Cvoid
 			_forget_window!(scene)
 		else
 			name = unsafe_string(cname)
+			_release_removed!(scene, kind, name)	# BEFORE the row's data leaves _SCENE_OBJS
 			_forget_object!(scene, kind, name)
 			# a Base Map tile removed from the window may be added again
 			haskey(_BASEMAP_LOADED, scene) && delete!(_BASEMAP_LOADED[scene], name)
@@ -356,6 +357,104 @@ function _on_forget(scene::Ptr{Cvoid}, ckind::Cstring, cname::Cstring)::Cvoid
 			_forget_file_element!(scene, name)
 		end
 	catch
+	end
+	return
+end
+
+# A ROW REMOVED FROM SCENE OBJECTS GIVES ITS MEMORY BACK. `_forget_object!` drops the row's own
+# object, but a raster lives in more places than that, and each kept the whole thing alive after the
+# user had deleted it (seen: VRT -> RGB -> Adjust Contrast -> remove every row, julia still 2.8 GB):
+#   * `_IMG_ORIG`: the full-precision original of a >8-bit image (a 16-bit RGB is 6 bytes a pixel —
+#     three times the 8-bit copy on screen);
+#   * `_FIGREG`: a window's PRIMARY figure (QtFigure/QtImage) holds the base grid/image, so removing
+#     the base row left it there; the window is now an empty launcher, and is registered as one;
+#   * the Adjust Contrast / Binarize dialog states (`_ENHSTATE`/`_BINSTATE`): each holds its source at
+#     full precision (Binarize also a grey copy, the mask and its undo) for as long as the dialog
+#     lives — parked included. With the source gone the state has nothing to work on; dropping it
+#     makes the dialog say so instead of operating on a deleted image;
+#   * `_BANDS_MEM`: bands taken from images already in the window are references to those images.
+# Only PURE JULIA copies are dropped here — never a buffer a ccall still points at (grid buffers are
+# pinned separately by `_on_grid_pin`, and released by their own GridZ handle).
+# Then ONE full collection, deferred to the event loop (never inside the C++ teardown that called
+# us) and coalesced, so "remove twenty rows" is one GC, not twenty: without it the freed gigabytes
+# stay in Julia's heap until some later allocation happens to trigger a collection.
+const _RELEASE_GC_PENDING = Ref(false)
+
+# GMT.jl's gdaltranslate/gdalwarp (and gdalread through them) write their result to GDAL's in-memory
+# file "/vsimem/tmp" and never unlink it: the LAST raster read — a whole 16-bit band, 121 MB on a
+# Landsat scene — stays inside GDAL for the life of the process (measured: GDAL's block cache 0, no
+# dataset open, and only GDALDestroyDriverManager gave the memory back). The result was already copied
+# into a Julia array, so the file is dead weight. Unlinking an in-memory file someone still has open is
+# safe: /vsimem/ content lives until its last handle closes. Only GMT.jl's default name and its
+# sidecars ("tmp.IMD", "tmp.aux.xml", ...) are touched — every /vsimem/ file iGMT itself creates has a
+# name of its own (emodnet.jl, bandslist.jl, gmtscript.jl).
+function _vsimem_tmp_purge()
+	try
+		p = ccall((:VSIReadDir, GMT.libgdal), Ptr{Ptr{UInt8}}, (Cstring,), "/vsimem/")
+		p == C_NULL && return
+		names = String[]
+		i = 1
+		while (q = unsafe_load(p, i)) != C_NULL
+			push!(names, unsafe_string(q));  i += 1
+		end
+		ccall((:CSLDestroy, GMT.libgdal), Cvoid, (Ptr{Ptr{UInt8}},), p)
+		for nm in names
+			(nm == "tmp" || startswith(nm, "tmp.")) || continue
+			ccall((:VSIUnlink, GMT.libgdal), Cint, (Cstring,), "/vsimem/" * nm)
+		end
+	catch e
+		@debug "could not purge /vsimem/tmp" exception = (e,)
+	end
+	return
+end
+function _release_removed!(scene::Ptr{Cvoid}, kind::Symbol, name::AbstractString)
+	(kind === :image || kind === :grid || kind === :mesh) || return
+	gone = Any[]
+	v = get(_SCENE_OBJS, scene, nothing)
+	v !== nothing && for t in v
+		(t[1] === kind && t[2] == name) && push!(gone, t[3])
+	end
+	if kind === :image
+		d = get(_IMG_ORIG, scene, nothing)
+		if d !== nothing
+			o = pop!(d, String(name), nothing)
+			o !== nothing && push!(gone, o)
+			isempty(d) && delete!(_IMG_ORIG, scene)
+		end
+	end
+	# The primary: an unnamed base, the row the viewer calls its base, or the figure's own object
+	# among the row's data.
+	isbase = isempty(name) ||
+	         name == unsafe_string(ccall(_fn(:gmtvtk_base_name_h), Cstring, (Ptr{Cvoid},), scene))
+	fig = get(_FIGREG, scene, nothing)
+	if (fig isa QtFigure || fig isa QtImage) && fig.h == scene
+		figdata = fig isa QtFigure ? fig.G : fig.I
+		isbase = isbase || any(x -> x === figdata, gone)
+		isbase && (_FIGREG[scene] = QtEmpty(scene))
+	end
+	# Dialog states are keyed by DIALOG pointer (see _forget_window!): select by the scene and source
+	# they record, never by key.
+	for reg in (_ENHSTATE, _BINSTATE)
+		for (dlg, st) in collect(reg)
+			st.scene == scene || continue
+			(st.srcname == name || (isempty(st.srcname) && isbase) || any(x -> x === st.I, gone)) &&
+				delete!(reg, dlg)
+		end
+	end
+	M = get(_BANDS_MEM, scene, nothing)
+	if M !== nothing && any(I -> any(x -> x === I, gone), M)
+		delete!(_BANDS_MEM, scene)
+		info = get(_BANDS_INFO, scene, nothing)
+		(info !== nothing && isempty(info.path)) && delete!(_BANDS_INFO, scene)
+	end
+	_vsimem_tmp_purge()
+	if !_RELEASE_GC_PENDING[]
+		_RELEASE_GC_PENDING[] = true
+		@async begin
+			sleep(0.2)
+			_RELEASE_GC_PENDING[] = false
+			GC.gc(true)
+		end
 	end
 	return
 end
