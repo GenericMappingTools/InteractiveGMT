@@ -339,7 +339,7 @@ end
 # gmtscript.jl `_script_save_standalone`.)
 _serialize_object(obj, path::String) =
 	(obj isa GMTgrid || obj isa GMTdataset || obj isa Vector{<:GMTdataset}) ?
-		GMT.gmtwrite(path, obj) : _save_image(obj, "", path)
+		_gmtwrite(path, obj) : _save_image(obj, "", path)
 
 # Fetch the window's RESTORABLE display state (camera/VE/flat2d/colorbar/shading) as the raw "k=v;" string the
 # C serializer emits — stored verbatim under the manifest [window] `state=` key and fed back to

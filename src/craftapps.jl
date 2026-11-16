@@ -529,7 +529,7 @@ function _pc_send(scene::Ptr{Cvoid}, kind::String, name::String)::Nothing
 	ccall(_fn(:gmtvtk_progress_show_async), Cint, (Cint, Cstring), 0, "Sending the picture to PhotoCraft...")
 	try
 		pic = R isa GMTimage ? R : _display_image(scene, R.range[1], R.range[2], R.range[3], R.range[4])
-		GMT.gmtwrite(path, pic)
+		_gmtwrite(path, pic)
 		isfile(path) || error("Could not write $path.")
 		if _pc_running()
 			_pc_tools(["doc_open" => "{\"path\":\"$file\"}"])

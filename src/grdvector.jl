@@ -359,7 +359,7 @@ function _on_grdvector(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 			T = GMT.mat2ds(hcat(px, py, pu, pv, mag, pt))
 			T.colnames = _gv_colnames(polar)
 			out = _get(d, "outfile")
-			isempty(out) || GMT.gmtwrite(String(out), T)
+			isempty(out) || _gmtwrite(String(out), T)
 			_on(d, "table") && show_table(scene, T; name = name)
 		end
 

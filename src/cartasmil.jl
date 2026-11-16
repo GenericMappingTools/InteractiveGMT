@@ -268,7 +268,7 @@ function _cm_mosaic(imgs::Vector{GMTimage}, bbox::NTuple{4,Float64})::GMTimage
 	for I in imgs
 		J = (I.n_colors > 0) ? GMT.ind2rgb(I) : I
 		f = tempname() * ".tif"
-		GMT.gmtwrite(f, J)
+		_gmtwrite(f, J)
 		push!(files, replace(f, '\\' => '/'))
 	end
 	vrt = GMT.gdalbuildvrt(files)

@@ -347,7 +347,7 @@ function _on_solar(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		out = _get(d, "outfile")
 		if !isempty(out)
 			isempty(dumped) && error("there is no terminator to save — tick at least one")
-			GMT.gmtwrite(String(out), dumped)          # a Vector{GMTdataset} = one multi-segment table
+			_gmtwrite(String(out), dumped)          # a Vector{GMTdataset} = one multi-segment table
 		end
 		return Cint(1)
 	catch e

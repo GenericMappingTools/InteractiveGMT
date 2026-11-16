@@ -495,7 +495,7 @@ function _xy_save(p::QtXYPlot, sel::Int, path)
 		push!(mats, GMT.mat2ds(hcat(xy[1], xy[2])))
 	end
 	isempty(mats) && return
-	GMT.gmtwrite(String(path), length(mats) == 1 ? mats[1] : mats)
+	_gmtwrite(String(path), length(mats) == 1 ? mats[1] : mats)
 	return
 end
 

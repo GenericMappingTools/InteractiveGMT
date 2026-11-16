@@ -80,7 +80,7 @@ function _on_grdfill(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 			for seg in D
 				seg.colnames = names
 			end
-			out = _get(d, "outfile");  isempty(out) || GMT.gmtwrite(String(out), length(D) == 1 ? D[1] : D)
+			out = _get(d, "outfile");  isempty(out) || _gmtwrite(String(out), length(D) == 1 ? D[1] : D)
 			show_table(scene, length(D) == 1 ? D[1] : D;
 			           name = polygons ? "Hole polygons" : "Hole bounding boxes")
 			# The polygons are also worth SEEING: they go on the map as a line layer, replacing the

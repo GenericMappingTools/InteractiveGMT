@@ -227,7 +227,7 @@ function _on_talwani2d(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 			D.colnames = _tal2d_colnames(field, size(D.data, 2))
 		end
 
-		out = _get(d, "outfile");  isempty(out) || GMT.gmtwrite(String(out), R)
+		out = _get(d, "outfile");  isempty(out) || _gmtwrite(String(out), R)
 		label = _tal_fieldname(field)
 		show_table(scene, length(Ds) == 1 ? Ds[1] : Ds; name = "talwani2d (" * label * ")")
 

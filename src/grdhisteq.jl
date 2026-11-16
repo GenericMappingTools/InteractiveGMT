@@ -69,7 +69,7 @@ function _on_grdhisteq(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 			D = _ghq_pick(GMT.grdhisteq(G; kw...), GMTdataset)
 			# The three columns the module dumps: each cell's z range and the cell's own index.
 			D.colnames = ["Start", "Stop", "Cell"][1:min(size(D.data, 2), 3)]
-			out = _get(d, "outfile");  isempty(out) || GMT.gmtwrite(String(out), D)
+			out = _get(d, "outfile");  isempty(out) || _gmtwrite(String(out), D)
 			show_table(scene, D; name = "Equal-area levels ($(kw[:C]) cells)")
 			return Cint(1)
 		elseif mode != "grid"

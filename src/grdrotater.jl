@@ -93,7 +93,7 @@ function _on_grdrotater(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		# run is for. REPLACE, never pile up.
 		if Drot !== nothing
 			out2 = _get(d, "outoutline")
-			isempty(out2) || GMT.gmtwrite(String(out2), Drot)
+			isempty(out2) || _gmtwrite(String(out2), Drot)
 			if _on(d, "drawoutline")
 				ccall(_fn(:gmtvtk_remove_overlay_group_h), Cint, (Ptr{Cvoid}, Cstring),
 				      scene, _GROT_OUTLINE_LAYER)

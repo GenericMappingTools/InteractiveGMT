@@ -564,7 +564,7 @@ end
 function _ce_write_netcdf(fname::AbstractString, lon::Vector{Float64}, lat::Vector{Float64},
                           ang::Vector{Float64}, resid::Array{Float64,3})
 	cube = GMT.mat2grid(Float32.(resid), x = lon, y = lat, v = ang)
-	GMT.gmtwrite(String(fname), cube)
+	_gmtwrite(String(fname), cube)
 	return
 end
 

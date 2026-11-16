@@ -58,7 +58,7 @@ function _grdfft_curve(scene::Ptr{Cvoid}, R, title::String, outfile::AbstractStr
 	                               "Frequency (1/m)"
 	names = _grdfft_spec_colnames(size(m, 2), xlab)
 	D.colnames = names
-	isempty(outfile) || GMT.gmtwrite(String(outfile), D)
+	isempty(outfile) || _gmtwrite(String(outfile), D)
 	show_table(scene, D; name = title)
 
 	# 3 columns: power + its error. 17: the cross-spectrum, whose headline curve is the coherency

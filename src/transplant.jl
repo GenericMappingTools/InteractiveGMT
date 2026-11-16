@@ -333,7 +333,7 @@ function _on_transplant(scene::Ptr{Cvoid}, implant_path::String, res::Int=1, rec
 			w, e, s, n = parse.(Float64, rf)
 			w = max(w, I.range[1]);  e = min(e, I.range[2])
 			s = max(s, I.range[3]);  n = min(n, I.range[4])
-			(e > w && n > s) && (I = GMT.grdcut(I; region=(w, e, s, n)))
+			(e > w && n > s) && (I = GMT.grdcut(_heal_trb!(I); region=(w, e, s, n)))
 		end
 
 		Gout, blk = _transplant_grid(H, I; keepres=(res != 0), progress=_tp_dialog)

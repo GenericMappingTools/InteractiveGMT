@@ -41,14 +41,14 @@ function _gm3d_deliver(scene::Ptr{Cvoid}, R, title::String, outfile::AbstractStr
 	if toTrack
 		D = isa(R, Vector) ? R : [R]
 		isempty(D) && error("no data returned for the track locations")
-		isempty(outfile) || GMT.gmtwrite(String(outfile), R)
+		isempty(outfile) || _gmtwrite(String(outfile), R)
 		show_table(scene, D; name = title)
 		return Cint(1)
 	end
 
 	isa(R, GMTgrid) || error("got a $(typeof(R)), not a grid")
 	G = R
-	isempty(outfile) || GMT.gmtwrite(String(outfile), G)
+	isempty(outfile) || _gmtwrite(String(outfile), G)
 
 	# REPLACE, never pile up: recomputing the same anomaly kind trashes the previous result (the C++
 	# actor AND the stale Julia reference) before adding the new one — same as _on_rtp3d.

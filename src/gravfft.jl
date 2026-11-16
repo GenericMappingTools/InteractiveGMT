@@ -87,7 +87,7 @@ function _gravfft_curve(scene::Ptr{Cvoid}, R, title::String, outfile::AbstractSt
 	                              "$freqname (1/m)"
 	ylab = coh ? "Coherence" : field == "g" ? "Admittance (m/m)" : "Admittance (mGal/m)"
 	D.colnames = [xlab, ylab, "1-sigma", "Theoretical"][1:min(size(m, 2), 4)]
-	isempty(outfile) || GMT.gmtwrite(String(outfile), D)
+	isempty(outfile) || _gmtwrite(String(outfile), D)
 	show_table(scene, D; name = title)
 
 	x = Float64.(@view m[:, 1])

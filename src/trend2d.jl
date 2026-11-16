@@ -86,7 +86,7 @@ function _on_trend2d(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		isa(Rd, GMTdataset) || error("got a $(typeof(Rd)), not a table")
 
 		Rd.colnames = _trend2d_colnames(F, size(Rd.data, 2))
-		out = _get(d, "outfile");  isempty(out) || GMT.gmtwrite(String(out), Rd)
+		out = _get(d, "outfile");  isempty(out) || _gmtwrite(String(out), Rd)
 		title = F == "p" ? "trend2d parameters" : "trend2d (N=$(kw[:N]))"
 		show_table(scene, Rd; name = title)
 

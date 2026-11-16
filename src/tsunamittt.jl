@@ -192,7 +192,7 @@ function _on_ttt(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		# ONE name for the quantity, whichever method produced it: recomputing REPLACES the previous
 		# result (that is what _gm3d_deliver's remove+forget does) instead of piling up near-identical
 		# layers the user then has to tell apart.
-		tofile && (GMT.gmtwrite(outfile, R); return Cint(1))
+		tofile && (_gmtwrite(outfile, R); return Cint(1))
 		_ttt_mem_check(nodes * _TTT_BYTES_PER_NODE.deliver + _TTT_FIXED_BYTES, "display the travel-time grid")
 		ok = _gm3d_deliver(scene, R, _TTT_NAME, "", false, recipe)
 		# 0 from a window that is still open: the viewer ran out of memory building the surface (its

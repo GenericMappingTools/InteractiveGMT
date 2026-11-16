@@ -264,7 +264,7 @@ function _ecmwf_to_180!(f::String, want::String = "180")::String
 		catch
 			# Only if GMT still declines: move the columns west of 180 to the front and drop 360 from
 			# their longitudes — an index permutation, not a resampling, so no value changes.
-			GMT.gmtwrite(tmp, _ecmwf_roll180(G))
+			_gmtwrite(tmp, _ecmwf_roll180(G))
 		end
 		if isfile(tmp)
 			rm(f; force=true)
@@ -303,7 +303,7 @@ function _ecmwf_to_unit!(f::String, want::String)::String
 		G.z  = Float32.(G.z .- 273.15f0)
 		G.z_unit = "degrees_C"
 		G.range[5], G.range[6] = extrema(G.z)
-		GMT.gmtwrite(f, G)
+		_gmtwrite(f, G)
 	catch
 		# Not readable as a grid, or no unit to trust: show exactly what the server sent.
 	end

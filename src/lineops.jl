@@ -1313,7 +1313,7 @@ function _lop_do_toridge(scene, targets, rest)
 		(e <= w || n0 <= s0) && continue
 		local sub
 		try
-			sub = GMT.grdcut(G, R = "$w/$e/$s0/$n0")
+			sub = GMT.grdcut(_heal_trb!(G), R = "$w/$e/$s0/$n0")
 		catch
 			continue
 		end

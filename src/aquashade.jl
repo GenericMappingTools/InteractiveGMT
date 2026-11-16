@@ -344,7 +344,7 @@ function tsushade(path::String; k::Union{Int,Nothing} = nothing, var::String = "
 	                        cmap_water = cmap_water, cmap_land = cmap_land)
 	println("tsushade: layer $(kk + 1)/$nt — water by method $mw (az $azim_water), " *
 	        "land by method $ml (az $azim_land)")
-	isempty(savefile) || (GMT.gmtwrite(savefile, img); println("tsushade: wrote $savefile"))
+	isempty(savefile) || (_gmtwrite(savefile, img); println("tsushade: wrote $savefile"))
 	show && GMT.imshow(img)
 	return img
 end
@@ -493,7 +493,7 @@ function tsupbr(path::String; k::Union{Int,Nothing} = nothing, var::String = "z"
 	                        cmap_water = cmap_water, cmap_land = cmap_land)
 	println("tsupbr: layer $(kk + 1)/$nt — both halves by method 1 (VTK PBR), " *
 	        "water az $azim_water, land az $azim_land")
-	isempty(savefile) || (GMT.gmtwrite(savefile, img); println("tsupbr: wrote $savefile"))
+	isempty(savefile) || (_gmtwrite(savefile, img); println("tsupbr: wrote $savefile"))
 	show && GMT.imshow(img)
 	return img
 end

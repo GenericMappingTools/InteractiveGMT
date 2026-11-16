@@ -621,7 +621,7 @@ end
 # Name the result and save it if asked.
 function _si_finish(O, index::String, o::SIOpts)
 	isa(O, GMT.GItype) && (O.names = [index * " index"])
-	(o.save != "") && (gmtwrite(o.save, O); return nothing)
+	(o.save != "") && (InteractiveGMT._gmtwrite(o.save, O); return nothing)
 	return O
 end
 

@@ -237,7 +237,7 @@ function _on_gravprisms(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 			for Dd in Ds
 				Dd.colnames = _gpr_colnames(field, geog, size(Dd.data, 2))
 			end
-			isempty(out) || GMT.gmtwrite(String(out), R)
+			isempty(out) || _gmtwrite(String(out), R)
 			show_table(scene, length(Ds) == 1 ? Ds[1] : Ds; name = "gravprisms (" * label * ")")
 			# The track's x,y ARE map coordinates, so the values can sit on the map where they belong.
 			if _on(d, "plotpts")

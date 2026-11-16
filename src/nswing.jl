@@ -1111,7 +1111,7 @@ function _nswing_save_files(scene::Ptr{Cvoid}, d::Dict{String,String})
 	gauges = _on(d, "maregs") ? _nswing_gauges(d) : nothing
 	if gauges !== nothing
 		gpath = joinpath(plan.dir, "tide_gauges.dat")
-		gmtwrite(gpath, gauges)
+		_gmtwrite(gpath, gauges)
 		push!(saved, "$(basename(gpath)) — the virtual tide gauges plotted in the window")
 		opts = [startswith(o, "-T") ? "-T" * gpath * o[3:end] : o for o in opts]
 	end

@@ -506,8 +506,8 @@ function _bm1_run_async(scene::Ptr{Cvoid}, outfile::String; ncycles::Int=5000, i
 	bat  = stem * "_bat.grd"
 	src  = stem * "_src.grd"
 	Gb   = _bm1_bathymetry(dx)
-	gmtwrite(bat, Gb)
-	gmtwrite(src, _bm1_source(dx, 0.0))
+	_gmtwrite(bat, Gb)
+	_gmtwrite(src, _bm1_source(dx, 0.0))
 	# THE NESTED LEVELS, checked before they are written. `_nswing_check_nest_fits` is the run's own
 	# pre-flight (Mirone's check_binning port) — the same authority the NSWING dialog uses — so a bad
 	# chain is refused here with the real message instead of inside the model.
@@ -517,7 +517,7 @@ function _bm1_run_async(scene::Ptr{Cvoid}, outfile::String; ncycles::Int=5000, i
 	for (i, G) in enumerate(nests)
 		_nswing_check_nest_fits(parent, G, i == 1 ? "bathymetry" : "nest level $(i-1)", "nest level $i")
 		p = stem * "_L$(i).grd"
-		gmtwrite(p, G)
+		_gmtwrite(p, G)
 		push!(nestpaths, "-$(i)$(p)")            # nswing CLI: -1<grd> -2<grd> …, path ATTACHED
 		parent = G
 	end

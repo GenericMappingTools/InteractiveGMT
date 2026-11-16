@@ -1323,7 +1323,7 @@ function _on_cube_save(scene::Ptr{Cvoid}, cpath::Cstring)::Cint
 			catch
 			end
 		end
-		GMT.gmtwrite(path, C)
+		_gmtwrite(path, C)
 		isfile(path) || return Cint(2)
 		return Cint(0)
 	catch e
@@ -1568,9 +1568,74 @@ end
 #   bit 1 — set: row 0 = NORTH ('T??'), clear: row 0 = SOUTH ('B??')
 # so "BCB" -> 0, "TRB" -> 3. An absent/short layout means GMT's own "BCB".
 function _grid_layout_code(G::GMTgrid)::Cint
+	_heal_trb!(G)
 	lay = G.layout
 	length(lay) < 2 && return Cint(0)
 	return Cint((lay[2] == 'R' ? 1 : 0) | (lay[1] == 'T' ? 2 : 0))
+end
+
+# GUARD AGAINST A GMT.jl THAT RELABELS / MODIFIES ITS INPUT GRIDS (GMT/TRB_GRID_INIT_FLIP.md).
+# GMT.jl's grid_init (gmt_main.jl, before the fix) renames every TR grid handed to ANY GMT module to
+# "BR…" while its memory stays north-first — so one Info (grdinfo) click on a window grid made the next
+# NSWING run come out upside down — and gmtwrite flips a TR grid's memory in place. The installer ships
+# a fixed GMT.jl; a dev/registered GMT.jl may not have it yet.
+#
+# THE GUARD ACTS ONLY WHEN THE LOADED GMT.jl ACTUALLY DOES IT. `_gmtjl_tr_unsafe()` asks once, on the
+# main thread, by running the two offending calls on a 3x2 TRB grid, and caches the answer. A fixed
+# GMT.jl answers false and then nothing below ever runs: a fixed GMT.jl can carry a GENUINE "BR" grid,
+# and "healing" that would be this bug put back. Never replace the probe with a version check.
+const _GMTJL_TR_UNSAFE = Ref{Int8}(-1)        # -1 not asked yet, 0 GMT.jl leaves TR grids alone, 1 it does not
+
+function _gmtjl_tr_unsafe()::Bool
+	v = _GMTJL_TR_UNSAFE[]
+	v >= 0 && return v == 1
+	# NEVER IN THE INSTALLER VERSION (user's order): an iGMT Windows install ships the fixed GMT.jl, so
+	# the guard is off there before anything runs -- no probe, no relabel, no write copy. The install is
+	# recognised by the same marker Help > Update GMT.jl goes by (selfupdate.jl, `_GMTJL_MARKER`).
+	if isfile(joinpath(first(DEPOT_PATH), _GMTJL_MARKER))
+		_GMTJL_TR_UNSAFE[] = 0
+		return false
+	end
+	# GMT is not to be called off the main thread (one session). Unknown there: guard on, which is safe
+	# with an unfixed GMT.jl and harmless with a fixed one until the main thread asks.
+	Threads.threadid() == 1 || return true
+	bad = try
+		G = GMT.mat2grid(Float32[1 2 3; 4 5 6], x = [0.0, 1, 2], y = [0.0, 1])
+		H = deepcopy(G)                           # the same grid in TRB: rows north-first, x fastest
+		H.z = reshape(Float32[4, 5, 6, 1, 2, 3], 2, 3);  H.layout = "TRB";  z0 = copy(H.z)
+		GMT.grdinfo(H)
+		renamed = H.layout != "TRB"
+		H.layout = "TRB"
+		f = tempname() * ".nc"
+		GMT.gmtwrite(f, H)
+		rm(f; force = true)
+		renamed || H.layout != "TRB" || H.z != z0
+	catch
+		true                                       # could not tell: protect
+	end
+	_GMTJL_TR_UNSAFE[] = bad ? 1 : 0
+	return bad
+end
+
+# Undo GMT.jl's rename. Valid ONLY while `_gmtjl_tr_unsafe()`: then iGMT never holds a genuinely BR
+# grid (it reads grids "TRB", GMT modules return "BCB", and every write goes through `_gmtwrite`'s copy,
+# so nothing really flips), and a "BR…" label can only be the rename of north-first memory.
+function _heal_trb!(G::GMTgrid)
+	(length(G.layout) >= 2 && G.layout[1] == 'B' && G.layout[2] == 'R') || return G
+	_gmtjl_tr_unsafe() && (G.layout = "TR" * G.layout[3:end])
+	return G
+end
+_heal_trb!(x) = x
+
+# THE grid write of iGMT: GMT.gmtwrite, but a TR grid is written from a COPY while the loaded GMT.jl
+# would flip/relabel the one it is given (`_gmtjl_tr_unsafe`). Everything else goes straight through.
+function _gmtwrite(path::AbstractString, obj; kw...)
+	if obj isa GMTgrid && _gmtjl_tr_unsafe()
+		_heal_trb!(obj)
+		lay = obj.layout
+		(length(lay) >= 2 && lay[1] == 'T' && lay[2] == 'R') && (obj = deepcopy(obj))
+	end
+	return GMT.gmtwrite(path, obj; kw...)
 end
 
 # THE viewer boundary for a grid's z: the buffer as it lies + its dims + its layout code.

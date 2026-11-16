@@ -269,7 +269,7 @@ function _on_emodnet(scene::Ptr{Cvoid}, dlg::Ptr{Cvoid}, cparams::Cstring)::Cint
 		G = emodnet_dtm(bbox[1], bbox[2], bbox[3], bbox[4]; log = m -> _emod_log(dlg, m))
 		outfile = strip(_get(d, "outfile"))
 		if !isempty(outfile)
-			GMT.gmtwrite(String(outfile), G)
+			_gmtwrite(String(outfile), G)
 			_emod_log(dlg, "written to $outfile")
 		end
 		r = G.range

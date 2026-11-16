@@ -218,7 +218,7 @@ function _on_greenspline(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 			isa(T, GMTdataset) || error("got a $(typeof(T)), not a table")
 			T.colnames = _gs_colnames(dim, size(T.data, 2))
 			out = _get(d, "outfile")
-			isempty(out) || GMT.gmtwrite(String(out), T)
+			isempty(out) || _gmtwrite(String(out), T)
 			show_table(scene, T; name = "greenspline at " * basename(String(nodes)))
 			return Cint(1)
 		end

@@ -167,9 +167,9 @@ _gtiff_opts(path::AbstractString, X::GMTimage) = _gtiff_opts(path, eltype(X.imag
 # Write a grid: netCDF/Surfer via gmtwrite, everything else via GDAL (driver inferred from the ext).
 function _save_grid(G, fmt::AbstractString, path::String)
 	if (fmt == "nc")
-		GMT.gmtwrite(path, G)                 # netCDF (GMT's default grid format)
+		_gmtwrite(path, G)                 # netCDF (GMT's default grid format)
 	elseif (fmt == "surfer")
-		GMT.gmtwrite(path * "=sf", G)         # Surfer 6 binary grid (GMT grid-format code =sf)
+		_gmtwrite(path * "=sf", G)         # Surfer 6 binary grid (GMT grid-format code =sf)
 	else
 		GMT.gdalwrite(path, G, _gtiff_opts(path, G))   # GeoTIFF / JPEG2000 / Erdas(HFA) / ENVI — driver by ext
 	end

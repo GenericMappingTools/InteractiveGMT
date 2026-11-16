@@ -30,7 +30,7 @@ _curtain_texfile(path::AbstractString) =
 	(isfile(path) || error("curtain image file not found: $path");  String(path))
 function _curtain_texfile(I::GMTimage)
 	p = tempname() * ".png"
-	gmtwrite(p, I)
+	_gmtwrite(p, I)
 	return p
 end
 

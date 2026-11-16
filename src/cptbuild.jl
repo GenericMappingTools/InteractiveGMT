@@ -130,7 +130,7 @@ function _on_cptbuild(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		isa(C, Tuple) && (C = C[1])
 		(C isa GMTcpt && !isempty(C.colormap)) || error("the module returned no palette")
 
-		isempty(out) || GMT.gmtwrite(String(out), C)
+		isempty(out) || _gmtwrite(String(out), C)
 		if apply
 			# The SAME road the colour-bar's own colormap chooser takes: the layer is addressed by its
 			# tag (gridSel) and coloured over its own z range, so this never recolours "the first grid".

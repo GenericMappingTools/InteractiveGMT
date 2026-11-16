@@ -306,7 +306,7 @@ function _vw_save(st::_VWState, path::String, bg, layers)
 		end
 		out[1].proj4 = st.proj4;  out[1].wkt = st.wkt;  out[1].epsg = st.epsg
 		GMT.set_dsBB!(out)
-		GMT.gmtwrite(path, out)
+		_gmtwrite(path, out)
 	else
 		# not ".gmt": that is the OGR/GMT format, which has no place for the -G / -Ph headers
 		error("unknown file type '$ext' (use .svg, .eps, .pdf, .def, .txt or .dat)")

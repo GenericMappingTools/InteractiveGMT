@@ -447,7 +447,7 @@ function _index_series(items::Vector{HLSItem}, region::Vector{Float64}, idx::Str
 		files = String[]
 		for (t, p, G) in zip(times, prodv, grids)
 			f = joinpath(outdir, "$(prefix)_$(GMT.Dates.format(t, "yyyymmdd"))_$(p).tif")
-			gmtwrite(f, G)
+			InteractiveGMT._gmtwrite(f, G)
 			push!(files, f)
 		end
 		stackgrids(files, times; z_unit = "decimalyear", save = joinpath(outdir, "$(prefix)_cube.nc"))

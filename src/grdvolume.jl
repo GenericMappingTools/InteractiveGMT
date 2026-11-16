@@ -101,7 +101,7 @@ function _on_grdvolume(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		m = D.data
 		D.colnames = _gvol_colnames(slices, size(m, 2))
 
-		out = _get(d, "outfile");  isempty(out) || GMT.gmtwrite(String(out), D)
+		out = _get(d, "outfile");  isempty(out) || _gmtwrite(String(out), D)
 		show_table(scene, D; name = mode == "all" ? "Volume (whole grid)" : "Volume by contour")
 
 		# One contour is one number — a plot of it would be a single dot. A RANGE is a curve, and the

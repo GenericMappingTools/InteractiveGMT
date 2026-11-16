@@ -172,7 +172,7 @@ function _on_tiles(scene::Ptr{Cvoid}, dlg::Ptr{Cvoid}, cparams::Cstring)::Cvoid
 			isempty(cache) || (kw[:cache]    = cache)
 			I = _mosaic_logged(scene, dlg, [W, E], [S, N], kw)
 			png = joinpath(tempdir(), "igmt_tiles_bg_$(time_ns()).png")   # unique name -> never a stale reload
-			GMT.gmtwrite(png, I)
+			_gmtwrite(png, I)
 			isempty(_LAST_BG[]) || rm(_LAST_BG[]; force=true)
 			_LAST_BG[] = png
 			r = I.range
@@ -276,7 +276,7 @@ function _tiles_warm()
 			GMT.mosaic([-9.2, -9.1], [38.7, 38.8]; quadonly=true, zoom=3)   # quadtree only, no network
 			I = GMT.mosaic([-9.2, -9.1], [38.7, 38.8]; zoom=3, provider="OSM", cache="gmt")
 			png = joinpath(tempdir(), "igmt_tiles_warm.png")   # the same write the bg op does
-			GMT.gmtwrite(png, I)
+			_gmtwrite(png, I)
 			rm(png; force=true)
 		end
 	catch

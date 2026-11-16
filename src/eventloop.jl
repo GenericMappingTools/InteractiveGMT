@@ -260,7 +260,7 @@ function _gmtwrite_line(tmp::AbstractString, out::AbstractString, ispoly::Bool)
 		elseif hasproperty(D, :geom)
 			D.geom = geom
 		end
-		GMT.gmtwrite(String(out), D)
+		_gmtwrite(String(out), D)
 	catch err
 		@tool_error "gmtwrite failed to save the line/polygon" out exception=err
 	finally
