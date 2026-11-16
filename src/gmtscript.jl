@@ -338,6 +338,37 @@ function _script_cpt!(ctx::ScriptCtx, r::ElementRecipe, G::GMTgrid)
 	return DataBind(var, :cpt, expr, mk)
 end
 
+# An INDEXED image whose pixel values are named CLASSES (`I.labels`, one per value, value k = labels[k+1]
+# — the Köppen-Geiger map): its OWN palette as a CATEGORICAL makecpt, one labelled entry per class, so
+# the figure's colour bar names the classes as the window's does. Values the palette makes transparent
+# at either end (the Köppen sea, value 0) are left off the bar. `nothing` for any other image.
+function _script_class_cpt!(ctx::ScriptCtx, I::GMTimage)
+	(_img_is_indexed(I) && !isempty(I.labels)) || return nothing
+	L = _img_palette(I)
+	shown = [k for k in 1:min(size(L, 1), length(I.labels)) if size(L, 2) < 4 || L[k, 4] != 0]
+	length(shown) >= 2 || return nothing
+	k0, k1 = first(shown), last(shown)
+	cm  = join(("$(L[k, 1])/$(L[k, 2])/$(L[k, 3])" for k in k0:k1), ',')
+	lab = join(I.labels[k0:k1], ',')
+	var = _script_var!(ctx, "C", nothing)
+	mk  = (cmap=cm, range=(k0 - 1, k1 - 1, 1), F="+c" * lab)
+	expr = "makecpt(cmap=$(_lit(mk.cmap)), range=$(_lit(mk.range)), F=$(_lit(mk.F)))"
+	return DataBind(var, :cpt, expr, mk)
+end
+
+# The colour of an indexed image's TRANSPARENT palette entry ("r/g/b"), for grdimage's -Q: the window
+# draws that value see-through (the Köppen sea), and GMT would paint it in its palette colour.
+function _script_clear_entry(I::GMTimage)
+	_img_is_indexed(I) || return nothing
+	L = _img_palette(I)
+	size(L, 2) >= 4 || return nothing
+	n = clamp(Int(maximum(I.image)) + 1, 1, size(L, 1))
+	for k in 1:n
+		L[k, 4] == 0 && return "$(L[k, 1])/$(L[k, 2])/$(L[k, 3])"
+	end
+	return nothing
+end
+
 # A TSUNAMI layer's palette is the "Color Bar water" one: the water side's palette over the water span
 # of the slice on screen — the SAME `_aqua_side_pal` / `_aqua_layer_water_range` the layer is coloured
 # with and its bar is built from. The layer's grid (the stage, dry cells holding land elevation) and a
@@ -735,6 +766,13 @@ function _script_emit_raster!(ctx::ScriptCtx, r::ElementRecipe, obj, first::Bool
 	end
 	bind = _script_bind!(ctx, r, obj)
 	binds = DataBind[bind]
+	if obj isa GMTimage
+		# A classified image keeps its colour scale (a categorical CPT for the bar) and its see-through value.
+		cb = _script_class_cpt!(ctx, obj)
+		cb === nothing || push!(binds, cb)
+		q = _script_clear_entry(obj)
+		q === nothing || append!(kw, Pair{Symbol,Any}[:Q => q, :D => true])
+	end
 	if isgrid
 		cptbind = _script_cpt!(ctx, r, obj)
 		if cptbind !== nothing
@@ -880,14 +918,18 @@ end
 # is unreliable under -p, and the window's own bar coordinates are VTK viewport fractions, not a
 # GMT anchor — so this is a sane fixed placement, flagged in the fidelity notes rather than
 # pretended to be exact.
-function _script_emit_colorbar(ctx::ScriptCtx, cptvar::ScriptVar, h::Ptr{Cvoid}=C_NULL)
+function _script_emit_colorbar(ctx::ScriptCtx, cptvar::ScriptVar, h::Ptr{Cvoid}=C_NULL; classes::Bool=false)
 	# The bar's own axis labels (its Color Bar row's "Labels…"): X along it, Y at its top — GMT's
 	# colorbar -Bx+l / -By+l, which GMT.jl spells frame=(xlabel=, ylabel=).
 	xl, yl = h == C_NULL ? ("", "") : _script_colorbar_labels(h)
-	frame = (annot=:auto,)
+	# A CLASS bar (categorical CPT) is equal boxes, each named by its CPT label (-L); -L refuses -B
+	# increments, so it gets no annot.
+	frame = classes ? NamedTuple() : (annot=:auto,)
 	isempty(xl) || (frame = merge(frame, (xlabel=xl,)))
 	isempty(yl) || (frame = merge(frame, (ylabel=yl,)))
-	kw = Pair{Symbol,Any}[:pos => (anchor=:MR, offset=(1.0, 0.0)), :frame => frame]
+	kw = Pair{Symbol,Any}[:pos => (anchor=:MR, offset=(1.0, 0.0))]
+	isempty(frame) || push!(kw, :frame => frame)
+	classes && push!(kw, :equal_size => true)
 	return ScriptStep("colour bar", DataBind[], :colorbar, cptvar, kw, true)
 end
 
@@ -1938,6 +1980,7 @@ function _script_emit(h::Ptr{Cvoid}; figsize::Real=15.0, recompute::Bool=false, 
 	steps = ScriptStep[]
 	seen = Set{Tuple{Symbol,String}}()
 	lastcpt = nothing
+	lastcls = false
 	recipes = get(_SESSION_LOG, h, ElementRecipe[])
 	layers  = _script_raster_layers(h)
 	# Covering only proves anything looking STRAIGHT DOWN: under a tilted view a buried layer's relief
@@ -1967,14 +2010,16 @@ function _script_emit(h::Ptr{Cvoid}; figsize::Real=15.0, recompute::Bool=false, 
 		step = _script_emit_raster!(ctx, r, obj, isempty(steps))
 		push!(steps, step)
 		for b in step.binds
-			b.tier === :cpt && (lastcpt = b.var)
+			b.tier === :cpt || continue
+			lastcpt = b.var
+			lastcls = b.mk isa NamedTuple && haskey(b.mk, :F)       # a class CPT (_script_class_cpt!)
 		end
 	end
 	isempty(steps) && error("gmtscript: this window has no exportable layer yet")
 	# Vectors always follow every raster (they are drawn ON TOP of them), then the colour bar last so
 	# nothing paints over it.
 	append!(steps, _script_vector_steps!(ctx, h, recipes))
-	(get(st, "bar", 0) == 1 && lastcpt !== nothing) && push!(steps, _script_emit_colorbar(ctx, lastcpt, h))
+	(get(st, "bar", 0) == 1 && lastcpt !== nothing) && push!(steps, _script_emit_colorbar(ctx, lastcpt, h; classes=lastcls))
 	return steps, ctx
 end
 

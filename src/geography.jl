@@ -398,6 +398,11 @@ function _on_geography(scene::Ptr{Cvoid}, req::String)::Cvoid
 			# coast/borders/rivers. Loads all 7 boundary-type files, grouped in Scene Objects (see
 			# plateboundaries.jl). Bail (no session record) if nothing was added.
 			_load_plate_boundaries(scene) || return
+		elseif startswith(kind, "koppen:")
+			# Köppen-Geiger climate classes (koppen.jl): a RASTER, added like any image — its own axes,
+			# and saved in a session as the image itself, so no :geography request is recorded for it.
+			_kg_plot(scene, kind[length("koppen:")+1:end], W, E, S, N)
+			return
 		elseif kind == "isochrons_gplates"
 			# Whole-earth static dataset (Sutton_isocs.sqlite), same no-region-clip convention as
 			# plateboundaries above (see magneticisochrons.jl). Bail (no session record) if nothing added.

@@ -84,6 +84,7 @@ include("session.jl")    # File > Save/Load Session (.igmtz): provenance registr
 include("gmtscript.jl")  # reproduce a window as GMT.jl calls (live) or a standalone script
 include("nodescript.jl") # ...that script as a graph of boxes (the editor's Graph… button)
 include("geography.jl")  # Geography menu -> GSHHG coastlines for the current view
+include("koppen.jl")     # Geography > Köppen-Geiger climate (Beck et al. 2023) as an indexed image
 include("solar.jl")      # Geography > Sun and terminators: day/night + twilights + night paint + sun position
 include("plateboundaries.jl") # Geography > Plate boundaries -> 7 grouped boundary-type overlays
 include("magneticisochrons.jl") # Geography > Magnetic isochrons > GPlates -> Sutton_isocs.sqlite

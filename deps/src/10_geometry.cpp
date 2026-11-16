@@ -668,6 +668,9 @@ struct PaletteLegend {
 	int  n = 0;
 	bool show = true;                        // the Color Bar row's per-object "want it shown" intent
 	BarLabels lab;                           // its axis labels
+	// Optional NAMES of the pixel values (gmtvtk_image_set_class_names_h), entry k = value k: the short
+	// one labels value k's block on the colour bar, the long one goes into the hover readout.
+	std::vector<std::string> shortName, longName;
 };
 
 // ============================ AxesSet =======================================
@@ -7080,6 +7083,13 @@ static void onMouseMove(vtkObject*, unsigned long, void *clientData, void* /*cd*
 			}
 		}
 	}
+	// No grid ON SCREEN (an image laid over a window whose grid is unchecked): what is under the cursor
+	// lies on the map plane, so the plane answers, wherever the image reaches. The march above aimed at
+	// the HIDDEN grid and missed everywhere outside its footprint, so hovering the image read nothing.
+	if (!hit && !s->globe && dirz != 0.0 && !sceneHasVisibleGrid(s)) {
+		const double t0 = -nr[2] / dirz;
+		if (t0 >= 0.0 && t0 <= 1.0) { w[0] = nr[0] + t0*dirx; w[1] = nr[1] + t0*diry; w[2] = 0.0; hit = true; }
+	}
 	// Buried 3-D fault plane: cast the same ray at its quad. If it is nearer to the camera than the
 	// surface hit (or the surface missed), report the PLANE's own x,y,z so the user can verify the
 	// plane geometry directly (otherwise the plane never shows coordinates at all).
@@ -7119,15 +7129,31 @@ static void onMouseMove(vtkObject*, unsigned long, void *clientData, void* /*cd*
 		// cursor answers (extras are drawn over the base, the later over the earlier).
 		QString dn;
 		bool haveDN = false;
+		const PaletteLegend *dnPal = nullptr;    // the answering image's palette: its value NAMES, if any
 		if ((s->imageOnly && !s->gridAdopted) || !sceneHasVisibleGrid(s)) {
 			for (auto it = s->extras.rbegin(); !haveDN && it != s->extras.rend(); ++it)
-				if (it->isImage && it->actor && it->actor->GetVisibility() && it->dn.at(rdX, rdY, dn)) haveDN = true;
-			if (!haveDN && surfProp(s) && surfProp(s)->GetVisibility() && s->baseDN.at(rdX, rdY, dn))
+				if (it->isImage && it->actor && it->actor->GetVisibility() && it->dn.at(rdX, rdY, dn)) {
+					haveDN = true;
+					dnPal = &it->palette;
+				}
+			if (!haveDN && surfProp(s) && surfProp(s)->GetVisibility() && s->baseDN.at(rdX, rdY, dn)) {
 				haveDN = true;
+				dnPal = &s->palette;
+			}
 		}
 		if (haveDN) {
+			// A classified image names its values (Köppen-Geiger: 14 = "Cfa — Temperate, no dry season,
+			// hot summer"): the name follows the number. Images without names print what they always did.
+			QString cls;
+			bool okv = false;
+			const int v = dn.toInt(&okv);
+			if (okv && dnPal && v >= 0 && v < (int)dnPal->longName.size()) {
+				const QString sn = QString::fromStdString(dnPal->shortName[v]);
+				const QString ln = QString::fromStdString(dnPal->longName[v]);
+				cls = (sn.isEmpty() || sn == ln) ? ln : sn + QString::fromUtf8(" \xE2\x80\x94 ") + ln;
+			}
 			s->win->statusBar()->showMessage(QString("x = %1    y = %2    DN = %3")
-				.arg(rdX, 0, 'f', 3).arg(rdY, 0, 'f', 3).arg(dn));
+				.arg(rdX, 0, 'f', 3).arg(rdY, 0, 'f', 3).arg(dn) + (cls.isEmpty() ? QString() : "    " + cls));
 		} else if (s->imageOnly && !s->gridAdopted) {
 			// Bare image: no elevation -> show the pixel COLOUR under the cursor instead of z.
 			// Read it straight from the framebuffer (the drape is unlit, so the pixel is the

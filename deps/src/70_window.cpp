@@ -33042,6 +33042,29 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	mGeo->addAction("Fracture Zones",                geoTODO("Fracture Zones"));
 	mGeo->addAction("Plate boundaries",              geoPlot("plateboundaries", ""));
 
+	// Köppen-Geiger climate classes (Beck et al. 2023; src/koppen.jl, data/koppen). A classified
+	// RASTER, not an overlay: it IS the map, so no ensureGeoBase. The request rides the same Geography
+	// callback as "koppen:<period>".
+	auto kgPlot = [s, visibleRegion](const QString &period) {
+		return [s, period, visibleRegion]() {
+			if (!g_juliaGeo) {
+				if (s->win) s->win->statusBar()->showMessage("Geography: callback not registered", 3000);
+				return;
+			}
+			double W = -180, E = 180, S = -90, N = 90;          // whole Earth: empty window or globe
+			if (!s->globe) visibleRegion(W, E, S, N);
+			const QString req = QString("koppen:%1//%2/%3/%4/%5").arg(period)
+				.arg(W, 0, 'f', 6).arg(E, 0, 'f', 6).arg(S, 0, 'f', 6).arg(N, 0, 'f', 6);
+			g_juliaGeo(s, req.toUtf8().constData());
+		};
+	};
+	QMenu *mKG = mGeo->addMenu("Köppen-Geiger climate (demo)");
+	mKG->setToolTipsVisible(true);
+	mKG->setToolTip("<html>Köppen-Geiger climate classes, Beck et al. (2023), Scientific Data 10, 724<br>"
+	                "(CC BY 4.0), at 0.1 degree.</html>");
+	for (const char *p : {"1901_1930", "1931_1960", "1961_1990", "1991_2020"})
+		mKG->addAction(QString(p).replace('_', QChar(0x2013)), kgPlot(p));
+
 	QMenu *mCit = mGeo->addMenu("Cities");
 	mCit->addAction("Major cities", geoPlot("city_major", ""));
 	mCit->addAction("Other cities", geoPlot("city", ""));

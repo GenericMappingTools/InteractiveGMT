@@ -4946,6 +4946,29 @@ GMTVTK_API void gmtvtk_image_set_palette_h(void *handle, const char *name, const
 	rebuildSceneObjects(s);
 }
 
+// Give an INDEXED image's pixel values NAMES: `names` holds one line per value (line k = value k),
+// "short\tlong". The short name labels value k's block on the colour bar; "short — long" follows the
+// value in the hover readout. A line with no tab is used for both. NULL or "" clears them.
+GMTVTK_API void gmtvtk_image_set_class_names_h(void *handle, const char *name, const char *names) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s)) return;
+	bool isPrimary = false;
+	ExtraObj *ex = imageExtraByName(s, name ? name : "", isPrimary);
+	PaletteLegend *pl = ex ? &ex->palette : (isPrimary ? &s->palette : nullptr);
+	if (!pl) return;
+	pl->shortName.clear();
+	pl->longName.clear();
+	if (names && names[0]) {
+		for (const QString &ln : QString::fromUtf8(names).split('\n')) {
+			const int t = ln.indexOf('\t');
+			pl->shortName.push_back((t < 0 ? ln : ln.left(t)).toStdString());
+			pl->longName.push_back((t < 0 ? ln : ln.mid(t + 1)).toStdString());
+		}
+	}
+	refreshGridColorbar(s);
+	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+}
+
 // Set/clear a per-image flag under EVERY name that image answers to. ONE function for every such
 // flag, because they are all looked up by menus that name the image differently: the PRIMARY image
 // is "" to most host calls but carries its own Scene Objects name once a dropped file has been

@@ -217,8 +217,9 @@ static void layoutColorbar(Scene *s) {
 // per class, and the labels are the class VALUES centred in their block instead of nice-number ticks
 // along a continuous ramp. Same actors, same layout, same drag — ONE colour bar in this viewer, with
 // the discrete case as an argument rather than a second bar that could drift from it.
+// `names` (discrete only, optional): block k is labelled names[k] instead of the number k.
 static void buildColorbar(Scene *s, vtkScalarsToColors *lut, double lo, double hi, int discreteN = 0,
-                          const BarLabels *lab = nullptr) {
+                          const BarLabels *lab = nullptr, const std::vector<std::string> *names = nullptr) {
 	if (!s) return;
 	s->barLabShown = lab ? *lab : BarLabels{};   // the owner's axis labels, drawn after the numbers
 	// NO imageOnly test here. Whether a z bar is wanted is decided ONCE, by refreshGridColorbar, which
@@ -257,7 +258,9 @@ static void buildColorbar(Scene *s, vtkScalarsToColors *lut, double lo, double h
 			vtkIdType b = s->barTickPts->InsertNextPoint(0, 0, 0);
 			dlines->InsertNextCell(2); dlines->InsertCellPoint(a); dlines->InsertCellPoint(b);
 			vtkSmartPointer<vtkTextActor> ta = vtkSmartPointer<vtkTextActor>::New();
-			ta->SetInput(std::to_string(k).c_str());
+			const std::string txt = (names && k < (int)names->size() && !(*names)[k].empty()) ? (*names)[k]
+			                                                                                   : std::to_string(k);
+			ta->SetInput(txt.c_str());
 			barApplyFont(ta->GetTextProperty(), s->barLabShown.annFont);
 			ta->GetTextProperty()->SetJustificationToRight();
 			ta->GetTextProperty()->SetVerticalJustificationToCentered();
@@ -1790,7 +1793,7 @@ static PaletteLegend *resolveActivePalette(Scene *s) {
 static bool buildPaletteColorbar(Scene *s) {
 	PaletteLegend *pl = resolveActivePalette(s);
 	if (!pl || !pl->show) return false;
-	buildColorbar(s, pl->lut, 0.0, (double)pl->n, pl->n, &pl->lab);
+	buildColorbar(s, pl->lut, 0.0, (double)pl->n, pl->n, &pl->lab, pl->shortName.empty() ? nullptr : &pl->shortName);
 	return true;
 }
 

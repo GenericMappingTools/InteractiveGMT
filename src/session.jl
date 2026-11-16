@@ -1241,6 +1241,30 @@ end
 # missing source (obj === nothing) skips that layer but keeps the window. The add path re-records
 # provenance for the REBUILT window (its own Scene*), passing the disk path back for :file layers so a
 # re-save keeps the file ref (not the data). Base layers restore the saved element name.
+function _session_empty_window(target::Ptr{Cvoid})
+	hv = (target != C_NULL && ccall(_fn(:gmtvtk_has_surface), Cint, (Ptr{Cvoid},), target) == 0) ?
+	     target : ccall(_fn(:gmtvtk_open_empty), Ptr{Cvoid}, (Cstring,), "i'GMT  —  session")
+	hv == C_NULL && return nothing
+	return get(() -> _register_fig!(QtEmpty(hv)), _FIGREG, hv)
+end
+
+# What a load could not put back, told to the user in ONE box: every missing element by name and file,
+# and -- in red -- when the cause is a LOCAL session (file references only) opened away from its files.
+function _session_report_lost(scene::Ptr{Cvoid}, path::String, lost::Vector{String}, localmiss::Bool)
+	isempty(lost) && return nothing
+	esc(s) = replace(s, '&' => "&amp;", '<' => "&lt;", '>' => "&gt;")
+	msg = "<p><b>$(esc(basename(path)))</b>: everything readable was restored. " *
+	      "$(length(lost)) element(s) could NOT be restored:</p><ul>" *
+	      join(("<li>" * esc(l) * "</li>" for l in lost)) * "</ul>"
+	localmiss && (msg *= "<p style=\"color:red;font-weight:bold\">WARNING: this is a LOCAL session, not a " *
+		"PORTABLE one. It only points at its files on the computer where it was saved; they are not " *
+		"inside it. Ask the sender to save it again with File &gt; Save Session (portable).</p>")
+	for l in lost; @warn "session: not restored: $l"; end
+	_TEST_MODE[] && return nothing
+	ccall(_fn(:gmtvtk_error_box), Cvoid, (Ptr{Cvoid}, Cstring, Cstring), scene, "Session incomplete", msg)
+	return nothing
+end
+
 function _session_replay!(fig, r::ElementRecipe, obj, display, target::Ptr{Cvoid})
 	src = r.origin === :file ? r.source : ""             # keep :file ref on re-save; else data (:generated)
 	if fig === nothing                                   # base layer: create the window
@@ -1249,18 +1273,24 @@ function _session_replay!(fig, r::ElementRecipe, obj, display, target::Ptr{Cvoid
 			_on_basemap(sc, get(r.params, "copt", ""))
 			return get(_FIGREG, sc, QtEmpty(sc))
 		end
-		obj === nothing && (@warn "session: base layer data missing; window not opened"; return nothing)
+		# An Okada request is computed ON the window's grid: with no grid there is nothing to compute it
+		# on, and a field rebuilt from the dialog's Region text would be a grid the session never had.
+		r.kind === :elastic && error("Okada deformation not restored: the grid it was computed on is missing")
+		# A missing raster opens nothing; the NEXT element still gets its chance to open the window.
+		obj === nothing && r.kind in (:basegrid, :dropgrid, :image, :dropimage, :curtain) && return nothing
 		# Promote the invoking window when it is a bare launcher; else open a fresh window.
 		promote = target != C_NULL && ccall(_fn(:gmtvtk_has_surface), Cint, (Ptr{Cvoid},), target) == 0
-		if r.kind === :basegrid
+		if r.kind in (:basegrid, :dropgrid)
 			promote && (_add_grid_to_scene(target, obj, r.name; promote=true, source=src); return get(_FIGREG, target, nothing))
 			f = _view_grid(obj); _session_set_name!(getfield(f, :h), r.name); return f
-		elseif r.kind === :image
+		elseif r.kind in (:image, :dropimage)
 			promote && (_add_image_to_scene(target, obj, r.name; promote=true, source=src); return get(_FIGREG, target, nothing))
 			f = _view_image(obj); _session_set_name!(getfield(f, :h), r.name); return f
 		end
-		@warn "session: first layer kind=$(r.kind) is not a base grid/image; window not opened"
-		return nothing
+		# Any other first element (an Okada request computed over an empty window, a menu layer): it
+		# never owned the window, so give it one and replay it into it like every later element.
+		fig = _session_empty_window(target)
+		fig === nothing && return nothing
 	end
 	h = getfield(fig, :h)
 	if r.kind === :geography                             # menu layer: re-dispatch the saved request
@@ -1280,6 +1310,7 @@ function _session_replay!(fig, r::ElementRecipe, obj, display, target::Ptr{Cvoid
 		# A raster kind (see `israster`), so it replays with the grids and BEFORE the vectors -- adding a
 		# surface during the vector pass would outrank, and bury, every overlay already put back.
 		# adopt=false: the saved `checked` + `state` decide what this window shows and how it is framed.
+		fig isa QtFigure || error("Okada deformation not restored: the grid it was computed on is missing")
 		_on_elastic(h, _elastic_request(r.params); adopt=false)
 		return fig
 	elseif r.kind === :illum                             # re-dispatch the Illumination model onto the rebuilt grid
@@ -1359,6 +1390,24 @@ end
 function _on_load_session(scene::Ptr{Cvoid}, path::String)
 	# Progress dialog already shown from C++ - convert to determinate and update progress
 	ccall(_fn(:gmtvtk_progress_show), Cint, (Cint, Cstring), 100, "Loading Session...")
+	# Never trim: one element that cannot come back costs that element only. Each is named in `lost`.
+	lost = String[]; localmiss = false; fig = nothing
+	isdata(r) = r.kind in (:basegrid, :dropgrid, :image, :dropimage, :curtain)
+	label(r)  = isempty(r.name) ? string(r.kind) : r.name
+	function replay(fig, r, obj, display, scene)
+		if obj === nothing && isdata(r)
+			why = r.origin === :file ? "file not found: $(r.source)" : "its data is not in the session"
+			s = "$(label(r)) ($why)"
+			s in lost || push!(lost, s)
+			r.origin === :file && (localmiss = true)
+		end
+		try
+			return _session_replay!(fig, r, obj, display, scene)
+		catch e
+			push!(lost, "$(label(r)) ($(sprint(showerror, e)))")
+			return fig
+		end
+	end
 	try
 		entries = _zip_read(path)
 		haskey(entries, "session.manifest") || error("session: '$path' has no session.manifest")
@@ -1378,8 +1427,10 @@ function _on_load_session(scene::Ptr{Cvoid}, path::String)
 			if israster(r)
 				ri += 1
 				ccall(_fn(:gmtvtk_progress_update), Cvoid, (Cint,), round(Int, 10 + 50*ri/nraster))
-				obj = _session_load_object(r, entries)
-				fig = _session_replay!(fig, r, obj, display, scene)
+				obj = try _session_load_object(r, entries) catch e
+					push!(lost, "$(label(r)) (unreadable: $(sprint(showerror, e)))"); continue
+				end
+				fig = replay(fig, r, obj, display, scene)
 			end
 		end
 		# NO ADOPT ON REPLAY. A layer must never change how another layer is drawn, and the adopt
@@ -1407,7 +1458,10 @@ function _on_load_session(scene::Ptr{Cvoid}, path::String)
 			if !israster(r)
 				vi += 1
 				ccall(_fn(:gmtvtk_progress_update), Cvoid, (Cint,), round(Int, 60 + 20*vi/nvec))
-				fig = _session_replay!(fig, r, _session_load_object(r, entries), display, scene)
+				obj = try _session_load_object(r, entries) catch e
+					push!(lost, "$(label(r)) (unreadable: $(sprint(showerror, e)))"); continue
+				end
+				fig = replay(fig, r, obj, display, scene)
 			end
 		end
 		ccall(_fn(:gmtvtk_progress_update), Cvoid, (Cint,), 85)
@@ -1416,9 +1470,7 @@ function _on_load_session(scene::Ptr{Cvoid}, path::String)
 		# take `fig`. Reuse the invoking window when it is an empty launcher (the same "promote in place"
 		# rule every drop/menu path follows), else open one.
 		if fig === nothing && any(k -> startswith(k, "drawn/"), keys(entries))
-			hv = (scene != C_NULL && ccall(_fn(:gmtvtk_has_surface), Cint, (Ptr{Cvoid},), scene) == 0) ?
-			     scene : ccall(_fn(:gmtvtk_open_empty), Ptr{Cvoid}, (Cstring,), "i'GMT  —  session")
-			hv == C_NULL || (fig = get(() -> _register_fig!(QtEmpty(hv)), _FIGREG, hv))
+			fig = _session_empty_window(scene)
 		end
 		# C++-drawn elements rebuilt after the layers exist: polygons, faults/slip + nested rects, text
 		# labels, line/point overlays, symbol layers, rulers.
@@ -1472,6 +1524,7 @@ function _on_load_session(scene::Ptr{Cvoid}, path::String)
 		return fig
 	finally
 		ccall(_fn(:gmtvtk_progress_close), Cvoid, ())
+		_session_report_lost(fig === nothing ? scene : getfield(fig, :h), path, lost, localmiss)
 	end
 end
 "Console convenience: load a session into a fresh window (no invoking scene)."
