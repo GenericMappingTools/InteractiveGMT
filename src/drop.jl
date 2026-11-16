@@ -1553,7 +1553,7 @@ function _gmtread_trb(spec::AbstractString)
 	o = GMT.gmtread(s; layout = "TRB")
 	# The probe goes by extension: a netCDF that actually holds an IMAGE would land here anyway. Put it
 	# back on the normal reader rather than leaving it wearing a layout its packing does not expect.
-	return o isa GMTimage ? GMT.gmtread(s) : o
+	return o isa GMTimage ? GMT.gmtread(s) : _heal_trb!(o)    # _heal_trb! on a TR grid = record it as TR
 end
 
 # NO TRANSPOSITIONS. A grid is handed to the viewer EXACTLY as it lies in memory, together with the
@@ -1617,23 +1617,46 @@ function _gmtjl_tr_unsafe()::Bool
 	return bad
 end
 
-# Undo GMT.jl's rename. Valid ONLY while `_gmtjl_tr_unsafe()`: then iGMT never holds a genuinely BR
-# grid (it reads grids "TRB", GMT modules return "BCB", and every write goes through `_gmtwrite`'s copy,
-# so nothing really flips), and a "BR…" label can only be the rename of north-first memory.
+# Undo GMT.jl's rename — and ONLY GMT.jl's. A "BR…" label is NOT proof of a rename: iGMT holds genuine
+# BR grids too (RemoteS flips a sensor grid's N/S by relabelling TRB -> BRB, never by reversing the
+# buffer). So a grid is put back to TR only when iGMT ITSELF last saw it as TR, on the very same buffer:
+# `_TR_SEEN` records that, at THE TRB reader (`_gmtread_trb`) and at every pass through here (the
+# layout resolver, the viewer handover). A grid relabelled on purpose is never in it, or no longer has
+# the buffer it was recorded with. RULE for future code: relabelling a grid iGMT already read/showed as
+# TR, on the same buffer, must `delete!(_TR_SEEN, G)` first.
+const _TR_SEEN = WeakKeyDict{GMTgrid,UInt}()   # grid -> data pointer it had when iGMT knew it was TR
+
 function _heal_trb!(G::GMTgrid)
-	(length(G.layout) >= 2 && G.layout[1] == 'B' && G.layout[2] == 'R') || return G
-	_gmtjl_tr_unsafe() && (G.layout = "TR" * G.layout[3:end])
+	lay = G.layout
+	length(lay) >= 2 && lay[2] == 'R' || return G
+	_gmtjl_tr_unsafe() || return G
+	p = UInt(pointer(G.z))
+	if lay[1] == 'T'
+		_TR_SEEN[G] = p
+	elseif lay[1] == 'B' && get(_TR_SEEN, G, UInt(0)) == p
+		G.layout = "TR" * lay[3:end]
+	end
 	return G
 end
 _heal_trb!(x) = x
 
-# THE grid write of iGMT: GMT.gmtwrite, but a TR grid is written from a COPY while the loaded GMT.jl
-# would flip/relabel the one it is given (`_gmtjl_tr_unsafe`). Everything else goes straight through.
+# THE grid write of iGMT: GMT.gmtwrite, but while the loaded GMT.jl would flip/relabel a row-major grid
+# it is given (`_gmtjl_tr_unsafe`), it gets a COPY in TR order instead: a TR grid as it is, a genuine BR
+# grid with its rows put north-first (that GMT.jl reads every row-major buffer as TR, so it would write
+# a BR grid upside down). Everything else goes straight through.
 function _gmtwrite(path::AbstractString, obj; kw...)
 	if obj isa GMTgrid && _gmtjl_tr_unsafe()
 		_heal_trb!(obj)
 		lay = obj.layout
-		(length(lay) >= 2 && lay[1] == 'T' && lay[2] == 'R') && (obj = deepcopy(obj))
+		if length(lay) >= 2 && lay[2] == 'R' && ndims(obj.z) == 2
+			H = deepcopy(obj)
+			if lay[1] == 'B'                       # rows south-first -> north-first
+				nx, ny = _grid_dims(obj)
+				H.z = reshape(vec(reverse(reshape(vec(obj.z), nx, ny), dims = 2)), size(obj.z))
+				H.layout = "TR" * lay[3:end]
+			end
+			obj = H
+		end
 	end
 	return GMT.gmtwrite(path, obj; kw...)
 end
