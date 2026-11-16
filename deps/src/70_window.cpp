@@ -12274,8 +12274,12 @@ public:
 			b->setFocusPolicy(Qt::NoFocus);                    // …and never clicks a keypad button
 			if (nm.startsWith("push_digit_"))
 				QObject::connect(b, &QPushButton::clicked, d, [append, b]() { append(b->text()); });
-			else if (nm.startsWith("push_op_"))
-				QObject::connect(b, &QPushButton::clicked, d, [append, b]() { append(" " + b->text() + " "); });
+			else if (nm == "push_op_not")            // unary: no blank between `!` and its operand
+				QObject::connect(b, &QPushButton::clicked, d, [append]() { append(" !"); });
+			else if (nm.startsWith("push_op_"))      // "&&" is how a label shows ONE `&` (Qt mnemonic escape)
+				QObject::connect(b, &QPushButton::clicked, d, [append, b]() {
+					append(" " + QString(b->text()).replace("&&", "&") + " ");
+				});
 			else if (nm.startsWith("push_fun_")) {
 				const QString fn = nm.mid(9);
 				QObject::connect(b, &QPushButton::clicked, d, [append, fn]() { append(" " + fn + "("); });
@@ -12395,10 +12399,12 @@ public:
 			}
 		}
 		showBusyDialog("Computing…");
+		// 1 = computed; 2 = the expression was refused BEFORE computing (wrong operand for an operator,
+		// unknown name, other limits) and Julia already showed why; 0 = the computation itself failed.
 		const int ok = g_juliaGridCalc(scn, kv.join("\n").toUtf8().constData());
 		closeBusyDialog();
-		if (ok) fillList();      // the result is a new Scene Objects grid -> offer it to the next expression
-		else    QMessageBox::warning(d, "Grid calculator",
+		if (ok == 1) fillList();      // the result is a new Scene Objects grid -> offer it to the next expression
+		else if (ok == 0) QMessageBox::warning(d, "Grid calculator",
 		                             "Compute failed — see this window's Errors console for details.");
 	}
 };
@@ -12408,6 +12414,175 @@ static int openGridCalcDialog(QWidget *win, Scene *s) {
 	auto it = g_gridCalcDlgs.find(s);
 	if (it != g_gridCalcDlgs.end() && it->second && it->second->dlg) { it->second->unpark(); return 1; }
 	auto *w = new GridCalculatorDialog(win, s);
+	if (!w->dlg) { delete w; return 0; }
+	w->dlg->show();
+	return 1;
+}
+
+// ============================================================================================
+// Synthetic terrain (Grid Tools) — a made-up but believable DTM on any lattice, grown by a
+// landscape-evolution model (uplift vs stream-power incision + hillslope creep). All the maths
+// is Julia's (_on_synthterrain, src/synthterrain.jl); this is only the form, loaded at RUNTIME via
+// QUiLoader from deps/ui/synth_terrain.ui (absolute geometry, plain Qt widgets).
+// The output lattice is typed in, or copied from a grid on disk ("OR Ref grid") or one already in
+// the window ("OR Window grid") — the shared rows, wired by wireRefGridRow / wireWindowGridRow.
+// The result is a NEW grid in this window (SACRED_LAW derived-variable display law, via
+// _gm3d_deliver). PARKED like every tool window, with its settings intact; the menu entry brings back
+// the SAME dialog (g_synthTerrainDlgs).
+class SynthTerrainDialog;
+static std::map<Scene *, SynthTerrainDialog *> g_synthTerrainDlgs;   // one per window, alive while parked
+
+class SynthTerrainDialog {
+public:
+	QDialog *dlg = nullptr;
+	Scene *scn = nullptr;
+	bool reallyClose = false;  // set by the parked row's "Delete": let the next close through
+
+	void unpark() {
+		if (!dlg) return;
+		unparkTool(scn, dlg);
+		dlg->setWindowState(dlg->windowState() & ~Qt::WindowMinimized);
+		dlg->showNormal();
+		dlg->raise();
+		dlg->activateWindow();
+	}
+
+	std::function<void(const QPoint &)> parkedMenu() {
+		return [this](const QPoint &g) {
+			QMenu m;
+			QAction *aShow = m.addAction("Show");
+			m.addSeparator();
+			QAction *aDel  = m.addAction("Delete");
+			QAction *pick  = m.exec(g);
+			if (pick == aShow) unpark();
+			else if (pick == aDel) {
+				reallyClose = true;
+				unparkTool(scn, dlg);
+				dlg->deleteLater();
+			}
+		};
+	}
+
+	// Hide and leave the handle: the ONE way out for the X, Close, minimise and Esc. Idempotent.
+	void park() {
+		if (!dlg || reallyClose || !sceneAlive(scn)) return;
+		dlg->hide();
+		SynthTerrainDialog *c = this;
+		parkTool(scn, dlg, "Synthetic terrain", IC_Surface,
+		         "Parked Synthetic terrain — double-click to bring it back, click for Show / Delete",
+		         [c]() { c->unpark(); }, parkedMenu());
+	}
+
+	~SynthTerrainDialog() {
+		for (auto it = g_synthTerrainDlgs.begin(); it != g_synthTerrainDlgs.end(); )
+			it = (it->second == this) ? g_synthTerrainDlgs.erase(it) : std::next(it);
+	}
+
+	explicit SynthTerrainDialog(QWidget *parent, Scene *scene) : scn(scene) {
+		QUiLoader loader;
+		QFile f(gmtvtkUiDir() + "/synth_terrain.ui");
+		if (!f.open(QFile::ReadOnly)) {
+			qWarning("SynthTerrainDialog: cannot open %s", qUtf8Printable(f.fileName()));
+			return;
+		}
+		dlg = qobject_cast<QDialog *>(loader.load(&f, parent));
+		f.close();
+		if (!dlg) { qWarning("SynthTerrainDialog: QUiLoader failed to load the .ui"); return; }
+		dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint | Qt::WindowMinimizeButtonHint);
+		dlg->setWindowModality(Qt::NonModal);
+		QDialog *d = dlg;
+		g_synthTerrainDlgs[scn] = this;
+
+		struct CloseParks : QObject {
+			SynthTerrainDialog *st;
+			CloseParks(QObject *p, SynthTerrainDialog *c) : QObject(p), st(c) {}
+			bool eventFilter(QObject *o, QEvent *e) override {
+				if (e->type() == QEvent::Close && st) {
+					if (!st->reallyClose && sceneAlive(st->scn)) {
+						e->ignore();
+						st->park();
+						return true;
+					}
+					st->dlg->deleteLater();
+				}
+				if (e->type() == QEvent::KeyPress && st &&
+				    static_cast<QKeyEvent *>(e)->key() == Qt::Key_Escape) {
+					if (sceneAlive(st->scn)) st->park();
+					else st->dlg->close();
+					return true;
+				}
+				return QObject::eventFilter(o, e);
+			}
+		};
+		dlg->installEventFilter(new CloseParks(dlg, this));
+		parkOnMinimise(dlg, [this]() { park(); });
+
+		auto E = [d](const char *n) { return d->findChild<QLineEdit *>(n); };
+		QLineEdit *x0 = E("edit_xmin"), *x1 = E("edit_xmax"), *y0 = E("edit_ymin"), *y1 = E("edit_ymax");
+		QLineEdit *xi = E("edit_xinc"), *yi = E("edit_yinc");
+
+		// Prefill: the window's own grid lattice when it has one, else the "auto" default region
+		// -R-13/23/30/60 at 0.05 deg (721x601, geographic: Julia's _ST_DEFAULTS).
+		auto num = [](double v) { return QString::number(v, 'g', 12); };
+		const bool hasGrid = scn && scn->gnx > 1 && scn->gny > 1;
+		if (x0) x0->setText(num(hasGrid ? scn->gx0 : -13.0));
+		if (x1) x1->setText(num(hasGrid ? scn->gx1 : 23.0));
+		if (y0) y0->setText(num(hasGrid ? scn->gy0 : 30.0));
+		if (y1) y1->setText(num(hasGrid ? scn->gy1 : 60.0));
+		if (xi) xi->setText(num(hasGrid ? scn->gdx : 0.05));
+		if (yi) yi->setText(num(hasGrid ? scn->gdy : 0.05));
+
+		wireRefGridRow(d, E("edit_refgrid"), d->findChild<QToolButton *>("push_refgrid"), x0, x1, y0, y1, xi, yi);
+		wireWindowGridRow(d, d->findChild<QComboBox *>("combo_wingrid"), scn, x0, x1, y0, y1, xi, yi);
+
+		for (QPushButton *b : d->findChildren<QPushButton *>()) { b->setAutoDefault(false); b->setDefault(false); }
+		if (auto *b = d->findChild<QPushButton *>("push_newseed"))
+			QObject::connect(b, &QPushButton::clicked, d, [d]() {
+				if (auto *e = d->findChild<QLineEdit *>("edit_seed"))
+					e->setText(QString::number(QDateTime::currentMSecsSinceEpoch() % 999983 + 1));
+			});
+		if (auto *b = d->findChild<QPushButton *>("push_compute"))
+			QObject::connect(b, &QPushButton::clicked, d, [this, d]() { runCompute(d); });
+		if (auto *b = d->findChild<QPushButton *>("push_close"))
+			QObject::connect(b, &QPushButton::clicked, d, [d]() { d->close(); });
+
+		wrapTooltips(d);
+		QObject::connect(d, &QObject::destroyed, d, [this]() {
+			unparkTool(scn, dlg);
+			delete this;
+		});
+	}
+
+	// Compute: the ONE action that runs. Every box goes to Julia as typed; Julia checks the numbers and
+	// says what is wrong in the Errors console (the box below points there).
+	void runCompute(QDialog *d) {
+		if (!g_juliaSynthTerrain) {
+			QMessageBox::warning(d, "Synthetic terrain", "Synthetic terrain: callback not registered (rebuild/restart needed?).");
+			return;
+		}
+		auto txt = [d](const char *n) {
+			auto *e = d->findChild<QLineEdit *>(n);
+			return e ? e->text().trimmed() : QString();
+		};
+		QStringList kv;
+		kv << "x0=" + txt("edit_xmin") << "x1=" + txt("edit_xmax") << "y0=" + txt("edit_ymin")
+		   << "y1=" + txt("edit_ymax") << "dx=" + txt("edit_xinc") << "dy=" + txt("edit_yinc")
+		   << "z0=" + txt("edit_zmin") << "z1=" + txt("edit_zmax") << "feature=" + txt("edit_feature")
+		   << "lowlands=" + txt("edit_lowlands") << "hillslope=" + txt("edit_hillslope")
+		   << "concavity=" + txt("edit_concavity") << "seed=" + txt("edit_seed");
+		showBusyDialog("Making the terrain…");
+		const int ok = g_juliaSynthTerrain(scn, kv.join("\n").toUtf8().constData());
+		closeBusyDialog();
+		if (!ok) QMessageBox::warning(d, "Synthetic terrain",
+		                              "Synthetic terrain failed — see this window's Errors console for details.");
+	}
+};
+
+// The menu entry (and its test hook): the parked dialog back if this window has one, else a new one.
+static int openSynthTerrainDialog(QWidget *win, Scene *s) {
+	auto it = g_synthTerrainDlgs.find(s);
+	if (it != g_synthTerrainDlgs.end() && it->second && it->second->dlg) { it->second->unpark(); return 1; }
+	auto *w = new SynthTerrainDialog(win, s);
 	if (!w->dlg) { delete w; return 0; }
 	w->dlg->show();
 	return 1;
@@ -34327,6 +34502,47 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// an arithmetic expression. Opens on ANY window: one-band images (a Landsat band) are operands too,
 	// and with nothing listed the grids come in through its own "Load Grid".
 	mGridTools->addAction("Grid calculator…", [win, s]() { openGridCalcDialog(win, s); });
+
+	// "Synthetic terrain": MAKES a grid, so it needs none loaded. Its Julia side is wired on first use
+	// (warm_register "synthterrain", src/synthterrain.jl), never at start-up: both entries wait for it
+	// (wait cursor, ~10 s cap) and then run; the same warm-up compiles the maths meanwhile.
+	//   auto     — no questions: Julia's defaults (_ST_DEFAULTS: -R-13/23/30/60, geographic) and a new seed
+	//   params…  — the dialog
+	{
+		auto whenReady = [win, s](std::function<void()> go) {
+			if (g_juliaSynthTerrain) { go(); return; }
+			warmupTool("synthterrain");
+			QApplication::setOverrideCursor(Qt::WaitCursor);
+			auto tries = std::make_shared<int>(0);
+			auto step = std::make_shared<std::function<void()>>();
+			*step = [win, s, tries, step, go]() {
+				if (!g_juliaSynthTerrain && ++*tries < 200) {
+					QTimer::singleShot(50, win, *step);
+					return;
+				}
+				QApplication::restoreOverrideCursor();
+				if (!sceneAlive(s)) return;
+				if (g_juliaSynthTerrain)
+					go();
+				else
+					QMessageBox::warning(win, "Synthetic terrain", "Synthetic terrain's Julia side did not answer (src/synthterrain.jl).");
+			};
+			QTimer::singleShot(0, win, *step);
+		};
+		QMenu *mSynth = mGridTools->addMenu("Synthetic terrain");
+		mSynth->addAction("auto", [win, s, whenReady]() {
+			whenReady([win, s]() {
+				showBusyDialog("Making the terrain…");
+				const int ok = g_juliaSynthTerrain(s, "auto=1");
+				closeBusyDialog();
+				if (!ok) QMessageBox::warning(win, "Synthetic terrain",
+				                              "Synthetic terrain failed — see this window's Errors console for details.");
+			});
+		});
+		mSynth->addAction("params…", [win, s, whenReady]() {
+			whenReady([win, s]() { openSynthTerrainDialog(win, s); });
+		});
+	}
 
 	// "Terrain Modeling" (port of Mirone src_figs/multiscale.m + the mirblock.c MEX behind it): pick
 	// a moving-window method and a window size, and the chosen quantity is computed for every node.

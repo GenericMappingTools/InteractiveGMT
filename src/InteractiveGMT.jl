@@ -137,6 +137,7 @@ include("rgbexplore.jl")   # Image > Explore RGB: the 13 colour components monta
 include("empilhador.jl") # Tools > Empilhador: stack grids/L2 scenes into a 3-D file (port of Mirone empilhador.m)
 include("oceancolor.jl") # Tools > Ocean Color Data Browser: OB.DAAC L3 catalogue + browse images
 include("gridcalc.jl")   # Grid Tools > Grid calculator: expression over same-geometry grids (port of Mirone grid_calculator.m)
+include("synthterrain.jl")   # Grid Tools > Synthetic terrain: seeded noise relief + thermal/hydraulic erosion
 include("contours.jl")   # Grid Tools > Contours: GDAL-traced contour lines (port of Mirone contouring.m)
 include("sdg.jl")        # Grid Tools > SDG: 2nd derivative along the gradient (port of Mirone GridToolsSDG_CB)
 include("multiscale.jl") # Grid Tools > Terrain Modeling: moving-window terrain analysis (port of Mirone mirblock.c)

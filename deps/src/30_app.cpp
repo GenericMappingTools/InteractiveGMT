@@ -1233,6 +1233,14 @@ static JuliaEmpilhadorFn g_juliaEmpilhador = nullptr;
 typedef int (*JuliaGridCalcFn)(void *scene, const char *params);
 static JuliaGridCalcFn g_juliaGridCalc = nullptr;
 
+// Synthetic terrain (Grid Tools). SynthTerrainDialog (70_window.cpp, loads deps/ui/synth_terrain.ui)
+// hands a newline-separated "key=value" block to Julia (_on_synthterrain, src/synthterrain.jl):
+// x0 x1 y0 y1 dx dy (output lattice), z0 z1 (height span), feature (% of the larger side), lowlands,
+// hillslope, concavity, seed — or "auto=1" alone (Julia's defaults, a new seed). Returns 1/0.
+// Registered lazily (warm_register "synthterrain"), never at start-up.
+typedef int (*JuliaSynthTerrainFn)(void *scene, const char *params);
+static JuliaSynthTerrainFn g_juliaSynthTerrain = nullptr;
+
 // grdtrend (GMT menu), dialog laid out after Mirone's src_figs/grdtrend_mir.m. GrdTrendDialog
 // (70_window.cpp, loads deps/ui/grdtrend_dialog.ui) hands a newline-separated "key=value" block to
 // Julia (_on_grdtrend, src/grdtrend.jl): what=trend|diff|weights, model=<n>, robust, protectnans,

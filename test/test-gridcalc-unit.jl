@@ -184,3 +184,93 @@ end
 	@test out == "V + V + bb"
 	@test sort(unique(seen)) == ["a", "aa"]
 end
+
+# Comparisons and logic: `> >= < <= == !=` on grids give a MASK; `& | ! xor` combine MASKS; a mask in
+# the window (a Bool image) is a mask operand, never a 0/1 grid. Which operator takes which operand is
+# CHECKED before anything is evaluated: the wrong kind is a `_GcRejected` with a readable message,
+# never a MethodError from the middle of the broadcast.
+@testitem "gridcalc: comparisons and logic on grids and masks" tags=[:unit, :fast] begin
+	IG = InteractiveGMT; GMT = IG.GMT
+	mk(z) = GMT.mat2grid(Float32.(z); x = collect(range(0, 2, length = 3)), y = collect(range(0, 2, length = 3)))
+	A = mk([1.0 2 3; 4 5 6; 7 8 9]);  B = mk([10.0 10 10; 20 20 20; 30 30 30])
+	M = IG._gc_image_grid(IG._gc_mask_image(Bool[1 0 1; 0 1 0; 1 1 0], A))
+	@test M isa IG.GMTgrid{Bool,2}                        # a mask operand stays a mask
+	objs = Tuple{String,IG.GMTgrid}[("topo", A), ("layer B", B), ("msk", M)]
+	ev(e) = IG._gridcalc_eval(objs, Dict{String,String}(), e)
+
+	@test ev("topo > 4") == (A.z .> 4)
+	@test eltype(ev("topo > 4")) == Bool                  # -> a mask result
+	@test ev("(topo > 4) & (layer B < 25)") == ((A.z .> 4) .& (B.z .< 25))
+	@test ev("topo > 4 && layer B < 25")    == ((A.z .> 4) .& (B.z .< 25))
+	@test ev("!(topo >= 5) | msk") == (.!(A.z .>= 5) .| M.z)
+	@test ev("2 < topo <= 6") == (2 .< A.z .<= 6)
+	@test ev("msk == (topo > 4)") == (M.z .== (A.z .> 4))
+	@test ev("xor(msk, topo > 3)") == xor.(M.z, A.z .> 3)
+	@test ev("isnan(topo) | msk") == M.z
+	@test ev("topo * msk") == A.z .* M.z                  # a mask in arithmetic is 0/1
+	@test isequal(ev("ifelse(msk, topo, NaN)"), ifelse.(M.z, A.z, NaN))
+	# `&` after an operand is AND; where an operand is expected it is still Mirone's name prefix
+	@test ev("(topo > 1) &msk") == ((A.z .> 1) .& M.z)
+	@test ev("&topo + &{layer B}") == A.z .+ B.z
+
+	rejected(e) = try ev(e); false catch x; x isa IG._GcRejected end
+	for e in ("topo & msk", "topo > 1 & msk", "msk > 0", "msk == topo", "!topo", "foo + topo",
+	          "bar(topo)", "ifelse(topo, 1, 2)", "topo +", "topo; msk", "topo[1]", "isnan(msk)")
+		@test rejected(e)
+	end
+end
+
+# ifelse(mask, A, B) with an RGB image: B (or A) a whole number 0-255, a colour (r, g, b) or another
+# RGB image (Mirone run_cmd's mask(Z) and mix(Z, img2, mask)). An RGB image anywhere else is refused
+# BEFORE computing. The source image is never painted in place.
+@testitem "gridcalc: ifelse paints RGB images" tags=[:unit, :fast] begin
+	IG = InteractiveGMT; GMT = IG.GMT
+	mk(z) = GMT.mat2grid(Float32.(z); x = collect(range(0, 2, length = 3)), y = collect(range(0, 2, length = 3)))
+	A = mk([1.0 2 3; 4 5 6; 7 8 9])
+	arr  = UInt8[10i + j + 100b for i in 1:3, j in 1:3, b in 0:2]
+	arr2 = UInt8[200 + i + j + b for i in 1:3, j in 1:3, b in 0:2]
+	I = GMT.mat2img(arr, A);  I2 = GMT.mat2img(arr2, A)
+	@test IG._gc_same_geom(I, A)
+	objs = Tuple{String,IG.GMTgrid}[("topo", A)]
+	rgbs = Tuple{String,IG.GMTimage}[("img", I), ("img2", I2)]
+	ev(e) = IG._gridcalc_eval(objs, Dict{String,String}(), e; rgbs = rgbs)
+	m = A.z .> 4
+	expect(col) = UInt8[m[i, j] ? arr[i, j, b] : col[b] for i in 1:3, j in 1:3, b in 1:3]
+	@test ev("ifelse(topo > 4, img, 255)").image == expect((255, 255, 255))
+	@test ev("ifelse(topo > 4, img, (255, 0, 7))").image == expect((255, 0, 7))
+	@test ev("ifelse(topo <= 4, (1, 2, 3), img)").image == expect((1, 2, 3))      # the colour as A
+	@test ev("ifelse(topo > 4, img, img2)").image ==
+	      UInt8[m[i, j] ? arr[i, j, b] : arr2[i, j, b] for i in 1:3, j in 1:3, b in 1:3]
+	@test I.image == arr                                                            # source untouched
+
+	rejected(e) = try ev(e); false catch x; x isa IG._GcRejected end
+	for e in ("img + 1", "img > 3", "!img", "img", "ifelse(img, topo, 1)", "(1,2,3) + topo",
+	          "ifelse(topo > 4, img, 300)", "ifelse(topo > 4, img, 2.5)", "ifelse(topo > 4, img, (1, 2))",
+	          "ifelse(topo > 4, img, topo)", "ifelse(topo > 4, topo, (1,2,3))")
+		@test rejected(e)
+	end
+end
+
+# An RGB image as every open reads it (row-major, pixel-interleaved "BRPa") against a mask made from
+# GDAL's own grid of its band 1 (column-major "BCB"): the two layouts are matched node for node, so
+# band 1 of the result is that grid, masked — not a flipped or sheared copy of it.
+@testitem "gridcalc: ifelse on an RGB image read from disk keeps its orientation" tags=[:unit, :fast] begin
+	IG = InteractiveGMT; GMT = IG.GMT
+	nx, ny = 5, 4
+	rgb = UInt8[(10 * j + i + 60b) % 256 for i in 1:ny, j in 1:nx, b in 0:2]
+	f3 = joinpath(mktempdir(), "gc_rgb.tif")
+	GMT.gmtwrite(f3, GMT.mat2img(rgb; x = [0.0, nx], y = [0.0, ny], noconv = true))
+	try
+		Ir = IG._gmtread_trb(f3)
+		Gb = GMT.gmtread(f3, grd = true)                 # band 1, as GDAL itself reads it
+		@test IG._gc_same_geom(Ir, Gb)
+		R = IG._gridcalc_eval(Tuple{String,IG.GMTgrid}[("b1", Gb)], Dict{String,String}(),
+		                      "ifelse(b1 > 30, rgb, 0)"; rgbs = Tuple{String,IG.GMTimage}[("rgb", Ir)])
+		idx, npl, _ = IG._gc_rgb_index(R)
+		Z = IG._zmat(Gb)
+		@test all(R.image[idx(ix, iy)] == (Z[iy, ix] > 30 ? UInt8(Z[iy, ix]) : 0x00) for ix in 1:nx, iy in 1:ny)
+		@test count(Z .> 30) > 0 && count(Z .<= 30) > 0     # both branches really taken
+	finally
+		try rm(f3, force = true) catch end     # GDAL may still hold the .tif open (Windows)
+	end
+end

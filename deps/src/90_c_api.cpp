@@ -5203,6 +5203,12 @@ GMTVTK_API void gmtvtk_set_gridcalc_callback(JuliaGridCalcFn fn) {
 	g_juliaGridCalc = fn;
 }
 
+// Register the Synthetic terrain Compute callback (Grid Tools). fn(scene, params) with the "key=value"
+// block described in 30_app.cpp builds the relief and adds it to `scene`. Returns 1/0. nullptr to detach.
+GMTVTK_API void gmtvtk_set_synthterrain_callback(JuliaSynthTerrainFn fn) {
+	g_juliaSynthTerrain = fn;
+}
+
 // Register the grdtrend Compute callback (GMT menu). fn(scene, params) with the "key=value" block
 // described in 30_app.cpp fits the trend and adds trend/residuals/weights to `scene`. Returns 1/0.
 // nullptr to detach.
@@ -11609,6 +11615,16 @@ GMTVTK_API int gmtvtk_grdblend_delete_dialog_test(void *handle) {
 	if (!g) return 0;
 	testDeleteParkedDialog(&g);
 	return blendTestDlg(handle) == nullptr ? 1 : 0;
+}
+// ---- Synthetic terrain (SynthTerrainDialog): open it on a window, for a look at the form -------
+GMTVTK_API int gmtvtk_synthterrain_open_dialog_test(void *handle) {
+	ensureApp();
+	Scene *s = static_cast<Scene *>(handle);
+	if (!s || !s->win) return 0;
+	testBorrowScene(s);
+	const int ok = openSynthTerrainDialog(s->win, s);
+	QApplication::processEvents();
+	return ok;
 }
 // ---- Grid calculator (GridCalculatorDialog): the same open / leave / parked / delete shape ------
 static GridCalculatorDialog *gridCalcTestDlg(void *handle) {

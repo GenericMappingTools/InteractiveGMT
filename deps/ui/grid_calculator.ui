@@ -6,7 +6,7 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>660</width>
+    <width>820</width>
     <height>300</height>
    </rect>
   </property>
@@ -35,7 +35,7 @@
       </size>
      </property>
      <property name="toolTip">
-      <string>&lt;html&gt;The expression to evaluate. Write a grid by its name, as shown&lt;br&gt;in the list below (double-click a name to insert it) - blanks&lt;br&gt;and all. Everything else is plain arithmetic: + - * / ^ ( )&lt;br&gt;and the functions on the right. A grid whose name is also a&lt;br&gt;function name (abs, log, ...) must be written &amp;name.&lt;/html&gt;</string>
+      <string>&lt;html&gt;The expression to evaluate. Write a grid by its name, as shown&lt;br&gt;in the list below (double-click a name to insert it) - blanks&lt;br&gt;and all. Everything else is plain arithmetic: + - * / ^ ( )&lt;br&gt;and the functions on the right. A grid whose name is also a&lt;br&gt;function name (abs, log, ...) must be written &amp;name.&lt;br&gt;&lt;br&gt;Comparisons &amp;lt; &amp;lt;= &amp;gt; &amp;gt;= on grids give a MASK (true/false per node);&lt;br&gt;== and != compare two grids or two masks. Masks combine with&lt;br&gt;&amp;amp; | ! xor; put each comparison in parentheses: (a &amp;gt; 1) &amp;amp; (b &amp;lt; 2).&lt;br&gt;In arithmetic a mask counts as 0/1. Wrong operands are refused&lt;br&gt;before anything is computed.&lt;/html&gt;</string>
      </property>
     </widget>
    </item>
@@ -48,7 +48,7 @@
       <widget class="QListWidget" name="listbox_inArrays">
        <property name="minimumSize">
         <size>
-         <width>280</width>
+         <width>440</width>
          <height>130</height>
         </size>
        </property>
@@ -175,6 +175,70 @@
          <property name="text"><string>+</string></property>
         </widget>
        </item>
+       <item row="4" column="0">
+        <widget class="QPushButton" name="push_op_lt">
+         <property name="minimumSize"><size><width>26</width><height>26</height></size></property>
+         <property name="maximumSize"><size><width>30</width><height>26</height></size></property>
+         <property name="toolTip"><string>Less than: compares grids/numbers, gives a mask</string></property>
+         <property name="text"><string>&lt;</string></property>
+        </widget>
+       </item>
+       <item row="4" column="1">
+        <widget class="QPushButton" name="push_op_le">
+         <property name="minimumSize"><size><width>26</width><height>26</height></size></property>
+         <property name="maximumSize"><size><width>30</width><height>26</height></size></property>
+         <property name="toolTip"><string>Less or equal: compares grids/numbers, gives a mask</string></property>
+         <property name="text"><string>&lt;=</string></property>
+        </widget>
+       </item>
+       <item row="4" column="2">
+        <widget class="QPushButton" name="push_op_gt">
+         <property name="minimumSize"><size><width>26</width><height>26</height></size></property>
+         <property name="maximumSize"><size><width>30</width><height>26</height></size></property>
+         <property name="toolTip"><string>Greater than: compares grids/numbers, gives a mask</string></property>
+         <property name="text"><string>&gt;</string></property>
+        </widget>
+       </item>
+       <item row="4" column="3">
+        <widget class="QPushButton" name="push_op_ge">
+         <property name="minimumSize"><size><width>26</width><height>26</height></size></property>
+         <property name="maximumSize"><size><width>30</width><height>26</height></size></property>
+         <property name="toolTip"><string>Greater or equal: compares grids/numbers, gives a mask</string></property>
+         <property name="text"><string>&gt;=</string></property>
+        </widget>
+       </item>
+       <item row="5" column="0">
+        <widget class="QPushButton" name="push_op_eq">
+         <property name="minimumSize"><size><width>26</width><height>26</height></size></property>
+         <property name="maximumSize"><size><width>30</width><height>26</height></size></property>
+         <property name="toolTip"><string>Equal: two grids/numbers or two masks, gives a mask</string></property>
+         <property name="text"><string>==</string></property>
+        </widget>
+       </item>
+       <item row="5" column="1">
+        <widget class="QPushButton" name="push_op_ne">
+         <property name="minimumSize"><size><width>26</width><height>26</height></size></property>
+         <property name="maximumSize"><size><width>30</width><height>26</height></size></property>
+         <property name="toolTip"><string>Not equal: two grids/numbers or two masks, gives a mask</string></property>
+         <property name="text"><string>!=</string></property>
+        </widget>
+       </item>
+       <item row="5" column="2">
+        <widget class="QPushButton" name="push_op_and">
+         <property name="minimumSize"><size><width>26</width><height>26</height></size></property>
+         <property name="maximumSize"><size><width>30</width><height>26</height></size></property>
+         <property name="toolTip"><string>AND of two masks. Put comparisons in parentheses: (a &gt; 1) &amp; (b &lt; 2)</string></property>
+         <property name="text"><string>&amp;&amp;</string></property>
+        </widget>
+       </item>
+       <item row="5" column="3">
+        <widget class="QPushButton" name="push_op_or">
+         <property name="minimumSize"><size><width>26</width><height>26</height></size></property>
+         <property name="maximumSize"><size><width>30</width><height>26</height></size></property>
+         <property name="toolTip"><string>OR of two masks. Put comparisons in parentheses: (a &gt; 1) | (b &lt; 2)</string></property>
+         <property name="text"><string>|</string></property>
+        </widget>
+       </item>
       </layout>
      </item>
      <item>
@@ -266,6 +330,38 @@
          <property name="maximumSize"><size><width>60</width><height>26</height></size></property>
          <property name="toolTip"><string>Empty the expression box</string></property>
          <property name="text"><string>Clear</string></property>
+        </widget>
+       </item>
+       <item row="4" column="0">
+        <widget class="QPushButton" name="push_op_not">
+         <property name="minimumSize"><size><width>50</width><height>26</height></size></property>
+         <property name="maximumSize"><size><width>60</width><height>26</height></size></property>
+         <property name="toolTip"><string>NOT of a mask: true where it is false</string></property>
+         <property name="text"><string>!</string></property>
+        </widget>
+       </item>
+       <item row="4" column="1">
+        <widget class="QPushButton" name="push_fun_xor">
+         <property name="minimumSize"><size><width>50</width><height>26</height></size></property>
+         <property name="maximumSize"><size><width>60</width><height>26</height></size></property>
+         <property name="toolTip"><string>xor(m1, m2): true where exactly one of two masks is true</string></property>
+         <property name="text"><string>xor</string></property>
+        </widget>
+       </item>
+       <item row="4" column="2">
+        <widget class="QPushButton" name="push_fun_isnan">
+         <property name="minimumSize"><size><width>50</width><height>26</height></size></property>
+         <property name="maximumSize"><size><width>60</width><height>26</height></size></property>
+         <property name="toolTip"><string>isnan(grid): a mask, true at the NaN nodes</string></property>
+         <property name="text"><string>isnan</string></property>
+        </widget>
+       </item>
+       <item row="5" column="0">
+        <widget class="QPushButton" name="push_fun_ifelse">
+         <property name="minimumSize"><size><width>50</width><height>26</height></size></property>
+         <property name="maximumSize"><size><width>60</width><height>26</height></size></property>
+         <property name="toolTip"><string>&lt;html&gt;ifelse(mask, A, B): A where the mask is true, B elsewhere.&lt;br&gt;With an RGB image as A, B can be another RGB image, a whole number&lt;br&gt;0-255 or a colour (r, g, b) of 0-255, e.g. ifelse(mask, image, (255, 0, 0)).&lt;/html&gt;</string></property>
+         <property name="text"><string>ifelse</string></property>
         </widget>
        </item>
       </layout>

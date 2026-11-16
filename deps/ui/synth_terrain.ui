@@ -1,0 +1,156 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>SynthTerrainDialog</class>
+ <widget class="QDialog" name="SynthTerrainDialog">
+  <property name="geometry"><rect><x>0</x><y>0</y><width>440</width><height>336</height></rect></property>
+  <property name="windowTitle"><string>Synthetic terrain</string></property>
+  <widget class="QGroupBox" name="group_region">
+   <property name="geometry"><rect><x>11</x><y>8</y><width>418</width><height>156</height></rect></property>
+   <property name="title"><string>Output grid</string></property>
+   <widget class="QLabel" name="label_xmin">
+    <property name="geometry"><rect><x>10</x><y>26</y><width>40</width><height>24</height></rect></property>
+    <property name="text"><string>x min</string></property>
+   </widget>
+   <widget class="QLineEdit" name="edit_xmin">
+    <property name="geometry"><rect><x>50</x><y>26</y><width>80</width><height>24</height></rect></property>
+   </widget>
+   <widget class="QLabel" name="label_xmax">
+    <property name="geometry"><rect><x>142</x><y>26</y><width>40</width><height>24</height></rect></property>
+    <property name="text"><string>x max</string></property>
+   </widget>
+   <widget class="QLineEdit" name="edit_xmax">
+    <property name="geometry"><rect><x>182</x><y>26</y><width>80</width><height>24</height></rect></property>
+   </widget>
+   <widget class="QLabel" name="label_xinc">
+    <property name="geometry"><rect><x>274</x><y>26</y><width>40</width><height>24</height></rect></property>
+    <property name="text"><string>x inc</string></property>
+   </widget>
+   <widget class="QLineEdit" name="edit_xinc">
+    <property name="geometry"><rect><x>314</x><y>26</y><width>92</width><height>24</height></rect></property>
+    <property name="toolTip"><string>Node spacing along x. The node count is (x max - x min) / x inc + 1.</string></property>
+   </widget>
+   <widget class="QLabel" name="label_ymin">
+    <property name="geometry"><rect><x>10</x><y>58</y><width>40</width><height>24</height></rect></property>
+    <property name="text"><string>y min</string></property>
+   </widget>
+   <widget class="QLineEdit" name="edit_ymin">
+    <property name="geometry"><rect><x>50</x><y>58</y><width>80</width><height>24</height></rect></property>
+   </widget>
+   <widget class="QLabel" name="label_ymax">
+    <property name="geometry"><rect><x>142</x><y>58</y><width>40</width><height>24</height></rect></property>
+    <property name="text"><string>y max</string></property>
+   </widget>
+   <widget class="QLineEdit" name="edit_ymax">
+    <property name="geometry"><rect><x>182</x><y>58</y><width>80</width><height>24</height></rect></property>
+   </widget>
+   <widget class="QLabel" name="label_yinc">
+    <property name="geometry"><rect><x>274</x><y>58</y><width>40</width><height>24</height></rect></property>
+    <property name="text"><string>y inc</string></property>
+   </widget>
+   <widget class="QLineEdit" name="edit_yinc">
+    <property name="geometry"><rect><x>314</x><y>58</y><width>92</width><height>24</height></rect></property>
+    <property name="toolTip"><string>Node spacing along y. The node count is (y max - y min) / y inc + 1.</string></property>
+   </widget>
+   <widget class="QLabel" name="label_refgrid">
+    <property name="geometry"><rect><x>10</x><y>90</y><width>90</width><height>24</height></rect></property>
+    <property name="text"><string>OR Ref grid</string></property>
+   </widget>
+   <widget class="QLineEdit" name="edit_refgrid">
+    <property name="geometry"><rect><x>100</x><y>90</y><width>274</width><height>24</height></rect></property>
+   </widget>
+   <widget class="QToolButton" name="push_refgrid">
+    <property name="geometry"><rect><x>380</x><y>90</y><width>26</width><height>24</height></rect></property>
+    <property name="text"><string>...</string></property>
+   </widget>
+   <widget class="QLabel" name="label_wingrid">
+    <property name="geometry"><rect><x>10</x><y>122</y><width>90</width><height>24</height></rect></property>
+    <property name="text"><string>OR Window grid</string></property>
+   </widget>
+   <widget class="QComboBox" name="combo_wingrid">
+    <property name="geometry"><rect><x>100</x><y>122</y><width>306</width><height>24</height></rect></property>
+   </widget>
+  </widget>
+  <widget class="QGroupBox" name="group_shape">
+   <property name="geometry"><rect><x>11</x><y>172</y><width>418</width><height>124</height></rect></property>
+   <property name="title"><string>Landscape</string></property>
+   <widget class="QLabel" name="label_feature">
+    <property name="geometry"><rect><x>10</x><y>26</y><width>72</width><height>24</height></rect></property>
+    <property name="text"><string>Feature (%)</string></property>
+   </widget>
+   <widget class="QLineEdit" name="edit_feature">
+    <property name="geometry"><rect><x>84</x><y>26</y><width>50</width><height>24</height></rect></property>
+    <property name="toolTip"><string>Size of the uplift pattern (the mountain belts and the basins between them), in percent of the larger side of the grid. Small values give many small ranges, large values a few big ones.</string></property>
+    <property name="text"><string>30</string></property>
+   </widget>
+   <widget class="QLabel" name="label_lowlands">
+    <property name="geometry"><rect><x>146</x><y>26</y><width>58</width><height>24</height></rect></property>
+    <property name="text"><string>Lowlands</string></property>
+   </widget>
+   <widget class="QLineEdit" name="edit_lowlands">
+    <property name="geometry"><rect><x>206</x><y>26</y><width>50</width><height>24</height></rect></property>
+    <property name="toolTip"><string>From 0 to 0.9: share of the area that barely rises, which becomes plains and basins. 0 = mountains everywhere.</string></property>
+    <property name="text"><string>0.1</string></property>
+   </widget>
+   <widget class="QLabel" name="label_seed">
+    <property name="geometry"><rect><x>270</x><y>26</y><width>70</width><height>24</height></rect></property>
+    <property name="text"><string>Seed</string></property>
+   </widget>
+   <widget class="QLineEdit" name="edit_seed">
+    <property name="geometry"><rect><x>346</x><y>26</y><width>60</width><height>24</height></rect></property>
+    <property name="toolTip"><string>Any whole number. The same seed and settings always give the same terrain.</string></property>
+    <property name="text"><string>1</string></property>
+   </widget>
+   <widget class="QLabel" name="label_hillslope">
+    <property name="geometry"><rect><x>10</x><y>58</y><width>72</width><height>24</height></rect></property>
+    <property name="text"><string>Hillslope</string></property>
+   </widget>
+   <widget class="QLineEdit" name="edit_hillslope">
+    <property name="geometry"><rect><x>84</x><y>58</y><width>50</width><height>24</height></rect></property>
+    <property name="toolTip"><string>From 0 to 1: how strongly soil creeps down the slopes. Low: sharp ridges and narrow valleys; high: rounded hills.</string></property>
+    <property name="text"><string>0.3</string></property>
+   </widget>
+   <widget class="QLabel" name="label_concavity">
+    <property name="geometry"><rect><x>146</x><y>58</y><width>58</width><height>24</height></rect></property>
+    <property name="text"><string>Concavity</string></property>
+   </widget>
+   <widget class="QLineEdit" name="edit_concavity">
+    <property name="geometry"><rect><x>206</x><y>58</y><width>50</width><height>24</height></rect></property>
+    <property name="toolTip"><string>From 0.2 to 0.8: the stream-power exponent m. Higher values make the rivers flatten faster downstream (steep headwaters, low broad valleys). 0.45 is typical of real rivers.</string></property>
+    <property name="text"><string>0.45</string></property>
+   </widget>
+   <widget class="QPushButton" name="push_newseed">
+    <property name="geometry"><rect><x>270</x><y>58</y><width>136</width><height>24</height></rect></property>
+    <property name="toolTip"><string>Put a new random seed in the Seed box.</string></property>
+    <property name="text"><string>New seed</string></property>
+   </widget>
+   <widget class="QLabel" name="label_zmin">
+    <property name="geometry"><rect><x>10</x><y>90</y><width>72</width><height>24</height></rect></property>
+    <property name="text"><string>z min</string></property>
+   </widget>
+   <widget class="QLineEdit" name="edit_zmin">
+    <property name="geometry"><rect><x>84</x><y>90</y><width>50</width><height>24</height></rect></property>
+    <property name="toolTip"><string>Height of the lowest node.</string></property>
+    <property name="text"><string>0</string></property>
+   </widget>
+   <widget class="QLabel" name="label_zmax">
+    <property name="geometry"><rect><x>146</x><y>90</y><width>58</width><height>24</height></rect></property>
+    <property name="text"><string>z max</string></property>
+   </widget>
+   <widget class="QLineEdit" name="edit_zmax">
+    <property name="geometry"><rect><x>206</x><y>90</y><width>50</width><height>24</height></rect></property>
+    <property name="toolTip"><string>Height of the highest node.</string></property>
+    <property name="text"><string>1000</string></property>
+   </widget>
+  </widget>
+  <widget class="QPushButton" name="push_compute">
+   <property name="geometry"><rect><x>249</x><y>304</y><width>90</width><height>24</height></rect></property>
+   <property name="text"><string>Compute</string></property>
+  </widget>
+  <widget class="QPushButton" name="push_close">
+   <property name="geometry"><rect><x>349</x><y>304</y><width>80</width><height>24</height></rect></property>
+   <property name="text"><string>Close</string></property>
+  </widget>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>
