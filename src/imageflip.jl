@@ -49,7 +49,7 @@ function _on_image_flip(scene::Ptr{Cvoid}, req::Cstring)::Cvoid
 		p    = split(unsafe_string(req), ';')
 		op   = String(p[1])
 		name = length(p) >= 2 ? String(strip(p[2])) : ""
-		key, I = isempty(name) ? _find_object_named(scene, :image) :
+		key, I = isempty(name) ? _displayed_image(scene) :
 		                         (name, _find_object(scene, :image, name))
 		(I isa GMTimage) || error("Flip: this window has no image named '$name'")
 		updown = (op == "ud")

@@ -161,7 +161,7 @@ end
 # ---------------------------------------------------------------------------------------------
 
 function _enh_init(scene::Ptr{Cvoid}, dlg::Ptr{Cvoid}, wanted::String="")
-	srcname, I = isempty(wanted) ? _find_object_named(scene, :image) :
+	srcname, I = isempty(wanted) ? _displayed_image(scene) :
 	                               (String(wanted), _find_object(scene, :image, wanted))
 	(I isa GMTimage) || error("No image in this window to enhance")
 	# The displayed object of a 16-bit image is its 8-bit display copy; the image IS the original.

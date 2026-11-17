@@ -186,7 +186,7 @@ function _on_classify(scene::Ptr{Cvoid}, dlg::Ptr{Cvoid}, cparams::Cstring)::Cin
 		src  = isempty(name) ? "Image" : name
 
 		if op == "compute"
-			I = isempty(name) ? _find_object_named(scene, :image)[2] : _find_object(scene, :image, name)
+			I = isempty(name) ? _displayed_image(scene)[2] : _find_object(scene, :image, name)
 			(I isa GMTimage) || error("K-means: this window has no image named '$name'")
 			supervised = strip(p[3]) == "1"
 			nclasses   = parse(Int, strip(p[4]))

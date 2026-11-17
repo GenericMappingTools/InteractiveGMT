@@ -102,3 +102,58 @@ end
 	# Cartesian path also routes through gmtspatial -Q now; unit square stays 1.0.
 	@test IG._polygon_area([0.0 0.0; 1.0 0.0; 1.0 1.0; 0.0 1.0; 0.0 0.0], false) ≈ 1.0
 end
+
+# "Digitize whites" outline of a mask -> "Area under polygon…": EVERY ring is measured and the holes are
+# taken off (user's order, 2026-11-17). Exact check: the traced area equals white pixels x pixel area.
+@testitem "measure: area of a traced mask outline (several rings, holes subtracted)" tags=[:unit, :fast] begin
+	IG = InteractiveGMT
+	n = 200
+	G = IG.GMT.mat2grid(zeros(Float32, n, n), x = [0.0, 6000.0], y = [0.0, 6000.0], reg = 1)   # 30 m pixels
+	m = [(20 <= hypot(ix - 70.5, iy - 70.5) <= 45) || (hypot(ix - 160.5, iy - 150.5) <= 25) for iy in 1:n, ix in 1:n]
+	xyz, segoff, nseg, _ = IG._digitize_rings(IG._gc_mask_image(m, G), 1)
+	rings = [reshape(xyz, 3, :)'[segoff[s]+1:segoff[s+1], 1:2] |> Matrix{Float64} for s in 1:nseg]
+	@test nseg == 3
+	@test IG._ring_holes(rings) |> count == 1                        # the ring field's hole
+	tbl = tempname() * ".txt"
+	open(tbl, "w") do io
+		for r in rings
+			println(io, ">");  for i in axes(r, 1); println(io, r[i, 1], " ", r[i, 2]); end
+		end
+	end
+	out = mktemp() do p, io
+		redirect_stdout(() -> IG._poly_area(C_NULL, tbl, "", true, "Ellipsoidal"), io);  flush(io);  read(p, String)
+	end
+	a = parse(Float64, match(r"Area = ([0-9.eE+]+)", out)[1])
+	@test a ≈ count(m) * 900.0
+	@test occursin("1 hole(s) subtracted", out)
+	rm(tbl; force = true)
+end
+
+# The POLYGON a clicked ring belongs to (user's order, 2026-11-17: Area / Delete on a traced outline act
+# on the selected polygon only): an outer ring answers with itself and its own holes, a hole with the
+# ring around it and that ring's holes, a lone blob with itself. Its area is that polygon's alone.
+@testitem "measure: the polygon of a clicked ring, and its area alone" tags=[:unit, :fast] begin
+	IG = InteractiveGMT
+	n = 200
+	G = IG.GMT.mat2grid(zeros(Float32, n, n), x = [0.0, 6000.0], y = [0.0, 6000.0], reg = 1)
+	donut(ix, iy) = 20 <= hypot(ix - 70.5, iy - 70.5) <= 45
+	blob(ix, iy)  = hypot(ix - 160.5, iy - 150.5) <= 25
+	m = [donut(ix, iy) || blob(ix, iy) for iy in 1:n, ix in 1:n]
+	xyz, segoff, nseg, _ = IG._digitize_rings(IG._gc_mask_image(m, G), 1)
+	rings = [Matrix{Float64}(reshape(xyz, 3, :)'[segoff[s]+1:segoff[s+1], 1:2]) for s in 1:nseg]
+	tbl(rs) = (p = tempname() * ".txt";
+		open(p, "w") do io
+			for r in rs; println(io, ">"); for i in axes(r, 1); println(io, r[i, 1], " ", r[i, 2]); end; end
+		end; p)
+	capture(f) = mktemp() do p, io; redirect_stdout(f, io); flush(io); read(p, String); end
+	all_tbl = tbl(rings)
+	region(k) = sort(parse.(Int, split(capture(() -> IG._ring_region(all_tbl, k)))))
+	regs = [region(k) for k in 0:nseg-1]
+	isblob = [length(r) == 1 for r in regs]
+	@test count(isblob) == 1                                   # the blob alone
+	donutreg = regs[findfirst(!, isblob)]
+	@test length(donutreg) == 2 && all(r -> r == donutreg, regs[.!isblob])   # outer ring OR its hole -> both
+	area(rs) = parse(Float64, match(r"Area = ([0-9.eE+]+)", capture(() -> IG._poly_area(C_NULL, tbl(rs), "", true, "Ellipsoidal")))[1])
+	@test area(rings[donutreg .+ 1]) ≈ count(donut(ix, iy) for iy in 1:n, ix in 1:n) * 900.0
+	@test area(rings[findall(isblob)]) ≈ count(blob(ix, iy) for iy in 1:n, ix in 1:n) * 900.0
+end

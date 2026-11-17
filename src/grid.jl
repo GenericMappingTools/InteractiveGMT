@@ -328,7 +328,32 @@ _roi_crop_grid(G::GMTgrid, w, e, s, n)   = GMT.crop(G; region=(w, e, s, n))[1]
 # `_to_band_planar` FIRST (drape.jl): a disk-read RGB image is pixel-interleaved ("BRPa"), and a
 # row-major image sends `crop` down its gdaltranslate branch, which reads the buffer as band-planar
 # -> colour noise. De-interleaved, the same crop is exact.
-_roi_crop_image(I::GMTimage, w, e, s, n) = GMT.crop(_to_band_planar(I); region=(w, e, s, n))[1]
+# …and through `_true_row_label`, which gives a row-major image the layout code the DISPLAY reads it by
+# (`_north_first`). MEASURED, 2026-11-17 (user's report, on an ifelse picture): a north rectangle cut
+# from a gmtread RGB GeoTIFF ("BRBa" once de-interleaved) came back as the wrong rows, flipped; the
+# same buffer handed over as "TRBa" crops right. Measured behaviour only — no claim here about what
+# GMT.jl's layout characters mean.
+_roi_crop_image(I::GMTimage, w, e, s, n) =
+	GMT.crop(_true_row_label(_to_band_planar(I)); region=(w, e, s, n))[1]
+
+# The image with the first layout character `_north_first` (drape.jl — the rule the texture packing
+# reads by) gives it: 'T' when that rule reads it top row first. A wrapper over the SAME buffer when the
+# code has to change (no pixel is copied), the image itself when it already agrees.
+function _true_row_label(I::GMTimage)::GMTimage
+	lay = _true_layout(I.layout)
+	lay == I.layout && return I
+	J = GMT.mat2img(I.image, I)                   # same buffer, same georeference
+	J.layout = lay
+	isempty(I.alpha) || (J.alpha = I.alpha)
+	return J
+end
+
+# THE rule, on the label alone: its first character made to say what `_north_first` says the memory is.
+function _true_layout(lay::AbstractString)::String
+	isempty(lay) && return String(lay)
+	rowmajor = length(lay) >= 2 && lay[2] == 'R'
+	return string(_north_first(lay, rowmajor) ? 'T' : 'B', lay[2:end])
+end
 
 # "Crop Image" (plain, un-referenced): `GMT.crop` preserves the source image's own CRS, which is
 # correct for "Crop Image (with coords)" but wrong for the plain variant — Mirone's real distinction
@@ -488,6 +513,24 @@ _adopt_derived!(scene::Ptr{Cvoid}, name::AbstractString, data) = _adopt_new_elem
 # standalone window's own axes, which no longer applies) — that's a consequence of the law, not a
 # bug. Only these three basic crops are ported for now; Mirone's fuller ROI toolset
 # (stats/clip/fill-gaps/spectral…) is not.
+# The IMAGE displayed at map point (x, y) and its Scene Objects name, or ("", nothing) when what is
+# displayed there is not an image (a grid, or nothing). The viewer decides (gmtvtk_displayed_at_h ->
+# seenImageAt, the hover readout's own resolver); "" names the window's base image, registered under "".
+function _displayed_image_at(scene::Ptr{Cvoid}, x::Real, y::Real)
+	buf = zeros(UInt8, 4096)
+	k = ccall(_fn(:gmtvtk_displayed_at_h), Cint, (Ptr{Cvoid}, Cdouble, Cdouble, Ptr{UInt8}, Cint),
+	          scene, Float64(x), Float64(y), buf, Cint(length(buf)))
+	k == 2 || return "", nothing
+	name = GC.@preserve buf unsafe_string(pointer(buf))
+	I = _find_object_exact(scene, :image, name)
+	if !(I isa GMTimage)                               # the base image: registered under ""
+		for (kd, nm, d) in get(_SCENE_OBJS, scene, Tuple{Symbol,String,Any}[])
+			(kd === :image && isempty(nm) && d isa GMTimage) && (I = d; break)
+		end
+	end
+	return I isa GMTimage ? (name, I) : ("", nothing)
+end
+
 function _on_roi_crop(scene::Ptr{Cvoid}, kind::String, rectstr::String)::Cvoid
 	k = ""
 	try
@@ -511,7 +554,11 @@ function _on_roi_crop(scene::Ptr{Cvoid}, kind::String, rectstr::String)::Cvoid
 			# axes+camera re-framed to the crop's OWN X/Y/Z (`Gc.range`), Scene Objects unfolded.
 			_adopt_derived!(scene, newname, Gc)
 		elseif k == "image" || k == "image_coords"
-			srcname, I = _find_object_named(scene, :image)
+			# WHAT IS DISPLAYED inside the rectangle — asked of the viewer at its centre, the same answer
+			# the hover readout gives there (seenImageAt): the image on top, never the first image the
+			# window happens to hold (a hidden one was cropped before). A grid on display there is
+			# photographed instead (`capturedFromGrid` below).
+			srcname, I = _displayed_image_at(scene, (w + e) / 2, (s + n) / 2)
 			wantCoords = (k == "image_coords")
 			# No separate bitmap image in this window (e.g. a pure grid, no draped/dropped image) ->
 			# capture the rendered grid itself instead of erroring. See `_capture_rect_image`.

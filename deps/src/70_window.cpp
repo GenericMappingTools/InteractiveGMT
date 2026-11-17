@@ -12150,8 +12150,8 @@ static bool multiscaleAsk(QWidget *parent, int &method, int &nWin) {
 // the loaded-file paths to Julia (_on_gridcalc), which evaluates it element-wise and adds the result
 // as a NEW derived grid (SACRED_LAW derived-variable display law).
 // ============================================================================================
-// PARKED like every tool window (the Contours dialog above is the model): the X, the Close button,
-// minimise and Esc hide it into this window's Scene Objects, with its expression and its "Load Grid"
+// PARKED like every tool window (the Contours dialog above is the model): the X (there is no Close
+// button), minimise and Esc hide it into this window's Scene Objects, with its expression and its "Load Grid"
 // entries intact; the row brings it back (Show) or destroys it (Delete). Re-picking the menu entry
 // brings back the SAME dialog (g_gridCalcDlgs), never a second one.
 class GridCalculatorDialog;
@@ -12164,6 +12164,7 @@ public:
 	QPlainTextEdit *cmdEdit = nullptr;
 	QListWidget *listBox = nullptr;
 	bool reallyClose = false;  // set by the parked row's "Delete": let the next close through
+	int nameEnd = -1;          // length of the expression right after a list name was put in (ifelseComma)
 
 	// Every way back in (double-click, the row's checkbox, its "Show"). The window's grids may have
 	// changed while it was parked, so the list is asked for again.
@@ -12194,7 +12195,7 @@ public:
 		};
 	}
 
-	// Hide and leave the handle: the ONE way out for the X, Close, minimise and Esc. Idempotent.
+	// Hide and leave the handle: the ONE way out for the X, minimise and Esc. Idempotent.
 	void park() {
 		if (!dlg || reallyClose || !sceneAlive(scn)) return;
 		dlg->hide();
@@ -12255,10 +12256,13 @@ public:
 		cmdEdit = d->findChild<QPlainTextEdit *>("edit_command");
 		listBox = d->findChild<QListWidget *>("listbox_inArrays");
 
-		// Append text at the end of the expression box and keep the caret there.
-		auto append = [this](const QString &t) {
+		// Append text at the end of the expression box and keep the caret there. `operand` = the text
+		// STARTS a new operand (a grid name, a number, a function, "(", "!"): inside an open ifelse( whose
+		// current argument is already complete, the separating ", " is written first (ifelseComma).
+		auto append = [this](const QString &t, bool operand = false) {
 			if (!cmdEdit) return;
 			cmdEdit->moveCursor(QTextCursor::End);
+			if (operand && ifelseComma(cmdEdit->toPlainText(), t, nameEnd)) cmdEdit->insertPlainText(", ");
 			cmdEdit->insertPlainText(t);
 			cmdEdit->setFocus();
 		};
@@ -12273,18 +12277,18 @@ public:
 			b->setAutoDefault(false);  b->setDefault(false);   // Enter in the expression box types a newline
 			b->setFocusPolicy(Qt::NoFocus);                    // …and never clicks a keypad button
 			if (nm.startsWith("push_digit_"))
-				QObject::connect(b, &QPushButton::clicked, d, [append, b]() { append(b->text()); });
+				QObject::connect(b, &QPushButton::clicked, d, [append, b]() { append(b->text(), true); });
 			else if (nm == "push_op_not")            // unary: no blank between `!` and its operand
-				QObject::connect(b, &QPushButton::clicked, d, [append]() { append(" !"); });
+				QObject::connect(b, &QPushButton::clicked, d, [append]() { append(" !", true); });
 			else if (nm.startsWith("push_op_"))      // "&&" is how a label shows ONE `&` (Qt mnemonic escape)
 				QObject::connect(b, &QPushButton::clicked, d, [append, b]() {
 					append(" " + QString(b->text()).replace("&&", "&") + " ");
 				});
 			else if (nm.startsWith("push_fun_")) {
 				const QString fn = nm.mid(9);
-				QObject::connect(b, &QPushButton::clicked, d, [append, fn]() { append(" " + fn + "("); });
+				QObject::connect(b, &QPushButton::clicked, d, [append, fn]() { append(" " + fn + "(", true); });
 			}
-			else if (nm == "push_par_l") QObject::connect(b, &QPushButton::clicked, d, [append]() { append("("); });
+			else if (nm == "push_par_l") QObject::connect(b, &QPushButton::clicked, d, [append]() { append("(", true); });
 			else if (nm == "push_par_r") QObject::connect(b, &QPushButton::clicked, d, [append]() { append(")"); });
 			else if (nm == "push_clear") QObject::connect(b, &QPushButton::clicked, d, [this]() { if (cmdEdit) cmdEdit->clear(); });
 		}
@@ -12304,8 +12308,10 @@ public:
 				cmdEdit->setPlainText(tok);
 			else {
 				cmdEdit->moveCursor(QTextCursor::End);
+				if (ifelseComma(cmdEdit->toPlainText(), tok, nameEnd)) cmdEdit->insertPlainText(",");
 				cmdEdit->insertPlainText(" " + tok);
 			}
+			nameEnd = cmdEdit->toPlainText().size();      // the box now ENDS in a name, digits included
 			cmdEdit->setFocus();
 		});
 
@@ -12326,7 +12332,9 @@ public:
 		auto compute = [this, d]() { runCompute(d); };
 		if (auto *b = d->findChild<QPushButton *>("push_compute")) QObject::connect(b, &QPushButton::clicked, d, compute);
 		if (auto *b = d->findChild<QPushButton *>("push_equal"))   QObject::connect(b, &QPushButton::clicked, d, compute);
-		if (auto *b = d->findChild<QPushButton *>("push_close"))   QObject::connect(b, &QPushButton::clicked, d, [d]() { d->close(); });
+		// No Close button (user's order, 2026-11-17): the dialog is left by its X, Esc or minimise, which
+		// all park it. The .ui still carries the button; it is hidden here, never wired.
+		if (auto *b = d->findChild<QPushButton *>("push_close"))   b->hide();
 
 		addManualButton(d, "grdmath");     // the green ? disk, lower-left as in every other dialog
 		fillList();
@@ -12342,6 +12350,35 @@ public:
 	QString baseName() const {
 		if (!scn) return QString();
 		return scn->surfName.empty() ? QString("Surface") : QString::fromStdString(scn->surfName);
+	}
+
+	// Does a new operand `tok`, appended to `text`, need a ", " in front of it? Yes when the innermost
+	// open parenthesis of `text` is an `ifelse(`, that ifelse has fewer than its two commas, and its
+	// current argument is already complete (the text ends in a name, a number, ")" or "}"). A digit or
+	// "." right after a digit or "." continues the same number, so it never gets one — unless the text
+	// ends exactly where a grid name from the list ended (`nameEnd`): "layer B5" then "2" is a new operand.
+	static bool ifelseComma(const QString &text, const QString &tok, int nameEnd) {
+		std::vector<std::pair<int, int>> open;            // (position of "(", commas seen at its level)
+		for (int i = 0; i < text.size(); ++i) {
+			const QChar c = text[i];
+			if (c == '(') open.push_back({i, 0});
+			else if (c == ')') { if (!open.empty()) open.pop_back(); }
+			else if (c == ',' && !open.empty()) ++open.back().second;
+		}
+		if (open.empty() || open.back().second >= 2) return false;
+		const QString before = text.left(open.back().first).trimmed();
+		if (!before.endsWith("ifelse")) return false;
+		const int k = before.size() - 6;                  // "ifelse" must be a whole word
+		if (k > 0 && (before[k - 1].isLetterOrNumber() || before[k - 1] == '_' || before[k - 1] == '.')) return false;
+		const QString arg = text.mid(open.back().first + 1);
+		const QString cur = arg.mid(arg.lastIndexOf(',') + 1);   // the argument being written
+		if (cur.trimmed().isEmpty()) return false;
+		const QChar last = text.back();                   // NOT trimmed: "0.4 " then "5" is a new operand
+		const QString t = tok.trimmed();
+		if (!t.isEmpty() && (t[0].isDigit() || t[0] == '.') && (last.isDigit() || last == '.') &&
+		    text.size() != nameEnd) return false;
+		const QChar end = text.trimmed().back();
+		return end.isLetterOrNumber() || end == '_' || end == '.' || end == ')' || end == '}';
 	}
 
 	// What a double-click writes into the expression. Grid names are substituted TEXTUALLY on the Julia
@@ -35242,10 +35279,12 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 					symbolLayerMenu(s, sym, widget->mapToGlobal(pos));
 					return;
 				}
-				int ovMode = 1;
-				vtkActor *ov = pickOverlayAt(s, px, py, ovMode);
+				int ovMode = 1, ovSeg = -1;
+				vtkActor *ov = pickOverlayAt(s, px, py, ovMode, &ovSeg);
 				if (ov) {
+					s->menuSeg = ovSeg;                      // the menu acts on THIS segment where it can
 					popupOverlayMenu(s, ov, ovMode, widget->mapToGlobal(pos));
+					if (sceneAlive(s)) s->menuSeg = -1;
 					return;
 				}
 			}

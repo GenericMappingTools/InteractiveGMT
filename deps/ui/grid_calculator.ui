@@ -324,7 +324,7 @@
          <property name="text"><string>)</string></property>
         </widget>
        </item>
-       <item row="3" column="2">
+       <item row="5" column="2">
         <widget class="QPushButton" name="push_clear">
          <property name="minimumSize"><size><width>50</width><height>26</height></size></property>
          <property name="maximumSize"><size><width>60</width><height>26</height></size></property>
@@ -360,7 +360,7 @@
         <widget class="QPushButton" name="push_fun_ifelse">
          <property name="minimumSize"><size><width>50</width><height>26</height></size></property>
          <property name="maximumSize"><size><width>60</width><height>26</height></size></property>
-         <property name="toolTip"><string>&lt;html&gt;ifelse(mask, A, B): A where the mask is true, B elsewhere.&lt;br&gt;With an RGB image as A, B can be another RGB image, a whole number&lt;br&gt;0-255 or a colour (r, g, b) of 0-255, e.g. ifelse(mask, image, (255, 0, 0)).&lt;/html&gt;</string></property>
+         <property name="toolTip"><string>&lt;html&gt;ifelse(mask, A, B): A where the mask is true, B elsewhere.&lt;br&gt;With an RGB image as A, B can be another RGB image, a whole number&lt;br&gt;0-255 or a colour (r, g, b) of 0-255, e.g. ifelse(mask, image, (255, 0, 0)).&lt;br&gt;Add @ and a transparency 0-100 (%) to paint see-through:&lt;br&gt;ifelse(mask, image, 255@50) is white at 50 %, 255@100 fully transparent.&lt;/html&gt;</string></property>
          <property name="text"><string>ifelse</string></property>
         </widget>
        </item>

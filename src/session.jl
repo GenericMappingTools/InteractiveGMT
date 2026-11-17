@@ -1093,7 +1093,12 @@ function _on_save_session(scene::Ptr{Cvoid}, path::String; portable::Bool=false)
 				push!(seen, (r.kind, r.name))
 				id, bytes = _session_pack_generated(scene, r, used)
 				push!(files, ("data/" * id, bytes))
-				push!(out, ElementRecipe(r.kind, :generated, id; name=r.name, params=copy(r.params)))
+				p = copy(r.params)
+				# A MASK goes on disk as a 0/1 byte GeoTIFF (no file format has a Bool pixel), so the
+				# manifest says what it was: on load it comes back as the Bool mask, not as a picture.
+				_session_obj_kind(r) === :image &&
+					_find_object_exact(scene, :image, r.name) isa GMTimage{Bool} && (p["mask"] = "1")
+				push!(out, ElementRecipe(r.kind, :generated, id; name=r.name, params=p))
 			else
 				# Menu vector layers (coastlines/borders/rivers) replay with the default pen; capture the
 				# live overlay's current pen so Line-properties edits (colour/width/style/opacity) survive.
@@ -1169,10 +1174,40 @@ function _session_load_object(r::ElementRecipe, entries::Dict{String,Vector{UInt
 		key = "data/" * r.source
 		haskey(entries, key) || (@warn "session: sidecar missing, layer skipped" key=key; return nothing)
 		tmp = tempname() * splitext(r.source)[2]; write(tmp, entries[key])
-		data = _gmtread_trb(tmp); rm(tmp; force=true)
-		return data
+		data = _gmtread_trb(tmp)
+		# The temp copy is only scaffolding: failing to delete it must never cost the layer just read.
+		# On Windows the GeoTIFF reader can still hold the file (EBUSY) — that threw here and the whole
+		# layer was reported "unreadable" and dropped (user's report, 2026-11-17: a session's masks, its
+		# RGB composition and its ifelse picture all lost on load). Such a file goes at exit instead.
+		_session_rm_temp(tmp)
+		return _session_is_mask(r, data) ? _bool_mask(data) : data
 	end
 	return nothing
+end
+
+# Delete a session's temp sidecar copy now, or — when something still holds it open — when Julia exits.
+const _SESSION_LEFT_TEMPS = String[]
+function _session_rm_temp(tmp::String)
+	try
+		rm(tmp; force=true)
+	catch
+		isempty(_SESSION_LEFT_TEMPS) && atexit(() -> foreach(p -> try rm(p; force=true) catch end, _SESSION_LEFT_TEMPS))
+		push!(_SESSION_LEFT_TEMPS, tmp)
+	end
+	return nothing
+end
+
+# Was this generated picture a MASK when it was saved? The manifest says so (`mask=1`). A session saved
+# before that flag existed has none: there, a generated ONE-band byte picture holding nothing but 0 and
+# 1 can only have been written from a mask (every picture iGMT generates is 0-255), so it is one.
+function _session_is_mask(r::ElementRecipe, data)
+	data isa GMTimage || return false
+	get(r.params, "mask", "") == "1" && return true
+	(r.kind in (:image, :dropimage) && eltype(data.image) == UInt8 && ndims(data.image) == 2) || return false
+	@inbounds for v in data.image
+		v > 0x01 && return false
+	end
+	return true
 end
 
 # Rebuild a curtain into `fig`'s grid window from its recipe + texture path. add_curtain! is called
@@ -1284,8 +1319,14 @@ function _session_replay!(fig, r::ElementRecipe, obj, display, target::Ptr{Cvoid
 			promote && (_add_grid_to_scene(target, obj, r.name; promote=true, source=src); return get(_FIGREG, target, nothing))
 			f = _view_grid(obj); _session_set_name!(getfield(f, :h), r.name); return f
 		elseif r.kind in (:image, :dropimage)
-			promote && (_add_image_to_scene(target, obj, r.name; promote=true, source=src); return get(_FIGREG, target, nothing))
-			f = _view_image(obj); _session_set_name!(getfield(f, :h), r.name); return f
+			# ONE door for a session's first picture, whichever window it lands in: promoted into an empty
+			# one by `_add_image_to_scene` — the door that makes a 16-bit band's 8-bit display copy and keeps
+			# its values for the readout. `_view_image` draws the raw pixels and threw on every Landsat band
+			# ("InexactError: trunc(UInt8, …)") when the session was loaded from a window already showing data.
+			hv = promote ? target : ccall(_fn(:gmtvtk_open_empty), Ptr{Cvoid}, (Cstring,), "i'GMT  —  session")
+			hv == C_NULL && return nothing
+			_add_image_to_scene(hv, obj, r.name; promote=true, source=src)
+			return get(_FIGREG, hv, nothing)
 		end
 		# Any other first element (an Okada request computed over an empty window, a menu layer): it
 		# never owned the window, so give it one and replay it into it like every later element.

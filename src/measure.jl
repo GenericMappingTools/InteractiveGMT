@@ -209,16 +209,79 @@ end
 #   geographic + "Ellipsoidal" -> GMT.geodesicarea (exact area on the WGS84 ellipsoid).
 #   geographic, anything else  -> GMT.gmtspatial -Q (e.g. spherical geographic area), km² → m².
 #   cartesian                  -> GMT.gmtspatial -Q (planar area, data units²).
-function _polygon_area(M::Matrix{Float64}, geog::Bool, datype::AbstractString="Ellipsoidal")::Float64
-	(M[1, :] != M[end, :]) && (M = vcat(M, M[1:1, :]))         # geometry must be a closed ring
+_polygon_area(M::Matrix{Float64}, geog::Bool, datype::AbstractString="Ellipsoidal")::Float64 =
+	_rings_areas([M], geog, datype)[1]
+
+# THE area of polygon rings, one number per ring (m² when geographic, data units² otherwise) — the
+# engines the Preferences Dist/Azim type names, as always. ONE gmtspatial call for every ring when the
+# engine is gmtspatial (one row per ring), so a traced outline of thousands of rings is not thousands
+# of module calls; the ellipsoidal geodesic area is asked ring by ring (GMT.geodesicarea sums a vector).
+function _rings_areas(rings::Vector{Matrix{Float64}}, geog::Bool, datype::AbstractString="Ellipsoidal")::Vector{Float64}
+	closed = [(M[1, :] != M[end, :]) ? vcat(M, M[1:1, :]) : M for M in rings]   # geometry must be closed rings
 	if geog && datype == "Ellipsoidal"
-		return abs(GMT.geodesicarea(GMT.mat2ds(M; geom=GMT.wkbPolygon, proj4=GMT.prj4WGS84)))
-	elseif geog
-		D = GMT.gmtspatial(GMT.mat2ds(M; geom=GMT.wkbPolygon, proj4=GMT.prj4WGS84); area="k")
-		return abs(Float64(D.data[end, end])) * 1e6            # gmtspatial -Qk reports km² → m²
+		return [abs(Float64(GMT.geodesicarea(GMT.mat2ds(M; geom=GMT.wkbPolygon, proj4=GMT.prj4WGS84)))) for M in closed]
 	end
-	D = GMT.gmtspatial(GMT.mat2ds(M; geom=GMT.wkbPolygon); area=true)
-	return abs(Float64(D.data[end, end]))                      # planar area, data units²
+	D = geog ? [GMT.mat2ds(M; geom=GMT.wkbPolygon, proj4=GMT.prj4WGS84) for M in closed] :
+	           [GMT.mat2ds(M; geom=GMT.wkbPolygon) for M in closed]
+	R = geog ? GMT.gmtspatial(D; area="k") : GMT.gmtspatial(D; area=true)
+	a = abs.(Float64.(R.data[:, end]))
+	size(R.data, 1) == length(closed) || error("area: got $(size(R.data, 1)) areas for $(length(closed)) rings")
+	return geog ? a .* 1e6 : a                                    # gmtspatial -Qk reports km² → m²
+end
+
+# Is each ring a HOLE? A ring lying inside an odd number of the other rings is one (even-odd rule), so
+# the answer needs no ring orientation. Tested with the midpoint of the ring's first edge — on a traced
+# pixel outline that point is never on another ring — against the rings whose box holds it.
+_ring_holes(rings::Vector{Matrix{Float64}})::Vector{Bool} = [isodd(length(c)) for c in _ring_containers(rings)]
+
+# For every ring, the rings it lies INSIDE (indices) — the nesting both the hole rule and the polygon a
+# ring belongs to are read from. Each ring is tested with the midpoint of its first edge (on a traced
+# pixel outline never on another ring) against the rings whose box holds that point.
+function _ring_containers(rings::Vector{Matrix{Float64}})::Vector{Vector{Int}}
+	box = [(minimum(@view M[:, 1]), maximum(@view M[:, 1]), minimum(@view M[:, 2]), maximum(@view M[:, 2])) for M in rings]
+	inside(px, py, M) = begin
+		c = false;  n = size(M, 1)
+		@inbounds for i in 1:n
+			j = i == 1 ? n : i - 1
+			yi, yj = M[i, 2], M[j, 2]
+			if (yi > py) != (yj > py) && px < (M[j, 1] - M[i, 1]) * (py - yi) / (yj - yi) + M[i, 1]
+				c = !c
+			end
+		end
+		c
+	end
+	cont = [Int[] for _ in rings]
+	Threads.@threads for k in eachindex(rings)
+		M = rings[k]
+		px = (M[1, 1] + M[2, 1]) / 2;  py = (M[1, 2] + M[2, 2]) / 2
+		for j in eachindex(rings)
+			j == k && continue
+			b = box[j]
+			(b[1] <= px <= b[2] && b[3] <= py <= b[4]) || continue
+			inside(px, py, rings[j]) && push!(cont[k], j)
+		end
+	end
+	return cont
+end
+
+# The POLYGON ring `k` (0-based) belongs to, printed as 0-based ring indices: its outer ring first, then
+# that ring's own holes. A ring at even nesting depth is an outer ring; a hole (odd depth) answers with
+# the ring directly around it. The holes of an outer ring are the rings exactly one level inside it.
+# Called by the viewer (overlayRingRegion, 55_lineprops.cpp) for "Area under polygon…" / "Delete this
+# polygon" on the polygon clicked out of a many-polygon outline. `path` is the outline's ring table.
+function _ring_region(path::AbstractString, k::Integer)
+	D = GMT.gmtread(String(path))
+	segs = D isa Vector ? D : [D]
+	rings = [Float64.(d.data[:, 1:2]) for d in segs]
+	cont = _ring_containers(rings)
+	depth = length.(cont)
+	i = k + 1
+	if isodd(depth[i])                                 # a hole: the ring right around it is the polygon
+		i = cont[i][argmax(depth[cont[i]])]
+	end
+	holes = [j for j in eachindex(rings) if depth[j] == depth[i] + 1 && i in cont[j]]
+	print(join(string.([i; holes] .- 1), ' '))
+	return nothing
 end
 
 # "Area under polygon…": area via _polygon_area, CRS-aware + Preferences Dist/Azim type. Prints the
@@ -229,6 +292,23 @@ function _poly_area(scene::Ptr{Cvoid}, path::String, proj4::String, ispoly::Bool
                     units::AbstractString="kilometers")
 	D   = GMT.gmtread(path)
 	seg = isa(D, Vector) ? D[1] : D
+	# SEVERAL rings (a "Digitize whites" outline: every white region, holes included): each ring's area,
+	# the holes taken off (_ring_holes). Used to measure only the first ring and ignore the rest.
+	if D isa Vector && length(D) > 1
+		rings = [Float64.(d.data[:, 1:2]) for d in D if size(d.data, 1) >= 3]
+		isempty(rings) && (print("Need at least 3 vertices for an area."); return nothing)
+		geog = _measure_isgeog(seg, proj4)
+		a = _rings_areas(rings, geog, datype)
+		h = _ring_holes(rings)
+		tot = sum(a[.!h]) - sum(a[h]; init = 0.0)
+		what = "$(count(.!h)) polygon(s)" * (any(h) ? ", $(count(h)) hole(s) subtracted" : "")
+		if geog
+			print("Area = ", round(tot / 1e6; digits = 4), " km²   (", round(tot; digits = 1), " m²)   — ", what)
+		else
+			print("Area = ", tot, "  (data units²)   — ", what)
+		end
+		return nothing
+	end
 	M   = Float64.(seg.data[:, 1:2])
 	size(M, 1) < 3 && (print("Need at least 3 vertices for an area."); return nothing)
 	if _measure_isgeog(seg, proj4)

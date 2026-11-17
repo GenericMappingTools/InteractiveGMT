@@ -954,18 +954,66 @@ static bool lineClosedRing(Scene *s, const LineRef &lr) {
 	return pi >= 0 && s->polys[pi].closed && s->polys[pi].v.size() >= 4;
 }
 
+// A line OVERLAY whose every segment is a closed ring (>= 4 vertices, last == first) — a set of
+// polygons drawn as lines, e.g. "Digitize whites"' outline of a mask (outer rings and holes).
+static bool lineOverlayClosedRings(Scene *s, const LineRef &lr) {
+	if (lr.kind != LK_Overlay) return false;
+	std::vector<std::vector<std::array<double,3>>> segs;
+	lineGatherPolylines(s, lr, segs);
+	if (segs.empty()) return false;
+	for (const auto &sg : segs) {
+		if (sg.size() < 4) return false;
+		if (sg.front()[0] != sg.back()[0] || sg.front()[1] != sg.back()[1]) return false;
+	}
+	return true;
+}
+
+// The POLYGON segment `seg` of a closed-ring overlay belongs to, as segment indices (0-based): its outer
+// ring and that ring's own holes — a clicked hole answers with the polygon it is a hole of. Decided by
+// the host's ONE ring rule (_ring_region, measure.jl: the even-odd nesting _ring_holes uses), never by
+// a second copy of it here. Empty on failure.
+static std::vector<int> overlayRingRegion(Scene *s, const LineRef &lr, int seg) {
+	std::vector<int> out;
+	if (!g_juliaEval || seg < 0) return out;
+	std::vector<std::vector<std::array<double,3>>> polylines;
+	lineGatherPolylines(s, lr, polylines);
+	if (seg >= (int)polylines.size()) return out;
+	const QString tmp = QDir::tempPath() + "/igmt_rings_" + QString::number(QDateTime::currentMSecsSinceEpoch()) + ".txt";
+	if (!lineWriteTable(s, polylines, /*threeD=*/false, tmp)) return out;
+	const QString cmd = QString("InteractiveGMT._ring_region(raw\"%1\", %2)").arg(tmp).arg(seg);
+	std::vector<char> buf(1 << 16);
+	const int n = g_juliaEval(s, cmd.toStdString().c_str(), buf.data(), (int)buf.size());
+	QFile::remove(tmp);
+	if (n < 0) { sceneLogError(s, QString::fromUtf8(buf.data(), -n)); return out; }
+	for (const QString &t : QString::fromUtf8(buf.data(), n).split(' ', Qt::SkipEmptyParts)) {
+		bool ok = false;
+		const int k = t.toInt(&ok);
+		if (ok) out.push_back(k);
+	}
+	return out;
+}
+
 // Hand the object's 2-D vertices to a Julia measure function over the in-process console bridge.
 // `fn` is "_line_measure" (table -> Data Viewer) or "_poly_area" (number -> message box). The temp
 // table, the scene handle and the window's proj4 go across; Julia decides geographic vs cartesian.
 // Deferred a turn (like nestCreateBlankGrid) so the menu's own event finishes before the (possibly
 // slow first-call) GMT compile runs. `box` shows the result in a dialog, else the status bar.
-static void lineRunMeasure(Scene *s, const LineRef &lr, const char *fn, bool box) {
+// `only` (optional): measure just these segments (0-based) of the object — the polygon clicked out of
+// a many-polygon overlay (overlayRingRegion). Empty = the whole object, as always.
+static void lineRunMeasure(Scene *s, const LineRef &lr, const char *fn, bool box,
+                           const std::vector<int> &only = std::vector<int>()) {
 	if (!g_juliaEval) {
 		QMessageBox::warning(s->win, "Measure", "This computation needs the Julia/GMT host.");
 		return;
 	}
 	std::vector<std::vector<std::array<double,3>>> polylines;
 	lineGatherPolylines(s, lr, polylines);
+	if (!only.empty()) {
+		std::vector<std::vector<std::array<double,3>>> sel;
+		for (int k : only)
+			if (k >= 0 && k < (int)polylines.size()) sel.push_back(std::move(polylines[k]));
+		polylines.swap(sel);
+	}
 	if (polylines.empty()) return;
 	const QString tmp = QDir::tempPath() + "/igmt_measure_" +
 						QString::number(QDateTime::currentMSecsSinceEpoch()) + ".txt";
@@ -1051,6 +1099,21 @@ static void lineExtractProfile(Scene *s, const LineRef &lr) {
 	});
 }
 
+// The object's bounding box W/E/S/N (true coords). false when it has no area. ONE rectangle convention
+// for every rectangle tool (transplant, Roi Crop, Ocean Color region) and for the crop menu's "what is
+// displayed in it" question.
+static bool lineBBox(Scene *s, const LineRef &lr, double &w, double &e, double &so, double &no) {
+	std::vector<std::vector<std::array<double,3>>> polylines;
+	lineGatherPolylines(s, lr, polylines);
+	w = 1e300; e = -1e300; so = 1e300; no = -1e300;
+	for (const auto &pl : polylines)
+		for (const auto &p : pl) {
+			w  = std::min(w,  p[0]);  e  = std::max(e,  p[0]);
+			so = std::min(so, p[1]);  no = std::max(no, p[1]);
+		}
+	return e > w && no > so;
+}
+
 // "Transplant 2nd grid…": the rectangle-handle path of Grid Tools > Transplant 2nd grid (port of
 // Mirone utils/transplants.m). The clicked rectangle/polygon's bounding box (W/E/S/N) clips the
 // implant grid before it is implanted into THIS window's host grid — the "connection to rectangle
@@ -1060,16 +1123,8 @@ static void rectTransplant(Scene *s, const LineRef &lr) {
 		QMessageBox::warning(s->win, "Transplant 2nd grid", "This computation needs the Julia/GMT host.");
 		return;
 	}
-	std::vector<std::vector<std::array<double,3>>> polylines;
-	lineGatherPolylines(s, lr, polylines);
-	if (polylines.empty()) return;
-	double w = 1e300, e = -1e300, so = 1e300, no = -1e300;                 // rectangle bounding box
-	for (const auto &pl : polylines)
-		for (const auto &p : pl) {
-			w  = std::min(w,  p[0]);  e  = std::max(e,  p[0]);
-			so = std::min(so, p[1]);  no = std::max(no, p[1]);
-		}
-	if (!(e > w && no > so)) return;
+	double w, e, so, no;                                                   // rectangle bounding box
+	if (!lineBBox(s, lr, w, e, so, no)) return;
 	const QString rect = QString("%1/%2/%3/%4").arg(w, 0, 'g', 16).arg(e, 0, 'g', 16)
 	                                           .arg(so, 0, 'g', 16).arg(no, 0, 'g', 16);
 	runTransplant(s, 1, rect);   // the SAME transplant as the Grid Tools menu (source chooser included)
@@ -1096,16 +1151,8 @@ static void rectRoiCrop(Scene *s, const LineRef &lr, const char *kind) {
 		QMessageBox::warning(s->win, "Roi Crop Tools", "This computation needs the Julia/GMT host.");
 		return;
 	}
-	std::vector<std::vector<std::array<double,3>>> polylines;
-	lineGatherPolylines(s, lr, polylines);
-	if (polylines.empty()) return;
-	double w = 1e300, e = -1e300, so = 1e300, no = -1e300;                 // rectangle bounding box
-	for (const auto &pl : polylines)
-		for (const auto &p : pl) {
-			w  = std::min(w,  p[0]);  e  = std::max(e,  p[0]);
-			so = std::min(so, p[1]);  no = std::max(no, p[1]);
-		}
-	if (!(e > w && no > so)) return;
+	double w, e, so, no;                                                   // rectangle bounding box
+	if (!lineBBox(s, lr, w, e, so, no)) return;
 	const QString rect = QString("%1/%2/%3/%4").arg(w, 0, 'g', 16).arg(e, 0, 'g', 16)
 	                                           .arg(so, 0, 'g', 16).arg(no, 0, 'g', 16);
 	const QString cmd = QString("InteractiveGMT._on_roi_crop(Ptr{Cvoid}(UInt(%1)),\"%2\",\"%3\")")
@@ -1653,6 +1700,21 @@ static void popupLineObjectMenu(Scene *s, const LineRef &lr, const QString &name
 	if (!isSlip && isRectShape)
 		m.addAction("Rectangle limits (edit)…", [s, a]() { showRectLimitsDialog(s, a); });
 
+	// A line overlay made only of CLOSED RINGS — "Digitize whites"' outline of a mask, its holes included —
+	// is a set of polygons: it gets the AREA, whatever its vertex count (a traced outline has thousands,
+	// which the small-object gate below exists to keep away from length/azimuth, not from an area).
+	// The host measures every ring and takes the holes off (_poly_area, measure.jl).
+	// Right-clicked ON one of its polygons in the view (s->menuSeg): the area of THAT polygon only (its
+	// outer ring minus its own holes). From its Scene Objects row (no segment): the whole outline.
+	const int pickSeg = (lr.kind == LK_Overlay) ? s->menuSeg : -1;
+	const bool ringSet = !isSlip && lineOverlayClosedRings(s, lr);
+	if (ringSet)
+		m.addAction("Area under polygon…", [s, lr, pickSeg]() {
+			if (pickSeg < 0) { lineRunMeasure(s, lr, "_poly_area", true); return; }
+			const std::vector<int> region = overlayRingRegion(s, lr, pickSeg);
+			if (!region.empty()) lineRunMeasure(s, lr, "_poly_area", true, region);
+		});
+
 	// CRS-aware measurements (length(s) + azimuth(s) for lines/polygons; area for closed polygons).
 	// Gated to small objects so coastlines / large imports don't get them (lineMeasurable). The "(s)"
 	// turns plural on a polyline (>1 segment); a polyline shows a table, a single line a number (!many).
@@ -1679,7 +1741,13 @@ static void popupLineObjectMenu(Scene *s, const LineRef &lr, const QString &name
 				// window's primary grid and/or image into a new window.
 				if (!isSlip && (hasRealGrid || sceneHasImage(s))) {
 					QMenu *roi = m.addMenu("Roi Crop Tools");
-					if (hasRealGrid)
+					// "Crop Grid" only where a GRID is what is displayed in the rectangle: over an image
+					// (seenImageAt at its centre — the resolver the readout and the crop itself use) the
+					// rectangle is cropping a picture, and a grid entry would cut the layer under it.
+					double rw, re, rs, rn;
+					const bool imageShown = lineBBox(s, lr, rw, re, rs, rn) &&
+					                        seenImageAt(s, 0.5 * (rw + re), 0.5 * (rs + rn)).valid;
+					if (hasRealGrid && !imageShown)
 						roi->addAction("Crop Grid", [s, lr]() { rectRoiCrop(s, lr, "grid"); });
 					// Mirone (draw_funs.m:409-413) shows Crop Image / Crop Image (with coords) for a
 					// GRID too, not only when a separate bitmap image is loaded — its own architecture
@@ -1935,8 +2003,23 @@ static void popupLineObjectMenu(Scene *s, const LineRef &lr, const QString &name
 			mk->addAction("Land",  [runMask]() { runMask(true); });
 			mk->addAction("Ocean", [runMask]() { runMask(false); });
 		}
-		m.addAction(QString("Delete %1").arg(name),       // hide = the Scene Objects checkbox; this DELETES
-					[s, a]() { overlayDelete(s, a); });
+		if (ringSet && pickSeg >= 0) {
+			// A polygon of a many-polygon outline, clicked in the view: Delete takes THAT polygon (its
+			// outer ring and its own holes) and nothing else. The whole outline goes from its row.
+			m.addAction("Delete this polygon", [s, a, lr, pickSeg]() {
+				std::vector<int> region = overlayRingRegion(s, lr, pickSeg);
+				Overlay *ov = nullptr;
+				for (auto &o : s->overlays) if (o.actor.Get() == a) { ov = &o; break; }
+				if (!ov || region.empty()) return;
+				if ((int)region.size() >= ov->nseg) { overlayDelete(s, a); return; }   // it was the last one
+				std::sort(region.rbegin(), region.rend());          // highest first: indices below stay valid
+				for (int k : region) overlayRemoveSegment(s, *ov, k);
+				if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+			});
+		}
+		else
+			m.addAction(QString("Delete %1").arg(name),       // hide = the Scene Objects checkbox; this DELETES
+						[s, a]() { overlayDelete(s, a); });
 	}
 	// Shared vector-pile draw-order: order this line/polygon against ALL other vector elements
 	// (overlays + symbols + polygons). Not for the singleton profile track, nor for nested-grid

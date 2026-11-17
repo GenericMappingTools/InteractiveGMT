@@ -106,7 +106,15 @@ end
 # that stops being indexed never keeps a stale bar.
 function _push_image_palette(scene::Ptr{Cvoid}, I::GMTimage, name::String)
 	n, rgb = 0, UInt8[]
-	if _img_is_indexed(I)
+	if eltype(I.image) == Bool
+		# A Bool mask keeps the legend its 0/255 grey copy used to give it (the 256-level grey ramp) —
+		# it is drawn without that copy now (`_grey_texture`), and its legend must not change with it.
+		n = 256
+		rgb = Vector{UInt8}(undef, 3n)
+		@inbounds for k = 1:n, b = 1:3
+			rgb[3(k - 1) + b] = UInt8(k - 1)
+		end
+	elseif _img_is_indexed(I)
 		L = _img_palette(I)
 		n = clamp(Int(maximum(I.image)) + 1, 1, size(L, 1))     # highest value in use decides the count
 		nc = min(size(L, 2), 3)
@@ -261,7 +269,35 @@ function _drape_to_bbox(I, gx0, gx1, gy0, gy1; outside::Symbol=:shademesh, fill=
 	cdy = (gy1 - gy0) / nlat
 	_dtb_fill!(buf, pix, nlon, nlat, comps, nb, north_first, gx0, gy0, cdx, cdy,
 	           ix0, ix1, iy0, iy1, nlon_i, nlat_i)
+	_alpha_bleed!(buf, nlon, nlat)
 	return buf, nlon, nlat, comps
+end
+
+# NO HALO AROUND A TRANSPARENT AREA. The viewer smooths every picture when it draws it (the texture is
+# interpolated), and that smoothing blends each texel's COLOUR with its neighbours' whatever their alpha
+# — so a visible edge was mixed with the colour sitting under its invisible neighbours: white under
+# `ifelse(mask, img, 255@100)`, the surrounding landscape when that kept its own colours, black outside
+# an image's footprint. A pale (or dark) ring around everything that stays opaque (user's report,
+# 2026-11-17). Here every fully transparent texel that touches a visible one takes that neighbour's
+# colour, its alpha left at 0: the smoothing then blends the edge only with itself. In place, one pass,
+# rows in parallel (only RGB of alpha-0 texels is written, and only the RGB of alpha>0 texels is read).
+function _alpha_bleed!(buf::Vector{UInt8}, nlon::Int, nlat::Int)
+	Threads.@threads for r in 0:nlat-1
+		@inbounds for c in 0:nlon-1
+			k = 4 * (r * nlon + c)
+			buf[k+4] == 0x00 || continue
+			for (dr, dc) in ((0, -1), (0, 1), (-1, 0), (1, 0), (-1, -1), (-1, 1), (1, -1), (1, 1))
+				rr = r + dr;  cc = c + dc
+				(0 <= rr < nlat && 0 <= cc < nlon) || continue
+				q = 4 * (rr * nlon + cc)
+				if buf[q+4] != 0x00
+					buf[k+1] = buf[q+1];  buf[k+2] = buf[q+2];  buf[k+3] = buf[q+3]
+					break
+				end
+			end
+		end
+	end
+	return buf
 end
 
 # Function barrier for the hot loop above. MEASURED: `pix`'s concrete closure type depends on a
@@ -308,6 +344,16 @@ end
 # `_drape_to_bbox`.
 function _grey_texture(I)
 	(ndims(I.image) == 2 || size(I.image, 3) == 1) || return nothing
+	# A Bool MASK is drawn straight from its own bytes, false -> black, true -> white: the same texels
+	# its 0/255 display copy gave, without making that copy (user's order, 2026-11-17: a mask cost its
+	# own size twice over before reaching the screen).
+	if eltype(I.image) === Bool
+		S = I.image;  lay = I.layout
+		rowmajor_b = length(lay) >= 2 && lay[2] == 'R'
+		nlon_b, nlat_b = rowmajor_b ? (size(S, 1), size(S, 2)) : (size(S, 2), size(S, 1))
+		pb = _pixaccess(S, lay, false, 1, rowmajor_b, nlon_b, nlat_b)   # the Bool itself, never a palette
+		return _grey_canvas(I, (lat, lon, b) -> pb(lat, lon, b) ? 0xff : 0x00, nlon_b, nlat_b, rowmajor_b)
+	end
 	eltype(I.image) === UInt8 || return nothing
 	# An INDEXED image whose palette is the plain grey ramp (entry i = grey i, opaque) — what a 16-bit
 	# band gets from `_stretch_to_u8` — is the same picture: its index IS its grey. Read the indices
@@ -324,6 +370,11 @@ function _grey_texture(I)
 		pix, nb, nlon_i, nlat_i, rowmajor = _pixaccess_img(I)
 	end
 	nb == 1 || return nothing
+	return _grey_canvas(I, pix, nlon_i, nlat_i, rowmajor)
+end
+
+# The one-byte canvas over the image's own footprint, filled through `pix` (one grey byte per pixel).
+function _grey_canvas(I, pix, nlon_i::Int, nlat_i::Int, rowmajor::Bool)
 	north_first = _north_first(I.layout, rowmajor)
 	ir = I.range
 	ix0, ix1, iy0, iy1 = ir[1], ir[2], ir[3], ir[4]

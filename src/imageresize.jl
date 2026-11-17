@@ -26,7 +26,7 @@ end
 # THE resize. Separate from the callback so a script (or a test) can resize without a dialog.
 function _image_resize(I::GMTimage, w::Int, h::Int, method::String)
 	(w < 1 || h < 1) && error("Resize: target size must be at least 1x1 (got $(w)x$(h))")
-	J = GMT.gdalwarp(I, ["-ts", string(w), string(h), "-r", String(method)])
+	J = GMT.gdalwarp(I, vcat(["-ts", string(w), string(h), "-r", String(method)], _alpha_warp_opts(I)))
 	return _resize_fix_georef!(J, I, w, h)
 end
 
@@ -36,7 +36,7 @@ function _on_image_resize(scene::Ptr{Cvoid}, dlg::Ptr{Cvoid}, cparams::Cstring):
 		p  = split(unsafe_string(cparams), ';')
 		op = p[1]
 		name = length(p) >= 2 ? String(strip(p[2])) : ""
-		I = isempty(name) ? _find_object_named(scene, :image)[2] : _find_object(scene, :image, name)
+		I = isempty(name) ? _displayed_image(scene)[2] : _find_object(scene, :image, name)
 		(I isa GMTimage) || error("Image resize: this window has no image named '$name'")
 		if op == "init"
 			# The dialog cannot measure the image itself (what it displays is padded to the window

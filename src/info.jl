@@ -19,7 +19,7 @@ _info_object(::Any)         = nothing
 function _info_image(h::Ptr{Cvoid}, fig, name::AbstractString = "")
 	h == C_NULL && return _info_object(fig)
 	if isempty(name)
-		key, I = _find_object_named(h, :image)
+		key, I = _displayed_image(h)
 		I isa GMTimage || return _info_object(fig)
 	else                                           # a NAMED image: that one, or nothing (no fallback)
 		key, I = String(name), _find_object_exact(h, :image, name)

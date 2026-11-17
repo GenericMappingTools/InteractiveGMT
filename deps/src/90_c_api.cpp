@@ -5064,7 +5064,10 @@ GMTVTK_API void gmtvtk_image_set_rgb_h(void *handle, const char *name, int on) {
 GMTVTK_API void gmtvtk_set_mask_flag_h(void *handle, const char *name, int on) {
 	Scene *s = static_cast<Scene*>(handle);
 	if (!sceneAlive(s)) return;
+	const std::set<std::string> before = s->maskNames;
 	imageFlagSet(s, s->maskNames, name ? name : "", on != 0);
+	// The flag arrives AFTER the handle's row was built: redraw the panel so the row wears the mask icon.
+	if (s->maskNames != before) sceneQueueRebuildObjects(s);
 }
 
 // Replace the PIXELS of an existing image IN PLACE, keeping everything else about it: the same
@@ -8622,6 +8625,18 @@ GMTVTK_API int gmtvtk_active_element_h(void *handle, char *out, int cap) {
 			out[n] = '\0';
 		}
 	};
+	// An image OVER the grids is what is shown: asked of THE resolver (seenImageAt) at the middle of
+	// the view — the camera's focal point — so Info describes what the readout reads there.
+	if (sceneHasVisibleGrid(s) && s->ren && s->ren->GetActiveCamera()) {
+		double fp[3];
+		s->ren->GetActiveCamera()->GetFocalPoint(fp);
+		const double gx = (s->xfac != 0.0) ? s->xfac : 1.0;
+		const SeenImage si = seenImageAt(s, fp[0] / gx, fp[1]);
+		if (si.valid) {
+			put(si.ex ? si.ex->name : s->surfName);
+			return 2;
+		}
+	}
 	if (sceneHasVisibleGrid(s)) {
 		put(activeGridName(s));
 		return 1;
@@ -8638,6 +8653,33 @@ GMTVTK_API int gmtvtk_active_element_h(void *handle, char *out, int cap) {
 	if (s->imageOnly && surfProp(s) && surfProp(s)->GetVisibility()) {
 		put(s->surfName);
 		return 2;
+	}
+	return 0;
+}
+
+// WHAT IS DISPLAYED AT A MAP POINT (true x, y): 2 = an image (seenImageAt — the image the eye sees
+// there, above any grid it covers), 1 = the visible grid layer, 0 = nothing. `out` gets its Scene
+// Objects name ("" = the base surface). Roi Crop asks it at the rectangle's centre, so a crop takes
+// what the user is looking at, the same thing the hover readout reads there.
+GMTVTK_API int gmtvtk_displayed_at_h(void *handle, double x, double y, char *out, int cap) {
+	if (out && cap > 0) out[0] = '\0';
+	Scene *s = static_cast<Scene *>(handle);
+	if (!sceneAlive(s)) return 0;
+	auto put = [out, cap](const std::string &nm) {
+		if (out && cap > 0) {
+			const int n = std::min<int>((int)nm.size(), cap - 1);
+			memcpy(out, nm.data(), n);
+			out[n] = '\0';
+		}
+	};
+	const SeenImage si = seenImageAt(s, x, y);
+	if (si.valid) {
+		put(si.ex ? si.ex->name : s->surfName);
+		return 2;
+	}
+	if (sceneHasVisibleGrid(s)) {
+		put(activeGridName(s));
+		return 1;
 	}
 	return 0;
 }
@@ -10176,6 +10218,27 @@ GMTVTK_API const char *gmtvtk_objrows_test(void *scene) {
 	return buf.c_str();
 }
 
+// test hook: the icon kind (ObjIcon) the Scene Objects row labelled `label` wears; -1 when no such row.
+GMTVTK_API int gmtvtk_objicon_test(void *scene, const char *label) {
+	Scene *s = (Scene*)scene;
+	if (!s || !s->objPanel || !label) return -1;
+	for (QWidget *row : s->objPanel->findChildren<QWidget*>()) {
+		QLabel *icon = nullptr; bool match = false;
+		for (QLabel *l : row->findChildren<QLabel*>(QString(), Qt::FindDirectChildrenOnly)) {
+			if (l->property("iconKind").isValid()) icon = l;
+			else if (l->text() == QString::fromUtf8(label)) match = true;
+		}
+		if (match && icon) return icon->property("iconKind").toInt();
+	}
+	return -1;
+}
+
+// test hook: save Scene Objects icon `kind` (ObjIcon) as a PNG at `path`, to look at it. 1 = written.
+GMTVTK_API int gmtvtk_objicon_png_test(int kind, const char *path) {
+	ensureApp();
+	return (path && makeObjectIcon(kind).save(QString::fromUtf8(path))) ? 1 : 0;
+}
+
 // test hook: the Scene Objects panel as a TREE -- one line per row, indented two spaces per level --
 // so a test can assert PARENTING (a plot's elements hanging under their one master handle), which the
 // flat gmtvtk_objrows_test above cannot show.
@@ -11640,7 +11703,7 @@ GMTVTK_API int gmtvtk_gridcalc_open_dialog_test(void *handle) {
 	QApplication::processEvents();
 	return ok;
 }
-// how: 0 = the X (close), 1 = minimise, 2 = Esc, 3 = the dialog's own Close button.
+// how: 0 = the X (close), 1 = minimise, 2 = Esc, 3 = a click on "push_close" (hidden and unwired now).
 GMTVTK_API void gmtvtk_gridcalc_leave_dialog_test(void *handle, int how) {
 	GridCalculatorDialog *g = gridCalcTestDlg(handle);
 	if (!g || !g->dlg) return;
@@ -11670,6 +11733,60 @@ GMTVTK_API int gmtvtk_gridcalc_delete_dialog_test(void *handle) {
 	if (!g) return 0;
 	testDeleteParkedDialog(&g);
 	return gridCalcTestDlg(handle) == nullptr ? 1 : 0;
+}
+// Type `expr` into the open dialog and press Compute — the dialog's own runCompute, list refill
+// included — then hand back the list's rows, one per line. Returns the row count, -1 = no dialog.
+GMTVTK_API int gmtvtk_gridcalc_compute_test(void *handle, const char *expr, char *out, int cap) {
+	GridCalculatorDialog *g = gridCalcTestDlg(handle);
+	if (!g || !g->dlg || !g->cmdEdit || !g->listBox) return -1;
+	g->cmdEdit->setPlainText(QString::fromUtf8(expr ? expr : ""));
+	if (auto *b = g->dlg->findChild<QPushButton *>("push_compute")) b->click();
+	QApplication::processEvents();
+	QStringList rows;
+	for (int i = 0; i < g->listBox->count(); ++i) rows << g->listBox->item(i)->text();
+	const QByteArray u = rows.join('\n').toUtf8();
+	if (out && cap > 0) {
+		const int n = std::min<int>(cap - 1, (int)u.size());
+		memcpy(out, u.constData(), (size_t)n);
+		out[n] = 0;
+	}
+	return g->listBox->count();
+}
+// Build an expression the way a user does: `steps` is newline-separated, each "btn:<objectName>" (a
+// keypad button clicked) or "list:<row text>" (that list row double-clicked). The box is cleared
+// first; its text afterwards is written to `out`. Returns 1, or -1 = no dialog / unknown step.
+GMTVTK_API int gmtvtk_gridcalc_type_test(void *handle, const char *steps, char *out, int cap) {
+	GridCalculatorDialog *g = gridCalcTestDlg(handle);
+	if (!g || !g->dlg || !g->cmdEdit || !g->listBox) return -1;
+	g->cmdEdit->clear();
+	for (const QString &st : QString::fromUtf8(steps ? steps : "").split('\n', Qt::SkipEmptyParts)) {
+		if (st.startsWith("btn:")) {
+			auto *b = g->dlg->findChild<QPushButton *>(st.mid(4));
+			if (!b) return -1;
+			b->click();
+		}
+		else if (st.startsWith("list:")) {
+			const auto hits = g->listBox->findItems(st.mid(5), Qt::MatchExactly);
+			if (hits.isEmpty()) return -1;
+			g->listBox->itemDoubleClicked(hits.first());     // the signal a real double-click emits
+		}
+		else return -1;
+	}
+	QApplication::processEvents();
+	const QByteArray u = g->cmdEdit->toPlainText().toUtf8();
+	if (out && cap > 0) {
+		const int n = std::min<int>(cap - 1, (int)u.size());
+		memcpy(out, u.constData(), (size_t)n);
+		out[n] = 0;
+	}
+	return 1;
+}
+// 1 = the dialog's Close button is on screen (it must not be), 0 = hidden/absent, -1 = no dialog.
+GMTVTK_API int gmtvtk_gridcalc_close_button_test(void *handle) {
+	GridCalculatorDialog *g = gridCalcTestDlg(handle);
+	if (!g || !g->dlg) return -1;
+	auto *b = g->dlg->findChild<QPushButton *>("push_close");
+	return (b && b->isVisibleTo(g->dlg)) ? 1 : 0;
 }
 
 // Put `paths` (newline-separated) on the map through the dialog's own header read (the Julia
@@ -12285,6 +12402,20 @@ GMTVTK_API int gmtvtk_combo_index_test(const char *window, const char *widget) {
 		if (tl->objectName() != QString::fromUtf8(window) || !tl->isVisible()) continue;
 		if (auto *cb = tl->findChild<QComboBox *>(QString::fromUtf8(widget))) return cb->currentIndex();
 	}
+	return -1;
+}
+
+// test hook: the segment a right-click in the view would have landed on (Scene::menuSeg), for the next
+// gmtvtk_line_menu_click_test — the click itself picks it with pickOverlayAt. -1 = none (the whole element).
+GMTVTK_API void gmtvtk_set_menu_seg_test(void *scene, int seg) {
+	if (Scene *s = (Scene*)scene) s->menuSeg = seg;
+}
+
+// test hook: how many segments the overlay `name` holds; -1 when there is no such overlay.
+GMTVTK_API int gmtvtk_overlay_nseg_test(void *scene, const char *name) {
+	Scene *s = (Scene*)scene;
+	if (!s || !name) return -1;
+	for (auto &o : s->overlays) if (o.name == name) return o.nseg;
 	return -1;
 }
 

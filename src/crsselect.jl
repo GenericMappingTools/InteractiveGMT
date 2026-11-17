@@ -106,9 +106,8 @@ _crs_box_txt(b) = join((round(v; sigdigits = 6) for v in b), " / ")
 # raster's footprint into `id`, and that footprint touches the area where `id` is defined (a UTM zone
 # on the other side of the world transforms to finite numbers too, all of them meaningless).
 function _crs_check(scene::Ptr{Cvoid}, grid::String, id::String)::String
-	O = _find_object(scene, :grid, grid)
-	O === nothing && (O = _find_object_named(scene, :image)[2])
-	O === nothing && return "NO\tThis window has no grid or image to reproject."
+	O = _displayed_raster(scene)          # what is ON DISPLAY (project.jl), the raster the warp will take
+	O === nothing && return "NO\tThis window has no grid or image on display to reproject."
 	src = _window_srs(scene)
 	isempty(src) && return "NO\tThe data in this window has no coordinate reference system, " *
 	                       "so it cannot be reprojected into $id."

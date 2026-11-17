@@ -168,9 +168,20 @@ function _gc_kind(ex, kinds::Dict{Symbol,Symbol}, labels::Dict{Symbol,String})::
 			end
 			return :rgb
 		end
+		(ka === :color || kb === :color) &&
+			throw(_GcRejected("a colour or a transparency (`255@50`) paints an RGB image: the other of A and B " *
+			                  "must be an RGB image, e.g. ifelse(mask, image, 255@50)"))
 		_gc_masky(ka) && _gc_masky(kb) && return :mask
 		_gc_numy(ka) && _gc_numy(kb) && return :grid
 		throw(_GcRejected("ifelse picks between two values of the same kind, but $(sh(args[2])) is $(what(ka)) and $(sh(args[3])) is $(what(kb))"))
+	end
+	if f === :_gc_tr                                   # `v@t`: a fill with transparency (see _GC_TRANSP)
+		v, t = args[1], args[2]
+		(_gc_is_byte(v) || (v isa Expr && v.head === :tuple && _gc_kind(v, kinds, labels) === :color)) ||
+			throw(_GcRejected("$(sh(ex)): before `@` goes a whole number 0-255 or a colour (r, g, b)"))
+		(t isa Real && !(t isa Bool) && 0 <= t <= 100) ||
+			throw(_GcRejected("$(sh(ex)): after `@` goes a transparency from 0 to 100 (%)"))
+		return :color
 	end
 	(isdefined(Base, f) && getfield(Base, f) isa Function) ||
 		throw(_GcRejected("`$f` is not a function the calculator knows"))
@@ -213,6 +224,13 @@ function _gc_check_compare(op, a, b, kinds::Dict{Symbol,Symbol}, labels::Dict{Sy
 	end
 	return nothing
 end
+
+# TRANSPARENCY: `v@t` — a whole number 0-255 or a colour (r, g, b), then a transparency 0-100 % — is
+# written `_gc_tr(v, t)` before parsing (`@` is a macro sign to Julia's parser). It is the painted side
+# of an RGB `ifelse` only: `ifelse(mask, img, 255@50)` paints white at 50 % transparency where the mask
+# is false; `@100` is fully see-through, whatever the number.
+const _GC_TRANSP = r"(\([^()]*\)|(?<![A-Za-z0-9_.])[0-9]+(?:\.[0-9]*)?)\s*@\s*([0-9]+(?:\.[0-9]*)?)"
+_gc_sub_transparency(code::AbstractString) = replace(String(code), _GC_TRANSP => s"_gc_tr(\1, \2)")
 
 # The grid name written inside a token (braced or not).
 function _gc_token_name(tok::AbstractString)::String
@@ -260,7 +278,35 @@ function _gc_rgb_copy(I::GMTimage)::GMTimage
 	Ib = _to_band_planar(J)
 	Ib === J && (Ib = deepcopy(J))
 	eltype(Ib.image) == UInt8 || (Ib = _stretch_to_u8(Ib))
+	_gc_true_label!(Ib)
 	return Ib
+end
+
+# A picture the calculator made is born with the layout code the display reads it by (`_north_first`,
+# via `_true_layout`, grid.jl), so a crop of it reads the rows the screen shows (measured, see
+# `_roi_crop_image`).
+_gc_true_label!(I::GMTimage) = (I.layout = _true_layout(I.layout); I)   # the rule: grid.jl
+
+# The same copy WITH an alpha band (4th band, opaque = 255), for an `ifelse` that paints transparency
+# (`255@50`). Built in ONE pass straight from the source's own memory — band-planar or pixel-interleaved
+# alike — into the final 4-band array: never a 3-band copy first and a 4-band one after it. A source
+# that already carries an alpha band keeps it.
+function _gc_rgba_copy(I::GMTimage)::GMTimage
+	eltype(I.image) == UInt8 || (I = _stretch_to_u8(I))
+	S = I.image;  lay = I.layout
+	nb = size(S, 3)
+	inter = length(lay) >= 3 && lay[3] == 'P'
+	d1, d2 = inter ? (size(S, 1), size(S, 2)) : (size(S, 1), size(S, 2))
+	A = Array{UInt8}(undef, d1, d2, 4)
+	P = inter ? reshape(S, nb, d1, d2) : S          # interleaved memory, band fastest (as _to_band_planar)
+	Threads.@threads for j in 1:d2
+		@inbounds for b in 1:4, i in 1:d1
+			A[i, j, b] = b <= nb ? (inter ? P[b, i, j] : S[i, j, b]) : 0xff
+		end
+	end
+	J = GMT.mat2img(A, I)
+	J.layout = inter ? lay[1:2] * "B" * lay[4:end] : lay
+	return _gc_true_label!(J)
 end
 
 # Linear index of pixel (ix, iy) — iy counted from the SOUTH — in a band-planar image, plus the band
@@ -287,8 +333,11 @@ function _gc_image_grid(I::GMTimage)::Union{GMTgrid,Nothing}
 	nx = length(I.x) - I.registration
 	ny = length(I.y) - I.registration
 	length(I.image) == nx * ny || return nothing
-	vals = eltype(I.image) == Bool ? Vector{Bool}(vec(I.image)) : Float32.(vec(I.image))
-	G = GMT.mat2grid(reshape(vals, ny, nx), I)
+	# NO COPY: the grid's z IS the image's own buffer, in its own element type (a Landsat band stays
+	# UInt16). It used to be a Float32 copy of every one-band image in the window, made on every list
+	# refresh and every Compute whether the expression used it or not — four times each image's memory,
+	# for nothing. Integer values become Float32 lazily, where an expression reads them (`_gc_operand`).
+	G = GMT.mat2grid(reshape(I.image, ny, nx), I)
 	# The row order the buffer REALLY has — `_north_first` (drape.jl), the rule the display reads it
 	# with: gmtread's disk reader hands a row-major image back north row first but labels it 'B', and
 	# the grid inherited that label, so a Landsat band came out of the calculator upside down.
@@ -322,12 +371,15 @@ end
 
 # Every RGB image of this window (three or four bands), in Scene Objects order: [(label, GMTimage), …].
 # Operands of `ifelse(mask, A, B)` only (see `_gc_is_rgb`).
+# An RGB operand is a PICTURE, so it is taken AS THE WINDOW SHOWS IT: the row's own 8-bit object, never
+# the 16-bit original kept aside for re-stretching (`_IMG_ORIG`). A Landsat RGB composition's original
+# is raw UInt16 DNs; squeezing those into 0-255 again gave back a near-black picture, not the colours
+# on screen.
 function _gridcalc_rgbs(scene::Ptr{Cvoid}, basenm::AbstractString)
 	out = Tuple{String,GMTimage}[]
-	origs = get(_IMG_ORIG, scene, Dict{String,GMTimage}())
 	for (kind, nm, data) in get(_SCENE_OBJS, scene, Tuple{Symbol,String,Any}[])
 		(kind === :image && data isa GMTimage) || continue
-		I = get(origs, nm, data)
+		I = data
 		_gc_is_rgb(I) || continue
 		label = isempty(nm) ? String(basenm) : nm
 		any(t -> t[1] == label, out) || push!(out, (label, I))
@@ -399,7 +451,8 @@ end
 # `ifelse` only). Returns the result array, or a GMTimage when the result is an RGB image.
 # Kept separate from the callback so the whole compute path is testable without a live window.
 function _gridcalc_eval(objs::Vector{Tuple{String,GMTgrid}}, files::Dict{String,String}, expr::AbstractString;
-                        rgbs::Vector{Tuple{String,GMTimage}} = Tuple{String,GMTimage}[])
+                        rgbs::Vector{Tuple{String,GMTimage}} = Tuple{String,GMTimage}[],
+                        alias::Union{Nothing,Base.RefValue{Tuple{String,String}}} = nothing)
 	objs = _gc_with_reference(objs, files, expr)
 	ref = objs[1][2]
 	# Each name becomes a generated variable, the grid behind it read (and geometry-checked) the first
@@ -450,12 +503,12 @@ function _gridcalc_eval(objs::Vector{Tuple{String,GMTgrid}}, files::Dict{String,
 			images[v] = G
 			return string(v)
 		end
-		# One element order for the whole expression — `ref`'s. A grid that already lies that way
-		# (the normal case) is taken as it is; one that does not is re-ordered by `_z_as`, because
-		# broadcasting buffers that run different ways would pair up points that are not the same
-		# point and quietly return a vertically mirrored result. The result therefore comes out in
-		# `ref`'s own order, which is the layout `mat2grid(z, ref)` then labels it with.
-		push!(arrays, v => _z_as(G, ref))
+		# One element order for the whole expression — `ref`'s: element k of every operand is the SAME
+		# node. A grid that already lies that way (the normal case) is its own buffer, flattened; one
+		# that does not is read through `_GcAs`, which maps ref's index k to that grid's own memory —
+		# an index, never a re-ordered copy. The result comes out in `ref`'s order, which is the layout
+		# `mat2grid(z, ref)` then labels it with.
+		push!(arrays, v => _gc_operand(_gc_as(G, ref)))
 		return string(v)
 	end
 
@@ -470,12 +523,13 @@ function _gridcalc_eval(objs::Vector{Tuple{String,GMTgrid}}, files::Dict{String,
 	code = _gc_replace_bare(code, known, resolve)
 	isempty(badname) || throw(_GcRejected(badname))
 	isempty(vars) && throw(_GcRejected("the expression uses no grid (nothing to compute)"))
+	alias === nothing || (alias[] = _gc_alias_name(code, Dict{Symbol,String}(v => nm for (nm, v) in vars)))
 
 	# CHECK before computing: parse, then give every piece a kind (grid / mask / number) and refuse
 	# an operator handed the wrong one — `&` on a grid, `>` on a mask — with a message saying which
 	# piece and what to write instead, never a Julia MethodError from the middle of the evaluation.
 	ex = try
-		Meta.parse(code)
+		Meta.parse(_gc_sub_transparency(code))
 	catch
 		throw(_GcRejected("the expression cannot be read: look for a missing operand, operator or parenthesis"))
 	end
@@ -492,17 +546,116 @@ function _gridcalc_eval(objs::Vector{Tuple{String,GMTgrid}}, files::Dict{String,
 	kind = _gc_kind(ex, kinds, labels)
 	(kind === :rgb && ex isa Symbol) && _gc_pixel_only(kind, ex, labels)     # a bare image: nothing to compute
 
-	# Evaluate in a throwaway module holding only the grid variables. `@.` broadcasts the WHOLE
-	# expression, so `&a * &b + sin(&c)` is element-wise without the user having to type any dot.
+	# Evaluate in a throwaway module (nothing of the session reachable from the expression).
 	m = Module(:GridCalcSandbox)
-	for (v, z) in arrays
-		Core.eval(m, :($v = $z))
+	kind === :rgb && return _gc_rgb_eval(ex, m, images, kinds, ref, arrays)
+	# ONE pass, node by node, straight into the result's final array — Bool for a mask, Float32 for a
+	# grid. No intermediate array of any kind: the result is the only allocation.
+	kind in (:mask, :bool, :grid, :num) || error("the expression produced $(_gc_what(kind)), not a grid")
+	z = Vector{_gc_mask_kind(kind) ? Bool : Float32}(undef, length(ref.z))
+	_gc_run!(z, ex, m, arrays)
+	return reshape(z, size(ref.z))                  # same memory, GMT.jl's (ny,nx) dims
+end
+
+_gc_mask_kind(k::Symbol) = k === :mask || k === :bool
+
+# THE evaluator: the expression compiled ONCE into a scalar kernel — every operand `_gcN` read as
+# `_gcN[k]` — run over the nodes k by every thread Julia has, each node computed and written straight
+# into `out`. Element-wise by construction: whatever the expression (arithmetic, comparisons, `&`,
+# `ifelse`, sin…), no node ever needs another one, so the threads split the nodes with no locking, and
+# no temporary array is ever made. The operands arrive as ARGUMENTS of the compiled function, so it is
+# specialised on their concrete types (a `_GcF32` view, a `_GcAs` index, a plain buffer) — a tight loop.
+function _gc_run!(out::Vector, ex, m::Module, arrays::Vector{Pair{Symbol,Any}})
+	vs   = Symbol[v for (v, _) in arrays]
+	body = _gc_at(ex, Set(vs))
+	f = Core.eval(m, :(function (_gc_out, $(vs...))
+		Base.Threads.@threads for _gc_k in eachindex(_gc_out)
+			@inbounds _gc_out[_gc_k] = $body
+		end
+		return _gc_out
+	end))
+	Base.invokelatest(f, out, (z for (_, z) in arrays)...)
+	return out
+end
+
+# The expression with every operand variable read at node `_gc_k`.
+_gc_at(ex::Symbol, vs::Set{Symbol}) = ex in vs ? :($ex[_gc_k]) : ex
+_gc_at(ex::Expr, vs::Set{Symbol}) = Expr(ex.head, (_gc_at(a, vs) for a in ex.args)...)
+_gc_at(ex, ::Set{Symbol}) = ex
+
+# A grid's values as ONE flat vector in `ref`'s element order, never a copy: its own buffer when the
+# two lie the same way (the normal case), else `_GcAs`, an index map onto its own memory.
+function _gc_as(G::GMTgrid, ref::GMTgrid)
+	c = _grid_layout_code(ref);  cg = _grid_layout_code(G)
+	cg == c && return vec(G.z)
+	nx, ny = _grid_dims(ref)
+	(nx, ny) == _grid_dims(G) || error("grids of different sizes cannot be combined element-wise")
+	return _GcAs(vec(G.z), nx, ny, (c & 1) != 0, (c & 2) != 0, (cg & 1) != 0, (cg & 2) != 0)
+end
+
+# Element k of `ref`'s memory order, read from a buffer laid out another way (`_grid_layout_code`:
+# bit 0 row-major, bit 1 north row first).
+struct _GcAs{T,A<:AbstractVector{T}} <: AbstractVector{T}
+	a::A
+	nx::Int
+	ny::Int
+	rowref::Bool
+	northref::Bool
+	rowsrc::Bool
+	northsrc::Bool
+end
+Base.size(v::_GcAs) = (v.nx * v.ny,)
+Base.@propagate_inbounds function Base.getindex(v::_GcAs, k::Int)
+	nx, ny = v.nx, v.ny
+	ix, j = v.rowref ? ((k - 1) % nx + 1, (k - 1) ÷ nx + 1) : ((k - 1) ÷ ny + 1, (k - 1) % ny + 1)
+	iy = v.northref ? ny + 1 - j : j                 # row counted from the south
+	js = v.northsrc ? ny + 1 - iy : iy
+	return v.a[v.rowsrc ? (js - 1) * nx + ix : (ix - 1) * ny + js]
+end
+
+# A grid operand as the expression reads it. Float32/Float64/Bool buffers are used as they lie; an
+# INTEGER buffer (a UInt16 Landsat band) is read through `_GcF32`, a no-copy Float32 view, so
+# `(B5 - B4) / (B5 + B4)` is real arithmetic, never UInt16 wrap-around — and never a converted copy.
+_gc_operand(z::AbstractArray{<:Union{AbstractFloat,Bool}}) = z
+_gc_operand(z::AbstractArray{<:Integer}) = _GcF32(z)
+
+struct _GcF32{N,A<:AbstractArray{<:Integer,N}} <: AbstractArray{Float32,N}
+	a::A
+end
+Base.size(v::_GcF32) = size(v.a)
+Base.IndexStyle(::Type{<:_GcF32}) = IndexLinear()       # operands are flat vectors (`_gc_as`)
+Base.@propagate_inbounds Base.getindex(v::_GcF32, i::Int) = Float32(v.a[i])
+
+# The result's NAME: the expression with each operand written as a one-letter alias — A, B, C … in the
+# order the operands first appear — so a calculation on three long Landsat file names is called
+# `(A - B) / (A + B)`, not a 200-character copy of the expression. `code` is the expression with every
+# operand already replaced by its generated variable (`_gc1`, `_gc2`, …), `labels` maps each variable
+# back to its operand's name. Returns (name, legend), the legend saying who is who: "A = …, B = …".
+function _gc_alias_name(code::AbstractString, labels::Dict{Symbol,String})::Tuple{String,String}
+	letters = Dict{String,String}()
+	legend  = String[]
+	letter(k) = k <= 26 ? string(Char('A' + k - 1)) : "X$k"
+	name = replace(String(code), r"_gc\d+" => function (v)
+		get!(letters, v) do
+			a = letter(length(letters) + 1)
+			push!(legend, a * " = " * get(labels, Symbol(v), v))
+			a
+		end
+	end)
+	return String(strip(name)), join(legend, ", ")
+end
+
+# A result name nobody in this window uses yet: `name`, else `name (2)`, `name (3)` … Aliases repeat
+# across calculations (every two-operand difference is `A - B`), and an existing object of the same name
+# would otherwise be REPLACED by the new result.
+function _gc_unique_name(scene::Ptr{Cvoid}, name::String)::String
+	used = Set{String}(nm for (_, nm, _) in get(_SCENE_OBJS, scene, Tuple{Symbol,String,Any}[]))
+	name in used || return name
+	k = 2
+	while "$name ($k)" in used
+		k += 1
 	end
-	kind === :rgb && return _gc_rgb_eval(ex, m, images, kinds, ref)
-	z = Core.eval(m, Expr(:macrocall, Symbol("@__dot__"), LineNumberNode(0), ex))
-	isa(z, AbstractArray) || error("the expression produced a $(typeof(z)), not a grid")
-	size(z) == size(ref.z) || error("the expression produced a $(size(z)) array, not $(size(ref.z))")
-	return z
+	return "$name ($k)"
 end
 
 # An `ifelse` whose result is an RGB image (`_gc_kind` said :rgb, so its shape is already checked):
@@ -510,41 +663,80 @@ end
 # a whole number on every colour band, a colour (r, g, b) band by band, or another RGB image pixel by
 # pixel. A 4th (alpha) band is left as the image has it. Pixels are matched by (ix, iy) through each
 # image's own row order (`_gc_rgb_index`), the mask's through `_zmat` — never by raw buffer position.
-function _gc_rgb_eval(ex, m::Module, images::Dict{Symbol,GMTimage}, kinds::Dict{Symbol,Symbol}, ref::GMTgrid)::GMTimage
+function _gc_rgb_eval(ex, m::Module, images::Dict{Symbol,GMTimage}, kinds::Dict{Symbol,Symbol}, ref::GMTgrid,
+                      arrays::Vector{Pair{Symbol,Any}})::GMTimage
 	ex isa Symbol && return _gc_rgb_copy(images[ex])
 	c, A, B = ex.args[2], ex.args[3], ex.args[4]
 	isrgb(x) = _gc_kind(x, kinds, Dict{Symbol,String}()) === :rgb
 	# the side that stays is an RGB image; the other one is painted where the mask says so
 	base, other, where = isrgb(A) ? (A, B, false) : (B, A, true)
-	out = _gc_rgb_eval(base, m, images, kinds, ref)
-	cz  = Core.eval(m, Expr(:macrocall, Symbol("@__dot__"), LineNumberNode(0), c))
+	# `v@t`: the painted pixels get alpha 255·(1 - t/100), so the result carries an alpha band — built
+	# with it from the start (`_gc_rgba_copy`), never added to a finished copy.
+	tr = other isa Expr && other.head === :call && other.args[1] === :_gc_tr
+	alpha = tr ? round(UInt8, 255 * (1 - other.args[3] / 100)) : nothing
+	tr && (other = other.args[2])
+	out = (tr && base isa Symbol) ? _gc_rgba_copy(images[base]) : _gc_rgb_eval(base, m, images, kinds, ref, arrays)
+	(tr && size(out.image, 3) < 4) && (out = _gc_rgba_copy(out))   # a nested ifelse's picture
 	nx, ny = _grid_dims(ref)
-	pick = cz isa Bool ? ((ix, iy) -> cz) :
-	       (M = _zmat(GMT.mat2grid(Matrix{Bool}(reshape(cz, size(ref.z))), ref)); (ix, iy) -> M[iy, ix])
+	# The mask as ONE concrete matrix read M[iy, ix] (iy from the south): the condition run by the same
+	# node-by-node kernel as any expression, into one Bool per node — its only allocation — so the
+	# loops below never branch on what kind of condition they were handed.
+	cz = _gc_run!(Vector{Bool}(undef, length(ref.z)), c, m, arrays)
+	M = _zmat(GMT.mat2grid(reshape(cz, size(ref.z)), ref))
 	idx, npl, ncol = _gc_rgb_index(out)
-	S = out.image
 	if other isa Integer || (other isa Expr && other.head === :tuple)
-		col = other isa Integer ? fill(UInt8(other), 3) : UInt8[UInt8(v) for v in other.args]
-		@inbounds for iy in 1:ny, ix in 1:nx
-			pick(ix, iy) == where || continue
-			k = idx(ix, iy)
-			for b in 0:ncol-1
-				S[k + b * npl] = col[b+1]
-			end
-		end
+		col = other isa Integer ? ntuple(_ -> UInt8(other), 3) : ntuple(b -> UInt8(other.args[b]), 3)
+		_gc_paint_color!(out.image, idx, npl, ncol, M, where, col, nx, ny,
+		                 alpha === nothing ? -1 : Int(alpha))
 	else
-		src = _gc_rgb_eval(other, m, images, kinds, ref)
+		# A second RGB image is only READ: its own buffer when it is already band-planar UInt8, never a
+		# copy made just to be read from (a nested ifelse is the one case that builds a picture first).
+		src = other isa Symbol ? _to_band_planar(images[other]) : _gc_rgb_eval(other, m, images, kinds, ref, arrays)
+		eltype(src.image) == UInt8 || (src = _gc_rgb_copy(src))
 		sidx, snpl, sncol = _gc_rgb_index(src)
-		T = src.image
-		@inbounds for iy in 1:ny, ix in 1:nx
-			pick(ix, iy) == where || continue
+		_gc_paint_image!(out.image, idx, npl, src.image, sidx, snpl, min(ncol, sncol), M, where, nx, ny)
+	end
+	return out
+end
+
+# The two paint loops, behind a function barrier: every argument arrives with its concrete type (the
+# index closures, the mask view), so a 50-megapixel scene is one tight loop, not a dynamic call and an
+# allocation per pixel.
+function _gc_paint_color!(S::AbstractArray{UInt8}, idx::F, npl::Int, ncol::Int, M::AbstractMatrix{Bool},
+                          where::Bool, col::NTuple{3,UInt8}, nx::Int, ny::Int, alpha::Int = -1) where {F}
+	a = UInt8(clamp(alpha, 0, 255))          # alpha >= 0: also written into band 4 (the image has one)
+	# FULLY transparent (`@100`): the colour is never seen, so the pixel KEEPS the picture's own colour
+	# and only its alpha changes. Painting the number in instead (white, for 255@100) was not invisible:
+	# the screen smooths the texture, so every edge pixel was blended with its white, alpha-0 neighbour
+	# — a whitish ring around whatever stayed opaque (user's report, 2026-11-17).
+	paint = alpha != 0
+	Threads.@threads for iy in 1:ny          # rows write disjoint pixels: no locking
+		@inbounds for ix in 1:nx
+			M[iy, ix] == where || continue
+			k = idx(ix, iy)
+			if paint
+				for b in 0:ncol-1
+					S[k + b * npl] = col[b+1]
+				end
+			end
+			alpha >= 0 && (S[k + 3 * npl] = a)
+		end
+	end
+	return S
+end
+
+function _gc_paint_image!(S::AbstractArray{UInt8}, idx::F, npl::Int, T::AbstractArray{UInt8}, sidx::G,
+                          snpl::Int, ncol::Int, M::AbstractMatrix{Bool}, where::Bool, nx::Int, ny::Int) where {F,G}
+	Threads.@threads for iy in 1:ny          # rows write disjoint pixels: no locking
+		@inbounds for ix in 1:nx
+			M[iy, ix] == where || continue
 			k = idx(ix, iy);  ks = sidx(ix, iy)
-			for b in 0:min(ncol, sncol)-1
+			for b in 0:ncol-1
 				S[k + b * npl] = T[ks + b * snpl]
 			end
 		end
 	end
-	return out
+	return S
 end
 
 # A LOGICAL expression (a comparison, `&`, `|`, `!` — anything whose result is true/false per node) is
@@ -556,7 +748,7 @@ end
 function _gc_mask_image(z::AbstractMatrix{Bool}, ref::GMTgrid)::GMTimage
 	nx, ny = _grid_dims(ref)
 	rowmajor = length(ref.layout) >= 2 && ref.layout[2] == 'R'
-	m = Vector{Bool}(vec(z))                          # a BitMatrix is not an Array: unpack once
+	m = z isa Array{Bool} ? vec(z) : Vector{Bool}(vec(z))   # no copy of a Bool Array; a BitMatrix unpacked once
 	return GMT.mat2img(rowmajor ? reshape(m, nx, ny) : reshape(m, ny, nx), ref)
 end
 
@@ -619,12 +811,17 @@ function _on_gridcalc(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		end
 		objs = _gc_with_reference(_gridcalc_objects(scene, _get(d, "base")), files, expr)
 
-		z = _gridcalc_eval(objs, files, expr; rgbs = _gridcalc_rgbs(scene, _get(d, "base")))
-		title = length(expr) <= 60 ? String(expr) : String(expr)[1:60] * "…"
+		alias = Ref(("", ""))
+		z = _gridcalc_eval(objs, files, expr; rgbs = _gridcalc_rgbs(scene, _get(d, "base")), alias = alias)
+		# Named by the operands' aliases (A, B, …), never by their full names; the legend goes to the
+		# info console and, for a grid, into its recipe.
+		short, legend = alias[]
+		title = _gc_unique_name(scene, length(short) <= 60 ? short : first(short, 60) * "…")
+		_viewer_log_info(scene, "Grid calculator: " * title * " — " * legend)
 		z isa GMTimage && return _gc_commit_rgb!(scene, z, title)
 		eltype(z) == Bool && return _commit_mask!(scene, _gc_mask_image(z, objs[1][2]), title)
-		G = GMT.mat2grid(Float32.(z), objs[1][2])
-		_grid_command!(G, "InteractiveGMT grid calculator: " * String(expr))
+		G = GMT.mat2grid(eltype(z) == Float32 ? z : Float32.(z), objs[1][2])   # already Float32: no copy
+		_grid_command!(G, "InteractiveGMT grid calculator: " * String(expr) * "  (" * legend * ")")
 		ok = _gm3d_deliver(scene, G, title, "", false, "gridcalc")
 		# Computed from a Landsat / Sentinel band (UInt16 DNs): a measured quantity, not a relief —
 		# born unshaded, the same rule as every RemoteS product (`_unshade_grid!`).

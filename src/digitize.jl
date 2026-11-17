@@ -27,6 +27,9 @@ const _DIGITIZE_WIDTH = 1.5
 # footprint). The values are flags, not a range: NSWING writes 0/1, a thresholded picture may carry
 # 0/255, and a third distinct value means this is a picture, not a mask.
 function _is_mask_image(I::GMTimage)::Bool
+	# A Bool image is a mask by type: both states present (it reaches the window as itself now, no
+	# longer as a 0/255 UInt8 copy, so this must answer for it as it did for that copy).
+	ndims(I.image) == 2 && eltype(I.image) == Bool && return any(I.image) && !all(I.image)
 	(ndims(I.image) == 2 && eltype(I.image) == UInt8) || return false
 	a = 0x00;  b = 0x00;  n = 0
 	@inbounds for v in I.image
@@ -108,7 +111,7 @@ function _digitize_source(scene::Ptr{Cvoid}, name::AbstractString)
 		I = _find_object_exact(scene, :image, name)
 		(I isa GMTimage) && return I
 	end
-	_, I = _find_object_named(scene, :image)
+	_, I = _displayed_image(scene)
 	(I isa GMTimage) && return I
 	error("Digitize whites: this window has no mask image to digitize")
 end

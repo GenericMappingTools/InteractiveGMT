@@ -501,7 +501,7 @@ _pc_stem(name::AbstractString) = (s = replace(String(name), r"[^A-Za-z0-9_.-]" =
 # The raster `kind` ("image" | "grid") called `name` ("" = the window's own), as (key, object).
 function _pc_raster(scene::Ptr{Cvoid}, kind::String, name::String)
 	if kind == "image"
-		key, I = isempty(name) ? _find_object_named(scene, :image) : (name, _find_object(scene, :image, name))
+		key, I = isempty(name) ? _displayed_image(scene) : (name, _find_object(scene, :image, name))
 		(I isa GMTimage) || error("This window has no image named '$name'.")
 		return String(key), I
 	end

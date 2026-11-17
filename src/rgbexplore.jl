@@ -117,7 +117,7 @@ function _on_rgbexplore(scene::Ptr{Cvoid}, dlg::Ptr{Cvoid}, cparams::Cstring)::C
 		p    = split(unsafe_string(cparams), ';')
 		op   = String(p[1])
 		name = length(p) >= 2 ? String(strip(p[2])) : ""
-		I = isempty(name) ? _find_object_named(scene, :image)[2] : _find_object(scene, :image, name)
+		I = isempty(name) ? _displayed_image(scene)[2] : _find_object(scene, :image, name)
 		(I isa GMTimage) || error("Explore RGB: this window has no image named '$name'")
 		_rgbx_is_rgb(I) || error("Explore RGB: '$(isempty(name) ? "the image" : name)' is not an RGB image")
 		if op == "init"

@@ -736,7 +736,7 @@ static void textLabelMenu(Scene *s, vtkProp3D *act, const QPoint &globalPos) {
 // colourbar / profile). Drawn into a 16x16 transparent pixmap (matches the small checkbox).
 enum ObjIcon { IC_Surface, IC_Image, IC_Line, IC_Points, IC_Curtain,
                IC_Polygon, IC_Polyline, IC_Rect, IC_Circle, IC_Text, IC_ColorBar, IC_Profile, IC_NestRect,
-               IC_Axes, IC_StraightLine, IC_Beachball, IC_LineArea, IC_Cloud, IC_Arrow };
+               IC_Axes, IC_StraightLine, IC_Beachball, IC_LineArea, IC_Cloud, IC_Arrow, IC_Mask };
 
 static QPixmap makeObjectIcon(int kind) {
 	// Drawn in a 16-unit coordinate space but rasterised at high DPI (supersampled) so the glyph
@@ -782,6 +782,18 @@ static QPixmap makeObjectIcon(int kind) {
 		QPolygonF hill; hill << QPointF(2, 13) << QPointF(6, 7) << QPointF(9, 11) << QPointF(12, 6) << QPointF(14, 13);
 		p.drawPolygon(hill);
 		p.setBrush(QColor(245, 220, 90)); p.drawEllipse(QPointF(11, 5.5), 1.6, 1.6);
+		break;
+	}
+	case IC_Mask: {                                            // a MASK: black and white only — a black frame,
+		p.setPen(QPen(Qt::black, 1.0)); p.setBrush(Qt::black);     // a white blob (the "true" region) with a
+		p.drawRect(2, 3, 12, 10);                                   // black hole in it: a binary picture
+		QPainterPath blob;
+		blob.moveTo(4.0, 9.5);
+		blob.cubicTo(3.5, 5.0, 8.5, 4.0, 10.5, 5.5);
+		blob.cubicTo(13.5, 7.5, 12.5, 11.5, 9.0, 11.5);
+		blob.cubicTo(6.5, 11.5, 4.3, 12.0, 4.0, 9.5);
+		p.setPen(Qt::NoPen); p.setBrush(Qt::white); p.drawPath(blob);
+		p.setBrush(Qt::black); p.drawEllipse(QPointF(8.6, 8.4), 1.3, 1.1);
 		break;
 	}
 	case IC_Line: {                                            // overlay track: a clean coloured line, no handles
@@ -3029,6 +3041,7 @@ static void rebuildSceneObjects(Scene *s) {
 			if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
 		});
 		QLabel *icon = new QLabel(row); icon->setPixmap(makeObjectIcon(iconKind));
+		icon->setProperty("iconKind", iconKind);          // which glyph this row wears (test hook gmtvtk_objicon_test)
 		ClickableLabel *text = new ClickableLabel(label, row);   // left-click -> properties
 		if (!tip.isEmpty()) { icon->setToolTip(tip); text->setToolTip(tip); }
 
@@ -3120,9 +3133,16 @@ static void rebuildSceneObjects(Scene *s) {
 		QObject::connect(cb, &QCheckBox::clicked, [s, t, grp](bool) { objRowsAboveFollow(s, t, grp); });
 
 		QLabel *icon = new QLabel(row); icon->setPixmap(makeObjectIcon(iconKind));
+		icon->setProperty("iconKind", iconKind);          // which glyph this row wears (test hook gmtvtk_objicon_test)
 		ClickableLabel *text = new ClickableLabel(name, row);
 		QFont f = text->font(); f.setBold(true); text->setFont(f);   // container labels stay bold
-		if (!tip.isEmpty()) { icon->setToolTip(tip); text->setToolTip(tip); }
+		// The tooltip's FIRST LINE is the handle's full name (a file name, mostly), which the narrow
+		// dock usually cuts off; the usage hint follows on the next line. Rich text with the break WRITTEN
+		// IN: the application's tooltip filter (StickyTooltipFilter -> wrappedTooltip) simplifies a plain
+		// tooltip, which turns a "\n" into a space; one that starts with "<" is shown as it is.
+		const QString fullTip = "<qt><nobr><b>" + name.toHtmlEscaped() + "</b></nobr>" +
+		                        (tip.isEmpty() ? QString() : "<br>" + tip.toHtmlEscaped()) + "</qt>";
+		icon->setToolTip(fullTip); text->setToolTip(fullTip);
 		if (onProps)   { text->setCursor(Qt::PointingHandCursor); text->onClick = onProps; }
 		if (onContext) text->onRightClick = onContext;
 		if (onDbl)     text->onDoubleClick = onDbl;
@@ -3246,6 +3266,7 @@ static void rebuildSceneObjects(Scene *s) {
 		});
 
 		QLabel *icon = new QLabel(row); icon->setPixmap(makeObjectIcon(iconKind));
+		icon->setProperty("iconKind", iconKind);          // which glyph this row wears (test hook gmtvtk_objicon_test)
 		ClickableLabel *text = new ClickableLabel(name, row);
 		QString tip = "Right-click to delete the entire slip model";
 		icon->setToolTip(tip); text->setToolTip(tip);
@@ -3536,7 +3557,9 @@ static void rebuildSceneObjects(Scene *s) {
 		std::function<void(const QPoint&)> imgMenu = [s](const QPoint &g) { imageHandleMenu(s, -1, g); };
 		const bool imgVis   = dp->GetVisibility() != 0;
 		const bool imgGrpOn = imgVis || s->baseAxes.shown || (s->palette.n > 0 && s->palette.show);
-		beginGroupHandle(nm, IC_Image, imgGrpOn,
+		// a MASK (two states, flagged by the host: gmtvtk_set_mask_flag_h) wears the mask icon
+		const int imgIcon = (s->maskNames.count(s->surfName) || s->maskNames.count(std::string())) ? IC_Mask : IC_Image;
+		beginGroupHandle(nm, imgIcon, imgGrpOn,
 		        imgMenu, imgMenu,
 		        "Left- or right-click for properties (save / remove)",
 		        // FOLDED, like every other image and grid group. Three bands opened the same way came up
@@ -3545,7 +3568,7 @@ static void rebuildSceneObjects(Scene *s) {
 		        /*startFolded=*/true);
 		// The picture is the drape AND the base surface it lies on: one element, one switch. Hiding the
 		// drape alone left the base mesh on screen in its placeholder CPT colour (a red plate).
-		makeRow("Image", IC_Image, imgVis,                          // Image leaf handle kept as a child
+		makeRow("Image", imgIcon, imgVis,                           // Image leaf handle kept as a child
 		        [s, dp](bool on) {
 			        dp->SetVisibility(on ? 1 : 0);
 			        for (vtkActor *a : surfActors(s)) a->SetVisibility(on ? 1 : 0);
@@ -3564,7 +3587,8 @@ static void rebuildSceneObjects(Scene *s) {
 		const QString nm = QString::fromStdString(ex.name);
 		if (ex.isImage) {                                  // dropped image group — header IS the image handle
 			vtkProp3D *a = ex.actor.Get();
-			beginGroupHandle(nm, IC_Image, extraGrpOn(ex),
+			const int imgIcon = s->maskNames.count(ex.name) ? IC_Mask : IC_Image;   // a mask wears the mask icon
+			beginGroupHandle(nm, imgIcon, extraGrpOn(ex),
 			        [s, a](const QPoint &g) { imageObjectMenu(s, a, g); },
 			        [s, a](const QPoint &g) { imageObjectMenu(s, a, g); },
 			        "Left- or right-click for image properties (incl. Save)",
@@ -3574,7 +3598,7 @@ static void rebuildSceneObjects(Scene *s) {
 			        // folded — one operation behaving differently for one element type (SACRED_LAW.md).
 			        // `objExpanded` still remembers whatever the user opens afterwards.
 			        /*startFolded=*/true);
-			makeRow("Image", IC_Image, a && a->GetVisibility() != 0,   // Image leaf handle kept as a child
+			makeRow("Image", imgIcon, a && a->GetVisibility() != 0,    // Image leaf handle kept as a child
 			        [a](bool on) { if (a) a->SetVisibility(on ? 1 : 0); },
 			        [s, a](const QPoint &g) { imageObjectMenu(s, a, g); },
 			        "Left- or right-click for image properties (incl. Save)",

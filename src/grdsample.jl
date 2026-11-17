@@ -112,6 +112,7 @@ function _gdalwarp_image(I::GMTimage; inc::AbstractString="", region::AbstractSt
 	end
 	r = _gdal_resample(interp)
 	!isempty(r) && append!(opts, ["-r", r])
+	append!(opts, _alpha_warp_opts(I))          # a picture with transparency resamples AS transparency
 	return GMT.gdalwarp(I, opts)
 end
 

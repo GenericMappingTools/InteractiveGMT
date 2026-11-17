@@ -402,7 +402,7 @@ function _fft_grid_arg(scene::Ptr{Cvoid}, spec::String)
 		# picture, which is what Image > FFT Spectrum runs on.
 		g = _active_grid(scene)
 		if !(g isa GMTgrid)
-			_, g = _find_object_named(scene, :image)
+			_, g = _displayed_image(scene)
 		end
 		g === nothing ? error("this window has no grid or image to transform") : g
 	else

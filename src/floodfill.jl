@@ -317,7 +317,7 @@ function _on_floodfill(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		op = p[1]
 		(op == "seed" || op == "multi") || error("Shape detector: unknown op '$op'")
 		name = String(strip(p[2]))
-		I = isempty(name) ? _find_object_named(scene, :image)[2] : _find_object(scene, :image, name)
+		I = isempty(name) ? _displayed_image(scene)[2] : _find_object(scene, :image, name)
 		(I isa GMTimage) || error("Shape detector: this window has no image named '$name'")
 		tol    = parse(Int,     strip(p[3]));  conn  = parse(Int,     strip(p[4]))
 		dodil  = strip(p[5]) == "1";           domah = strip(p[6]) == "1"

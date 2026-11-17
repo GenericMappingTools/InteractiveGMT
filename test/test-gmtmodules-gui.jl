@@ -343,26 +343,71 @@ end
 		expr = "$base - &{Trend (n=3)}"
 		@test GmtModules.send(IG._on_gridcalc, f.h, ["expr=$expr", "base=$base"]) == 1
 		IG._pump_once()
-		R = GmtModules.grid_named(f.h, expr)
+		# Named by the operands' ALIASES (A, B, … in order of appearance), never by their full names
+		R = GmtModules.grid_named(f.h, "A - B")
 		@test R !== nothing && size(R.z) == size(f.G.z)
 		@test abs(sum(R.z) / length(R.z)) < abs(sum(f.G.z) / length(f.G.z))
 		@test occursin("grid calculator", R.command)      # the recipe is stamped on the result
+		@test occursin("A = $base, B = Trend (n=3)", R.command)   # …with who is who
+		# The same aliases again: a NEW name, never a replace of the first result
+		@test GmtModules.send(IG._on_gridcalc, f.h, ["expr=$expr", "base=$base"]) == 1
+		IG._pump_once()
+		@test GmtModules.grid_named(f.h, "A - B (2)") !== nothing && GmtModules.grid_named(f.h, "A - B") !== nothing
 		# A LOGICAL expression is a mask: a Bool image on the base grid's own geometry, not a 0/1 grid.
 		mexpr = "($base > 0) & ($base < 1e9)"
+		mname = "(A > 0) & (A < 1e9)"
 		@test GmtModules.send(IG._on_gridcalc, f.h, ["expr=$mexpr", "base=$base"]) == 1
 		IG._pump_once()
-		Mi = IG._find_object_exact(f.h, :image, mexpr)              # the ROW'S object: the mask itself
+		Mi = IG._find_object_exact(f.h, :image, mname)              # the ROW'S object: the mask itself
 		@test Mi isa IG.GMTimage{Bool,2}
-		@test !haskey(get(IG._IMG_ORIG, f.h, Dict()), mexpr)        # not an 8-bit copy of a "wider" source
+		@test !haskey(get(IG._IMG_ORIG, f.h, Dict()), mname)        # not an 8-bit copy of a "wider" source
 		@test Mi.x == f.G.x && Mi.y == f.G.y && Mi.inc == f.G.inc && Mi.registration == f.G.registration
 		@test count(Mi.image) == count(z -> z > 0, f.G.z)
-		@test !(mexpr in GmtModules.names(f.h))                         # never ALSO a grid
+		@test !(mname in GmtModules.names(f.h))                         # never ALSO a grid
 	finally
 		ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), f.h)
 	end
 end
 
-@testitem "grid calculator dialog parks: X, minimise, Esc, Close; Delete" tags=[:gui] setup=[GmtModules, GmtvtkTest] begin
+@testitem "grid calculator dialog: results join its list (masks too); no Close button" tags=[:gui] setup=[GmtModules, GmtvtkTest] begin
+	IG = InteractiveGMT
+	_test_fn = GmtvtkTest._test_fn
+	f = viz(GmtModules.grid())
+	GmtvtkTest._register_gridcalc_test()
+	try
+		@test ccall(_test_fn(:gmtvtk_gridcalc_open_dialog_test), Cint, (Ptr{Cvoid},), f.h) == 1
+		@test ccall(_test_fn(:gmtvtk_gridcalc_close_button_test), Cint, (Ptr{Cvoid},), f.h) == 0
+		compute(expr) = (buf = zeros(UInt8, 8192);
+			n = ccall(_test_fn(:gmtvtk_gridcalc_compute_test), Cint, (Ptr{Cvoid}, Cstring, Ptr{UInt8}, Cint),
+			          f.h, expr, buf, Cint(length(buf)));
+			(n, split(GC.@preserve(buf, unsafe_string(pointer(buf))), '\n')))
+		n, rows = compute("Surface * 2")
+		@test "A * 2" in rows                                   # a grid result: offered to the next expression
+		n, rows = compute("(Surface > 0) & (Surface < 1e9)")
+		@test "(A > 0) & (A < 1e9)" in rows                     # a MASK result too: it is an ifelse operand
+		n, rows = compute("ifelse((A > 0) & (A < 1e9), Surface, 0)")
+		@test "ifelse(A, B, 0)" in rows                         # …and it really works as one
+
+		# ifelse writes its own commas: each argument, once complete, is followed by ", " when the next
+		# one starts (a grid name from the list, a number); a number's own digits are never split.
+		typed(steps...) = (buf = zeros(UInt8, 4096);
+			ccall(_test_fn(:gmtvtk_gridcalc_type_test), Cint, (Ptr{Cvoid}, Cstring, Ptr{UInt8}, Cint),
+			      f.h, join(steps, '\n'), buf, Cint(length(buf)));
+			GC.@preserve(buf, unsafe_string(pointer(buf))))
+		s = typed("btn:push_fun_ifelse", "list:Surface", "btn:push_op_ge", "btn:push_digit_0", "btn:push_digit_dot",
+		          "btn:push_digit_4", "list:A * 2", "btn:push_digit_2", "btn:push_digit_5", "btn:push_digit_5", "btn:push_par_r")
+		@test replace(s, r"\s+" => " ") == " ifelse( Surface >= 0.4, A * 2, 255)"
+		s = typed("btn:push_fun_ifelse", "btn:push_par_l", "list:Surface", "btn:push_op_gt", "btn:push_digit_1",
+		          "btn:push_par_r", "btn:push_digit_7")
+		@test endswith(replace(s, r"\s+" => ""), "(Surface>1),7")
+		@test !occursin(",", typed("btn:push_fun_sqrt", "list:Surface"))     # only ifelse gets commas
+		@test isempty(typed("list:Surface", "btn:push_clear"))               # Clear empties the box
+	finally
+		ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), f.h)
+	end
+end
+
+@testitem "grid calculator dialog parks: X, minimise, Esc; Delete" tags=[:gui] setup=[GmtModules, GmtvtkTest] begin
 	IG = InteractiveGMT
 	_test_fn = GmtvtkTest._test_fn
 	f = viz(GmtModules.grid())
@@ -371,7 +416,7 @@ end
 	leave(how) = ccall(_test_fn(:gmtvtk_gridcalc_leave_dialog_test), Cvoid, (Ptr{Cvoid}, Cint), f.h, how)
 	try
 		@test opened() == 1 && parked() == 0
-		for how in (0, 1, 2, 3)                        # the X, minimise, Esc, the Close button
+		for how in (0, 1, 2)                           # the X, minimise, Esc (there is no Close button)
 			leave(how)
 			@test parked() == 1
 			@test opened() == 1 && parked() == 0       # the menu brings the SAME one back
@@ -597,6 +642,230 @@ end
 	end
 end
 
+# ifelse with TRANSPARENCY (user's order, 2026-11-17): `255@50` paints the picked pixels white at 50 %
+# transparency, `@100` makes them fully see-through whatever the number; the result carries an alpha
+# band, opaque everywhere else. Both an in-memory (band-planar) and a disk (pixel-interleaved) RGB image.
+@testitem "grid calculator: ifelse paints transparency (255@50, 0@100)" tags=[:gui] setup=[GmtModules, GmtvtkTest] begin
+	IG = InteractiveGMT
+	# pixel-registered, so the picture keeps the grid's exact geometry through a GeoTIFF round trip
+	G = IG.GMT.mat2grid(Float32[ix for iy in 1:10, ix in 1:20], x = [0.0, 20.0], y = [0.0, 10.0], reg = 1)
+	f = viz(G; title = "ZZtransp")
+	try
+		P = IG.GMT.mat2img(cat(fill(0x14, 10, 20), fill(0xc8, 10, 20), fill(0x1e, 10, 20); dims = 3), G)
+		tif = joinpath(mktempdir(), "pic.tif");  IG.GMT.gmtwrite(tif, P)
+		for (nm, I) in (("Pmem", P), ("Pdisk", IG.GMT.gmtread(tif)))
+			@test IG._add_image_to_scene(f.h, I, nm; promote = false)
+			for (e, a) in (("255@50", 0x80), ("0@100", 0x00), ("(255, 0, 0)@25", 0xbf))
+				expr = "ifelse(Surface >= 11, $nm, $e)"
+				@test GmtModules.send(IG._on_gridcalc, f.h, ["expr=$expr", "base=Surface"]) == 1
+				R = last([d for (k, n, d) in IG._SCENE_OBJS[f.h] if k === :image && startswith(n, "ifelse(")])
+				@test size(R.image, 3) == 4
+				idx, npl, _ = IG._gc_rgb_index(R)
+				px(ix, iy) = [R.image[idx(ix, iy) + b * npl] for b in 0:3]
+				@test px(15, 5) == [0x14, 0xc8, 0x1e, 0xff]               # kept: the picture, opaque
+				# @100: the pixel keeps the picture's OWN colour (only alpha changes) — a painted colour under
+				# alpha 0 bleeds into the opaque edge when the texture is smoothed (a whitish ring)
+				col = e == "255@50" ? [0xff, 0xff, 0xff] : e == "0@100" ? [0x14, 0xc8, 0x1e] : [0xff, 0x00, 0x00]
+				@test px(3, 5) == vcat(col, a)                             # painted, at its transparency
+			end
+		end
+		# Crop Image (with coords) of a north-east rectangle takes the NORTH-EAST pixels, right way up — the
+		# picture itself and every ifelse result made from it, in memory and from disk (the disk one used to
+		# come back as the wrong rows, flipped).
+		IG.GMT.gmtwrite(tif, IG.GMT.mat2img(cat(UInt8[iy * 20 for iy in 1:10, ix in 1:20],
+		                                        UInt8[ix * 10 for iy in 1:10, ix in 1:20], fill(0x40, 10, 20); dims = 3), G))
+		@test IG._add_image_to_scene(f.h, IG.GMT.gmtread(tif), "Grad"; promote = false)
+		for e in ("", "0", "0@50")
+			if !isempty(e)
+				@test GmtModules.send(IG._on_gridcalc, f.h, ["expr=ifelse(Surface >= 11, Grad, $e)", "base=Surface"]) == 1
+			end
+			X = isempty(e) ? IG._find_object_exact(f.h, :image, "Grad") :
+			    last([d for (k, n, d) in IG._SCENE_OBJS[f.h] if k === :image && startswith(n, "ifelse(")])
+			C = IG._roi_crop_image(X, 10.0, 20.0, 6.0, 10.0)
+			cidx, cnpl, _ = IG._gc_rgb_index(C)
+			ncx, ncy = C.layout[2] == 'R' ? (size(C.image, 1), size(C.image, 2)) : (size(C.image, 2), size(C.image, 1))
+			@test (C.image[cidx(1, 1)], C.image[cidx(1, ncy)]) == (140, 200)                 # red: rows 7 (S) .. 10 (N)
+			@test (C.image[cidx(1, 1) + cnpl], C.image[cidx(ncx, 1) + cnpl]) == (110, 200)    # green: cols 11 (W) .. 20 (E)
+		end
+		# `@` paints an RGB image only
+		@test GmtModules.send(IG._on_gridcalc, f.h, ["expr=ifelse(Surface >= 11, Surface, 0@50)", "base=Surface"]) == 2
+	finally
+		ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), f.h)
+	end
+end
+
+# REPROJECT TAKES WHAT IS ON DISPLAY (user's order, 2026-11-17): a cropped IMAGE on display, its grid
+# still in the window — the CRS selector / Tools > Project used to warp the grid. Both the check and the
+# warp now ask `_displayed_raster`.
+@testitem "reproject warps the raster on display (an image over a grid)" tags=[:gui] setup=[GmtModules, GmtvtkTest] begin
+	IG = InteractiveGMT
+	G = IG.GMT.mat2grid(Float32[ix + iy for iy in 1:30, ix in 1:40], x = [-10.0, -6.0], y = [38.0, 41.0],
+	                    reg = 1, proj4 = "+proj=longlat +datum=WGS84 +no_defs")
+	f = viz(G; title = "ZZreproj")
+	try
+		P = IG.GMT.mat2img(cat(fill(0x20, 30, 40), fill(0x90, 30, 40), fill(0x30, 30, 40); dims = 3), G)
+		@test IG._add_image_to_scene(f.h, P, "ZZpic"; promote = false)
+		IG._on_roi_crop(f.h, "image_coords", "-9/-7/39/40")          # the crop is now what is displayed
+		IG._pump_once()
+		O = IG._displayed_raster(f.h)
+		@test O isa IG.GMTimage && O === IG._find_object_exact(f.h, :image, "ZZpic (cropped)")
+		@test startswith(IG._crs_check(f.h, "", "EPSG:3763"), "OK\t")
+		before = Set(keys(IG._FIGREG))
+		@test GmtModules.send(IG._on_project, f.h, ["t_srs=EPSG:3763", "s_srs=+proj=longlat +datum=WGS84 +no_defs",
+		                                            "resample=bilinear", "projname=PT-TM06", "grid="]) == 1
+		IG._pump_once()
+		new = [IG._FIGREG[h] for h in keys(IG._FIGREG) if !(h in before)]
+		@test length(new) == 1 && !(new[1] isa IG.QtFigure)            # an IMAGE window, never a grid one
+		newobjs = get(IG._SCENE_OBJS, getfield(new[1], :h), [])
+		@test any(t -> t[3] isa IG.GMTimage, newobjs) && !any(t -> t[3] isa IG.GMTgrid, newobjs)
+		# An image WITH TRANSPARENCY is warped as transparency (-srcalpha/-dstalpha): the white hidden under
+		# its transparent pixels never reaches the visible edge (the ring came back after reprojecting).
+		n = 120
+		A = Array{UInt8}(undef, n, n, 4)
+		for iy in 1:n, ix in 1:n
+			inside = hypot(ix - 60.5, iy - 60.5) <= 40
+			A[iy, ix, 1:3] .= inside ? (0x20, 0x80, 0x20) : (0xff, 0xff, 0xff)
+			A[iy, ix, 4] = inside ? 0xff : 0x00
+		end
+		Gd = IG.GMT.mat2grid(zeros(Float32, n, n), x = [-9.0, -8.0], y = [39.0, 40.0], reg = 1,
+		                     proj4 = "+proj=longlat +datum=WGS84 +no_defs")
+		W = IG.GMT.gdalwarp(IG.GMT.mat2img(A, Gd),
+		                    IG._project_opts(Dict("t_srs" => "EPSG:3763", "resample" => "bilinear"), true; alpha = true))
+		S = IG._to_band_planar(W).image
+		@test size(S, 3) == 4
+		@test !any(S[i, j, 4] > 0 && S[i, j, 2] > 0xa0 for i in axes(S, 1), j in axes(S, 2))   # no whitish visible pixel
+	finally
+		for h in collect(keys(IG._FIGREG))
+			h == f.h || ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), h)
+		end
+		ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), f.h)
+	end
+end
+
+# A MASK WEARS ITS OWN ICON in Scene Objects (user's order, 2026-11-17): black and white only, unlike a
+# picture's. A Grid calculator logical result gets it; a plain picture keeps the image icon.
+@testitem "grid calculator: a mask's Scene Objects row wears the mask icon" tags=[:gui] setup=[GmtModules, GmtvtkTest] begin
+	IG = InteractiveGMT
+	_test_fn = GmtvtkTest._test_fn
+	icon(h, l) = ccall(_test_fn(:gmtvtk_objicon_test), Cint, (Ptr{Cvoid}, Cstring), h, l)
+	IC_IMAGE, IC_MASK = 1, 19                                       # ObjIcon (50_scene.cpp)
+	G = IG.GMT.mat2grid(Float32[ix for iy in 1:10, ix in 1:20], x = [0.0, 20.0], y = [0.0, 10.0], reg = 1)
+	f = viz(G; title = "ZZmaskicon")
+	try
+		@test IG._add_image_to_scene(f.h, IG.GMT.mat2img(rand(UInt8, 10, 20, 3), G), "ZZphoto"; promote = false)
+		@test GmtModules.send(IG._on_gridcalc, f.h, ["expr=ZZmaskicon >= 11", "base=ZZmaskicon"]) == 1
+		for _ in 1:10; IG._pump_once(); sleep(0.03); end
+		@test icon(f.h, "A >= 11") == IC_MASK
+		@test icon(f.h, "ZZphoto") == IC_IMAGE
+		d = mktempdir()
+		@test ccall(_test_fn(:gmtvtk_objicon_png_test), Cint, (Cint, Cstring), IC_MASK, joinpath(d, "mask.png")) == 1
+		P = IG.GMT.gdalread(joinpath(d, "mask.png"))                  # black and white only (plus transparency)
+		px = [(P[i, j, 1], P[i, j, 2], P[i, j, 3]) for i in axes(P, 1), j in axes(P, 2) if size(P, 3) < 4 || P[i, j, 4] == 0xff]
+		@test all(c -> c[1] == c[2] == c[3], px)                       # no colour anywhere
+	finally
+		ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), f.h)
+	end
+end
+
+# "Delete this polygon" on a traced mask outline takes ONLY the polygon clicked (user's order, 2026-11-17):
+# the blob's ring alone; a hole's click removes the field around it together with that hole.
+@testitem "digitize whites: Delete this polygon removes only the clicked polygon" tags=[:gui] setup=[GmtModules, GmtvtkTest] begin
+	IG = InteractiveGMT
+	_test_fn = GmtvtkTest._test_fn
+	GmtvtkTest._register_console_eval_test(true)
+	nseg(h, nm) = ccall(_test_fn(:gmtvtk_overlay_nseg_test), Cint, (Ptr{Cvoid}, Cstring), h, nm)
+	setseg(h, k) = ccall(_test_fn(:gmtvtk_set_menu_seg_test), Cvoid, (Ptr{Cvoid}, Cint), h, k)
+	click(h, nm, item) = ccall(_test_fn(:gmtvtk_line_menu_click_test), Cint, (Ptr{Cvoid}, Cstring, Cstring), h, nm, item)
+	n = 120
+	G = IG.GMT.mat2grid(zeros(Float32, n, n), x = [0.0, 3600.0], y = [0.0, 3600.0], reg = 1)
+	m = [(12 <= hypot(ix - 40.5, iy - 40.5) <= 28) || (hypot(ix - 95.5, iy - 90.5) <= 15) for iy in 1:n, ix in 1:n]
+	f = viz(G; title = "ZZdigitize")
+	try
+		M = IG._gc_mask_image(m, G)
+		@test IG._commit_mask!(f.h, M, "ZZmask") == 1
+		IG._digitize_whites(f.h, "ZZmask")
+		IG._pump_once()
+		ol = "ZZmask boundary"
+		@test nseg(f.h, ol) == 3
+		# which ring is the blob, and which is the field's hole (the viewer's overlay keeps _digitize_rings' order)
+		xyz, so, ns, _ = IG._digitize_rings(M, 1)
+		rings = [Matrix{Float64}(reshape(xyz, 3, :)'[so[s]+1:so[s+1], 1:2]) for s in 1:ns]
+		cont = IG._ring_containers(rings)
+		kblob = findfirst(k -> isempty(cont[k]) && !any(c -> k in c, cont), 1:ns)
+		khole = findfirst(c -> !isempty(c), cont)
+		setseg(f.h, kblob - 1)
+		@test click(f.h, ol, "Delete this polygon") == 1
+		@test nseg(f.h, ol) == 2                                  # the blob only
+		setseg(f.h, (khole > kblob ? khole - 1 : khole) - 1)      # the hole, indexed in what is left
+		@test click(f.h, ol, "Delete this polygon") == 1
+		@test nseg(f.h, ol) == -1                                 # the field and its hole: nothing left
+	finally
+		ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), f.h)
+	end
+end
+
+# A MASK SURVIVES SAVE / LOAD SESSION (user's report, 2026-11-17: a session's logical arrays came back as
+# 0/1 pictures, so ifelse refused them): saved with `mask=1` in the manifest, loaded as the Bool mask.
+# A session written before that flag (sess2.igmtz) is read the same way: a generated one-band 0/1 picture.
+@testitem "grid calculator: masks survive Save/Load Session as masks" tags=[:gui] setup=[GmtModules, GmtvtkTest] begin
+	IG = InteractiveGMT
+	G = IG.GMT.mat2grid(Float32[ix for iy in 1:10, ix in 1:20], x = [0.0, 20.0], y = [0.0, 10.0], reg = 1)
+	f = viz(G; title = "ZZsessmask")
+	path = joinpath(mktempdir(), "masks.igmtz");  q = nothing
+	try
+		@test GmtModules.send(IG._on_gridcalc, f.h, ["expr=Surface >= 11", "base=Surface"]) == 1
+		IG._on_save_session(f.h, path)
+		man = IG._zip_read(path)["session.manifest"]
+		@test occursin("param.mask=1", String(copy(man)))
+		q = IG._on_load_session(C_NULL, path);  IG._pump_once()
+		h = getfield(q, :h)
+		M = IG._find_object_exact(h, :image, "A >= 11")
+		@test M isa IG.GMTimage{Bool,2} && count(M.image) == 10 * 10
+		# …and is a mask to the calculator again
+		base = unsafe_string(ccall(IG._fn(:gmtvtk_base_name_h), Cstring, (Ptr{Cvoid},), h))
+		@test GmtModules.send(IG._on_gridcalc, h, ["expr=ifelse(A >= 11, $base, 0)", "base=$base"]) == 1
+	finally
+		q === nothing || ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), getfield(q, :h))
+		ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), f.h)
+	end
+end
+
+# WHAT IS DISPLAYED ANSWERS (user's order, 2026-11-17): with a grid AND an image on top of it both
+# showing, the readout over the image prints the image's COLOUR, never the z of the grid under it;
+# beside the image it is the grid's z again. Roi Crop's "Crop Image" and Info ask the same resolver.
+@testitem "readout, crop and Info speak for the image on top of a grid" tags=[:gui] setup=[GmtModules, GmtvtkTest] begin
+	IG = InteractiveGMT
+	_test_fn = GmtvtkTest._test_fn
+	pump(n = 10) = for _ in 1:n; IG._pump_once(); sleep(0.03); end
+	hover(h, x, y) = (buf = zeros(UInt8, 1024);
+		ccall(_test_fn(:gmtvtk_hover_readout_test), Cint, (Ptr{Cvoid}, Cdouble, Cdouble, Ptr{UInt8}, Cint),
+		      h, x, y, buf, Cint(length(buf)));
+		GC.@preserve buf unsafe_string(pointer(buf)))
+	G = IG.GMT.mat2grid(Float32[100iy + ix for iy in 1:10, ix in 1:20], x = collect(1.0:20.0), y = collect(1.0:10.0))
+	f = viz(G; title = "ZZseen")
+	pump()
+	try
+		# a plain green picture over the WEST half of the grid; the grid stays checked beside it
+		P = IG.GMT.mat2img(cat(fill(0x14, 10, 10), fill(0xc8, 10, 10), fill(0x1e, 10, 10); dims = 3),
+		                   x = [1.0, 10.0], y = [1.0, 10.0])
+		@test IG._add_image_to_scene(f.h, P, "ZZpic"; promote = false)
+		pump()
+		over = hover(f.h, 5.0, 5.0)
+		@test occursin("rgb", over) && !occursin("z =", over)           # the image answers, with its colour
+		zs = match(r"z = (-?[0-9.]+)", hover(f.h, 15.0, 5.0))            # beside it, the grid's own z (≈ 515)
+		@test zs !== nothing && abs(parse(Float64, zs[1]) - 515) < 2
+		@test IG._displayed_image_at(f.h, 5.0, 5.0)[1] == "ZZpic"
+		@test IG._displayed_image_at(f.h, 15.0, 5.0)[2] === nothing      # a grid is displayed there
+		# Crop Image takes the picture on top (a hidden image of the window would have been taken before)
+		@test IG._on_roi_crop(f.h, "image_coords", "3/7/3/7") === nothing
+		pump()
+		Ic = IG._find_object_exact(f.h, :image, "ZZpic (cropped)")
+		@test Ic isa IG.GMTimage && Ic.image[1, 1, 2] == 0xc8
+	finally
+		ccall(IG._fn(:gmtvtk_close), Cvoid, (Ptr{Cvoid},), f.h)
+	end
+end
+
 # A MASK IS A BOOLEAN IMAGE (0/1), whichever tool made it, and what the window shows is what Info and the
 # readout describe: a mask on screen is reported as the Bool image it is, and an image wider than 8 bits
 # reads out its own values (DN), never the colour of the 8-bit copy it is drawn from.
@@ -621,7 +890,7 @@ end
 		expr = "(Surface > 500) & (Surface < 900)"
 		@test GmtModules.send(IG._on_gridcalc, f.h, ["expr=$expr", "base=Surface"]) == 1
 		pump()
-		@test IG._active_element(f.h) == (2, expr)                     # the viewer: the mask is on screen
+		@test IG._active_element(f.h) == (2, "(A > 500) & (A < 900)")  # the viewer: the mask is on screen (named by alias)
 		r = info(f.h)
 		@test occursin("GMTimage", r) && occursin("Bool", r)           # Info describes THE MASK...
 		@test !occursin("grid", lowercase(first(split(r, '\n'))))      # ...never the hidden grid under it

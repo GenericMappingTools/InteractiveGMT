@@ -1767,6 +1767,10 @@ struct Scene {
 	// "Digitize whites" traces the boundary between those two states, so it is offered only for these.
 	// Set from Julia (gmtvtk_set_mask_flag_h), the only side that sees the raster's real values.
 	std::set<std::string> maskNames;
+	// The SEGMENT of a line overlay that a right-click in the VIEW landed on, while that click's menu is
+	// open (-1 otherwise, e.g. a menu opened from the Scene Objects row = the whole element). A traced
+	// mask outline is one overlay of many polygons: its Area / Delete act on the polygon clicked.
+	int menuSeg = -1;
 	bool   emptyStart = false;  // full-chrome launcher with no data yet (hidden placeholder); drop -> promote
 	bool   gridAdopted = false; // a real grid was dropped onto an imageOnly canvas (Background region /
 	                            // bare image) and adopted as the hover heightfield -> readout shows z,
@@ -6931,6 +6935,88 @@ static bool pickFaultPlaneAt(Scene *s, const double o[3], const double d[3], dou
 	return true;
 }
 
+// ============================================================================================
+// WHICH IMAGE DOES THE EYE SEE ALONG THIS RAY — THE one answer for "is what is displayed here an
+// image?", asked by the hover readout (the cursor's ray), Roi Crop and Info (a vertical ray through a
+// point, seenImageAt). User's order, 2026-11-17: with several grids/images in a window, the readout
+// and the crop must ALWAYS refer to what is DISPLAYED — an image on top answers with ITS colours /
+// values, never with the z of a grid hidden underneath it.
+//
+// The rule is the render's own: along the ray, the nearest visible image that is NOT behind the
+// grid surface (`tSurf`, the ray parameter of the surface hit; +inf when no surface is hit). A flat
+// image quad is met where the ray crosses its plane, inside its footprint; an image DRAPED on the
+// relief is met at the surface hit itself, inside its footprint. A tie goes to the image drawn later
+// (the extras are drawn over the base, the later over the earlier) — and an image tied with the
+// surface (flat-2-D, where every z is 0) wins, as images are laid ABOVE the relief by construction.
+// Everything in SCALED world space, the ray's own. Not on the globe (images there are drapes on the
+// sphere, and the sphere is not a plane): no answer, and the readout keeps what it always said.
+struct SeenImage {
+	ExtraObj *ex = nullptr;   // the image extra seen; nullptr + base = the window's own image surface
+	bool   base  = false;
+	bool   valid = false;
+	double t     = 1e300;     // ray parameter of the hit
+	double w[3]  = { 0.0, 0.0, 0.0 };
+};
+
+static SeenImage seenImageOnRay(Scene *s, const double o[3], const double d[3], double tSurf,
+                                const double wSurf[3]) {
+	SeenImage best;
+	if (!s || s->globe) return best;
+	const double tTol = 1e-9 * (1.0 + std::fabs(tSurf < 1e299 ? tSurf : 0.0));
+	auto take = [&](double t, const double P[3], ExtraObj *ex, bool base) {
+		if (best.valid && t > best.t + tTol) return;               // farther than what is already seen
+		best.valid = true; best.t = t; best.ex = ex; best.base = base;
+		best.w[0] = P[0]; best.w[1] = P[1]; best.w[2] = P[2];
+	};
+	auto flatPlane = [&](vtkProp3D *a, ExtraObj *ex, bool base) {
+		if (!a || !a->GetVisibility() || d[2] == 0.0) return;
+		double b[6]; a->GetBounds(b);
+		if (b[5] - b[4] > 1e-6 * (1.0 + std::fabs(b[5]))) return;   // not a flat quad
+		const double t = (b[5] - o[2]) / d[2];
+		if (t < 0.0 || t > 1.0 || t > tSurf + tTol) return;        // behind the eye, or under the surface
+		const double P[3] = { o[0] + t * d[0], o[1] + t * d[1], b[5] };
+		if (P[0] < b[0] || P[0] > b[1] || P[1] < b[2] || P[1] > b[3]) return;
+		take(t, P, ex, base);
+	};
+	auto draped = [&](vtkProp3D *a, ExtraObj *ex) {
+		if (!a || !a->GetVisibility() || tSurf >= 1e299) return;
+		double b[6]; a->GetBounds(b);
+		if (wSurf[0] < b[0] || wSurf[0] > b[1] || wSurf[1] < b[2] || wSurf[1] > b[3]) return;
+		take(tSurf, wSurf, ex, false);
+	};
+	if (s->imageOnly && !s->gridAdopted) flatPlane(surfProp(s), nullptr, true);
+	for (auto &ex : s->extras) {                                  // draw order: later = drawn over
+		if (!ex.isImage) continue;
+		flatPlane(ex.actor.Get(), &ex, false);
+		if (ex.drape) draped(ex.drape.Get(), &ex);
+	}
+	return best;
+}
+
+// The same question at a map POINT (true x, y): a vertical ray from above everything, the surface
+// being the active grid's own height there at its own drawn scale (what the readout's march hits).
+static SeenImage seenImageAt(Scene *s, double tx, double ty) {
+	SeenImage none;
+	if (!s || !s->ren || s->globe) return none;
+	double bb[6];
+	s->ren->ComputeVisiblePropBounds(bb);
+	if (bb[0] > bb[1]) return none;                               // nothing visible
+	const double gx  = (s->xfac != 0.0) ? s->xfac : 1.0;
+	const double top = bb[5] + 1.0 + std::fabs(bb[5]), bot = bb[4] - 1.0 - std::fabs(bb[4]);
+	const double o[3] = { tx * gx, ty, top };
+	const double d[3] = { 0.0, 0.0, bot - top };
+	double tSurf = 1e300;
+	double wS[3] = { o[0], o[1], 0.0 };
+	if (sceneHasVisibleGrid(s)) {
+		const double h = sampleActiveZ(s, tx, ty);
+		if (!std::isnan(h)) {
+			wS[2]  = h * layerZScale(s, activeOwnerTag(s));
+			tSurf = (wS[2] - top) / d[2];
+		}
+	}
+	return seenImageOnRay(s, o, d, tSurf, wS);
+}
+
 static int mecaHitAt(Scene *s, int x, int y);   // beachball under cursor (defined in 85_polygon.cpp)
 
 // Mouse move (default priority): live coordinate readout. Runs only when the gizmo
@@ -7062,6 +7148,10 @@ static void onMouseMove(vtkObject*, unsigned long, void *clientData, void* /*cd*
 			s->pointPicker->GetPickPosition(w); hit = true;
 		}
 	}
+	// The SURFACE the ray really met (march / picker), before any map-plane fallback below stands in
+	// for one: an image is visible in front of THIS, never in front of a plane nobody drew.
+	const bool surfHit = hit;
+	const double wSurf[3] = { w[0], w[1], w[2] };
 	// Over a grid but the ray hit a NaN hole (no surface there) — the march above found no crossing.
 	// Coordinates must NEVER go blank: intersect the ray with the base map plane (z=0) to recover x,y
 	// (z is then sampled as NaN below and printed literally). Accept only inside the grid footprint so
@@ -7089,6 +7179,20 @@ static void onMouseMove(vtkObject*, unsigned long, void *clientData, void* /*cd*
 	if (!hit && !s->globe && dirz != 0.0 && !sceneHasVisibleGrid(s)) {
 		const double t0 = -nr[2] / dirz;
 		if (t0 >= 0.0 && t0 <= 1.0) { w[0] = nr[0] + t0*dirx; w[1] = nr[1] + t0*diry; w[2] = 0.0; hit = true; }
+	}
+	// An IMAGE in front of the surface (or with no surface behind it) is what the eye sees here: the
+	// point reported is where the ray meets THAT image, and the readout below speaks for it (its DN,
+	// else its colour) — never for the z of a grid it covers. One resolver, seenImageOnRay.
+	SeenImage seen;
+	{
+		const double o[3]  = { nr[0], nr[1], nr[2] };
+		const double dd[3] = { dirx, diry, dirz };
+		double tSurf = 1e300;
+		const double dlen2 = dirx*dirx + diry*diry + dirz*dirz;
+		if (surfHit && dlen2 > 0.0)
+			tSurf = ((wSurf[0]-nr[0])*dirx + (wSurf[1]-nr[1])*diry + (wSurf[2]-nr[2])*dirz) / dlen2;
+		seen = seenImageOnRay(s, o, dd, tSurf, wSurf);
+		if (seen.valid) { w[0] = seen.w[0]; w[1] = seen.w[1]; w[2] = seen.w[2]; hit = true; }
 	}
 	// Buried 3-D fault plane: cast the same ray at its quad. If it is nearer to the camera than the
 	// surface hit (or the surface missed), report the PLANE's own x,y,z so the user can verify the
@@ -7130,7 +7234,11 @@ static void onMouseMove(vtkObject*, unsigned long, void *clientData, void* /*cd*
 		QString dn;
 		bool haveDN = false;
 		const PaletteLegend *dnPal = nullptr;    // the answering image's palette: its value NAMES, if any
-		if ((s->imageOnly && !s->gridAdopted) || !sceneHasVisibleGrid(s)) {
+		if (seen.valid) {                        // the image the eye sees here, and no other
+			if (seen.ex && seen.ex->dn.at(rdX, rdY, dn)) { haveDN = true; dnPal = &seen.ex->palette; }
+			else if (seen.base && s->baseDN.at(rdX, rdY, dn)) { haveDN = true; dnPal = &s->palette; }
+		}
+		else if ((s->imageOnly && !s->gridAdopted) || !sceneHasVisibleGrid(s)) {
 			for (auto it = s->extras.rbegin(); !haveDN && it != s->extras.rend(); ++it)
 				if (it->isImage && it->actor && it->actor->GetVisibility() && it->dn.at(rdX, rdY, dn)) {
 					haveDN = true;
@@ -7154,8 +7262,9 @@ static void onMouseMove(vtkObject*, unsigned long, void *clientData, void* /*cd*
 			}
 			s->win->statusBar()->showMessage(QString("x = %1    y = %2    DN = %3")
 				.arg(rdX, 0, 'f', 3).arg(rdY, 0, 'f', 3).arg(dn) + (cls.isEmpty() ? QString() : "    " + cls));
-		} else if (s->imageOnly && !s->gridAdopted) {
-			// Bare image: no elevation -> show the pixel COLOUR under the cursor instead of z.
+		} else if (seen.valid || (s->imageOnly && !s->gridAdopted)) {
+			// An image is what is displayed here (bare image window, or an image over the grids):
+			// no elevation -> show the pixel COLOUR under the cursor instead of z.
 			// Read it straight from the framebuffer (the drape is unlit, so the pixel is the
 			// image's true albedo). p is bottom-up display pixels, matching GetPixelData.
 			vtkNew<vtkUnsignedCharArray> px;

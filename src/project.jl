@@ -14,7 +14,14 @@
 
 # The gdalwarp option vector for one run. Mirone's own rules, kept verbatim: a resolution beats a
 # row/column count, and a row count alone (without columns) means nothing.
-function _project_opts(d::Dict{String,String}, isimage::Bool)
+# THE rule for resampling a picture that carries transparency (an alpha 4th band), for every GDAL warp
+# of an image — reproject, resize, grdsample: band 4 is read as alpha and kept as alpha, so the colour
+# under a transparent pixel never bleeds into its visible neighbours (the white ring, 2026-11-17).
+const _ALPHA_WARP = ["-srcalpha", "-dstalpha"]
+_has_alpha_band(I::GMTimage) = ndims(I.image) == 3 && size(I.image, 3) == 4
+_alpha_warp_opts(I) = (I isa GMTimage && _has_alpha_band(I)) ? copy(_ALPHA_WARP) : String[]
+
+function _project_opts(d::Dict{String,String}, isimage::Bool; alpha::Bool = false)
 	t_srs = _get(d, "t_srs")
 	isempty(t_srs) && error("no destination referencing system given")
 	opts = String["-t_srs", t_srs]
@@ -34,7 +41,17 @@ function _project_opts(d::Dict{String,String}, isimage::Bool)
 	# An image has no NaN to mark the empties a rotated/curved warp leaves in the corners; Mirone
 	# fills them with 255 (white) by setting hdr.nodata, so do the same. Grids get GMT.jl's own
 	# "-dstnodata NaN" automatically (gdal_tools.jl helper_run_GDAL_fun).
-	isimage && append!(opts, ["-dstnodata", "255"])
+	# An image WITH TRANSPARENCY (a 4th, alpha band — an `ifelse(…, v@t)` picture, a crop of one) is
+	# warped AS transparency: `-srcalpha` makes GDAL read band 4 as alpha, so a transparent pixel adds
+	# nothing to its neighbours' resampled colour, and `-dstalpha` keeps an alpha band on the result
+	# (the empty corners come out transparent too). Warped as four plain bands, bilinear resampling mixed
+	# the colour under every transparent pixel into the visible edge — the white ring, baked into the
+	# reprojected picture's own pixels (user's report, 2026-11-17).
+	if isimage && alpha
+		append!(opts, _ALPHA_WARP)
+	elseif isimage
+		append!(opts, ["-dstnodata", "255"])
+	end
 	return opts
 end
 
@@ -103,18 +120,43 @@ function _vector_xy_project(M::Matrix{Float64}, s_srs::AbstractString, t_srs::Ab
 	return Q
 end
 
+# THE raster a projection works on: the one ON DISPLAY, of whatever kind — asked of the viewer
+# (`_active_element`, info.jl: the grid shown, or the image shown over it), the same answer Info and the
+# hover readout give. User's order, 2026-11-17: reprojecting a cropped IMAGE reprojected a grid instead,
+# because this used to take "the active grid" first and an image only when the window had no grid at all.
+# Returns nothing when nothing is on display.
+function _displayed_raster(scene::Ptr{Cvoid})
+	k, nm = _active_element(scene)
+	k == 1 && return _active_grid(scene, nm)
+	return _displayed_image(scene)[2]
+end
+
+# The IMAGE on display, as (registry key, image) — the key a tool needs for `_IMG_ORIG` and friends
+# ("" = the window's base image) — or ("", nothing) when what is on display is not an image. THE
+# replacement for "the first image the window holds" (`_find_object_named(scene, :image)`), which
+# answered with a hidden image as readily as with the one on screen.
+function _displayed_image(scene::Ptr{Cvoid})
+	k, nm = _active_element(scene)
+	k == 2 || return "", nothing
+	objs = get(_SCENE_OBJS, scene, Tuple{Symbol,String,Any}[])
+	for (kd, n, o) in objs
+		(kd === :image && n == nm && o isa GMTimage) && return n, o
+	end
+	I = _find_object_exact(scene, :image, nm)       # a base relabelled after it was opened
+	I isa GMTimage && return "", I
+	for (kd, n, o) in objs                            # the base image: registered under ""
+		(kd === :image && isempty(n) && o isa GMTimage) && return "", o
+	end
+	return "", nothing
+end
+
 # C callback (OK button): `cparams` is the newline-separated "key=value" block described in
 # 30_app.cpp's JuliaProjectFn. Returns Cint 1 on success, 0 on failure.
 function _on_project(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 	try
 		d = _nswing_parse(unsafe_string(cparams))
-		# The DISPLAYED raster, grid first (a window can hold both). Same resolution order the rest of
-		# the derive tools use: the dialog names the active grid layer, images answer by kind.
-		O = _find_object(scene, :grid, _get(d, "grid"))
-		if O === nothing
-			O = _find_object_named(scene, :image)[2]
-		end
-		O === nothing && error("this window has no grid or image to project")
+		O = _displayed_raster(scene)
+		O === nothing && error("this window has no grid or image on display to project")
 		isimage = O isa GMTimage
 
 		t_srs = _get(d, "t_srs")
@@ -127,7 +169,7 @@ function _on_project(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		t_epsg = _project_epsg(d)
 		t_epsg > 0 && (t_srs = "EPSG:$t_epsg")
 		d["t_srs"] = t_srs
-		opts  = _project_opts(d, isimage)
+		opts  = _project_opts(d, isimage; alpha = isimage && _has_alpha_band(O))
 		R = GMT.gdalwarp(O, opts)
 		(R isa GMTgrid || R isa GMTimage) || error("gdalwarp returned a $(typeof(R)), not a grid or image")
 

@@ -575,7 +575,7 @@ function _on_img_stretch(scene::Ptr{Cvoid}, req::Cstring)::Cvoid
 		parts = split(unsafe_string(req), ';', limit=2)
 		name = length(parts) >= 2 ? String(strip(parts[2])) : ""
 		# The object on screen (8-bit display copy); "" = the window's primary image, under its own name.
-		key, Idisp = isempty(name) ? _find_object_named(scene, :image) : (name, _find_object(scene, :image, name))
+		key, Idisp = isempty(name) ? _displayed_image(scene) : (name, _find_object(scene, :image, name))
 		(Idisp isa GMTimage) || error("No image named '$name' to stretch")
 		d = get(_IMG_ORIG, scene, nothing)
 		Isrc = (d === nothing) ? nothing : get(d, key, nothing)

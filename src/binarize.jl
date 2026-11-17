@@ -279,7 +279,7 @@ function _bin_init(scene::Ptr{Cvoid}, dlg::Ptr{Cvoid}, wanted::AbstractString=""
 	# sends it). Empty -> the window's primary image. Without this a window holding several images
 	# (a basemap tile + a dropped picture, say) would always threshold whichever came first, i.e.
 	# not necessarily the one on screen — and then every level would look "wrong" next to Mirone's.
-	srcname, I = isempty(wanted) ? _find_object_named(scene, :image) :
+	srcname, I = isempty(wanted) ? _displayed_image(scene) :
 	                               (String(wanted), _find_object(scene, :image, wanted))
 	(I isa GMTimage) || error("No image in this window to binarize")
 	# The displayed object of a 16-bit image is its 8-bit display copy; the image IS the original,

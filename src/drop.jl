@@ -1969,7 +1969,11 @@ function _add_image_to_scene(scene::Ptr{Cvoid}, I::GMTimage, name; promote=false
 	# The min-max display copy REPLACES I, but the original (higher-bit) image is stashed in
 	# _IMG_ORIG so the row's "Auto histogram stretch" handle can re-derive a percentile-stretched
 	# 8-bit image from full precision (see savefile.jl `_on_img_stretch`).
-	if eltype(I.image) != UInt8
+	# A Bool MASK is the exception: true/false has no histogram to stretch, and its texture is made
+	# straight from its own bytes (`_grey_texture`), so it enters with NO 8-bit copy (user's order,
+	# 2026-11-17: the copy cost a whole extra mask of RAM for nothing).
+	ismask = eltype(I.image) == Bool
+	if eltype(I.image) != UInt8 && !ismask
 		_remember_img_orig!(scene, String(name), I)
 		I = _stretch_to_u8(I)
 	end
@@ -1998,7 +2002,7 @@ function _add_image_to_scene(scene::Ptr{Cvoid}, I::GMTimage, name; promote=false
 	ok == 0 && @warn "drop: window is closed; image not added"
 	ok != 0 && _remember_object!(scene, :image, name, I)  # Scene Objects "Save…" / File>Save can write it
 	# drawn from an 8-bit copy -> the readout gets the real values (DN), see `_push_image_dn`
-	(ok != 0 && Iorig !== I) && _push_image_dn(scene, String(name), Iorig)
+	(ok != 0 && (Iorig !== I || ismask)) && _push_image_dn(scene, String(name), Iorig)   # a mask reads 0/1
 	# An INDEXED image's colormap IS its legend: hand the used entries over so the image's group gets a
 	# discrete Color Bar row (one block per pixel value). The pixels stay indices — only the texture
 	# was expanded, inside `_pixaccess_img` above.

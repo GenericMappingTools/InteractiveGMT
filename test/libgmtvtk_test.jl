@@ -104,7 +104,8 @@ const _TEST_SYMBOLS = (
 	:gmtvtk_landmask_parked_test, :gmtvtk_landmask_delete_dialog_test,
 	:gmtvtk_ttt_open_dialog_test, :gmtvtk_ttt_leave_dialog_test, :gmtvtk_ttt_parked_test, :gmtvtk_ttt_delete_dialog_test, :gmtvtk_ttt_place_source_test, :gmtvtk_ttt_src_fill_test,
 	:gmtvtk_synthterrain_open_dialog_test, :gmtvtk_gridcalc_open_dialog_test, :gmtvtk_gridcalc_leave_dialog_test, :gmtvtk_gridcalc_parked_test,
-	:gmtvtk_gridcalc_delete_dialog_test,
+	:gmtvtk_gridcalc_delete_dialog_test, :gmtvtk_gridcalc_compute_test, :gmtvtk_gridcalc_close_button_test, :gmtvtk_gridcalc_type_test, :gmtvtk_objicon_test, :gmtvtk_objicon_png_test, :gmtvtk_set_menu_seg_test, :gmtvtk_overlay_nseg_test,
+	:gmtvtk_set_gridcalc_callback,    # NOT test-only -- mirrored: this dll's Grid calculator Compute calls Julia too
 	:gmtvtk_hover_readout_test,       # the status-bar readout after a genuine mouse move over (x,y)
 	:gmtvtk_grdblend_open_dialog_test, :gmtvtk_grdblend_leave_dialog_test, :gmtvtk_grdblend_parked_test,
 	:gmtvtk_grdblend_delete_dialog_test, :gmtvtk_grdblend_feed_test, :gmtvtk_grdblend_pick_test,
@@ -262,6 +263,15 @@ function _register_console_eval_test(on::Bool = true)
 	ccall(_test_fn(:gmtvtk_set_julia_eval), Cvoid, (Ptr{Cvoid},), fptr)
 	cptr = on ? @cfunction(c -> Base.invokelatest(InteractiveGMT._console_complete, c), Cint, (Cstring,)) : C_NULL
 	ccall(_test_fn(:gmtvtk_set_julia_complete), Cvoid, (Ptr{Cvoid},), cptr)
+	return
+end
+
+# The Grid calculator's Compute calls Julia through its dll's own g_juliaGridCalc: a dialog built
+# inside gmtvtk_test.dll needs THIS dll's copy set (its list refill also needs the console-eval bridge).
+function _register_gridcalc_test()
+	fptr = @cfunction((s, c) -> Base.invokelatest(InteractiveGMT._on_gridcalc, s, c)::Cint, Cint, (Ptr{Cvoid}, Cstring))
+	ccall(_test_fn(:gmtvtk_set_gridcalc_callback), Cvoid, (Ptr{Cvoid},), fptr)
+	_register_console_eval_test(true)
 	return
 end
 
