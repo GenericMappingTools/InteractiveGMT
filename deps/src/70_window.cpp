@@ -29086,6 +29086,22 @@ static QIcon makeGizmoIcon();               // two orbiting arrows for the statu
 // (Scene::crsProj4/crsWkt/crsEpsg — the same store gmtvtk_set_crs fills and the Geography menu
 // gates on), so the chip can never drift from what the rest of the window believes. Called at
 // window birth and from gmtvtk_set_crs itself.
+#ifdef _WIN32                                                 // GMTVTK_API is only defined in 90_c_api.cpp
+extern "C" __declspec(dllexport) int gmtvtk_vector_points_count_h(void *handle);   // defined there
+#else
+extern "C" int gmtvtk_vector_points_count_h(void *handle);
+#endif
+
+// Can "Send to Google Earth" (2D/3D flyout) run on this window? Only with something on display -- a
+// raster (the base surface of a window that is not an empty launcher, or any extra) or at least one
+// vector point -- AND a known CRS (the window's own store, the one the EPSG chip shows): Google Earth
+// wants lon/lat, and nothing can be brought there from an unknown system.
+static bool sceneCanSendToGoogleEarth(Scene *s) {
+	if (!sceneAlive(s) || !s->hasCRS()) return false;
+	const bool raster = (s->surf && !s->emptyStart) || !s->extras.empty();
+	return raster || gmtvtk_vector_points_count_h(s) > 0;
+}
+
 static void sceneUpdateCrsChip(Scene *s) {
 	if (!s || !s->crsChip) return;
 	s->crsChip->setText(s->crsEpsg > 0 ? QString("EPSG:%1").arg(s->crsEpsg) : QString("EPSG:000"));
@@ -34566,6 +34582,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 			};
 			QTimer::singleShot(0, win, *step);
 		};
+		mGridTools->addSeparator();
 		QMenu *mSynth = mGridTools->addMenu("Synthetic terrain");
 		mSynth->addAction("auto", [win, s, whenReady]() {
 			whenReady([win, s]() {
@@ -34920,8 +34937,43 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		actModeCube->setToolTip(geog ? "Cube: PROJ +proj=qsc, equal-area cube — drag to turn it"
 		                             : "Cube: needs geographic (longitude/latitude) data");
 	});
+	// Send to Google Earth (port of Mirone's writekml.m "See in Google Earth"): the bottom entry of this
+	// list, under its own separator. The host (googleearth.jl `_google_earth`) writes what the window
+	// shows -- the displayed raster and every checked vector element, brought to lon/lat when the window
+	// is in another system -- into the tmp folder, as a KMZ when it carries files (picture, icons), a
+	// KML otherwise, and opens it. Errors come back through the console door's negative byte count and
+	// pop up.
+	viewModeMenu->addSeparator();
+	QAction *actGoogleEarth = viewModeMenu->addAction("Send to Google Earth...");
+	// LOCKED until it can run: an empty window, or one whose CRS is unknown, has nothing Google Earth
+	// can place. Re-decided every time the list opens (data and CRS change while the window lives).
+	QObject::connect(viewModeMenu, &QMenu::aboutToShow, viewModeMenu, [s, actGoogleEarth]() {
+		const bool ok = sceneCanSendToGoogleEarth(s);
+		actGoogleEarth->setEnabled(ok);
+		actGoogleEarth->setToolTip(ok ? "Write the displayed raster and vector elements as a Google Earth KMZ/KML "
+		                                "(converted to longitude/latitude when needed) and open it in Google Earth"
+		                              : "Send to Google Earth: needs data on display with a known coordinate system");
+	});
+	actGoogleEarth->setEnabled(sceneCanSendToGoogleEarth(s));
+	QObject::connect(actGoogleEarth, &QAction::triggered, win, [win, s]() {
+		if (!g_juliaEval) {
+			QMessageBox::warning(win, "Send to Google Earth", "The Julia host is not registered.");
+			return;
+		}
+		// No save dialog: the file goes to the system's tmp folder (Julia picks the name), as Mirone did.
+		std::string cmd = "InteractiveGMT._google_earth(fig);";
+		std::vector<char> buf(1 << 15);
+		showBusyDialog("Writing the Google Earth file...");
+		int n = g_juliaEval(s, cmd.c_str(), buf.data(), (int)buf.size());
+		closeBusyDialog();
+		QString txt = QString::fromUtf8(buf.data(), n < 0 ? -n : n).trimmed();
+		if (n < 0)
+			QMessageBox::warning(win, "Send to Google Earth", txt.isEmpty() ? QString("Failed.") : txt);
+		else if (s->win)
+			s->win->statusBar()->showMessage("Google Earth: " + txt, 6000);
+	});
 	tb2D->setMenu(viewModeMenu);
-	tb2D->setToolTip("View mode: flat 2D map / 3D perspective / globe / cube (QSC)");
+	tb2D->setToolTip("View mode: flat 2D map / 3D perspective / globe / cube (QSC) / send to Google Earth");
 	// Slot click toggles 2D<->3D; the 'v' dropdown picks a mode. NOT setDefaultAction (that would tie
 	// the button's sunken/checked look to the always-checked menu entry — leaving it permanently
 	// highlighted). Drive the glyph icon ourselves; the checked entry just marks the active mode.

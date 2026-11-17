@@ -169,6 +169,7 @@ include("cube.jl")       # CUBE (Combined Uncertainty and Bathymetry Estimator),
 include("interpolate.jl")# GMT menu > Interpolate: grid an x,y,z table (surface, nearneighbor, mbgrid, block*, …)
 include("satellite.jl")  # SGP4/SDP4 orbit propagation + ground tracks, via deps/src/satellite.cpp
 include("project.jl")    # Tools > Project: reproject the window's raster with gdalwarp (Mirone gdal_project.m)
+include("googleearth.jl")# 2D/3D flyout > Send to Google Earth: KMZ/KML in lon/lat (Mirone writekml.m)
 include("lineops.jl")    # Tools > Vector Operations (port of Mirone src_figs/line_operations.m)
 include("plates.jl")     # Plates > Euler rotations (port of Mirone euler_stuff.m; GMT spotter modules)
 include("computeeuler.jl") # Plates > Compute Euler pole (port of Mirone compute_euler.m + mex/distmin.c)
