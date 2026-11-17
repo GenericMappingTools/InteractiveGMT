@@ -128,6 +128,7 @@
 #include <QSettings>
 #include <QMimeData>
 #include <QImage>
+#include <QColorSpace>
 #include <QDragEnterEvent>
 #include <QDragMoveEvent>
 #include <QDropEvent>

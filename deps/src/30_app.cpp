@@ -2176,10 +2176,17 @@ static QString gmtvtkDataDir() {
 
 // iGMT application/window icon, decoded once from the embedded PNG (see _app_icon.h).
 static QIcon appIcon() {
+	// The embedded PNG carries an sRGB chunk, so the decoded image gets a QColorSpace, and on macOS
+	// QImage::toCGImage (QGuiApplication::setWindowIcon -> NSImage) then builds a CoreGraphics colour
+	// space for it. That object came back already dead on macOS 26.7: CGImageCreate ->
+	// CGColorSpaceGetType -> EXC_BAD_ACCESS inside ensureApp(), before any window existed (user's
+	// crash report, 2026-11-17). The icon is plain sRGB pixels anyway, so its colour space is
+	// cleared and Qt takes its default path.
 	static QIcon ic = []{
-		QPixmap pm;
-		pm.loadFromData(kAppIconPng, kAppIconPngLen, "PNG");
-		return QIcon(pm);
+		QImage img;
+		img.loadFromData(kAppIconPng, kAppIconPngLen, "PNG");
+		img.setColorSpace(QColorSpace());
+		return QIcon(QPixmap::fromImage(img));
 	}();
 	return ic;
 }
