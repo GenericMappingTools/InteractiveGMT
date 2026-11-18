@@ -973,7 +973,21 @@ static unsigned long now_ms(void) {
 #ifdef _WIN32
 static IPicture *g_pic;
 static HICON g_icon;
-static HBITMAP g_iconBmp;      /* the icon, area-averaged down to SPLASH_ICON_PX, premultiplied */
+static HBITMAP g_iconBmp;      /* the icon, area-averaged down to g_iconPx, premultiplied */
+static int g_iconPx = SPLASH_ICON_PX;   /* SPLASH_ICON_PX at 96 dpi, scaled to the real dpi */
+
+/* The splash runs PER-MONITOR DPI AWARE. A DPI-unaware window on a 125%/150% display is drawn at
+ * 96 dpi and then BITMAP-STRETCHED by Windows -- every glyph resampled, which is why the caption
+ * looked soft next to macOS, where Cocoa draws at the panel's native resolution. Set on THIS
+ * THREAD only (Win10 1607+), around the splash's own window, so no other window the launcher
+ * opens changes behaviour. Loaded by name so an older Windows simply keeps the old path.
+ * Returns the previous context to restore, or NULL when nothing was changed. */
+typedef HANDLE(WINAPI *SetThreadDpiCtxFn)(HANDLE);
+static HANDLE splash_dpi_aware(HANDLE ctx) {
+	HMODULE u = GetModuleHandleW(L"user32.dll");
+	SetThreadDpiCtxFn fn = u ? (SetThreadDpiCtxFn)GetProcAddress(u, "SetThreadDpiAwarenessContext") : NULL;
+	return fn ? fn(ctx) : NULL;
+}
 
 /* Shrink an icon to `dst` px square with a BOX FILTER (every source pixel in the block contributes),
  * and hand back a 32-bit premultiplied DIB ready for AlphaBlend. GDI's own scaling of an icon is a
@@ -1061,11 +1075,139 @@ static HBITMAP icon_scaled_bitmap(HICON ic, int src, int dst) {
 }
 
 
-static void splash_paint(HWND hw) {
-	PAINTSTRUCT ps;
-	HDC dc = BeginPaint(hw, &ps);
-	RECT rc;
-	GetClientRect(hw, &rc);
+/* GDI+ text, through its flat C API loaded by name (gdiplus.h is C++ only; gdiplus.dll ships with
+ * every Windows). GDI's own greyscale antialiasing snaps every stem to the pixel grid and drops
+ * colour quality on a picture; GDI+'s TextRenderingHintAntiAlias draws UNHINTED, area-coverage
+ * glyphs -- the same kind of rendering CoreText gives the macOS splash. Any failure leaves
+ * g_gp.ok at 0 and the paint code falls back to its GDI path. */
+typedef struct { float X, Y, Width, Height; } GpRectF;
+typedef struct { unsigned int ver; void *cb; BOOL noThread; BOOL noCodecs; } GpStartIn;
+static struct {
+	int ok;
+	ULONG_PTR token;
+	int (WINAPI *startup)(ULONG_PTR *, const GpStartIn *, void *);
+	void (WINAPI *shutdown)(ULONG_PTR);
+	int (WINAPI *fromHDC)(HDC, void **);
+	int (WINAPI *delGraphics)(void *);
+	int (WINAPI *setTextHint)(void *, int);
+	int (WINAPI *famFromName)(const WCHAR *, void *, void **);
+	int (WINAPI *delFam)(void *);
+	int (WINAPI *mkFont)(void *, float, int, int, void **);
+	int (WINAPI *delFont)(void *);
+	int (WINAPI *mkFill)(unsigned int, void **);
+	int (WINAPI *setFill)(void *, unsigned int);
+	int (WINAPI *delBrush)(void *);
+	int (WINAPI *mkFmt)(int, LANGID, void **);
+	int (WINAPI *fmtAlign)(void *, int);
+	int (WINAPI *fmtLineAlign)(void *, int);
+	int (WINAPI *delFmt)(void *);
+	int (WINAPI *drawStr)(void *, const WCHAR *, int, void *, const GpRectF *, void *, void *);
+	int (WINAPI *measure)(void *, const WCHAR *, int, void *, const GpRectF *, void *, GpRectF *, int *, int *);
+} g_gp;
+
+static void splash_gdip_start(void) {
+	HMODULE m = LoadLibraryW(L"gdiplus.dll");
+	GpStartIn in = { 1, NULL, FALSE, FALSE };
+	if (!m) return;
+#define GPF(f, n) *(FARPROC *)&g_gp.f = GetProcAddress(m, n); if (!g_gp.f) return;
+	GPF(startup, "GdiplusStartup")                 GPF(shutdown, "GdiplusShutdown")
+	GPF(fromHDC, "GdipCreateFromHDC")              GPF(delGraphics, "GdipDeleteGraphics")
+	GPF(setTextHint, "GdipSetTextRenderingHint")   GPF(famFromName, "GdipCreateFontFamilyFromName")
+	GPF(delFam, "GdipDeleteFontFamily")            GPF(mkFont, "GdipCreateFont")
+	GPF(delFont, "GdipDeleteFont")                 GPF(mkFill, "GdipCreateSolidFill")
+	GPF(setFill, "GdipSetSolidFillColor")          GPF(delBrush, "GdipDeleteBrush")
+	GPF(mkFmt, "GdipCreateStringFormat")           GPF(fmtAlign, "GdipSetStringFormatAlign")
+	GPF(fmtLineAlign, "GdipSetStringFormatLineAlign") GPF(delFmt, "GdipDeleteStringFormat")
+	GPF(drawStr, "GdipDrawString")                 GPF(measure, "GdipMeasureString")
+#undef GPF
+	if (g_gp.startup(&g_gp.token, &in, NULL) == 0) g_gp.ok = 1;
+}
+
+static void splash_gdip_stop(void) {
+	if (g_gp.ok) g_gp.shutdown(g_gp.token);
+	g_gp.ok = 0;
+}
+
+/* Centred text in `r`, `px` pixels tall, colour 0xRRGGBB. `shadow` adds the dark halo the macOS
+ * splash gets from NSShadow (blur 3, offset 1,2 down): the black glyphs stamped at every integer
+ * offset inside a radius-3 disk at low alpha, which builds a soft Gaussian-like falloff instead of
+ * the hard 1-px duplicate that made every glyph look doubled. Returns 0 if GDI+ cannot draw it. */
+static int splash_text(HDC dc, const wchar_t *txt, const RECT *r, int px, unsigned int rgb, int shadow) {
+	void *g = NULL, *fam = NULL, *font = NULL, *br = NULL, *fmt = NULL;
+	GpRectF rf;
+	int ok = 0, style = 0;
+	if (!g_gp.ok || g_gp.fromHDC(dc, &g) != 0) return 0;
+	/* "Segoe UI Semibold" is its own family on Win 8+; plain Segoe UI Bold where it is missing. */
+	if (g_gp.famFromName(L"Segoe UI Semibold", NULL, &fam) != 0) {
+		fam = NULL;
+		style = 1;   /* Bold */
+		if (g_gp.famFromName(L"Segoe UI", NULL, &fam) != 0) fam = NULL;
+	}
+	if (fam) g_gp.mkFont(fam, (float)px, style, 2 /* UnitPixel */, &font);
+	if (font && g_gp.mkFill(0xFF000000u, &br) == 0 && g_gp.mkFmt(0, LANG_NEUTRAL, &fmt) == 0) {
+		float avail = 0.92f * (float)(r->right - r->left);
+		g_gp.setTextHint(g, 4 /* TextRenderingHintAntiAlias */);
+		g_gp.fmtAlign(fmt, 1 /* Center */);
+		g_gp.fmtLineAlign(fmt, 1);
+		/* A long phase line must not run off the window and must not shrink either: it WRAPS
+		 * (GDI+'s default) inside a box 92% of the window wide. */
+		{
+			int inset = (int)(((float)(r->right - r->left) - avail) / 2.f);
+			static RECT nr;
+			nr = *r;
+			nr.left += inset;
+			nr.right -= inset;
+			r = &nr;
+		}
+		if (shadow) {
+			int dx, dy;
+			g_gp.setFill(br, 0x16000000u);
+			for (dy = -3; dy <= 3; dy++)
+				for (dx = -3; dx <= 3; dx++) {
+					if (dx * dx + dy * dy > 9) continue;
+					rf.X = (float)(r->left + 1 + dx);  rf.Y = (float)(r->top + 2 + dy);
+					rf.Width = (float)(r->right - r->left);  rf.Height = (float)(r->bottom - r->top);
+					g_gp.drawStr(g, txt, -1, font, &rf, fmt, br);
+				}
+		}
+		g_gp.setFill(br, 0xFF000000u | (rgb & 0xFFFFFFu));
+		rf.X = (float)r->left;  rf.Y = (float)r->top;
+		rf.Width = (float)(r->right - r->left);  rf.Height = (float)(r->bottom - r->top);
+		ok = g_gp.drawStr(g, txt, -1, font, &rf, fmt, br) == 0;
+	}
+	if (fmt)  g_gp.delFmt(fmt);
+	if (br)   g_gp.delBrush(br);
+	if (font) g_gp.delFont(font);
+	if (fam)  g_gp.delFam(fam);
+	g_gp.delGraphics(g);
+	return ok;
+}
+
+/* Every frame is composed OFF SCREEN (g_buf) and copied to the window in one BitBlt. Drawn straight
+ * on the window, a caption repaint showed the bare picture for an instant before its new text landed
+ * on it -- the blink at each phase change. The picture itself is scaled ONCE (g_bg): re-rendering
+ * the JPEG for every 40 ms frame of the bar was the heaviest thing a frame did. */
+static HBITMAP g_bg, g_buf;
+static int g_bgW, g_bgH;
+
+static void splash_free_buffers(void) {
+	if (g_bg)  DeleteObject(g_bg);
+	if (g_buf) DeleteObject(g_buf);
+	g_bg = g_buf = NULL;
+	g_bgW = g_bgH = 0;
+}
+
+static void splash_make_buffers(HDC wdc, const RECT *rc) {
+	HDC bdc;
+	HGDIOBJ ob;
+	if (g_bg && g_bgW == rc->right && g_bgH == rc->bottom) return;
+	splash_free_buffers();
+	g_bg  = CreateCompatibleBitmap(wdc, rc->right, rc->bottom);
+	g_buf = CreateCompatibleBitmap(wdc, rc->right, rc->bottom);
+	g_bgW = rc->right;
+	g_bgH = rc->bottom;
+	bdc = CreateCompatibleDC(wdc);
+	ob = SelectObject(bdc, g_bg);
 	if (g_pic) {
 		OLE_XSIZE_HIMETRIC iw = 0;
 		OLE_YSIZE_HIMETRIC ih = 0;
@@ -1073,20 +1215,40 @@ static void splash_paint(HWND hw) {
 		g_pic->lpVtbl->get_Height(g_pic, &ih);
 		if (iw > 0 && ih > 0) {
 			/* background-size: cover — crop the source to the window's aspect, then stretch. */
-			double wa = (double)(rc.right) / (double)(rc.bottom);
+			double wa = (double)(rc->right) / (double)(rc->bottom);
 			double ia = (double)iw / (double)ih;
 			long sx = 0, sy = 0, sw = iw, sh = ih;
 			if (ia > wa) { sw = (long)(ih * wa); sx = (iw - sw) / 2; }
 			else         { sh = (long)(iw / wa); sy = (ih - sh) / 2; }
-			g_pic->lpVtbl->Render(g_pic, dc, 0, 0, rc.right, rc.bottom,
+			g_pic->lpVtbl->Render(g_pic, bdc, 0, 0, rc->right, rc->bottom,
 			                      sx, ih - sy, sw, -sh, NULL);
 		}
 	}
 	else {
 		HBRUSH b = CreateSolidBrush(RGB(10, 13, 24));
-		FillRect(dc, &rc, b);
+		FillRect(bdc, rc, b);
 		DeleteObject(b);
 	}
+	SelectObject(bdc, ob);
+	DeleteDC(bdc);
+}
+
+static void splash_paint(HWND hw) {
+	PAINTSTRUCT ps;
+	HDC wdc = BeginPaint(hw, &ps);
+	HDC dc, bgdc;
+	HGDIOBJ obuf, obg;
+	RECT rc;
+	GetClientRect(hw, &rc);
+	splash_make_buffers(wdc, &rc);
+	dc   = CreateCompatibleDC(wdc);
+	obuf = SelectObject(dc, g_buf);
+	bgdc = CreateCompatibleDC(wdc);
+	obg  = SelectObject(bgdc, g_bg);
+	BitBlt(dc, ps.rcPaint.left, ps.rcPaint.top, ps.rcPaint.right - ps.rcPaint.left,
+	       ps.rcPaint.bottom - ps.rcPaint.top, bgdc, ps.rcPaint.left, ps.rcPaint.top, SRCCOPY);
+	SelectObject(bgdc, obg);
+	DeleteDC(bgdc);
 	/* The icon, upper-left corner — the .hta's `img { top:0; left:0; width:120px }`. The
 	 * area-averaged bitmap when we managed to build one (see icon_scaled_bitmap), else GDI's own
 	 * stretch of the icon, which is what this always used to do. */
@@ -1097,16 +1259,18 @@ static void splash_paint(HWND hw) {
 			HGDIOBJ ob = SelectObject(mdc, g_iconBmp);
 			bf.BlendOp = AC_SRC_OVER;  bf.BlendFlags = 0;
 			bf.SourceConstantAlpha = 255;  bf.AlphaFormat = AC_SRC_ALPHA;
-			AlphaBlend(dc, 0, 0, SPLASH_ICON_PX, SPLASH_ICON_PX,
-			           mdc, 0, 0, SPLASH_ICON_PX, SPLASH_ICON_PX, bf);
+			AlphaBlend(dc, 0, 0, g_iconPx, g_iconPx, mdc, 0, 0, g_iconPx, g_iconPx, bf);
 			SelectObject(mdc, ob);
 			DeleteDC(mdc);
 		}
 	}
 	else if (g_icon) {
-		DrawIconEx(dc, 0, 0, g_icon, SPLASH_ICON_PX, SPLASH_ICON_PX, 0, NULL, DI_NORMAL);
+		DrawIconEx(dc, 0, 0, g_icon, g_iconPx, g_iconPx, 0, NULL, DI_NORMAL);
 	}
 
+	/* The bar's 25 Hz repaint touches only the bar's own rows: skip the caption there, its
+	 * 30-pass GDI+ shadow made every frame late by a different amount -- the jerky bar. */
+	if (ps.rcPaint.top < rc.bottom / 2 + rc.bottom / 8 + 2 && ps.rcPaint.bottom > rc.bottom / 2 - rc.bottom / 8 - 2)
 	{
 		/* \x2026 is the ellipsis, written as a code point on purpose: MSVC reads this file with
 		 * the system codepage unless told otherwise, so a literal UTF-8 "…" in a wide string
@@ -1124,11 +1288,14 @@ static void splash_paint(HWND hw) {
 		 * blend its subpixels against, and GDI silently drops to ALIASED glyphs when it is asked
 		 * to draw with a TRANSPARENT background over an image — which is what made the caption
 		 * look low-resolution. Greyscale antialiasing has no such requirement. */
-		HFONT f = CreateFontW(-(rc.bottom / 26), 0, 0, 0, FW_SEMIBOLD, 0, 0, 0, DEFAULT_CHARSET,
-		                      OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY,
-		                      DEFAULT_PITCH, L"Segoe UI");
-		HFONT old = (HFONT)SelectObject(dc, f);
+		HFONT f, old;
 		RECT tr = rc, sh2 = rc;
+		if (splash_text(dc, cap, &rc, rc.bottom / 13, 0xF0F3FAu, 1))
+			goto caption_done;
+		f = CreateFontW(-(rc.bottom / 13), 0, 0, 0, FW_SEMIBOLD, 0, 0, 0, DEFAULT_CHARSET,
+		                OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY,
+		                DEFAULT_PITCH, L"Segoe UI");
+		old = (HFONT)SelectObject(dc, f);
 		SetBkMode(dc, TRANSPARENT);
 		/* One soft drop shadow, not a ring of eight: the ring thickened every glyph and read as
 		 * a blur. This is only there so the caption survives the nebula's bright middle. */
@@ -1139,6 +1306,7 @@ static void splash_paint(HWND hw) {
 		DrawTextW(dc, cap, -1, &tr, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 		SelectObject(dc, old);
 		DeleteObject(f);
+caption_done:;
 	}
 
 	{	/* Indeterminate progress bar — dark track, lighter chunk sweeping across it. */
@@ -1158,7 +1326,15 @@ static void splash_paint(HWND hw) {
 		DeleteObject(chunk);
 	}
 
-	{	/* Close button, lower-right — see splash_close_rect. */
+	{	/* Close button, lower-right — see splash_close_rect. Skipped, like the caption, when the
+		 * repaint is only the bar's rows. */
+		RECT cr, tmp;
+		int a, b2, c, d;
+		splash_close_rect(rc.right, rc.bottom, &a, &b2, &c, &d);
+		SetRect(&cr, a, b2, a + c, b2 + d);
+		if (!IntersectRect(&tmp, &cr, &ps.rcPaint)) goto close_done;
+	}
+	{
 		int cx, cy, cbw, cbh;
 		RECT r;
 		HBRUSH bg = CreateSolidBrush(RGB(24, 28, 40));
@@ -1168,7 +1344,12 @@ static void splash_paint(HWND hw) {
 		SetRect(&r, cx, cy, cx + cbw, cy + cbh);
 		FillRect(dc, &r, bg);
 		FrameRect(dc, &r, fr);
-		f = CreateFontW(-(cbh * 45 / 100), 0, 0, 0, FW_SEMIBOLD, 0, 0, 0, DEFAULT_CHARSET,
+		if (splash_text(dc, L"Close", &r, cbh * 55 / 100, 0xEBEEF5u, 0)) {
+			DeleteObject(bg);
+			DeleteObject(fr);
+			goto close_done;
+		}
+		f = CreateFontW(-(cbh * 55 / 100), 0, 0, 0, FW_SEMIBOLD, 0, 0, 0, DEFAULT_CHARSET,
 		                OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY,
 		                DEFAULT_PITCH, L"Segoe UI");
 		old = (HFONT)SelectObject(dc, f);
@@ -1179,6 +1360,7 @@ static void splash_paint(HWND hw) {
 		DeleteObject(f);
 		DeleteObject(bg);
 		DeleteObject(fr);
+close_done:;
 	}
 
 	{	/* The .hta's 1px #444 frame. */
@@ -1186,6 +1368,11 @@ static void splash_paint(HWND hw) {
 		FrameRect(dc, &rc, b);
 		DeleteObject(b);
 	}
+	/* The finished frame, in one copy: the window never shows a half-drawn state. */
+	BitBlt(wdc, ps.rcPaint.left, ps.rcPaint.top, ps.rcPaint.right - ps.rcPaint.left,
+	       ps.rcPaint.bottom - ps.rcPaint.top, dc, ps.rcPaint.left, ps.rcPaint.top, SRCCOPY);
+	SelectObject(dc, obuf);
+	DeleteDC(dc);
 	EndPaint(hw, &ps);
 }
 
@@ -1194,6 +1381,8 @@ static LRESULT CALLBACK splash_proc(HWND hw, UINT msg, WPARAM wp, LPARAM lp) {
 	case WM_PAINT:
 		splash_paint(hw);
 		return 0;
+	case WM_ERASEBKGND:
+		return 1;               /* splash_paint covers every pixel: never erase first */
 	case WM_TIMER:
 		/* iview_app.jl writes the flag once its window is up — the same handshake
 		 * iview_splash.hta used, so the splash closes on the real event, not a fixed timer.
@@ -1276,7 +1465,7 @@ static void splash_load(const char *root) {
 		w = wide(img);
 		g_icon = (HICON)LoadImageW(NULL, w, IMAGE_ICON, 256, 256, LR_LOADFROMFILE);
 		free(w);
-		g_iconBmp = icon_scaled_bitmap(g_icon, 256, SPLASH_ICON_PX);
+		g_iconBmp = icon_scaled_bitmap(g_icon, 256, g_iconPx);
 	}
 }
 
@@ -1285,11 +1474,22 @@ static void splash_run(const char *root)
 	WNDCLASSEXW wc;
 	HWND hw;
 	MSG msg;
+	/* ((HANDLE)-4) = DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2. Must precede every metric read
+	 * below: under it GetSystemMetrics and LOGPIXELSX report PHYSICAL pixels and the real dpi. */
+	HANDLE oldCtx = splash_dpi_aware((HANDLE)-4);
 	int sw = GetSystemMetrics(SM_CXSCREEN), sh = GetSystemMetrics(SM_CYSCREEN);
 	int x, y, w, h;
+	{	/* The corner icon keeps its 96-dpi size in physical terms, as Cocoa's points do. */
+		HDC sdc = GetDC(NULL);
+		int dpi = sdc ? GetDeviceCaps(sdc, LOGPIXELSX) : 96;
+		if (sdc) ReleaseDC(NULL, sdc);
+		g_iconPx = MulDiv(SPLASH_ICON_PX, dpi > 0 ? dpi : 96, 96);
+		if (g_iconPx > 256) g_iconPx = 256;    /* icon_scaled_bitmap only shrinks the 256 frame */
+	}
 	splash_geometry(sw, sh, &x, &y, &w, &h);
 
 	OleInitialize(NULL);
+	splash_gdip_start();
 	splash_load(root);
 
 	memset(&wc, 0, sizeof(wc));
@@ -1302,6 +1502,7 @@ static void splash_run(const char *root)
 
 	hw = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST, L"iGMTSplash", L"iGMT", WS_POPUP,
 	                     x, y, w, h, NULL, NULL, wc.hInstance, NULL);
+	if (oldCtx) splash_dpi_aware(oldCtx);   /* the window keeps the context it was created under */
 	if (!hw) return;
 	ShowWindow(hw, SW_SHOWNOACTIVATE);
 	UpdateWindow(hw);
@@ -1313,6 +1514,8 @@ static void splash_run(const char *root)
 	}
 	if (g_icon) DestroyIcon(g_icon);
 	if (g_pic) g_pic->lpVtbl->Release(g_pic);
+	splash_free_buffers();
+	splash_gdip_stop();
 	OleUninitialize();
 }
 

@@ -249,7 +249,7 @@ end
 function _ecmwf_to_180!(f::String, want::String = "180")::String
 	want == "360" && return f            # ERA5's own frame: nothing to do
 	try
-		G = GMT.gmtread(f, grd=true)
+		G = _gmtread(f, grd=true)
 		(G isa GMT.GMTgrid) || return f
 		(size(G.z, 3) > 1) && return f
 		x0, x1 = G.range[1], G.range[2]
@@ -260,7 +260,7 @@ function _ecmwf_to_180!(f::String, want::String = "180")::String
 			# with geog = -1, and grdedit then cannot know that 0-359.75 is a longitude span at all: it
 			# answers "Shift only allowed for global grids" and refuses a grid that is global. Told that
 			# the axes are geographic, GMT shifts the ERA5 frame correctly, gridline registration and all.
-			GMT.grdedit(f, S=true, R="-180/180/$(G.range[3])/$(G.range[4])", f="g", G=tmp)
+			GMT.grdedit(_gmt_safe_path(f), S=true, R="-180/180/$(G.range[3])/$(G.range[4])", f="g", G=_gmt_safe_path(tmp))
 		catch
 			# Only if GMT still declines: move the columns west of 180 to the front and drop 360 from
 			# their longitudes — an index permutation, not a resampling, so no value changes.
@@ -290,7 +290,7 @@ _ecmwf_unit(s)::String = lowercase(strip(rstrip(String(s), '\0')))
 function _ecmwf_to_unit!(f::String, want::String)::String
 	(want == "K" || isempty(want)) && return f
 	try
-		G = GMT.gmtread(f, grd=true)
+		G = _gmtread(f, grd=true)
 		(G isa GMT.GMTgrid) || return f
 		# A CUBE IS LEFT ALONE, exactly as `_ecmwf_to_180!` leaves it alone. `gmtread(grd=true)` hands
 		# back ONE 2-D layer of a multi-time file, and the `gmtwrite` below would then replace the

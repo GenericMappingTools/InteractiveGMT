@@ -76,7 +76,7 @@ _er_dir() = joinpath(dirname(pathof(GMT))[1:end-4], "share", "named_regions", ""
 function _er_listing(coll::AbstractString)::String
 	f = _er_dir() * String(coll) * "_collection.txt"
 	isfile(f) || error("the '$coll' collection table is not there: $f")
-	D = GMT.gmtread(f)
+	D = _gmtread(f)
 	isa(D, GMTdataset) || error("the '$coll' collection came back as a $(typeof(D))")
 	m = D.data
 	(size(m, 1) == 0 || size(m, 2) < 4) && error("the '$coll' collection has no regions in it")

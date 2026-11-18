@@ -251,7 +251,7 @@ when an OGR extension is chosen (C++ `g_juliaEval` → here). Deletes `tmp` when
 """
 function _gmtwrite_line(tmp::AbstractString, out::AbstractString, ispoly::Bool)
 	try
-		D = GMT.gmtread(String(tmp))
+		D = _gmtread(String(tmp))
 		geom = ispoly ? 3 : 2                         # wkbPolygon : wkbLineString
 		if D isa AbstractVector
 			for d in D

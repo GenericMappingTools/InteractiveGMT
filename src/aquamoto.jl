@@ -751,7 +751,7 @@ function _aquamoto_open(scene::Ptr{Cvoid}, path::String)
 		error("Aquamoto: could not read 'bathymetry' from $path ($(sprint(showerror, e)))")
 	end
 	info = try
-		GMT.grdinfo("$(path)?$(varname)", C = true, Q = true)
+		GMT.grdinfo(_gmt_safe_path(path) * "?" * varname, C = true, Q = true)
 	catch e
 		error("Aquamoto: could not read '$varname' header from $path ($(sprint(showerror, e)))")
 	end

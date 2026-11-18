@@ -349,7 +349,7 @@ end
 # resampled over the CPT's OWN z range (so the grid gets mapped into the levels the file defines);
 # as master only the colours are taken and the z range stays whatever the window already had.
 @noinline function _pal_read_cpt(path::String, use_z::Bool, m::Int = 256)
-	C = GMT.gmtread(path)
+	C = _gmtread(path)
 	rg = Float64.(C.range)
 	zlo, zhi = use_z ? (rg[1, 1], rg[end, end]) : (NaN, NaN)
 	lo, hi = use_z ? (rg[1, 1], rg[end, end]) : (0.0, 255.0)

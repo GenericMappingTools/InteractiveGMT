@@ -10,7 +10,7 @@
 const _GRDBLEND_BUF = Ref{Vector{UInt8}}(UInt8[0])
 const _GRDBLEND_WIRED = Ref(false)
 
-_gb_quote(p::AbstractString) = "\"" * p * "\""
+_gb_quote(p::AbstractString) = _gmt_quote_path(p)     # talwani2d.jl: the one quoting of a GMT path
 
 # "w e s n dx dy nx ny reg geog" per path, "" for a path that is not a readable grid. One grdinfo
 # for the whole set; when that fails (one bad file sinks it), each path on its own.
@@ -89,7 +89,7 @@ function _grdblend_prepare(files::Vector{String}, region::AbstractString, inc::A
 	DX, DY = _grdblend_inc(inc)
 	Gs = GMTgrid[]
 	for f in files
-		G = GMT.gmtread(f; grd = true)
+		G = _gmtread(f; grd = true)
 		gw, ge, gs, gn = G.range[1:4]
 		if !_grdblend_on_lattice(gw, gs, G.inc[1], G.inc[2], G.registration == 1, W, S, DX, DY, pixel)
 			w = W + ceil((max(gw, W) - W) / DX - 1e-6) * DX;  e = W + floor((min(ge, E) - W) / DX + 1e-6) * DX

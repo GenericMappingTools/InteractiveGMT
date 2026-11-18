@@ -6,8 +6,8 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>480</width>
-    <height>250</height>
+    <width>620</width>
+    <height>414</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -18,8 +18,8 @@
     <rect>
      <x>11</x>
      <y>11</y>
-     <width>458</width>
-     <height>160</height>
+     <width>598</width>
+     <height>324</height>
     </rect>
    </property>
    <property name="title">
@@ -38,17 +38,32 @@
      <string>Band files</string>
     </property>
    </widget>
-   <widget class="QLineEdit" name="p_names">
+   <widget class="QListWidget" name="p_names">
     <property name="geometry">
      <rect>
       <x>71</x>
       <y>27</y>
-      <width>346</width>
-      <height>26</height>
+      <width>486</width>
+      <height>124</height>
      </rect>
     </property>
     <property name="toolTip">
-     <string>The band files, ';'-separated (pick several at once with the button). Landsat file names get their band descriptions automatically.</string>
+     <string>The band files of one scene, in the order they go into the cube (drag a file up or down to change it); only the CHECKED ones are used. Opened with a .vrt in the window, it lists that .vrt's bands. Add more with the ... button (several at once; pressing it again adds more). Hover a file for its full path. Landsat file names get their band descriptions automatically.</string>
+    </property>
+    <property name="styleSheet">
+     <string notr="true">QListWidget::indicator { width: 10px; height: 10px; }</string>
+    </property>
+    <property name="dragEnabled">
+     <bool>true</bool>
+    </property>
+    <property name="dragDropMode">
+     <enum>QAbstractItemView::InternalMove</enum>
+    </property>
+    <property name="defaultDropAction">
+     <enum>Qt::MoveAction</enum>
+    </property>
+    <property name="input" stdset="0">
+     <bool>true</bool>
     </property>
     <property name="refresh" stdset="0">
      <bool>true</bool>
@@ -57,20 +72,17 @@
    <widget class="QToolButton" name="browse_p_names">
     <property name="geometry">
      <rect>
-      <x>423</x>
-      <y>30</y>
+      <x>563</x>
+      <y>27</y>
       <width>24</width>
       <height>20</height>
      </rect>
     </property>
     <property name="toolTip">
-     <string>Choose the band files</string>
+     <string>Add band files</string>
     </property>
     <property name="text">
      <string>...</string>
-    </property>
-    <property name="multi" stdset="0">
-     <bool>true</bool>
     </property>
     <property name="filter" stdset="0">
      <string>Band files (*.tif *.TIF *.jp2);;All files (*)</string>
@@ -80,33 +92,220 @@
     <property name="geometry">
      <rect>
       <x>11</x>
-      <y>59</y>
+      <y>159</y>
       <width>54</width>
-      <height>26</height>
+      <height>24</height>
      </rect>
     </property>
     <property name="text">
      <string>Region</string>
     </property>
    </widget>
-   <widget class="QLineEdit" name="p_region">
+   <widget class="QLabel" name="lbl_rg_w">
     <property name="geometry">
      <rect>
       <x>71</x>
-      <y>59</y>
-      <width>376</width>
+      <y>159</y>
+      <width>16</width>
+      <height>24</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>W</string>
+    </property>
+   </widget>
+   <widget class="QLineEdit" name="p_rg_w">
+    <property name="geometry">
+     <rect>
+      <x>89</x>
+      <y>159</y>
+      <width>105</width>
+      <height>24</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>West limit, in the band files' own coordinates (e.g. UTM metres). All four empty = the whole scene.</string>
+    </property>
+   </widget>
+   <widget class="QLabel" name="lbl_rg_e">
+    <property name="geometry">
+     <rect>
+      <x>202</x>
+      <y>159</y>
+      <width>16</width>
+      <height>24</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>E</string>
+    </property>
+   </widget>
+   <widget class="QLineEdit" name="p_rg_e">
+    <property name="geometry">
+     <rect>
+      <x>220</x>
+      <y>159</y>
+      <width>105</width>
+      <height>24</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>East limit, in the band files' own coordinates.</string>
+    </property>
+   </widget>
+   <widget class="QLabel" name="lbl_rg_s">
+    <property name="geometry">
+     <rect>
+      <x>333</x>
+      <y>159</y>
+      <width>16</width>
+      <height>24</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>S</string>
+    </property>
+   </widget>
+   <widget class="QLineEdit" name="p_rg_s">
+    <property name="geometry">
+     <rect>
+      <x>351</x>
+      <y>159</y>
+      <width>105</width>
+      <height>24</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>South limit, in the band files' own coordinates.</string>
+    </property>
+   </widget>
+   <widget class="QLabel" name="lbl_rg_n">
+    <property name="geometry">
+     <rect>
+      <x>464</x>
+      <y>159</y>
+      <width>16</width>
+      <height>24</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>N</string>
+    </property>
+   </widget>
+   <widget class="QLineEdit" name="p_rg_n">
+    <property name="geometry">
+     <rect>
+      <x>482</x>
+      <y>159</y>
+      <width>105</width>
+      <height>24</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>North limit, in the band files' own coordinates.</string>
+    </property>
+   </widget>
+   <widget class="QLabel" name="lbl_reffile">
+    <property name="geometry">
+     <rect>
+      <x>11</x>
+      <y>191</y>
+      <width>58</width>
+      <height>24</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>OR Ref file</string>
+    </property>
+   </widget>
+   <widget class="QLineEdit" name="p_reffile">
+    <property name="geometry">
+     <rect>
+      <x>71</x>
+      <y>191</y>
+      <width>486</width>
+      <height>24</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>A grid or image whose extent becomes the Region (converted to the band files' coordinates when it is in another system).</string>
+    </property>
+    <property name="refresh" stdset="0">
+     <bool>true</bool>
+    </property>
+   </widget>
+   <widget class="QToolButton" name="browse_p_reffile">
+    <property name="geometry">
+     <rect>
+      <x>563</x>
+      <y>193</y>
+      <width>24</width>
+      <height>20</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>Choose the reference grid or image</string>
+    </property>
+    <property name="text">
+     <string>...</string>
+    </property>
+    <property name="filter" stdset="0">
+     <string>Grids and images (*.grd *.nc *.tif *.tiff *.TIF *.jp2 *.img *.vrt);;All files (*)</string>
+    </property>
+   </widget>
+   <widget class="QLabel" name="lbl_or_rect">
+    <property name="geometry">
+     <rect>
+      <x>11</x>
+      <y>223</y>
+      <width>58</width>
+      <height>26</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>OR</string>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="run_rgrect">
+    <property name="geometry">
+     <rect>
+      <x>71</x>
+      <y>223</y>
+      <width>255</width>
       <height>26</height>
      </rect>
     </property>
     <property name="toolTip">
-     <string>W/E/S/N in the files' own coordinates (e.g. UTM metres). Empty = the whole scene.</string>
+     <string>Fill the Region with the last rectangle drawn in the window (Draw &gt; Rectangle) over the image showing: draw it over the area of interest first.</string>
+    </property>
+    <property name="text">
+     <string>Use the drawn rectangle</string>
+    </property>
+    <property name="needsmap" stdset="0">
+     <bool>true</bool>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="run_rgband">
+    <property name="geometry">
+     <rect>
+      <x>332</x>
+      <y>223</y>
+      <width>255</width>
+      <height>26</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>Fill the Region with the extent of the first band file (the whole scene), to trim it by hand.</string>
+    </property>
+    <property name="text">
+     <string>Use the first band's extent</string>
     </property>
    </widget>
    <widget class="QLabel" name="lbl_sentinel">
     <property name="geometry">
      <rect>
       <x>11</x>
-      <y>91</y>
+      <y>257</y>
       <width>54</width>
       <height>26</height>
      </rect>
@@ -119,8 +318,8 @@
     <property name="geometry">
      <rect>
       <x>71</x>
-      <y>91</y>
-      <width>376</width>
+      <y>257</y>
+      <width>516</width>
       <height>26</height>
      </rect>
     </property>
@@ -152,7 +351,7 @@
     <property name="geometry">
      <rect>
       <x>11</x>
-      <y>123</y>
+      <y>289</y>
       <width>54</width>
       <height>26</height>
      </rect>
@@ -165,8 +364,8 @@
     <property name="geometry">
      <rect>
       <x>71</x>
-      <y>123</y>
-      <width>346</width>
+      <y>289</y>
+      <width>486</width>
       <height>26</height>
      </rect>
     </property>
@@ -177,8 +376,8 @@
    <widget class="QToolButton" name="browse_p_save">
     <property name="geometry">
      <rect>
-      <x>423</x>
-      <y>126</y>
+      <x>563</x>
+      <y>292</y>
       <width>24</width>
       <height>20</height>
      </rect>
@@ -201,8 +400,8 @@
    <property name="geometry">
     <rect>
      <x>11</x>
-     <y>177</y>
-     <width>458</width>
+     <y>341</y>
+     <width>598</width>
      <height>30</height>
     </rect>
    </property>
@@ -213,14 +412,55 @@
     <bool>true</bool>
    </property>
   </widget>
+  <widget class="QToolButton" name="tutorial">
+   <property name="geometry">
+    <rect>
+     <x>11</x>
+     <y>378</y>
+     <width>24</width>
+     <height>24</height>
+    </rect>
+   </property>
+   <property name="toolTip">
+    <string>Open the Remote sensing page of the manual: every field of the Band cube dialog explained.</string>
+   </property>
+   <property name="text">
+    <string>?</string>
+   </property>
+   <property name="page" stdset="0">
+    <string>74f-remote-sensing</string>
+   </property>
+  </widget>
+  <widget class="QPushButton" name="link_tutorial">
+   <property name="geometry">
+    <rect>
+     <x>41</x>
+     <y>377</y>
+     <width>80</width>
+     <height>26</height>
+    </rect>
+   </property>
+   <property name="toolTip">
+    <string>Open the Remote sensing tutorial: a Landsat scene of Lisbon, from its band files to NDVI and a water mask, step by step.</string>
+   </property>
+   <property name="text">
+    <string>Tutorial</string>
+   </property>
+   <property name="page" stdset="0">
+    <string>74g-remote-sensing-tutorial</string>
+   </property>
+  </widget>
   <widget class="QPushButton" name="run_compute">
    <property name="geometry">
     <rect>
-     <x>388</x>
-     <y>213</y>
+     <x>528</x>
+     <y>377</y>
      <width>81</width>
      <height>26</height>
     </rect>
+   </property>
+   <property name="toolTip">
+    <string>Cut every band file to the Region, stack them into one multi-band GeoTIFF and open it in this window.</string>
    </property>
    <property name="text">
     <string>Build cube</string>

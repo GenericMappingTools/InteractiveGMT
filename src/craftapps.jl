@@ -580,7 +580,7 @@ function _pc_back(scene::Ptr{Cvoid}, kind::String, name::String)::Nothing
 		_pc_tools(["doc_save" => "{\"path\":\"$back\"}"])
 		path = joinpath(_pc_dir(), back)
 		isfile(path) || error("PhotoCraft did not write $path.")
-		_pc_put_back!(scene, kind, name, key, R, GMT.gmtread(path))
+		_pc_put_back!(scene, kind, name, key, R, _gmtread(path))
 	finally
 		ccall(_fn(:gmtvtk_progress_close), Cvoid, ())
 	end

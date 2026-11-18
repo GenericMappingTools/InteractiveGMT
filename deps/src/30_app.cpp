@@ -1033,6 +1033,11 @@ static JuliaGrdRedPolFn g_juliaGrdRedPol = nullptr;
 typedef int (*JuliaOpenManualFn)(const char *name);
 static JuliaOpenManualFn g_juliaOpenManual = nullptr;
 
+// A band row's "Load band" (Scene Objects, under a cube's group): add band `band` (1-based) of the
+// element named `owner` to this window as an element of its own. Host: drop.jl `_on_band_row`.
+typedef void (*JuliaBandRowFn)(void *scene, const char *owner, int band);
+static JuliaBandRowFn g_juliaBandRow = nullptr;
+
 // grdgradient (GMT menu) — directional derivative / slope / aspect of the window's grid, via GMT.jl's
 // `grdgradient` (src/grdgradient.jl). The dialog (GrdGradientDialog, 70_window.cpp, loads
 // deps/ui/grdgradient_dialog.ui) hands a NEWLINE-separated "key=value" block: azim=/azim2= (plain

@@ -54,7 +54,7 @@ function _lidar_table()::LidarTable
 	t === nothing || return t
 	path = _lidar_dat_path()
 	isfile(path) || error("LIDAR2011 tile table not found: $path")
-	D = GMT.gmtread(path)
+	D = _gmtread(path)
 	D isa Vector && (D = D[1])
 	size(D.data, 2) < 4 && error("$path: expected 4 numeric columns (x0 x1 y0 y1), got $(size(D.data, 2))")
 	nrows = size(D.data, 1)

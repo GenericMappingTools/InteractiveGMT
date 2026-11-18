@@ -437,7 +437,7 @@ function _xy_open_blank()
 end
 
 # File > Open: read a data file (anything GMT.gmtread understands) and add its columns as series.
-_xy_open_file(p::QtXYPlot, path) = _xy_add_dataset(p, GMT.gmtread(path))
+_xy_open_file(p::QtXYPlot, path) = _xy_add_dataset(p, _gmtread(path))
 
 # Add every plottable (>= 2 column) segment of a dataset/matrix as series on the CURRENT page:
 # column 1 is X, columns 2…n one series each, named by the REAL column names. THE ONE

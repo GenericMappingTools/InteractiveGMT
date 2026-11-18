@@ -22,7 +22,7 @@ function _on_grdseamount(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		tbl = _get(d, "table")
 		D = if !isempty(tbl)
 			isfile(tbl) || error("seamount table not found: $tbl")
-			GMT.gmtread(String(tbl))
+			_gmtread(String(tbl))
 		else
 			rec = _get(d, "record")
 			isempty(rec) && error("no seamount given")

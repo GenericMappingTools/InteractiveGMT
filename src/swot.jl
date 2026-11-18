@@ -319,7 +319,7 @@ const _SWOT_SHP_ATTRS = Dict{String,Vector{String}}()
 function _swot_vars(file::String)::Vector{String}
 	if lowercase(splitext(file)[2]) in (".zip", ".shp")
 		return get!(_SWOT_SHP_ATTRS, abspath(file)) do
-			D = GMT.gmtread(file)
+			D = _gmtread(file)
 			a = (D isa AbstractVector ? D[1] : D).attrib
 			sort!([String(k) for (k, v) in a if tryparse(Float64, strip(v)) !== nothing && !endswith(k, "_id") &&
 			       k != "Feature_ID" && !endswith(k, "_q") && !endswith(k, "_q_b") && k != "quality_f"])
@@ -336,7 +336,7 @@ end
 # overlay and not 20 000.
 function _swot_shp_features(file::String, var::String, kind::Symbol, W::Float64, E::Float64,
                             S::Float64, N::Float64, qmode::Int)::Vector{GMTdataset{Float64,2}}
-	D = GMT.gmtread(file)
+	D = _gmtread(file)
 	segs = D isa AbstractVector ? D : [D]
 	qn = _SWOT_SHP_QUAL[kind]
 	idn = kind === :reach ? "reach_id" : kind === :node ? "node_id" : "lake_id"

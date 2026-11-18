@@ -29,7 +29,7 @@ end
 function _climate_cpc_read(url::String; kw...)
 	fname = _climate_fetch(url)
 	try
-		return GMT.gmtread(fname; kw...)
+		return _gmtread(fname; kw...)
 	finally
 		rm(fname; force = true)
 	end
@@ -138,7 +138,7 @@ function _climate_soi_patch()
 end
 
 function _climate_keeling()
-	D = GMT.gmtread("https://gml.noaa.gov/webdata/ccgg/trends/co2/co2_mm_mlo.txt", i = "2,3")   # keeling()'s read
+	D = _gmtread("https://gml.noaa.gov/webdata/ccgg/trends/co2/co2_mm_mlo.txt", i = "2,3")   # keeling()'s read
 	p = _xyplot(_climate_unix(Float64.(D.data[:, 1])), Float64.(D.data[:, 2]); name = "Monthly mean", color = :red,
 	            linewidth = 1, title = "Keeling Curve - Mauna Loa CO2", xlabel = "Year", ylabel = "CO2 (ppm)",
 	            xtime = :date)

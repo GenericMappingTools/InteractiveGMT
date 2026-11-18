@@ -36,17 +36,98 @@ function _rs_window_file(scene::Ptr{Cvoid})::String
 	return ""
 end
 
-# One label per band of a raster file: its description, or "Layer k" where it has none.
+# One label per band of a raster file: its description; where it has none, the band's own name as
+# the multiband open names it (`_bands_probe`: Band_* metadata, a VRT's source files), cut to the part
+# that tells the bands apart ("LC08_..._T1_B2" -> "B2"); "Layer k" only when nothing names it.
 function _rs_bands(file::String)::Vector{String}
 	(isempty(file) || !isfile(file)) && return String[]
-	desc = RS._band_descriptions(file)
-	return String[isempty(strip(s)) ? "Layer $k" : String(s) for (k, s) in enumerate(desc)]
+	desc = String.(RS._band_descriptions(file))
+	if any(s -> isempty(strip(s)), desc)
+		pn = try
+			_bands_probe(file)[2]
+		catch
+			String[]
+		end
+		if length(pn) == length(desc)
+			short = _rs_short_names(pn)
+			roles = _rs_band_roles(file, pn)
+			desc = String[!isempty(strip(s)) ? s : isempty(roles[k]) ? short[k] : "$(short[k]) ($(roles[k]))"
+			              for (k, s) in enumerate(desc)]
+		end
+	end
+	return String[isempty(strip(s)) ? "Layer $k" : s for (k, s) in enumerate(desc)]
 end
 
-# 0-based index of the first band whose name contains `want` (case-insensitive), else `dflt`.
+# What each band of a known sensor IS, by its band number, in the role names the indices ask for
+# (`_RS_INDICES`). Landsat 8/9 OLI-TIRS renumbered the bands, so TM/ETM+ has its own table. HLS S30
+# takes B8A as its NIR (hls.jl), plain Sentinel-2 the broad B08.
+const _RS_SENSOR_ROLES = Dict{Symbol,Dict{String,String}}(
+	:oli => Dict("1" => "coastal", "2" => "blue", "3" => "green", "4" => "red", "5" => "nir",
+	             "6" => "swir1", "7" => "swir2", "8" => "pan", "9" => "cirrus", "10" => "tir1", "11" => "tir2"),
+	:tm  => Dict("1" => "blue", "2" => "green", "3" => "red", "4" => "nir", "5" => "swir1",
+	             "6" => "tir", "7" => "swir2", "8" => "pan"),
+	:s2  => Dict("1" => "coastal", "2" => "blue", "3" => "green", "4" => "red", "5" => "redEdge1",
+	             "6" => "redEdge2", "7" => "redEdge3", "8" => "nir", "8A" => "nir08", "9" => "vapour",
+	             "10" => "cirrus", "11" => "swir1", "12" => "swir2"),
+	:s30 => Dict("1" => "coastal", "2" => "blue", "3" => "green", "4" => "red", "5" => "redEdge1",
+	             "6" => "redEdge2", "7" => "redEdge3", "8" => "nirBroad", "8A" => "nir", "9" => "vapour",
+	             "10" => "cirrus", "11" => "swir1", "12" => "swir2"),
+)
+
+# The sensor a band stack comes from, read off its product names (the file and its bands' names):
+# Landsat "LC08_/LC09_" (OLI) or "LT04/LT05/LE07_" (TM/ETM+), Sentinel-2 "S2A_.._MSIL2A" or a tile
+# "T29SNC_..._B04", HLS "HLS.L30/S30". `nothing` when none of them.
+function _rs_sensor(text::String)::Union{Symbol,Nothing}
+	occursin(r"HLS\.S30"i, text) && return :s30
+	occursin(r"HLS\.L30"i, text) && return :oli
+	occursin(r"L[COT]0[89]_"i, text) && return :oli
+	occursin(r"L[TE]0[4-7]_"i, text) && return :tm
+	occursin(r"S2[A-D]_|MSIL[12]|(^|[\\/_])T\d\d[A-Z]{3}_|_B8A"i, text) && return :s2
+	return nothing
+end
+
+# One role per band ("" where unknown): the band number from each name's "B<n>" tail ("_B4",
+# "_B04_10m", "_B6_VCID_1", "B8A"), looked up in its sensor's table.
+function _rs_band_roles(file::String, names::Vector{String})::Vector{String}
+	roles = fill("", length(names))
+	sensor = _rs_sensor(basename(file) * "\n" * join(names, "\n"))
+	sensor === nothing && return roles
+	tbl = _RS_SENSOR_ROLES[sensor]
+	for (k, s) in enumerate(names)
+		m = match(r"(?:^|[_.\-])B(\d{1,2}|8A)(?:_VCID_\d|_\d+m)?$"i, s)
+		m === nothing && continue
+		b = uppercase(String(m.captures[1]))
+		b = b == "8A" ? b : string(parse(Int, b))          # "04" -> "4"
+		roles[k] = get(tbl, b, "")
+	end
+	return roles
+end
+
+# Drop the prefix every name shares, cut back to a separator so a band number stays whole.
+function _rs_short_names(v::Vector{String})::Vector{String}
+	length(v) < 2 && return v
+	p = v[1]
+	for s in v
+		n = 0
+		for (a, b) in zip(p, s)
+			a == b || break
+			n += 1
+		end
+		p = first(p, n)
+	end
+	k = findlast(c -> c in "_-. ", p)
+	k === nothing && return v
+	cut = length(p[1:k])
+	out = String[s[nextind(s, 0, cut + 1):end] for s in v]
+	return any(isempty, out) ? v : out
+end
+
+# 0-based index of the band whose role is exactly `want` ("B4 (red)" for "red" — never "B5 (redEdge1)"),
+# else the first whose name contains it (case-insensitive), else `dflt`.
 function _rs_match(names::Vector{String}, want::String, dflt::Int)::Int
 	w = lowercase(want)
-	k = findfirst(s -> occursin(w, lowercase(s)), names)
+	k = findfirst(s -> endswith(lowercase(s), "($(w))"), names)
+	k === nothing && (k = findfirst(s -> occursin(w, lowercase(s)), names))
 	return k === nothing ? dflt : k - 1
 end
 
@@ -149,6 +230,30 @@ const _RS_INDICES = Tuple{String,String,Vector{String}}[
 	("NDMI",   "Normalized difference moisture",          ["nir", "swir1"]),
 ]
 
+# The (file, index) the Spectral indices dialog last picked bands for, per window.
+const _RS_IDX_LAST = Dict{Ptr{Cvoid},Tuple{String,Int}}()
+
+# Top-of-atmosphere reflectance of LAYER k of `file`, when its MTL is at hand — `nothing` when it is not.
+# Two ways a stack carries one: a .vrt of Landsat band files, each with its …_MTL.txt beside it (each
+# band calibrated from its own file); a Band cube (cutcube), whose metadata holds the MTL and whose
+# band descriptions ("Band4 - Red …") give each layer's band number. Both go through RS.dn2reflectance,
+# the Calibration tool's reflectance (a Level-2 SR band comes out as its surface reflectance).
+function _rs_toa_reader(file::String)
+	(isempty(file) || !isfile(file)) && return nothing
+	if lowercase(splitext(file)[2]) == ".vrt"
+		src = try filter(isfile, _vrt_source_files(file)) catch; String[] end
+		length(src) >= 2 || return nothing
+		all(f -> RS.read_mtl_lines(f) !== nothing, src) || return nothing
+		return k::Int -> RS.dn2reflectance(src[k])
+	end
+	att = try _emp_att(file) catch; return nothing end
+	any(s -> startswith(s, "MTL="), att.meta) || return nothing
+	desc = String.(RS._band_descriptions(file))
+	nums = [(m = match(r"^Band\s*(\d+)", s)) === nothing ? 0 : parse(Int, m.captures[1]) for s in desc]
+	any(==(0), nums) && return nothing
+	return k::Int -> RS.dn2reflectance(file; band = nums[k])
+end
+
 function _rs_indices(scene::Ptr{Cvoid}, d::Dict{String,String}, io::IOBuffer)::Bool
 	what = _rs_get(d, "what")
 	file = _rs_file!(io, d, scene)
@@ -159,6 +264,20 @@ function _rs_indices(scene::Ptr{Cvoid}, d::Dict{String,String}, io::IOBuffer)::B
 		_rs_set(io, "p_index", 0)
 	end
 	if what == "init" || what == "refresh"
+		# Threshold / Class separators are live only for the outputs that use them.
+		mode = _rs_get(d, "p_output")
+		_rs_enable(io, "p_threshold", startswith(mode, "Threshold") || startswith(mode, "Mask"))
+		_rs_enable(io, "p_classes", startswith(mode, "Classes"))
+		# TOA reflectance only where the MTL is at hand; checked by default for each NEW file that has it.
+		hasmtl = _rs_toa_reader(file) !== nothing
+		_rs_enable(io, "p_toa", hasmtl)
+		newfile = get(_RS_IDX_LAST, scene, ("", 0))[1] != file
+		(newfile || !hasmtl) && _rs_set(io, "p_toa", hasmtl ? 1 : 0)
+		# The bands are re-picked only for a new file or a new index: a change of Output must not
+		# throw away bands the user chose by hand.
+		key = (file, k)
+		(what == "refresh" && get(_RS_IDX_LAST, scene, ("", 0)) == key) && return true
+		_RS_IDX_LAST[scene] = key
 		names = _rs_bands(file)
 		for j in 1:3
 			w = "p_b$j"
@@ -169,7 +288,8 @@ function _rs_indices(scene::Ptr{Cvoid}, d::Dict{String,String}, io::IOBuffer)::B
 			on && !isempty(names) && _rs_set(io, w, _rs_match(names, want[j], min(j, length(names)) - 1))
 		end
 		_rs_status(io, isempty(names) ? "Choose a multi-band file (a cube made by Band cube, or any band stack)." :
-		                                "$(length(names)) bands. $(ix) takes: $(join(want, ", ")).")
+		                                "$(length(names)) bands. $(ix) takes: $(join(want, ", "))." *
+		                                (hasmtl ? " MTL found: TOA reflectance available." : ""))
 		return true
 	end
 	what == "compute" || error("unknown request: $what")
@@ -190,15 +310,41 @@ function _rs_indices(scene::Ptr{Cvoid}, d::Dict{String,String}, io::IOBuffer)::B
 			startswith(mode, "Mask (<") && push!(kw, :mask => -1)
 		end
 	end
-	sc = RS.subcube(file; layers = layers)
-	b3 = length(layers) == 3 ? view(sc, :, :, 3) : nothing
-	O = RS.sp_indices(view(sc, :, :, 1), view(sc, :, :, 2), b3; index = ix, kw...)
+	toa = _rs_get(d, "p_toa") == "1" ? _rs_toa_reader(file) : nothing
+	(_rs_get(d, "p_toa") == "1" && toa === nothing) && error("No MTL found for $(basename(file)): untick Top of atmosphere reflectance.")
+	if toa !== nothing
+		R = [toa(l) for l in layers]                      # each chosen band as TOA reflectance (Float32, NaN = no data)
+		O = RS.sp_indices(R[1], R[2], length(R) == 3 ? R[3] : nothing; index = ix, kw...)
+		nodata = k -> any(r -> isnan(r.z[k]), R)
+	else
+		sc = RS.subcube(file; layers = layers)
+		b3 = length(layers) == 3 ? view(sc, :, :, 3) : nothing
+		O = RS.sp_indices(view(sc, :, :, 1), view(sc, :, :, 2), b3; index = ix, kw...)
+		# PIXEL bands (Byte/UInt16) mark no data with DN 0 (RemoteS's own rule, utils.jl _DNZero); DATA
+		# bands (a grid stack) with NaN — a 0 there can be a real value.
+		A = sc isa GMTimage ? sc.image : sc.z
+		np = size(A, 1) * size(A, 2)
+		isdn = sc isa GMTimage
+		nodata = k -> any(j -> (v = A[k + (j - 1) * np]; isdn ? v == 0 : isnan(v)), 1:size(A, 3))
+	end
+	# A pixel where any band it takes has no data (outside a satellite scene's swath: a third of a
+	# Landsat frame) has no index: NaN in an index grid — never the 0 the formula's guard writes, which
+	# painted the whole fill around a scene as "NDVI 0". A mask/class image keeps its 0 there.
+	if O isa GMTgrid
+		z = O.z
+		@inbounds for k in eachindex(z)
+			nodata(k) && (z[k] = NaN32)
+		end
+		O.nodata = NaN
+		GMT.setgrdminmax!(O)
+	end
 	# Each output kind is its own result: a mask must never replace the index grid it came from.
 	what_out = isempty(kw) ? "" : haskey(Dict(kw), :classes) ? " classes" :
 	           haskey(Dict(kw), :mask) ? " mask $(Dict(kw)[:mask] > 0 ? "≥" : "<") $(Dict(kw)[:threshold])" :
 	                                     " ≥ $(Dict(kw)[:threshold])"
-	name = "$(ix)$(what_out) — $(splitext(basename(file))[1])"
-	_rs_deliver(scene, O, name, "RemoteS.$(lowercase(ix))(\"$(basename(file))\", layers=$(layers))"; flat = true)
+	name = "$(ix)$(toa === nothing ? "" : " TOA")$(what_out) — $(splitext(basename(file))[1])"
+	_rs_deliver(scene, O, name, "RemoteS.$(lowercase(ix))(\"$(basename(file))\", layers=$(layers)" *
+	            (toa === nothing ? "" : ", TOA reflectance from the MTL") * ")"; flat = true)
 	_rs_status(io, "$(name) added.")
 	return true
 end
@@ -253,9 +399,9 @@ function _rs_calibration(scene::Ptr{Cvoid}, d::Dict{String,String}, io::IOBuffer
 	band = 0
 	if length(names) > 1
 		lab = names[clamp(_rs_idx(d, "p_band") + 1, 1, length(names))]
-		m = match(r"Band\s*(\d+)", lab)
+		m = match(r"Band\s*(\d+)|^B(\d+)\b", lab)
 		m === nothing && error("Band \"$lab\" has no Landsat band number in its description.")
-		band = parse(Int, m.captures[1])
+		band = parse(Int, something(m.captures[1], m.captures[2]))
 	end
 	mtl = _rs_get(d, "p_mtl")
 	q = _rs_get(d, "p_quantity")
@@ -284,7 +430,7 @@ function _rs_classify(scene::Ptr{Cvoid}, d::Dict{String,String}, io::IOBuffer)::
 	what == "compute" || error("unknown request: $what")
 	_rs_need_file(file, "band cube")
 	train = _rs_need_file(_rs_get(d, "p_train"), "training polygons file")
-	cube = GMT.gmtread(file)
+	cube = InteractiveGMT._gmtread(file)
 	cube isa GMT.GItype && ndims(cube) == 3 || error("$(basename(file)) is not a multi-band cube")
 	depth = round(Int, _rs_num(d, "p_depth", 3.0))
 	dens = _rs_num(d, "p_density", 0.1)
@@ -298,22 +444,92 @@ end
 
 # --- Band cube (cut) -----------------------------------------------------------------------------
 
+# The band files, one per line in the dialog (sent ';'-joined).
+_rs_cut_names(d::Dict{String,String})::Vector{String} =
+	String[String(strip(s)) for s in split(_rs_get(d, "p_names"), ';') if !isempty(strip(s))]
+
+# The reference file whose extent was last put into the Region, per window: a refresh that is not a
+# NEW reference file must never overwrite limits the user typed.
+const _RS_CUT_REF = Dict{Ptr{Cvoid},String}()
+
+# A box in system `from` as limits in the band files' system (the first band's), when both are known
+# and differ; otherwise as it is.
+function _rs_cut_in_bands(names::Vector{String}, from::String, b::NTuple{4,Float64})::NTuple{4,Float64}
+	isempty(names) && return b
+	to = try GMT.getproj(names[1]) catch; "" end
+	(isempty(from) || isempty(to) || _same_srs(from, to)) && return b
+	return _box_to(from, to, b...)
+end
+
+# The four Region boxes, as plain numbers: UTM northings must read 4187985, not 4.187985e6.
+function _rs_cut_set_region!(io::IOBuffer, b::NTuple{4,Float64})
+	for (w, v) in zip(("p_rg_w", "p_rg_e", "p_rg_s", "p_rg_n"), b)
+		r = round(v, digits = 5)
+		_rs_set(io, w, r == round(r) && abs(r) < 1e15 ? string(Int64(r)) : string(r))
+	end
+end
+
+# A raster file's own extent (header only) and system.
+function _rs_file_box(f::String)::Tuple{NTuple{4,Float64},String}
+	isfile(f) || error("File not found: $f")
+	h = _emp_att(f).hdr
+	h[2] > h[1] && h[4] > h[3] || error("Could not read the extent of $(basename(f)).")
+	return (h[1], h[2], h[3], h[4]), (try GMT.getproj(f) catch; "" end)
+end
+
 function _rs_cutcube(scene::Ptr{Cvoid}, d::Dict{String,String}, io::IOBuffer)::Bool
 	what = _rs_get(d, "what")
+	names = _rs_cut_names(d)
+	if what == "init"
+		# Opened over a .vrt: its band files, all checked, ready to be ticked out.
+		wf = String(first(split(_rs_window_file(scene), '?')))
+		if lowercase(splitext(wf)[2]) == ".vrt" && isfile(wf)
+			src = filter(isfile, _vrt_source_files(wf))
+			if !isempty(src)
+				_rs_items(io, "p_names", src)
+				names = src
+			end
+		end
+	end
 	if what == "init" || what == "refresh"
-		n = count(!isempty, strip.(split(_rs_get(d, "p_names"), ';')))
+		ref = _rs_get(d, "p_reffile")
+		if what == "refresh" && !isempty(ref) && get(_RS_CUT_REF, scene, "") != ref
+			b, srs = _rs_file_box(ref)
+			_rs_cut_set_region!(io, _rs_cut_in_bands(names, srs, b))
+			_RS_CUT_REF[scene] = ref
+		end
+		n = length(names)
 		_rs_status(io, n == 0 ? "Choose the band files of one scene." : "$(n) band file(s).")
 		return true
 	end
+	if what == "rgrect"
+		_rs_need_map(scene)
+		_rs_cut_set_region!(io, _rs_cut_in_bands(names, _window_srs(scene), _rs_drawn_rect(scene)))
+		_rs_status(io, "Region set to the drawn rectangle.")
+		return true
+	end
+	if what == "rgband"
+		isempty(names) && error("Choose the band files first.")
+		_rs_cut_set_region!(io, _rs_file_box(names[1])[1])
+		_rs_status(io, "Region set to the extent of $(basename(names[1])).")
+		return true
+	end
 	what == "compute" || error("unknown request: $what")
-	names = String[String(strip(s)) for s in split(_rs_get(d, "p_names"), ';') if !isempty(strip(s))]
 	isempty(names) && error("Choose the band files of one scene.")
 	save = _rs_get(d, "p_save")
 	isempty(save) && error("Choose the output file.")
-	reg = _rs_get(d, "p_region")
+	lim = [_rs_get(d, w) for w in ("p_rg_w", "p_rg_e", "p_rg_s", "p_rg_n")]
+	reg = if all(isempty, lim)
+		nothing
+	else
+		v = tryparse.(Float64, lim)
+		any(isnothing, v) && error("Give all four Region limits (W, E, S, N), or leave all four empty for the whole scene.")
+		(v[2] > v[1] && v[4] > v[3]) || error("The Region must have W < E and S < N.")
+		Float64.(v)
+	end
 	s2 = _rs_get(d, "p_sentinel")
 	sent = startswith(s2, "10") ? 10 : startswith(s2, "20") ? 20 : startswith(s2, "60") ? 60 : 0
-	RS.cutcube(names = names, region = isempty(reg) ? nothing : reg, sentinel2 = sent, save = save)
+	RS.cutcube(names = names, region = reg, sentinel2 = sent, save = save)
 	isfile(save) || error("cutcube wrote nothing to $save")
 	_on_drop(scene, save)			# the ONE open-a-file-into-a-window path
 	_rs_status(io, "$(basename(save)) written ($(length(names)) bands) and opened.")

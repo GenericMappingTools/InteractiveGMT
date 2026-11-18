@@ -113,7 +113,7 @@ end
 # Read through the ONE file reader, then use the SAME display clipping path as every other imported
 # vector. Never ask gmtselect to read the file and never duplicate its result-shape assumptions.
 function _import_xy_read(scene::Ptr{Cvoid}, path::String, empty::Bool)
-	D = GMT.gmtread(path; table=true)
+	D = _gmtread(path; table=true)
 	# Every Open xy(z) mode draws ROWS (a point, a scaled symbol, an arrow, a label): crossed as points.
 	return empty ? D : _clip_to_display(scene, D; kind = :points)
 end

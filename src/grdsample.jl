@@ -46,7 +46,7 @@ function _on_grdsample(scene::Ptr{Cvoid}, cparams::Cstring)::Cvoid
 			toggle && (kw[:toggle] = true)
 			rfields = split(region, '/')
 			(length(rfields) == 4 && !any(isempty, rfields)) && (kw[:region] = region)
-			G_out = GMT.grdsample(src; kw...)
+			G_out = GMT.grdsample(_gmt_safe_path(src); kw...)
 			_grid_command!(G_out, "GMT.grdsample($base; " * join(["$k=$v" for (k, v) in kw], ", ") * ")")
 			if isempty(output)
 				newname = base * " resampled"

@@ -3438,6 +3438,72 @@ static void rebuildSceneObjects(Scene *s) {
 		        "This raster's own axes · left-click the label for its Axes properties");
 	};
 
+	// The FILES an element is made of (a .vrt's sources: s->srcFiles, keyed by the element's name).
+	// One row per file and NO checkbox: a file on disk is not something on screen to show or hide.
+	// Left- or right-click opens its menu; "Load file" opens it into THIS window through the same door
+	// File > Open uses (juliaOpenFile). Queued: an open rebuilds this panel, and the row whose click is
+	// running belongs to it.
+	// The BANDS of a multi-band element (a cube: s->srcBands) are rows of the same kind: "Load band"
+	// hands (owner, band number) to the host, which adds that band to the window as a new element.
+	auto sourceFileRows = [&](const std::string &owner) {
+		std::vector<std::pair<QString, std::function<void(const QPoint&)>>> rows;   // label, menu
+		std::vector<QString> tips;
+		QObject *ctx = s->win ? static_cast<QObject*>(s->win) : static_cast<QObject*>(s->widget);
+		auto fi = s->srcFiles.find(owner);
+		if (fi != s->srcFiles.end())
+			for (const std::string &f : fi->second) {
+				const QString path = QString::fromStdString(f);
+				rows.push_back({QFileInfo(path).fileName(), [s, path, ctx](const QPoint &g) {
+					QMenu m;
+					QAction *load = m.addAction("Load file");
+					if (m.exec(g) != load || !ctx) return;
+					const QByteArray u8 = path.toUtf8();
+					QTimer::singleShot(0, ctx, [s, u8]() { if (sceneAlive(s)) juliaOpenFile(s, u8.constData()); });
+				}});
+				tips.push_back("<qt><nobr><b>" + path.toHtmlEscaped() + "</b></nobr><br>Click for Load file</qt>");
+			}
+		auto bi = s->srcBands.find(owner);
+		if (bi != s->srcBands.end())
+			for (size_t k = 0; k < bi->second.size(); ++k) {
+				const QString label = QString::fromStdString(bi->second[k]);
+				const int band = (int)k + 1;
+				rows.push_back({label, [s, owner, band, label, ctx](const QPoint &g) {
+					QMenu m;
+					QAction *load = m.addAction("Load band");
+					if (m.exec(g) != load || !ctx || !g_juliaBandRow) return;
+					QTimer::singleShot(0, ctx, [s, owner, band, label]() {
+						if (!sceneAlive(s) || !g_juliaBandRow) return;
+						showBusyDialog(QString("Loading %1…").arg(label).toUtf8().constData());
+						g_juliaBandRow(s, owner.c_str(), band);
+						closeBusyDialog();
+					});
+				}});
+				tips.push_back("<qt><nobr><b>Band " + QString::number(band) + ": " + label.toHtmlEscaped() +
+				               "</b></nobr><br>Click for Load band</qt>");
+			}
+		for (size_t r = 0; r < rows.size(); ++r) {
+			std::function<void(const QPoint&)> menu = rows[r].second;
+			QWidget *row = new QWidget(tree);
+			QHBoxLayout *h = new QHBoxLayout(row);
+			h->setContentsMargins(0, 1, 0, 1);
+			h->setSpacing(5);
+			QLabel *icon = new QLabel(row);
+			icon->setPixmap(makeObjectIcon(IC_Image));
+			icon->setProperty("iconKind", (int)IC_Image);
+			ClickableLabel *text = new ClickableLabel(rows[r].first, row);
+			icon->setToolTip(tips[r]);
+			text->setToolTip(tips[r]);
+			text->setCursor(Qt::PointingHandCursor);
+			text->onClick = menu;
+			text->onRightClick = menu;
+			h->addWidget(icon, 0);
+			h->addWidget(text, 1);
+			QTreeWidgetItem *item = new QTreeWidgetItem();
+			if (curParent) curParent->addChild(item); else tree->addTopLevelItem(item);
+			tree->setItemWidget(item, 0, row);
+		}
+	};
+
 	// ── AQUAMOTO FILE WRAPPER ── every variable loaded from the open tsunami netCDF -- the composited
 	// water/land surface below, PLUS bathymetry and any other static grid loaded alongside it as an
 	// extra -- nests under ONE collapsible parent named after the file: each variable gets its own
@@ -3548,6 +3614,7 @@ static void rebuildSceneObjects(Scene *s) {
 				colorbarRow(&s->surfShowBar, -1);    // base relief grid
 			}
 			axesRow(&s->baseAxes);               // the BASE raster's OWN set
+			sourceFileRows(s->surfName);
 			endGroup();
 		}
 	} else if (s->drape) {                                  // bare image (view_image) group — header IS the image handle
@@ -3576,6 +3643,7 @@ static void rebuildSceneObjects(Scene *s) {
 		        "Right-click for properties (save / remove)", imgMenu);
 		if (s->palette.n > 0) paletteRow(&s->palette);
 		axesRow(&s->baseAxes);                             // the primary IMAGE's OWN set
+		sourceFileRows(s->surfName);
 		endGroup();
 	}
 
@@ -3625,6 +3693,7 @@ static void rebuildSceneObjects(Scene *s) {
 			if (!ex.isMesh) colorbarRow(&ex.showBar, ex.tag);   // resolve by the grid's UNIQUE tag, not its (shifting) index
 			axesRow(&ex.ax);                         // THIS grid/mesh's OWN set
 		}
+		sourceFileRows(ex.name);
 		endGroup();
 	};
 	for (auto &ex : s->extras) if (inFile(ex)) emitExtra(ex);

@@ -79,8 +79,8 @@ function _geo_select(datafile::AbstractString, W, E, S, N; latlon::Bool=false)
 	# below the tools — so it records directly; the caller still gets (nothing, []) and reports its
 	# own failure to the user in its own window.
 	isfile(path) || (_record_tool_error("geography: data file not found: $path"); return (nothing, Float64[]))
-	Sr = latlon ? GMT.gmtselect(path, R=(W, E, S, N), f=:g, yx="i") :
-	              GMT.gmtselect(path, R=(W, E, S, N), f=:g)         # read + region/lon-periodic clip in ONE call
+	Sr = latlon ? GMT.gmtselect(_gmt_safe_path(path), R=(W, E, S, N), f=:g, yx="i") :
+	              GMT.gmtselect(_gmt_safe_path(path), R=(W, E, S, N), f=:g)         # read + region/lon-periodic clip in ONE call
 	(Sr === nothing || isempty(Sr)) && return (nothing, Float64[])
 	Sel = Sr isa AbstractVector ? Sr[1] : Sr
 	(Sel.data === nothing || isempty(Sel.data)) && return (nothing, Float64[])

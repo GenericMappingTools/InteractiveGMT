@@ -680,6 +680,11 @@ polygons, text, curtains, beachballs, colour bars, axes, … — each row with i
 - **Place on top / Place at bottom**
 - **Bring forward / Send backward**
 
+**Band stacks** list what they are made of, in rows with no checkbox below their group's usual rows:
+a **.vrt** lists its band files (click one for **Load file**), a multi-band **cube** lists its bands
+by name (click one for **Load band**, which adds that band as a layer of its own). See
+[Remote sensing: Spectral indices and Band cube](74f-remote-sensing.md#In-Scene-Objects).
+
 ---
 
 ## Julia Console

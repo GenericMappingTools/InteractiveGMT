@@ -207,7 +207,7 @@ end
 # Unix time as the LAST column. depth/mag columns found by NAME (gmtisf sets colnames; the count
 # varies with focal-mechanism content).
 function _seis_isf(file, W, E, S, N)
-	D = GMT.gmtisf(file; R=(W, E, S, N), abstime=2)
+	D = GMT.gmtisf(_gmt_safe_path(file); R=(W, E, S, N), abstime=2)
 	size(D, 1) == 0 && return _seis_none()
 	m  = D.data
 	ci(name, fallback) = something(findfirst(==(name), D.colnames), fallback)
@@ -262,7 +262,7 @@ _seis_none() = (Float64[], Float64[], Float64[], Float64[], Float64[])
 
 # Read a whitespace/comma table file into one plain matrix (multi-segment files are stacked).
 function _seis_matrix(file)::Matrix{Float64}
-	D = GMT.gmtread(file; table=true)
+	D = _gmtread(file; table=true)
 	return D isa GMTdataset ? D.data : reduce(vcat, (seg.data for seg in D))
 end
 

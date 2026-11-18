@@ -285,6 +285,7 @@ function _open_spec_into(scene::Ptr{Cvoid}, spec::AbstractString, name::Abstract
 	# Image > Load Bands and puts its FIRST band on screen, which is Mirone's multiband open. Returns
 	# false for everything else (an RGB photo included), and then the ordinary path below runs.
 	if _bands_open_first!(scene, String(spec), String(name), empty, String(recent))
+		_list_parts!(scene, String(spec), _BANDS_SHOWN[scene][2])
 		return
 	end
 	# An MB-System swath file (.mbXX / .mbXXX, XX = the MBIO format number) or datalist (.mb-1, a list of
@@ -327,6 +328,7 @@ function _open_spec_into(scene::Ptr{Cvoid}, spec::AbstractString, name::Abstract
 		# what the "global min/max" colour option and the axis pin are made of, and zeros are not it.
 		_on_3d_cube_dropped(scene, String(spec), name, empty, n_layers, zmin, zmax;
 		                    prescan = prescan || !(zmax > zmin))
+		_list_parts!(scene, String(spec), String(name))
 	else
 		data = _gmtread_trb(String(spec))
 		isempty(recent) || _record_recent(recent, data)
@@ -342,8 +344,77 @@ function _open_spec_into(scene::Ptr{Cvoid}, spec::AbstractString, name::Abstract
 		# `toBandsList` (aux_funs.m), same moment, same purpose. Best-effort: a probe that fails just
 		# leaves the tool saying the window has no bands.
 		is_table || try; _bands_register!(scene, String(spec)); catch; end
+		is_table || _list_parts!(scene, String(spec), String(name))
 	end
 	return
+end
+
+# A .vrt's SOURCE FILES, as full paths, in the order the VRT names them, each once. A
+# relativeToVRT="1" name is resolved against the VRT's own folder.
+function _vrt_source_files(vrt::String)::Vector{String}
+	xml = read(vrt, String)
+	out = String[]
+	for m in eachmatch(r"<SourceFilename([^>]*)>([^<]+)</SourceFilename>", xml)
+		f = String(strip(m.captures[2]))
+		f = replace(f, "&lt;" => "<", "&gt;" => ">", "&quot;" => "\"", "&apos;" => "'", "&amp;" => "&")
+		occursin(r"relativeToVRT\s*=\s*\"1\"", m.captures[1]) && (f = joinpath(dirname(vrt), f))
+		startswith(f, "/vsi") || (f = normpath(f))
+		f in out || push!(out, f)
+	end
+	return out
+end
+
+# Scene Objects: what a just-opened multi-part raster is made of, listed under its handle `handle`.
+#   a .vrt on disk  -> its source FILES, each with "Load file" (gmtvtk_set_source_files_h);
+#   any other multi-band raster (a cube: a Band cube GeoTIFF, a band stack) -> its BANDS, each with
+#                      "Load band" (gmtvtk_set_source_bands_h -> _on_band_row), labelled as the
+#                      Remote sensing band pickers label them (`_rs_bands`: "B4 (red)", a description).
+# A netCDF/GMT grid cube is left alone: its layers are walked with the layer slider.
+const _SRC_BANDS = Dict{Tuple{Ptr{Cvoid},String},Tuple{String,Vector{String}}}()   # (scene, handle) -> (file, labels)
+
+function _list_parts!(scene::Ptr{Cvoid}, spec::String, handle::String)::Nothing
+	base = String(first(split(spec, '?')))
+	isfile(base) || return nothing
+	ext = lowercase(splitext(base)[2])
+	if ext == ".vrt"
+		files = try
+			_vrt_source_files(base)
+		catch e
+			@warn "Could not read the source files of $base" exception = e
+			String[]
+		end
+		isempty(files) || ccall(_fn(:gmtvtk_set_source_files_h), Cvoid, (Ptr{Cvoid}, Cstring, Cstring),
+		                        scene, handle, join(files, '\n'))
+		return nothing
+	end
+	(occursin('?', spec) || ext in (".nc", ".grd", ".cpt")) && return nothing
+	labels = try _rs_bands(base) catch; String[] end
+	length(labels) > 1 || return nothing
+	_SRC_BANDS[(scene, handle)] = (base, labels)
+	ccall(_fn(:gmtvtk_set_source_bands_h), Cvoid, (Ptr{Cvoid}, Cstring, Cstring),
+	      scene, handle, join(labels, '\n'))
+	return nothing
+end
+
+# C callback, a band row's "Load band": band `k` of the cube behind handle `owner`, added to the window
+# as an element of its own, through the same two steps a newly opened file takes (_drop_into, then
+# _adopt_new_element: its own handle, its own axes, what the window shows).
+function _on_band_row(scene::Ptr{Cvoid}, cowner::Cstring, k::Cint)::Cvoid
+	try
+		owner = unsafe_string(cowner)
+		src = get(_SRC_BANDS, (scene, owner), nothing)
+		src === nothing && error("no band list for \"$owner\"")
+		file, labels = src
+		(1 <= k <= length(labels)) || error("band $k out of range (1..$(length(labels)))")
+		B = _bands_read(file, Int(k))
+		name = string(splitext(basename(file))[1], " — ", labels[k])
+		empty = ccall(_fn(:gmtvtk_has_surface), Cint, (Ptr{Cvoid},), scene) == 0
+		_drop_into(scene, B, name; promote = empty, source = file)
+		_adopt_new_element(scene, name, B)
+	catch e
+		@tool_error "Load band failed" exception = (e, catch_backtrace())
+	end
+	return nothing
 end
 
 # A newly OPENED FILE is what the window shows: it is made visible, everything previously displayed
@@ -700,7 +771,7 @@ function _cube_probe(path::String)::Tuple{Int,Float64,Float64}
 	(ext != ".nc" && ext != ".grd") && return _multiband_probe(path)
 	local info
 	try
-		info = GMT.grdinfo(path, C=true, Q=true)
+		info = GMT.grdinfo(_gmt_safe_path(path), C=true, Q=true)
 	catch
 		return (0, 0.0, 0.0)   # not a cube (or unreadable) -- falls through to the plain-grid path
 	end
@@ -780,7 +851,7 @@ _read_cube_layer(path::String, k::Int)::Union{GMTgrid,Nothing} = begin
 		# "z".
 		v = _cube_var(path)
 		v !== nothing ? _gmtread_trb("$(path)?$(v)[$(k-1)]") :
-		                (try GMT.gmtread(path, layer=k, layout="TRB") catch; nothing end)
+		                (try _gmtread(path, layer=k, layout="TRB") catch; nothing end)
 	end
 end
 
@@ -808,7 +879,7 @@ function _read_whole_cube(path::String, n::Int)::Union{GMTgrid,Nothing}
 		# GDAL's band-count route sees a multi-variable netCDF as subdatasets and answers "not a cube".
 		v = _cube_var(path)
 		v !== nothing && return _read_whole_cube("$(path)?$(v)", n)
-		C = try GMT.gmtread(path, layers=:all) catch; nothing end
+		C = try _gmtread(path, layers=:all) catch; nothing end
 		return (C isa GMTgrid && ndims(C.z) == 3) ? C : nothing
 	end
 	# Same reader as `_read_cube_layer` above — one operation, one function. The stack then carries the
@@ -1549,12 +1620,74 @@ end
 function _gmtread_trb(spec::AbstractString)
 	s = String(spec)
 	isgrid = try strip(GMT.guess_T_from_ext(s)) == "-Tg" catch; false end
-	isgrid || return GMT.gmtread(s)
-	o = GMT.gmtread(s; layout = "TRB")
+	isgrid || return _gmtread(s)
+	o = _gmtread(s; layout = "TRB")
 	# The probe goes by extension: a netCDF that actually holds an IMAGE would land here anyway. Put it
 	# back on the normal reader rather than leaving it wearing a layout its packing does not expect.
-	return o isa GMTimage ? GMT.gmtread(s) : _heal_trb!(o)    # _heal_trb! on a TR grid = record it as TR
+	return o isa GMTimage ? _gmtread(s) : _heal_trb!(o)    # _heal_trb! on a TR grid = record it as TR
 end
+
+# A FILE NAME GMT CAN OPEN. GMT.jl hands a file name to GMT inside a COMMAND STRING ("read <file> -Tg"),
+# which GMT splits on spaces, and GMT's C side opens files through the ANSI code page. So a full file
+# name with a SPACE ("C:\v\a b\grelha.grd") or with ANY non-ASCII character (ç, ã, é, ...) fails to open
+# or to write. THE one remedy, for every GMT door of this package (`_gmtread`, `_gmtwrite`,
+# `_gmt_quote_path`, every `grdinfo` of a path):
+#   1. a name that is plain ASCII with no space goes through untouched;
+#   2. else, on Windows, the file's 8.3 SHORT name (GetShortPathNameW: ASCII, no spaces) — fixes both the
+#      space and the ç, and is also what GMT.jl's own direct opens inside gmtread need. A file about to
+#      be WRITTEN does not exist yet, so its DIRECTORY is shortened and its own name kept;
+#   3. else (no short name on that volume) the name DOUBLE-QUOTED, which GMT_Create_Options keeps whole
+#      across the split. That fixes a space; nothing on our side can fix a non-ASCII name there.
+# Suffixes ride along: "<file>?var[k]", "<file>=sf" are not files, so they take branch 2's directory route.
+_gmt_path_ok(s::AbstractString) = all(c -> isascii(c) && c != ' ', s)
+
+function _win_short_path(p::String)::String
+	w = push!(transcode(UInt16, p), 0x0000)
+	n = ccall((:GetShortPathNameW, "kernel32"), stdcall, UInt32, (Ptr{UInt16}, Ptr{UInt16}, UInt32), w, C_NULL, 0)
+	n == 0 && return ""
+	buf = Vector{UInt16}(undef, n)
+	m = ccall((:GetShortPathNameW, "kernel32"), stdcall, UInt32, (Ptr{UInt16}, Ptr{UInt16}, UInt32), w, buf, n)
+	(m == 0 || m >= n) && return ""
+	return transcode(String, buf[1:m])
+end
+
+# `quoted = false` for a name that travels as its OWN argv word (never split, so quotes would stay in it):
+# branches 1 and 2 only, the name as it is when neither applies.
+function _gmt_safe_path(path::AbstractString; quoted::Bool = true)::String
+	s = String(path)
+	(isempty(s) || _gmt_path_ok(s) || s[1] == '"') && return s
+	if Sys.iswindows() && !startswith(s, "http") && !startswith(s, "/vsi")
+		if ispath(s)
+			sh = _win_short_path(s)
+			_gmt_path_ok(sh) && return sh
+		end
+		d, b = dirname(s), basename(s)
+		if !isempty(d) && _gmt_path_ok(b) && isdir(d)
+			sd = _win_short_path(d)
+			_gmt_path_ok(sd) && return joinpath(sd, b)
+		end
+	end
+	return quoted ? '"' * s * '"' : s
+end
+_gmt_safe_path(x; quoted::Bool = true) = x                 # an in-memory object (GMTgrid, ...) is not a name: as it is
+
+# THE file read of iGMT: GMT.gmtread on `_gmt_safe_path(path)`. When that had to fall back to quotes,
+# GMT.jl can no longer guess the type off the name's extension (it would see the closing quote), so the
+# type is stated for it; types GMT.jl opens itself, not through a command string (OGR, .obj, .las,
+# Geosoft), keep the plain name.
+const _GMTREAD_TYPE_KEYS = (:grd, :grid, :img, :image, :data, :dataset, :table, :cpt, :cmap, :ps, :ogr)
+function _gmtread(path::AbstractString; kw...)
+	s = _gmt_safe_path(path)
+	(isempty(s) || s[1] != '"') && return GMT.gmtread(s; kw...)
+	any(k -> haskey(kw, k), _GMTREAD_TYPE_KEYS) && return GMT.gmtread(s; kw...)
+	T = try strip(GMT.guess_T_from_ext(String(path))) catch; "" end
+	T == "-Tg" && return GMT.gmtread(s; grd = true, kw...)
+	T == "-Ti" && return GMT.gmtread(s; img = true, kw...)
+	T == "-Td" && return GMT.gmtread(s; data = true, kw...)
+	T == "-Tc" && return GMT.gmtread(s; cpt = true, kw...)
+	return GMT.gmtread(String(path); kw...)
+end
+_gmtread(x; kw...) = GMT.gmtread(x; kw...)
 
 # NO TRANSPOSITIONS. A grid is handed to the viewer EXACTLY as it lies in memory, together with the
 # code that says how to read it — never permutedims'd, never reversed, never copied into a second
@@ -1658,7 +1791,7 @@ function _gmtwrite(path::AbstractString, obj; kw...)
 			obj = H
 		end
 	end
-	return GMT.gmtwrite(path, obj; kw...)
+	return GMT.gmtwrite(_gmt_safe_path(path), obj; kw...)
 end
 
 # THE viewer boundary for a grid's z: the buffer as it lies + its dims + its layout code.
@@ -2411,6 +2544,9 @@ end
 function _register_drop_callback()
 	fptr = @cfunction((s,c)->Base.invokelatest(_on_drop,s,c), Cvoid, (Ptr{Cvoid}, Cstring))
 	ccall(_fn(:gmtvtk_set_drop_callback), Cvoid, (Ptr{Cvoid},), fptr)
+	# the "Load band" of a cube's band rows (_list_parts!) -- same door, a band instead of a file
+	bptr = @cfunction((s, o, k) -> Base.invokelatest(_on_band_row, s, o, k), Cvoid, (Ptr{Cvoid}, Cstring, Cint))
+	ccall(_fn(:gmtvtk_set_band_row_callback), Cvoid, (Ptr{Cvoid},), bptr)
 	return
 end
 

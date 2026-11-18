@@ -216,7 +216,7 @@ function _on_gravprisms(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 			# The prisms WERE the answer. Show them, in the module's own seven columns.
 			pf = _get(d, "saveprisms")
 			isfile(pf) || error("gravprisms wrote no prism table")
-			P = GMT.gmtread(String(pf); dataset = true)
+			P = _gmtread(String(pf); dataset = true)
 			P === nothing && error("could not read back the prisms that were written")
 			Ps = isa(P, Vector) ? P : [P]
 			isempty(Ps) && error("the prism table came back empty")

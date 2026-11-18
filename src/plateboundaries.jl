@@ -25,7 +25,7 @@ const _PB_TYPES = (
 function _pb_load_one(scene::Ptr{Cvoid}, file::AbstractString, typename::AbstractString, color)::Bool
 	path = joinpath(_PKGROOT, "data", "$file.sqlite")
 	isfile(path) || (@tool_error "plate boundaries: data file not found" path; return false)
-	D = GMT.gmtread(path)
+	D = _gmtread(path)
 	segs = D isa AbstractVector ? D : (D,)
 	isempty(segs) && return false
 	mats = Matrix{Float64}[]; seginfo = String[]

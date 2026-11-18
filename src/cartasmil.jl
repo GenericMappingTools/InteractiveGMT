@@ -240,7 +240,7 @@ end
 # georeferencing (bdnTile's third and best method), and the projection is the military one. The
 # georeference is set in full — range, x, y, inc, registration and the CRS — never `range` alone.
 function _cm_read_sheet(src::AbstractString, rect::NTuple{4,Float64})::GMTimage
-	I = GMT.gmtread(String(src))
+	I = _gmtread(String(src))
 	isa(I, GMTimage) || error("$(basename(String(src))) did not come back as an image (got a $(typeof(I)))")
 	ny, nx = size(I.image, 1), size(I.image, 2)
 	(nx < 2 || ny < 2) && error("$(basename(String(src))) is empty")

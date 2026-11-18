@@ -15044,6 +15044,21 @@ static void rsShowScriptEditor(QWidget *parent, const QString &name, const QStri
 	dlg->show(); dlg->raise(); dlg->activateWindow();
 }
 
+// One file of a file-list INPUT (a QListWidget with `input`=true): its name shown, its full path in
+// the item's data and tooltip, checked = it is used. Each path once.
+static void rsAddFileItem(QListWidget *lw, const QString &path) {
+	const QString p = QDir::toNativeSeparators(path.trimmed());
+	if (p.isEmpty()) return;
+	for (int i = 0; i < lw->count(); ++i)
+		if (lw->item(i)->data(Qt::UserRole).toString() == p) return;
+	auto *it = new QListWidgetItem(QFileInfo(p).fileName(), lw);
+	it->setData(Qt::UserRole, p);
+	it->setToolTip(p);
+	it->setFlags(it->flags() | Qt::ItemIsUserCheckable);
+	it->setCheckState(Qt::Checked);
+	tightenListRows(lw);           // one text line per row, like every list of the app
+}
+
 static void rsOpenL2With(Scene *s, const QString &file);   // below, after the dialogs' registry
 static void vectorPickDisarm(Scene *s);                    // 85_polygon.cpp: the shared click pick's off switch
 
@@ -15135,6 +15150,17 @@ public:
 			else if (auto *ab = qobject_cast<QAbstractButton *>(w)) {
 				if (ab->isCheckable()) kv += n + "=" + QString(ab->isChecked() ? "1" : "0") + "\n";
 			}
+			// A file-list INPUT (QListWidget, dynamic property `input`=true): the full paths of its CHECKED
+			// items, ';'-joined, like a multi browse fills a line edit. A list without the property is an
+			// output and is not sent.
+			else if (auto *lw = qobject_cast<QListWidget *>(w)) {
+				if (lw->property("input").toBool()) {
+					QStringList ls;
+					for (int i = 0; i < lw->count(); ++i)
+						if (lw->item(i)->checkState() == Qt::Checked) ls << lw->item(i)->data(Qt::UserRole).toString();
+					kv += n + "=" + ls.join(';') + "\n";
+				}
+			}
 		}
 		return kv;
 	}
@@ -15168,8 +15194,12 @@ public:
 					cb->addItems(it);
 				}
 				else if (auto *lw = qobject_cast<QListWidget *>(w)) {
+					QSignalBlocker b(lw);
 					lw->clear();
-					lw->addItems(it);
+					if (lw->property("input").toBool())
+						for (const QString &p : it) rsAddFileItem(lw, p);
+					else
+						lw->addItems(it);
 				}
 				continue;
 			}
@@ -15370,8 +15400,30 @@ public:
 					QObject::connect(sb, &QAbstractSpinBox::editingFinished, [this] { refresh(); });
 			}
 			// browse_<target>: a file dialog for that line edit, through the app's directory MRU.
+			// The target may instead be a file-list INPUT (QListWidget, `input`=true): the picked files
+			// are APPENDED to it, checked, each once — so a scene's bands can be gathered from more than
+			// one folder. Ticking a file in or out is a change of that widget (its `refresh`).
 			if (n.startsWith("browse_")) {
 				auto *bt = qobject_cast<QAbstractButton *>(w);
+				QListWidget *lw = d->findChild<QListWidget *>(n.mid(7));
+				if (bt && lw && lw->property("input").toBool()) {
+					QObject::connect(bt, &QAbstractButton::clicked, [this, d, bt, lw] {
+						const QString filter = bt->property("filter").toString().isEmpty()
+						                     ? QString("All files (*)") : bt->property("filter").toString();
+						const QString title = bt->toolTip().isEmpty() ? QString("Choose files") : bt->toolTip();
+						const QStringList fns = QFileDialog::getOpenFileNames(d, title, prefStartDir(), filter);
+						if (fns.isEmpty()) return;
+						rememberStartDir(fns.first());
+						{
+							QSignalBlocker b(lw);
+							for (const QString &f : fns) rsAddFileItem(lw, f);
+						}
+						if (lw->property("refresh").toBool()) refresh();
+					});
+					if (lw->property("refresh").toBool())
+						QObject::connect(lw, &QListWidget::itemChanged, [this](QListWidgetItem *) { refresh(); });
+					continue;
+				}
 				QLineEdit *le = d->findChild<QLineEdit *>(n.mid(7));
 				if (!bt || !le) continue;
 				fileBoxDoubleClick(le, bt);
@@ -28230,7 +28282,7 @@ public:
 	}
 
 	// Seed the Input-grids widgets from the window's live grids (Scene Objects). Source <- the first grid
-	// named "Okada z…", else the first grid on the base grid's exact nodes with |z| <= 20 m; the nesting chain <- every "layerN" (in N order), each shown in the listbox
+	// named "Okada z…", else the first grid on the base grid's exact nodes with |z| <= 20 m; the nesting chain <- the grids that nest one inside the other, whatever their names, each shown in the listbox
 	// as "name · W/E/S/N · nx×ny". Nest edit gets the first nested grid's name. Grids are in-memory scene
 	// objects (names, not file paths) — this is a convenience default; the user can still browse to files.
 	void populateFromScene() {
@@ -28265,25 +28317,23 @@ public:
 				break;
 			}
 		}
-		// Nesting chain: "layerN" grids, ordered by N. Collect (N, &ex) then sort so 1,2,3… line up.
-		// A freshly-made "layerN" is a literal all-zero placeholder (nestCreateBlankGrid, 55_lineprops.cpp)
+		// Nesting chain. A freshly-made nested layer is a literal all-zero placeholder (nestCreateBlankGrid, 55_lineprops.cpp)
 		// until "Transplant 2nd grid…" fills it with real bathymetry — skip those here so the dialog never
 		// offers a still-blank layer as a ready nesting level (nswing would silently run over zero bathymetry
 		// there; the real guard is _on_nswing's blank check, but the dialog shouldn't seed one as "ready").
-		QRegularExpression re("^layer(\\d+)$");
-		std::vector<std::pair<int, const ExtraObj *>> nests;
-		for (auto &ex : scene_->extras) {
-			if (ex.isImage) continue;
-			auto m = re.match(QString::fromStdString(ex.name));
-			if (!m.hasMatch()) continue;
-			if (std::all_of(ex.gridZ.begin(), ex.gridZ.end(), [](float v) { return v == 0.0f; })) continue;
-			nests.emplace_back(m.captured(1).toInt(), &ex);
-		}
-		std::sort(nests.begin(), nests.end(), [](auto &a, auto &b) { return a.first < b.first; });
-		for (auto &pr : nests) {
-			int level = pr.first;
-			if (level < 1 || level >= levelCombo->count()) continue;   // combo only holds levels 0..5
-			nestNames[level] = QString::fromStdString(pr.second->name);
+		// The chain is found from the GRIDS, never their names (nswing.jl _nswing_scene_chain): level 1
+		// nests in the bathymetry, level 2 in level 1, … — the same chain the run is built from.
+		// Each line is "N\tblank\tname".
+		QString chain;
+		if (juliaEvalCall(QString("InteractiveGMT._nswing_print_chain(Ptr{Cvoid}(UInt(%1)))")
+		                  .arg((qulonglong)reinterpret_cast<uintptr_t>(scene_)), chain)) {
+			for (const QString &line : chain.split('\n', Qt::SkipEmptyParts)) {
+				const QStringList f = line.split('\t');
+				if (f.size() < 3 || f[1] == "1") continue;
+				const int level = f[0].toInt();
+				if (level < 1 || level >= levelCombo->count()) continue;   // combo only holds levels 0..5
+				nestNames[level] = f.mid(2).join('\t');
+			}
 		}
 		refreshLevelCombo();
 	}

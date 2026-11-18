@@ -369,7 +369,7 @@ end
 # ---- DATA/OUTER/INNER normalization -------------------------------------------------------
 # Reduce any accepted input form to a Vector of Float64 Mx2/Mx3 matrices ("ensembles"/swarms)
 # plus a GDAL/OGR geometry code (0 = unknown) taken from the first ensemble when available.
-_shnc_normalize(data::String) = _shnc_normalize(GMT.gmtread(data))
+_shnc_normalize(data::String) = _shnc_normalize(_gmtread(data))
 
 _shnc_normalize(data::GMT.GMTdataset) = ([Float64.(data.data)], Int(data.geom))
 function _shnc_normalize(data::Vector{<:GMT.GMTdataset})

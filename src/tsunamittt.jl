@@ -102,7 +102,7 @@ function _ttt_stations(d::Dict{String,String})
 	f = _get(d, "stations")
 	isempty(f) && error("give me a stations file (lon lat [name], one per line)")
 	isfile(f) || error("stations file not found: $f")
-	D = GMT.gmtread(f)
+	D = _gmtread(f)
 	Ds = isa(D, Vector) ? D[1] : D
 	M = Ds.data
 	size(M, 2) >= 2 || error("the stations file needs at least two columns (lon lat)")

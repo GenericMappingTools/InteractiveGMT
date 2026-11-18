@@ -234,7 +234,7 @@ function _on_grdflexure(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 				f = joinpath(pwd(), _gflx_transfer_name(te))
 				(isfile(f) && mtime(f) >= t_run - 5) || continue    # not a leftover from last time
 				push!(made, f)
-				Dt = GMT.gmtread(f; dataset = true)
+				Dt = _gmtread(f; dataset = true)
 				Dt = isa(Dt, Vector) ? (isempty(Dt) ? nothing : Dt[1]) : Dt
 				(Dt === nothing || size(Dt.data, 2) < 3) && continue
 				m = Dt.data
@@ -293,7 +293,7 @@ function _on_grdflexure(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 			t, file, tag = made[argmax(first.(made))]
 			isfile(file) || (file = joinpath(pwd(), file))
 			isfile(file) || error("grdflexure named a grid that is not there: $file")
-			G = GMT.gmtread(String(file); grd = true)
+			G = _gmtread(String(file); grd = true)
 			isa(G, GMTgrid) || error("got a $(typeof(G)), not a grid")
 			return _gm3d_deliver(scene, G, "Flexure (" * (isempty(tag) ? string(t) : tag) * ")", "",
 			                     false, "grdflexure " * join(opts, ' ');

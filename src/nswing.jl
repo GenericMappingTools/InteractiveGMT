@@ -107,7 +107,7 @@ end
 # simulation cube opened in: its own window (not a page of some unrelated plot), owned by that viewer,
 # so its X parks it in that window's Scene Objects like every plot opened from a viewer.
 function _nswing_plot_maregs(path::String, owner::Ptr{Cvoid})
-	D = GMT.gmtread(path, table=true)
+	D = _gmtread(path, table=true)
 	D isa AbstractVector && (D = D[1])
 	names = String[]
 	for l in eachline(path)                                  # row 1: "#\t name name …"
@@ -165,7 +165,7 @@ function _nswing_opts(d::Dict{String,String}; max_nest_level::Int=0)
 	mode = _get(d, "outmode", "grids")
 	if (mode == "grids")
 		isempty(name) && push!(msgs, "no output Name stem given")
-		stem = isempty(name) ? "tsu_time_" : name
+		stem = isempty(name) ? "tsu_time_" : _gmt_safe_path(name; quoted = false)   # drop.jl: space / ç
 		push!(args, "-G$(stem),$(grn)")                  # nswing -G<name>,<int>
 		_get(d, "field") == "total" && push!(args, "-D") # total water depth
 		_on(d, "max")      && push!(args, "-M")          # max water level grid (Max water checkbox)
@@ -177,7 +177,7 @@ function _nswing_opts(d::Dict{String,String}; max_nest_level::Int=0)
 		_on(d, "power")    && push!(args, "-Epm,2")      # max power grid, decimated by 2
 	elseif (mode == "anuga")
 		isempty(name) && error("NSWING: ANUGA output needs a file Name")
-		push!(args, "-A$(name)")
+		push!(args, "-A" * _gmt_safe_path(name; quoted = false))
 	elseif (mode == "most")
 		error("NSWING: MOST (.nc) output is not supported by the installed nswing module (no -n option) — pick Output grids or ANUGA")
 	end
@@ -189,7 +189,8 @@ function _nswing_opts(d::Dict{String,String}; max_nest_level::Int=0)
 	(tide !== nothing && tide != 0) && push!(args, "-Q$(_get(d, "tide"))")   # tide: sea-level offset
 
 	if _on(d, "maregs")
-		mi = _get(d, "maregin"); mo = _get(d, "maregout"); ci = _get(d, "cumint", "1")
+		mi = _gmt_safe_path(_get(d, "maregin"); quoted = false); mo = _gmt_safe_path(_get(d, "maregout"); quoted = false)
+		ci = _get(d, "cumint", "1")
 		if _nswing_gauges(d) !== nothing
 			# Virtual tide gauges, in memory: -T with NO file name. nswing's KEYS declare -T a dataset
 			# input (TD(), so GMT fills the empty name with the dataset object handed after the grids
@@ -236,19 +237,56 @@ function _nswing_grid_ref(scene::Ptr{Cvoid}, name::AbstractString)
 	G isa GMTgrid ? G : String(name)
 end
 
-# Every in-scene "layerN" grid for this window, as (N, GMTgrid) sorted by N — the nesting chain
-# the user built (layer1 → -1, layer2 → -2, …). Read straight from the object registry.
-function _nswing_scene_nests(scene::Ptr{Cvoid})
-	out = Tuple{Int,Any}[]   # value is GMTgrid here, but shares this Vector with dialog-typed paths (String) later
+# Does `C` nest inside `P` (both gridline)? Finer, inside P's extent, and every corner on nswing's
+# half-cell rule — the SAME `_nswing_nest_msg` verdict the RUN pre-flight and the file check give.
+function _nswing_nests_in(P::GMTgrid, C::GMTgrid)
+	tx, ty = 1e-6 * P.inc[1], 1e-6 * P.inc[2]
+	(C.range[1] >= P.range[1] - tx && C.range[2] <= P.range[2] + tx &&
+	 C.range[3] >= P.range[3] - ty && C.range[4] <= P.range[4] + ty) || return false
+	return isempty(_nswing_nest_msg(P, C))
+end
+
+# This window's nesting chain, found from the GRIDS THEMSELVES — never from their names (a nested
+# level may be called anything): level 1 is a grid that nests in the window's bathymetry (the base
+# grid), level 2 one that nests in level 1, and so on. When several grids nest in the same parent the
+# COARSEST is the next level (the finer ones nest inside it). Returns [(N, name, GMTgrid)…], N = 1, 2, …
+# A still-blank (all-zero) placeholder is a level like any other here; callers decide what to do with it.
+function _nswing_scene_chain(scene::Ptr{Cvoid})
+	out = Tuple{Int,String,GMTgrid}[]
 	v = get(_SCENE_OBJS, scene, nothing)
 	v === nothing && return out
-	for (k, n, dat) in v
-		(k === :grid && dat isa GMTgrid) || continue
-		m = match(r"^layer(\d+)$", n)
-		m === nothing || push!(out, (parse(Int, m.captures[1]), dat))
+	base = _find_object(scene, :grid, "")
+	base isa GMTgrid || return out
+	cands = Tuple{String,GMTgrid,GMTgrid}[(String(n), d, _as_gridline(d)) for (k, n, d) in v
+	                                      if k === :grid && d isa GMTgrid && d !== base]
+	parent = _as_gridline(base)
+	while true
+		kids = filter(c -> _nswing_nests_in(parent, c[3]), cands)
+		isempty(kids) && break
+		n, G, Gl = kids[argmax([c[3].inc[1] * c[3].inc[2] for c in kids])]
+		push!(out, (length(out) + 1, n, G))
+		filter!(c -> c[2] !== G, cands)
+		parent = Gl
 	end
-	sort!(out; by = first)
 	return out
+end
+
+# The chain as (N, GMTgrid) — what _nswing_validate builds the run from.
+function _nswing_scene_nests(scene::Ptr{Cvoid})
+	out = Tuple{Int,Any}[]   # value is GMTgrid here, but shares this Vector with dialog-typed paths (String) later
+	for (N, _, G) in _nswing_scene_chain(scene)
+		push!(out, (N, G))
+	end
+	return out
+end
+
+# For the NSWING dialog (C++ populateFromScene): one line per level, "N\tblank\tname", blank = 1 for a
+# still-all-zero placeholder. The dialog seeds its level list from this, so dialog and run see ONE chain.
+function _nswing_print_chain(scene::Ptr{Cvoid})
+	for (N, n, G) in _nswing_scene_chain(scene)
+		print(N, '\t', all(iszero, G.z) ? 1 : 0, '\t', n, '\n')
+	end
+	return nothing
 end
 
 # ── async run + live progress ─────────────────────────────────────────────────────────────────
@@ -513,7 +551,7 @@ function _nswing_run_c(opts::Vector{String}, grids::Vector{GMTgrid}, gauges; dir
 				continue
 			end
 			if gauges === nothing && !isempty(src)       # a positions FILE: read here, the solver reads none
-				gauges = GMT.gmtread((isempty(dir) || isabspath(src)) ? src : joinpath(dir, src), table = true)
+				gauges = _gmtread((isempty(dir) || isabspath(src)) ? src : joinpath(dir, src), table = true)
 			end
 			o = "-T@d0" * mods
 		end
@@ -1030,7 +1068,7 @@ const _NSWING_GRDINFO_FIELDS = ("x_min", "x_max", "y_min", "y_max", "z_min", "z_
 function _nswing_grid_diff_report(path::String, G::GMTgrid)::String
 	local a, b
 	try
-		a = GMT.grdinfo(path, C = true).data
+		a = GMT.grdinfo(_gmt_safe_path(path), C = true).data
 	catch e
 		return "  (could not read $path with grdinfo: $(sprint(showerror, e)))"
 	end

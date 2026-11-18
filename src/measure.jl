@@ -65,7 +65,7 @@ end
 
 # Read the temp table once: the per-segment GMTdataset list, the geographic flag, and the unit label.
 function _measure_load(path::String, proj4::String)
-	D    = GMT.gmtread(path)
+	D    = _gmtread(path)
 	segs = isa(D, Vector) ? D : [D]
 	geog = _measure_isgeog(segs[1], proj4)
 	return (segs, geog, geog ? "km" : "units")
@@ -270,7 +270,7 @@ end
 # Called by the viewer (overlayRingRegion, 55_lineprops.cpp) for "Area under polygon…" / "Delete this
 # polygon" on the polygon clicked out of a many-polygon outline. `path` is the outline's ring table.
 function _ring_region(path::AbstractString, k::Integer)
-	D = GMT.gmtread(String(path))
+	D = _gmtread(String(path))
 	segs = D isa Vector ? D : [D]
 	rings = [Float64.(d.data[:, 1:2]) for d in segs]
 	cont = _ring_containers(rings)
@@ -290,7 +290,7 @@ end
 function _poly_area(scene::Ptr{Cvoid}, path::String, proj4::String, ispoly::Bool,
                     datype::AbstractString="Ellipsoidal", dir::AbstractString="Forward",
                     units::AbstractString="kilometers")
-	D   = GMT.gmtread(path)
+	D   = _gmtread(path)
 	seg = isa(D, Vector) ? D[1] : D
 	# SEVERAL rings (a "Digitize whites" outline: every white region, holes included): each ring's area,
 	# the holes taken off (_ring_holes). Used to measure only the first ring and ignore the rest.
@@ -334,7 +334,7 @@ function _extract_profile(scene::Ptr{Cvoid}, path::String, proj4::String,
 	# label = the base surface is the visible one, which is also _find_object's first-of-kind fallback.
 	G = _find_object(scene, :grid, String(gridname))
 	G === nothing && (print("No grid to sample."); return nothing)
-	D   = GMT.gmtread(path)
+	D   = _gmtread(path)
 	seg = isa(D, Vector) ? D[1] : D                             # a drawn line/polyline is one segment
 	x = Float64.(seg.data[:, 1]);  y = Float64.(seg.data[:, 2])
 	length(x) < 2 && (print("Need at least two vertices for a profile."); return nothing)

@@ -77,7 +77,7 @@ end
 # so a file the run will use as-is is never read twice. Unreadable -> false: the reader that follows
 # reports it in its own words.
 _grid_file_is_pixel(path::AbstractString) =
-	try GMT.grdinfo(String(path), C = true).data[11] == 1 catch; false end
+	try GMT.grdinfo(_gmt_safe_path(path), C = true).data[11] == 1 catch; false end
 
 # Called (synchronously, via g_juliaEval) by the C++ nested-rectangle tool the moment the ROOT rectangle
 # is drawn, before it snaps, and by a session load before it restores any nested rectangle. A pixel

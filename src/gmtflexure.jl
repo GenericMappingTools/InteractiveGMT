@@ -168,7 +168,7 @@ function _on_gmtflexure(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		end
 		GMT.gmt("gmtflexure " * join(opts, ' ') * " > " * _gmt_quote_path(dest))
 		isfile(dest) || error("gmtflexure wrote no output")
-		R = GMT.gmtread(String(dest); dataset = true)
+		R = _gmtread(String(dest); dataset = true)
 		R === nothing && error("gmtflexure returned nothing")
 		Ds = isa(R, Vector) ? R : [R]
 		isempty(Ds) && error("gmtflexure returned no rows")

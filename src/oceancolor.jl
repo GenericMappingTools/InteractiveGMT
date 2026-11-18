@@ -757,7 +757,7 @@ function _oc_open(scene::Ptr{Cvoid}, dlg::Ptr{Cvoid}, url::AbstractString)
 	dup  = _oc_already_shown(scene, dlg, f, :image, replace(nc0, r"\.nc$" => ""))
 	dup === nothing || return dup
 
-	I = gmtread(f)
+	I = _gmtread(f)
 	W, E, S, N = _OC_PNG_REGION
 	_georef_image!(I, W, E, S, N)		# range + x + y + inc + registration, never .range alone
 	nc   = nc0									# the L3 netCDF name; the image is the L4 of the same name
@@ -940,7 +940,7 @@ end
 # Returns the entries as n x 3 in 0..1, or `nothing`.
 function _oc_read_palette(file::AbstractString)
 	M = try
-		P = GMT.gmtread(string(file, "?palette"))
+		P = _gmtread(string(file, "?palette"))
 		A = P isa GMTgrid ? P.z : (P isa GMTimage ? P.image : P)
 		A isa AbstractArray ? Array(A) : nothing
 	catch
@@ -1060,7 +1060,7 @@ function _oc_place(scene::Ptr{Cvoid}, dlg::Ptr{Cvoid}, file::AbstractString, reg
 	end
 	# Only the drawn box is READ: `grdcut` pulls it straight off disk instead of materialising the whole
 	# global grid and throwing most of it away.
-	G    = reg === nothing ? _gmtread_trb(spec) : GMT.grdcut(spec, region = reg)
+	G    = reg === nothing ? _gmtread_trb(spec) : GMT.grdcut(_gmt_safe_path(spec), region = reg)
 	fin  = filter(isfinite, G.z)
 	cmap = isempty(fin) ? :auto : something(_oc_palette_cpt(file, extrema(fin)...), :auto)
 	empty = ccall(_fn(:gmtvtk_has_surface), Cint, (Ptr{Cvoid},), scene) == 0

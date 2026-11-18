@@ -7,7 +7,7 @@
     <x>0</x>
     <y>0</y>
     <width>460</width>
-    <height>440</height>
+    <height>472</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -87,6 +87,9 @@
     </property>
    </widget>
    <widget class="QComboBox" name="p_index">
+    <property name="toolTip">
+     <string>The spectral index to compute. Picking one sets the band slots below to the bands it needs (red, nir, swir1...) and, for a recognised Landsat / Sentinel-2 stack, selects those bands.</string>
+    </property>
     <property name="geometry">
      <rect>
       <x>46</x>
@@ -106,7 +109,7 @@
      <x>11</x>
      <y>113</y>
      <width>438</width>
-     <height>128</height>
+     <height>160</height>
     </rect>
    </property>
    <property name="title">
@@ -117,7 +120,7 @@
      <rect>
       <x>11</x>
       <y>27</y>
-      <width>205</width>
+      <width>60</width>
       <height>26</height>
      </rect>
     </property>
@@ -126,11 +129,14 @@
     </property>
    </widget>
    <widget class="QComboBox" name="p_b1">
+    <property name="toolTip">
+     <string>The band of the file that plays the role named on the left. Pre-selected by its role when the sensor is recognised; change it if your stack is ordered differently.</string>
+    </property>
     <property name="geometry">
      <rect>
-      <x>222</x>
+      <x>77</x>
       <y>27</y>
-      <width>205</width>
+      <width>350</width>
       <height>26</height>
      </rect>
     </property>
@@ -140,7 +146,7 @@
      <rect>
       <x>11</x>
       <y>59</y>
-      <width>205</width>
+      <width>60</width>
       <height>26</height>
      </rect>
     </property>
@@ -149,11 +155,14 @@
     </property>
    </widget>
    <widget class="QComboBox" name="p_b2">
+    <property name="toolTip">
+     <string>The band of the file that plays the role named on the left. Pre-selected by its role when the sensor is recognised; change it if your stack is ordered differently.</string>
+    </property>
     <property name="geometry">
      <rect>
-      <x>222</x>
+      <x>77</x>
       <y>59</y>
-      <width>205</width>
+      <width>350</width>
       <height>26</height>
      </rect>
     </property>
@@ -163,7 +172,7 @@
      <rect>
       <x>11</x>
       <y>91</y>
-      <width>205</width>
+      <width>60</width>
       <height>26</height>
      </rect>
     </property>
@@ -172,21 +181,39 @@
     </property>
    </widget>
    <widget class="QComboBox" name="p_b3">
+    <property name="toolTip">
+     <string>The band of the file that plays the role named on the left. Pre-selected by its role when the sensor is recognised; change it if your stack is ordered differently. Unused (greyed) by two-band indices.</string>
+    </property>
     <property name="geometry">
      <rect>
-      <x>222</x>
+      <x>77</x>
       <y>91</y>
-      <width>205</width>
+      <width>350</width>
       <height>26</height>
      </rect>
     </property>
    </widget>
-  </widget>
+   <widget class="QCheckBox" name="p_toa">
+    <property name="geometry">
+     <rect>
+      <x>11</x>
+      <y>123</y>
+      <width>416</width>
+      <height>26</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>Compute the index on top-of-atmosphere reflectance instead of on the raw DNs: each band is calibrated with the scene's MTL (gain, offset and sun elevation), as Satellite &gt; Remote sensing &gt; Calibration does. Available only when the MTL is at hand: a .vrt of Landsat band files with their â€¦_MTL.txt beside them, or a Band cube (which carries the MTL in its metadata). A Level-2 SR band gives its surface reflectance.</string>
+    </property>
+    <property name="text">
+     <string>Top of atmosphere reflectance (from the MTL)</string>
+    </property>
+   </widget>  </widget>
   <widget class="QGroupBox" name="gb_output">
    <property name="geometry">
     <rect>
      <x>11</x>
-     <y>247</y>
+     <y>279</y>
      <width>438</width>
      <height>128</height>
     </rect>
@@ -195,6 +222,17 @@
     <string>Output</string>
    </property>
    <widget class="QComboBox" name="p_output">
+    <property name="toolTip">
+     <string>What the index is turned into:
+- Index values: the index itself, a grid (NDVI runs from -1 to 1).
+- Threshold: the same grid with every pixel below Threshold blanked (NaN), e.g. NDVI 0.2 keeps the vegetation.
+- Mask (≥): a black/white image, white where the index ≥ Threshold, e.g. MNDWI 0 = a water mask.
+- Mask (&lt;): the reverse, white where the index &lt; Threshold.
+- Classes: an image of classes 0-3 cut at the Class separators.</string>
+    </property>
+    <property name="refresh" stdset="0">
+     <bool>true</bool>
+    </property>
     <property name="geometry">
      <rect>
       <x>11</x>
@@ -243,6 +281,9 @@
     </property>
    </widget>
    <widget class="QLineEdit" name="p_threshold">
+    <property name="toolTip">
+     <string>The index value that splits the pixels. Used by the Threshold and both Mask outputs (greyed otherwise), e.g. 0.2 for NDVI vegetation, 0 for MNDWI water.</string>
+    </property>
     <property name="geometry">
      <rect>
       <x>102</x>
@@ -278,7 +319,7 @@
      </rect>
     </property>
     <property name="toolTip">
-     <string>Comma-separated, increasing: value ≥ 1st = class 1, ≥ 2nd = class 2, ≥ 3rd = class 3, else 0.</string>
+     <string>Used only by the Classes output (greyed otherwise). Up to 3 values, comma-separated, increasing: index ≥ 1st = class 1, ≥ 2nd = class 2, ≥ 3rd = class 3, below the 1st = class 0. E.g. NDVI 0.2, 0.4, 0.6 = bare / sparse / moderate / dense vegetation.</string>
     </property>
     <property name="text">
      <string>0.2, 0.4, 0.6</string>
@@ -289,7 +330,7 @@
    <property name="geometry">
     <rect>
      <x>11</x>
-     <y>381</y>
+     <y>413</y>
      <width>438</width>
      <height>16</height>
     </rect>
@@ -301,11 +342,52 @@
     <bool>true</bool>
    </property>
   </widget>
+  <widget class="QToolButton" name="tutorial">
+   <property name="geometry">
+    <rect>
+     <x>11</x>
+     <y>436</y>
+     <width>24</width>
+     <height>24</height>
+    </rect>
+   </property>
+   <property name="toolTip">
+    <string>Open the Remote sensing page of the manual: every field of the Spectral indices dialog explained.</string>
+   </property>
+   <property name="text">
+    <string>?</string>
+   </property>
+   <property name="page" stdset="0">
+    <string>74f-remote-sensing</string>
+   </property>
+  </widget>
+  <widget class="QPushButton" name="link_tutorial">
+   <property name="geometry">
+    <rect>
+     <x>41</x>
+     <y>435</y>
+     <width>80</width>
+     <height>26</height>
+    </rect>
+   </property>
+   <property name="toolTip">
+    <string>Open the Remote sensing tutorial: a Landsat scene of Lisbon, from its band files to NDVI and a water mask, step by step.</string>
+   </property>
+   <property name="text">
+    <string>Tutorial</string>
+   </property>
+   <property name="page" stdset="0">
+    <string>74g-remote-sensing-tutorial</string>
+   </property>
+  </widget>
   <widget class="QPushButton" name="run_compute">
+   <property name="toolTip">
+    <string>Compute the index from the chosen bands and add the result to this window as a new layer.</string>
+   </property>
    <property name="geometry">
     <rect>
      <x>368</x>
-     <y>403</y>
+     <y>435</y>
      <width>81</width>
      <height>26</height>
     </rect>

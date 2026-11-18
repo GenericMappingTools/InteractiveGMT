@@ -126,7 +126,7 @@ function _on_talwani3d(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 		isfile(dest) || error("talwani3d wrote no output")
 
 		if mode == "track"
-			R = GMT.gmtread(String(dest); dataset = true)
+			R = _gmtread(String(dest); dataset = true)
 			R === nothing && error("talwani3d returned nothing")
 			Ds = isa(R, Vector) ? R : [R]
 			isempty(Ds) && error("talwani3d returned no rows")
@@ -153,7 +153,7 @@ function _on_talwani3d(scene::Ptr{Cvoid}, cparams::Cstring)::Cint
 			return Cint(1)
 		end
 
-		G = GMT.gmtread(String(dest); grd = true)
+		G = _gmtread(String(dest); grd = true)
 		isa(G, GMTgrid) || error("got a $(typeof(G)), not a grid")
 		# The file was written by GMT itself, so `_gm3d_deliver` is told to save nothing: it would
 		# only rewrite what is already on disk.

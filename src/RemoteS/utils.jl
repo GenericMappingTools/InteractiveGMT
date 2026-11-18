@@ -103,7 +103,7 @@ function truecolor(bndR, bndG, bndB)
 end
 
 _as_image(x::GMT.GMTimage)::GMT.GMTimage = x
-_as_image(x::String)::GMT.GMTimage = gmtread(x)
+_as_image(x::String)::GMT.GMTimage = InteractiveGMT._gmtread(x)
 
 # One band into layer `k` of `img`: copied when already UInt8, auto-stretched otherwise.
 function _stretch_into!(img::Array{UInt8,3}, I::GMT.GMTimage, k::Int)
@@ -204,7 +204,7 @@ function subcube(cube::String; bands::Vector{Int}=Int[], layers::Vector{Int}=Int
 	# This is also used as a helper function in 'truecolor' and the radiometric indices functions.
 	alllayers = isempty(bands) && isempty(bandnames) && isempty(layers)	# Read them all
 	lay = isempty(layers) ? find_layers(cube, bands=bands, bandnames=bandnames, alllayers=alllayers)[1] : layers
-	gmtread(cube, band=lay, layout="TRBa")		# This one is still UInt16
+	InteractiveGMT._gmtread(cube, band=lay, layout="TRBa")		# This one is still UInt16
 end
 
 function subcube(cube::_Cube3; bands::Vector{Int}=Int[], layers::Vector{Int}=Int[], bandnames::Vector{String}=String[])
@@ -403,7 +403,7 @@ end
 # A region, however given (nothing = the whole of `fname`), as a GMT -R argument without the "-R".
 function _region_str(region, fname::String)::String
 	if (region === nothing)							# Swallow the entire region
-		r = grdinfo(fname, C=true)
+		r = grdinfo(InteractiveGMT._gmt_safe_path(fname), C=true)
 		reg = Float64[r[1], r[2], r[3], r[4]]
 	elseif isa(region, String)
 		return startswith(region, "-R") ? region[3:end] : region	# Tolerate a region that starts with "-R"
@@ -543,7 +543,7 @@ end
 function helper1_sats(fname::String, band_layer::Int)
 	# "TRB" for a single band file too, as for a cube layer: the plain reader's image label does not
 	# describe its memory, and the grid built on it (`mat2grid(o, I)`) came out upside down.
-	I = ((band_layer == 0) ? gmtread(fname, layout="TRB") : gmtread(fname, layer=band_layer, layout="TRB"))::GMT.GMTimage{UInt16, 2}
+	I = ((band_layer == 0) ? InteractiveGMT._gmtread(fname, layout="TRB") : InteractiveGMT._gmtread(fname, layer=band_layer, layout="TRB"))::GMT.GMTimage{UInt16, 2}
 	indNaN = _DNZero(I.image)          # "no data" = DN 0 (what isnodata(I) tests), asked per pixel: no mask array
 	o = Matrix{Float32}(undef, size(I))
 	return I, indNaN, o
@@ -685,7 +685,7 @@ function _trad2(fname::String, mtl::String, temperature::Bool)::GMTgrid
 	end
 	isfile(mtl) || error("The MTL file of $(basename(fname)) was not found. Pass it with `mtl=`.")
 	pars = parse_mtl(readlines(mtl), 10)
-	G = gmtread(fname, layout="TRB")::GMTgrid
+	G = InteractiveGMT._gmtread(fname, layout="TRB")::GMTgrid
 	z = G.z
 	K1, K2 = pars.K1, pars.K2
 	@inbounds Threads.@threads for k = 1:length(z)
@@ -979,7 +979,7 @@ end
 Returns the trained model (a `DecisionTreeModel`) and the class names.
 """
 function train_raster(cube::GMT.GItype, train::Union{Vector{<:GMTdataset}, String}; np::Int=0, density=0.1, max_depth::Int=3)
-	samples = (isa(train, String) ? gmtread(train) : train)::Vector{<:GMTdataset}
+	samples = (isa(train, String) ? InteractiveGMT._gmtread(train) : train)::Vector{<:GMTdataset}
 	get(samples[1].attrib, "class", "") == "" && error("The datasets used for training MUST have an attribute called 'class'.")
 	(get(samples[1].attrib, "id", "") == "") && add_class_id!(samples)	# If no 'id' attribute, create one from 'class'
 

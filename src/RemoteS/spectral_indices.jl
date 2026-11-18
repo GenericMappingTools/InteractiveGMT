@@ -576,7 +576,7 @@ function _si_mask(f::F, clip::Bool, b1::A, b2::B, b3::C, s::Float64, o::SIOpts) 
 	thr, rev = o.threshold, o.rev_mask
 	@inbounds Threads.@threads for k = 1:length(mask)
 		t = f(_bv(b1,k,s), _bv(b2,k,s), _bv(b3,k,s))
-		((rev ? t < thr : t > thr) && (!clip || t <= 1)) && (mask[k] = 0xff)
+		((rev ? t < thr : t >= thr) && (!clip || t <= 1)) && (mask[k] = 0xff)   # vals >= threshold, as documented
 	end
 	return mask
 end
@@ -631,7 +631,7 @@ function sp_indices(bnd1::String, bnd2::String, bnd3::String=""; index::String="
 	do_radTOA = haskey(kwargs, :dn2radiance)
 	do_refTOA = haskey(kwargs, :dn2reflectance)
 	do_refSrf = haskey(kwargs, :reflectance_surf)
-	rd(b) = (do_radTOA) ? dn2radiance(b) : (do_refTOA) ? dn2reflectance(b) : (do_refSrf) ? reflectance_surf(b) : gmtread(b)
+	rd(b) = (do_radTOA) ? dn2radiance(b) : (do_refTOA) ? dn2reflectance(b) : (do_refSrf) ? reflectance_surf(b) : InteractiveGMT._gmtread(b)
 	sp_indices(rd(bnd1), rd(bnd2), (bnd3 != "") ? rd(bnd3) : nothing; index=index, kwargs...)
 end
 

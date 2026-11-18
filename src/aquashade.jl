@@ -334,8 +334,8 @@ function tsushade(path::String; k::Union{Int,Nothing} = nothing, var::String = "
 	nt > 0 || error("tsushade: '$var' not found in $path")
 	kk  = k === nothing ? nt ÷ 2 : k
 	(0 <= kk < nt) || error("tsushade: layer $kk out of range (0..$(nt - 1))")
-	bat = GMT.gmtread(path * "?bathymetry", layout = "TRB")
-	G   = GMT.gmtread(path * "?$(var)[$(kk)]", layout = "TRB")
+	bat = _gmtread(path * "?bathymetry", layout = "TRB")
+	G   = _gmtread(path * "?$(var)[$(kk)]", layout = "TRB")
 	mw  = method_water > 0 ? method_water : method
 	ml  = method_land  > 0 ? method_land  : method
 	img, = aqua_shade_image(bat, G; method_water = mw, method_land = ml,
@@ -485,8 +485,8 @@ function tsupbr(path::String; k::Union{Int,Nothing} = nothing, var::String = "z"
 	nt > 0 || error("tsupbr: '$var' not found in $path")
 	kk = k === nothing ? nt ÷ 2 : k
 	(0 <= kk < nt) || error("tsupbr: layer $kk out of range (0..$(nt - 1))")
-	bat = GMT.gmtread(path * "?bathymetry", layout = "TRB")
-	G   = GMT.gmtread(path * "?$(var)[$(kk)]", layout = "TRB")
+	bat = _gmtread(path * "?bathymetry", layout = "TRB")
+	G   = _gmtread(path * "?$(var)[$(kk)]", layout = "TRB")
 	img, = aqua_shade_image(bat, G; method_water = 1, method_land = 1,
 	                        azim_water = azim_water, elev_water = elev_water,
 	                        azim_land = azim_land, elev_land = elev_land,

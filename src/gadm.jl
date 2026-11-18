@@ -26,7 +26,7 @@ function _gadm_countries()::Vector{String}
 	name2 = Dict{String,String}()                     # alpha-2 -> country name
 	f = _er_dir() * "DCW_collection.txt"              # the same table Earth regions lists
 	if isfile(f)
-		D = GMT.gmtread(f)
+		D = _gmtread(f)
 		D isa Vector && (D = D[1])
 		for t in D.text
 			p = split(String(t), ',')

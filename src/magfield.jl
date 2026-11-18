@@ -154,7 +154,7 @@ end
 # The Earth picture draped on the sphere: GMT's own blue-marble raster, packed by the SAME
 # `_drape_buf` every other texture in this viewer goes through (row 0 = south, west->east, RGB).
 function _mag_texture(res::String = "@earth_day_06m")
-	I = GMT.gmtread(res)
+	I = _gmtread(res)
 	buf, nlon, nlat, comps = _drape_buf(I)
 	return buf, nlon, nlat, comps
 end

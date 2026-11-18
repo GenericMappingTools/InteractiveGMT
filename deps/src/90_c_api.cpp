@@ -5070,6 +5070,49 @@ GMTVTK_API void gmtvtk_set_mask_flag_h(void *handle, const char *name, int on) {
 	if (s->maskNames != before) sceneQueueRebuildObjects(s);
 }
 
+// The files element `name` is made of (a .vrt's sources), '\n'-separated full paths. Scene Objects
+// lists them under that element's group, each with a "Load file" menu. Empty `files` clears the list.
+GMTVTK_API void gmtvtk_set_source_files_h(void *handle, const char *name, const char *files) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !name) return;
+	std::vector<std::string> v;
+	const std::string all = files ? files : "";
+	size_t a = 0;
+	while (a < all.size()) {
+		size_t b = all.find('\n', a);
+		if (b == std::string::npos) b = all.size();
+		if (b > a) v.push_back(all.substr(a, b - a));
+		a = b + 1;
+	}
+	if (v.empty()) s->srcFiles.erase(name);
+	else s->srcFiles[name] = v;
+	sceneQueueRebuildObjects(s);
+}
+
+// The bands element `name` holds (a cube), '\n'-separated labels in band order. Scene Objects lists
+// them under that element's group, each with a "Load band" menu. Empty `bands` clears the list.
+GMTVTK_API void gmtvtk_set_source_bands_h(void *handle, const char *name, const char *bands) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !name) return;
+	std::vector<std::string> v;
+	const std::string all = bands ? bands : "";
+	size_t a = 0;
+	while (a < all.size()) {
+		size_t b = all.find('\n', a);
+		if (b == std::string::npos) b = all.size();
+		if (b > a) v.push_back(all.substr(a, b - a));
+		a = b + 1;
+	}
+	if (v.empty()) s->srcBands.erase(name);
+	else s->srcBands[name] = v;
+	sceneQueueRebuildObjects(s);
+}
+
+// Register the "Load band" callback (JuliaBandRowFn); nullptr detaches.
+GMTVTK_API void gmtvtk_set_band_row_callback(JuliaBandRowFn fn) {
+	g_juliaBandRow = fn;
+}
+
 // Replace the PIXELS of an existing image IN PLACE, keeping everything else about it: the same
 // actor, the same plane, the same z position in the stack, the same Scene Objects row, the same
 // georeference. `img` is the packed RGB(A) texture buffer the host already builds for every image
@@ -13752,6 +13795,51 @@ GMTVTK_API int gmtvtk_toplevel_widget_test(const char *title, const char *objNam
 		return 1;
 	}
 	return 0;
+}
+
+// test hook (docs screenshots): pick the item of QComboBox `objName` of a visible top-level window whose
+// text CONTAINS `text` (case-insensitive) — setCurrentIndex, so its currentIndexChanged handlers run as
+// on a user's pick. 1 = done, 0 = no such window/combo/item.
+GMTVTK_API int gmtvtk_toplevel_combo_test(const char *title, const char *objName, const char *text) {
+	if (!title || !objName || !text) return 0;
+	const QString want = QString::fromUtf8(title), item = QString::fromUtf8(text);
+	for (QWidget *w : QApplication::topLevelWidgets()) {
+		if (!w->isVisible() || !w->windowTitle().contains(want, Qt::CaseInsensitive)) continue;
+		auto *cb = w->findChild<QComboBox *>(QString::fromUtf8(objName));
+		if (!cb) return 0;
+		for (int i = 0; i < cb->count(); ++i)
+			if (cb->itemText(i).contains(item, Qt::CaseInsensitive)) {
+				cb->setCurrentIndex(i);
+				QApplication::processEvents();
+				return 1;
+			}
+		return 0;
+	}
+	return 0;
+}
+
+// test hook (docs screenshots): EXPAND the Scene Objects group(s) whose label contains `label` — the
+// tree item opened, and remembered in objExpanded as a user's click on its arrow is, so the rebuilds
+// that follow keep it open. Returns how many groups were opened.
+GMTVTK_API int gmtvtk_objgroup_expand_test(void *scene, const char *label) {
+	Scene *s = (Scene*)scene;
+	if (!s || !label) return 0;
+	testBorrowScene(s);
+	if (!sceneAlive(s) || !s->objPanel) return 0;
+	QTreeWidget *tree = s->objPanel->findChild<QTreeWidget*>();
+	if (!tree) return 0;
+	const QString want = QString::fromUtf8(label);
+	int n = 0;
+	for (int i = 0; i < tree->topLevelItemCount(); ++i) {
+		QTreeWidgetItem *it = tree->topLevelItem(i);
+		const QString key = it->data(0, Qt::UserRole).toString();
+		if (!key.contains(want, Qt::CaseInsensitive)) continue;
+		s->objExpanded.insert(key.toStdString());
+		it->setExpanded(true);
+		++n;
+	}
+	for (int i = 0; i < 5; ++i) QApplication::processEvents();
+	return n;
 }
 
 // test hook: THE CRS SELECTOR, DRIVEN LIKE A USER. Opens it (preselecting `initial`), and once it is on

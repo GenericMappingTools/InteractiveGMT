@@ -287,7 +287,7 @@ function _ce_line(scene::Ptr{Cvoid}, spec::AbstractString)::Matrix{Float64}
 		end
 	end
 	isfile(spec) || error("no line named \"$spec\" in this window, and no such file")
-	D = GMT.gmtread(spec)
+	D = _gmtread(spec)
 	m = isa(D, Vector) ? vcat([d.data for d in D]...) : D.data
 	size(m, 2) < 2 && error("$spec: need at least two columns (lon lat)")
 	return Matrix{Float64}(m[:, 1:2])
@@ -313,7 +313,7 @@ function _ce_od_table(d::Dict{String,String})
 	isempty(f) && (f = get(ENV, "IGMT_OD_FILE", ""))
 	isempty(f) && return nothing
 	isfile(f) || error("outward displacement file not found: $f")
-	D = GMT.gmtread(f)
+	D = _gmtread(f)
 	m = isa(D, Vector) ? vcat([x.data for x in D]...) : D.data
 	size(m, 2) < 2 && error("$f: outward displacement needs two columns (lat km)")
 	return Matrix{Float64}(m[:, 1:2])

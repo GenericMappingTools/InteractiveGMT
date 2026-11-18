@@ -230,7 +230,7 @@ function cubegrid_all(data; kwargs...)
 	return _cubegrid(xx, yy, zz, data; kw...)
 end
 function cubegrid_all(path::String; kwargs...)
-	D = _cube_is_swath(path) ? _mb_good_dataset(String(path)) : GMT.gmtread(path; data = true)
+	D = _cube_is_swath(path) ? _mb_good_dataset(String(path)) : _gmtread(path; data = true)
 	kw = Dict{Symbol,Any}(kwargs)
 	_cube_is_swath(path) && (haskey(kw, :geographic) || (kw[:geographic] = true))
 	return cubegrid_all(D; kw...)

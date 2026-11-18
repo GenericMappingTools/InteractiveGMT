@@ -358,7 +358,7 @@ function biplot(D::GMTdataset; PC = (1, 2), varlabels = :yes, xlabel = "", ylabe
 	                arrowcolor=_rgb(arrow[4]), arrowwidth=_gmt_len_px(:biplot, :arrow, arrow[3], 'p'), bold)
 	return p
 end
-biplot(fname::AbstractString; kw...) = biplot(GMT.gmtread(fname)::GMTdataset; kw...)
+biplot(fname::AbstractString; kw...) = biplot(_gmtread(fname)::GMTdataset; kw...)
 biplot(M::AbstractMatrix{<:Real}; kw...) = biplot(GMT.mat2ds(Matrix{Float64}(M)); kw...)
 
 "Alias of [`viz`](@ref)."

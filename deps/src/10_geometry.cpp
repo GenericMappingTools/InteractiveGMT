@@ -1767,6 +1767,13 @@ struct Scene {
 	// "Digitize whites" traces the boundary between those two states, so it is offered only for these.
 	// Set from Julia (gmtvtk_set_mask_flag_h), the only side that sees the raster's real values.
 	std::set<std::string> maskNames;
+	// The FILES an element is made of, keyed by the element's own name (a .vrt's sources, set by the
+	// host: gmtvtk_set_source_files_h). Scene Objects lists them under that element's group, each with
+	// a "Load file" menu.
+	std::map<std::string, std::vector<std::string>> srcFiles;
+	// The BANDS a multi-band element holds (a cube), keyed the same way (gmtvtk_set_source_bands_h):
+	// one row each under its group, with a "Load band" menu (g_juliaBandRow).
+	std::map<std::string, std::vector<std::string>> srcBands;
 	// The SEGMENT of a line overlay that a right-click in the VIEW landed on, while that click's menu is
 	// open (-1 otherwise, e.g. a menu opened from the Scene Objects row = the whole element). A traced
 	// mask outline is one overlay of many polygons: its Area / Delete act on the polygon clicked.

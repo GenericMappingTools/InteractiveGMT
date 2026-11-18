@@ -125,7 +125,7 @@ _mb_xyz(D::Vector{<:GMTdataset}) = _mb_xyz(reduce(vcat, (d.data for d in D)))
 # segment to the start of the next. A path is read here with the same reader the file drop uses.
 _mb_break(::Nothing) = (Float64[], Float64[], Float64[], Cint[])
 _mb_break(D::GMTdataset) = _mb_break([D])
-_mb_break(f::String) = isempty(strip(f)) ? _mb_break(nothing) : _mb_break(GMT.gmtread(f))
+_mb_break(f::String) = isempty(strip(f)) ? _mb_break(nothing) : _mb_break(_gmtread(f))
 function _mb_break(D::Vector{<:GMTdataset})
 	xs, ys, zs, lens = Float64[], Float64[], Float64[], Cint[]
 	for d in D

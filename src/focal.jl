@@ -343,7 +343,7 @@ _focal_none() = (Float64[], Float64[], Float64[], Float64[], Float64[], Float64[
                  Float64[], Float64[], Float64[], Float64[], Float64[], String[])
 
 function _focal_matrix(file)::Matrix{Float64}
-	D = GMT.gmtread(file; table=true)
+	D = _gmtread(file; table=true)
 	return D isa GMTdataset ? D.data : reduce(vcat, (seg.data for seg in D))
 end
 
@@ -377,7 +377,7 @@ end
 # date label (Mirone's `sprintf('%d/%d/%d', day, month, year)`) — an anchor is not a thing ISF
 # carries, so plon/plat = lon/lat (matches Mirone: `handles.plot_pos = [out_d(1,:)' out_d(2,:)']`).
 function _focal_isf(file::String, W::Float64, E::Float64, S::Float64, N::Float64)
-	D = GMT.gmtisf(file; R=(W, E, S, N), focal=true)
+	D = GMT.gmtisf(_gmt_safe_path(file); R=(W, E, S, N), focal=true)
 	size(D, 1) == 0 && return _focal_none()
 	m = D.data
 	ci(name) = findfirst(==(name), D.colnames)
