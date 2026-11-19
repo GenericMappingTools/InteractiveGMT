@@ -13902,8 +13902,15 @@ GMTVTK_API int gmtvtk_crs_select_test(const char *initial, const char *filter, c
 				else find(ch);
 			}
 		};
-		for (int t = 0; t < tree->topLevelItemCount() && !hit; t++)
-			if (!tree->topLevelItem(t)->isHidden()) find(tree->topLevelItem(t));
+		// The catalogue rows arrive asynchronously: keep the event loop running and look again until the
+		// wanted row is there (10 s budget), instead of one look that fails under the parallel suite's load.
+		const auto t0 = std::chrono::steady_clock::now();
+		for (;;) {
+			for (int t = 0; t < tree->topLevelItemCount() && !hit; t++)
+				if (!tree->topLevelItem(t)->isHidden()) find(tree->topLevelItem(t));
+			if (hit || std::chrono::steady_clock::now() - t0 > std::chrono::seconds(10)) break;
+			QApplication::processEvents(QEventLoop::AllEvents, 25);
+		}
 		if (hit) {
 			flags |= 8;
 			tree->scrollToItem(hit);
@@ -13971,6 +13978,10 @@ GMTVTK_API int gmtvtk_project_crs_test(void *handle, const char *filter, const c
 		};
 		for (int t = 0; t < tree->topLevelItemCount() && !hit; t++)
 			if (!tree->topLevelItem(t)->isHidden()) find(tree->topLevelItem(t));
+		// The catalogue rows arrive asynchronously (two-phase protocol): under load the wanted row may
+		// not be in the tree yet. Wait for it (same 10 s budget as the dialog's own appearance) instead
+		// of giving up on the first look, which is what failed only in the parallel suite.
+		if (!hit && ++*tries < 400) { QTimer::singleShot(25, *step); return; }
 		if (hit) {
 			tree->scrollToItem(hit);
 			QApplication::processEvents();
