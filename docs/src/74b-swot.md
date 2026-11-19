@@ -1,7 +1,7 @@
 # SWOT (sea surface and water heights)
 
 !!! tip "Tutorial"
-    Worked examples and what every variable is: [Tutorial: SWOT](74c-swot-tutorial.md) (the green **?** in the dialog).
+    Worked examples and what every variable is: [Tutorial: SWOT](74c-swot-tutorial.md) (the **Tutorial** button in the dialog; the green **?** opens this page).
 
 *Satellite → SWOT…*
 

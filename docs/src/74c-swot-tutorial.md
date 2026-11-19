@@ -1,6 +1,6 @@
 # Tutorial: SWOT sea surface and water heights
 
-*Satellite → SWOT…* — the green **?** at the bottom of the dialog opens this page.
+*Satellite → SWOT…* — the **Tutorial** button at the bottom of the dialog opens this page; the green **?** opens the [SWOT help page](74b-swot.md).
 
 This tutorial goes through four real examples, then explains every variable the dialog offers. The
 reference for each button is the [SWOT](74b-swot.md) page.

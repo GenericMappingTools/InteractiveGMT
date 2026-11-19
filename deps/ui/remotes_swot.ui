@@ -881,10 +881,29 @@
     </rect>
    </property>
    <property name="toolTip">
-    <string>Open the SWOT tutorial: worked examples and what every variable is.</string>
+    <string>Open the SWOT page of the manual: every field of the dialog explained.</string>
    </property>
    <property name="text">
     <string>?</string>
+   </property>
+   <property name="page" stdset="0">
+    <string>74b-swot</string>
+   </property>
+  </widget>
+  <widget class="QPushButton" name="link_tutorial">
+   <property name="geometry">
+    <rect>
+     <x>39</x>
+     <y>540</y>
+     <width>80</width>
+     <height>26</height>
+    </rect>
+   </property>
+   <property name="toolTip">
+    <string>Open the SWOT tutorial: worked examples and what every variable is.</string>
+   </property>
+   <property name="text">
+    <string>Tutorial</string>
    </property>
    <property name="page" stdset="0">
     <string>74c-swot-tutorial</string>
@@ -893,10 +912,10 @@
   <widget class="QLabel" name="lbl_status">
    <property name="geometry">
     <rect>
-     <x>37</x>
-     <y>539</y>
-     <width>319</width>
-     <height>30</height>
+     <x>125</x>
+     <y>535</y>
+     <width>231</width>
+     <height>37</height>
     </rect>
    </property>
    <property name="text">

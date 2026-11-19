@@ -15478,7 +15478,7 @@ public:
 				tb->setText(QString());
 				tb->setCursor(Qt::PointingHandCursor);
 				tb->setFocusPolicy(Qt::NoFocus);
-				if (tb->toolTip().isEmpty()) tb->setToolTip("Open the tutorial");
+				if (tb->toolTip().isEmpty()) tb->setToolTip("Open the help page");
 				QObject::connect(tb, &QToolButton::clicked, d, [d, page]() {
 					const QUrl u("https://www.generic-mapping-tools.org/InteractiveGMT/dev/" + page + "/");
 					if (!QDesktopServices::openUrl(u))
@@ -34540,55 +34540,17 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	});
 
 	// --- Grid Tools menu: operations that combine / modify the window's host grid ------------
-	// "Transplant 2nd grid" (port of Mirone utils/transplants.m, IMPLANTGRID mode): pick an external
-	// grid and implant it into THIS window's grid with a smooth seam. A rectangle is NOT required from
-	// here (the rectangle-handle path is the same action wired into a rectangle's context menu, which
-	// passes its W/E/S/N as a clip). The submenu's two entries are the -res choice (host vs implant
-	// resolution). Both hand params to Julia's _on_transplant via g_juliaEval, like Extract profile.
 	QMenu *mGridTools  = win->menuBar()->addMenu("Grid T&ools");
-	QMenu *mTransplant = mGridTools->addMenu("Transplant 2nd grid");
-	// The source is chosen by runTransplant (50_scene.cpp): the window's other grids that intersect
-	// the active grid, beside "External file…" — or straight the file picker when there are none.
-	auto menuTransplant = [win, s](int res) {
-		if (!g_juliaEval) {
-			QMessageBox::warning(win, "Transplant 2nd grid", "This computation needs the Julia/GMT host.");
-			return;
-		}
-		runTransplant(s, res, QString());
-	};
-	mTransplant->addAction("Keep host resolution",     [menuTransplant]() { menuTransplant(1); });
-	mTransplant->addAction("Adopt implant resolution", [menuTransplant]() { menuTransplant(0); });
-
-	// "Clip Grid" (port of Mirone src_figs/ml_clip.m): threshold/statistical clipping of the window's
-	// grid into a NEW derived grid. Opens the clipp_grid.ui dialog (ClipGridDialog). Only meaningful
-	// with a grid loaded — offer it only then, like the rest of the grid-modifying tools.
-	mGridTools->addSeparator();
-	mGridTools->addAction("Clip Grid…", [win, s]() {
-		if (!sceneHasGrid(s)) {
-			QMessageBox::warning(win, "Clip Grid", "Load a grid into this window first.");
-			return;
-		}
-		auto *w = new ClipGridDialog(win, s);
-		if (w->dlg) w->dlg->show();
-	});
+	// "Grid calculator" (port of Mirone src_figs/grid_calculator.m): combine the window's grids with
+	// an arithmetic expression. Opens on ANY window: one-band images (a Landsat band) are operands too,
+	// and with nothing listed the grids come in through its own "Load Grid".
+	mGridTools->addAction("Grid calculator…", [win, s]() { openGridCalcDialog(win, s); });
 
 	// "Contours" (port of Mirone src_figs/contouring.m): trace the window's grid (GDAL marching
 	// squares, see src/contours.jl) and draw the levels as one grouped overlay set. Two ways in, the
 	// SAME operation behind both — "Automatic" is the tool with its dialog skipped: it asks for the
 	// grid's range and hands contourNiceLevels' guess straight to contourDrawLevels, which is exactly
 	// what the Contour Tool's "Add Common Charting Intervals" + Compute do by hand.
-	// Grid Tools > Spectrum — Mirone's three QUICK entries (mirone_uis.m:704-706): the same maths the
-	// FFT tool's buttons run, straight on the window's grid at its own size, with no dialog in
-	// between (GridToolsSectrum_CB's non-'Allopts' path, which never builds the window).
-	QMenu *mSpectrum = mGridTools->addMenu("Spectrum");
-	mSpectrum->addAction("Amplitude spectrum", [s]() { FFTStuffDialog::runQuick(s, "amplitude"); });
-	mSpectrum->addAction("Power spectrum",     [s]() { FFTStuffDialog::runQuick(s, "power"); });
-	mSpectrum->addAction("Autocorrelation",    [s]() { FFTStuffDialog::runQuick(s, "autocorr"); });
-	// The radial average belongs here too: it is the same engine on the same grid, and it is what
-	// one usually wants a spectrum FOR. Its answer is a curve, so it lands in the X,Y tool rather
-	// than as a new raster — same as the FFT tool's own button.
-	mSpectrum->addAction("Radial power average", [s]() { FFTStuffDialog::runQuick(s, "radial"); });
-
 	QMenu *mContours = mGridTools->addMenu("Contours");
 	auto needGrid = [win, s]() {
 		if (!sceneHasGrid(s)) {
@@ -34621,10 +34583,48 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		if (w->dlg) w->dlg->show();
 	});
 
-	// "Grid calculator" (port of Mirone src_figs/grid_calculator.m): combine the window's grids with
-	// an arithmetic expression. Opens on ANY window: one-band images (a Landsat band) are operands too,
-	// and with nothing listed the grids come in through its own "Load Grid".
-	mGridTools->addAction("Grid calculator…", [win, s]() { openGridCalcDialog(win, s); });
+	// "Clip Grid" (port of Mirone src_figs/ml_clip.m): threshold/statistical clipping of the window's
+	// grid into a NEW derived grid. Opens the clipp_grid.ui dialog (ClipGridDialog). Only meaningful
+	// with a grid loaded — offer it only then, like the rest of the grid-modifying tools.
+	mGridTools->addAction("Clip Grid…", [win, s]() {
+		if (!sceneHasGrid(s)) {
+			QMessageBox::warning(win, "Clip Grid", "Load a grid into this window first.");
+			return;
+		}
+		auto *w = new ClipGridDialog(win, s);
+		if (w->dlg) w->dlg->show();
+	});
+
+	// "Transplant 2nd grid" (port of Mirone utils/transplants.m, IMPLANTGRID mode): pick an external
+	// grid and implant it into THIS window's grid with a smooth seam. A rectangle is NOT required from
+	// here (the rectangle-handle path is the same action wired into a rectangle's context menu, which
+	// passes its W/E/S/N as a clip). The submenu's two entries are the -res choice (host vs implant
+	// resolution). Both hand params to Julia's _on_transplant via g_juliaEval, like Extract profile.
+	QMenu *mTransplant = mGridTools->addMenu("Transplant 2nd grid");
+	// The source is chosen by runTransplant (50_scene.cpp): the window's other grids that intersect
+	// the active grid, beside "External file…" — or straight the file picker when there are none.
+	auto menuTransplant = [win, s](int res) {
+		if (!g_juliaEval) {
+			QMessageBox::warning(win, "Transplant 2nd grid", "This computation needs the Julia/GMT host.");
+			return;
+		}
+		runTransplant(s, res, QString());
+	};
+	mTransplant->addAction("Keep host resolution",     [menuTransplant]() { menuTransplant(1); });
+	mTransplant->addAction("Adopt implant resolution", [menuTransplant]() { menuTransplant(0); });
+
+	// Grid Tools > Spectrum — Mirone's three QUICK entries (mirone_uis.m:704-706): the same maths the
+	// FFT tool's buttons run, straight on the window's grid at its own size, with no dialog in
+	// between (GridToolsSectrum_CB's non-'Allopts' path, which never builds the window).
+	mGridTools->addSeparator();
+	QMenu *mSpectrum = mGridTools->addMenu("Spectrum");
+	mSpectrum->addAction("Amplitude spectrum", [s]() { FFTStuffDialog::runQuick(s, "amplitude"); });
+	mSpectrum->addAction("Power spectrum",     [s]() { FFTStuffDialog::runQuick(s, "power"); });
+	mSpectrum->addAction("Autocorrelation",    [s]() { FFTStuffDialog::runQuick(s, "autocorr"); });
+	// The radial average belongs here too: it is the same engine on the same grid, and it is what
+	// one usually wants a spectrum FOR. Its answer is a curve, so it lands in the X,Y tool rather
+	// than as a new raster — same as the FFT tool's own button.
+	mSpectrum->addAction("Radial power average", [s]() { FFTStuffDialog::runQuick(s, "radial"); });
 
 	// "Synthetic terrain": MAKES a grid, so it needs none loaded. Its Julia side is wired on first use
 	// (warm_register "synthterrain", src/synthterrain.jl), never at start-up: both entries wait for it
