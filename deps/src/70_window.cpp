@@ -4272,7 +4272,7 @@ protected:
 			g.drawLine(QLineF(rulerX, y, 0.565 * w, y));
 		}
 
-		// Geological periods (right). The column (and its Plistocene top box) starts at age 0 —
+		// Geological periods (right). The column (and its Pleistocene top box) starts at age 0 —
 		// there are no negative times, so clamp the top of the two rails to yOf(0), not y=0.
 		double geoLeft = 0.79 * w, geoRight = 0.88 * w;
 		double geoTop = std::max(0.0, yOf(0.0));
@@ -4283,7 +4283,7 @@ protected:
 
 		struct Period { QString name; double textAge; double sepAge; };
 		QList<Period> periods = {
-			{" Plistocene", 1.0, 2.0}, {"Pliocene", 3.5, 5.0},
+			{" Pleistocene", 1.0, 2.0}, {"Pliocene", 3.5, 5.0},
 			{"Miocene", 14.75, 24.5}, {"Oligocene", 31.25, 38.0},
 			{"Eocene", 46.5, 55.0}, {"Paleocene", 60.0, 65.0},
 			{"Maastrichtian", 69.0, 73.0}, {"Campanian", 78.0, 83.0},
@@ -4472,6 +4472,9 @@ public:
 		barcodeArea = static_cast<MagBarcodeArea *>(dlg->findChild<QWidget *>("barcodeWidget"));
 		scrollBar = dlg->findChild<QScrollBar *>("verticalScrollBar");
 		if (barcodeArea) barcodeArea->statusLabel = dlg->findChild<QLabel *>("statusLabel");
+		// The hint ("Hover a chron for its name; click anywhere to read its age.") is wider than the
+		// dialog: wrap it instead of cutting the last word off at the right edge.
+		if (QLabel *st = dlg->findChild<QLabel *>("statusLabel")) st->setWordWrap(true);
 
 		if (scrollBar && barcodeArea) {
 			barcodeArea->scrollBar = scrollBar;   // resizeEvent keeps the range in sync from here on
@@ -20976,6 +20979,7 @@ public:
 					rd->reallyClose = true;
 					rd->stopPlay();
 					rd->forget();
+					rd->dropMemory();            // nothing it fetched outlives the X
 					rd->dlg->deleteLater();      // destroyed -> this wrapper goes with it
 				}
 				return QObject::eventFilter(o, e);
@@ -21310,6 +21314,9 @@ public:
 	// blocks (kPixelated). Only then are new tiles asked for, over a box padded past the view
 	// (kDetailPad) so the next small pan or zoom-out is still covered.
 	void requestDetail() {
+		// A dialog that is closing or parked shows nothing: fetching sharper tiles for it is pure waste.
+		// The close/hide resizes the map, which is what used to fire this request on the way out.
+		if (reallyClose || !dlg || !dlg->isVisible()) return;
 		if (asking) { if (bgTimer) bgTimer->start(); return; }   // a request is running: try again shortly
 		if (!tiled() || !view->hasExtent() || view->mpp <= 0) return;
 		const int z = zoomFor(view->mpp);
@@ -21634,8 +21641,9 @@ public:
 		};
 	}
 	void parkNow() {
-		if (!dlg || !sceneAlive(scn)) return;
+		if (!dlg || !sceneAlive(scn) || reallyClose) return;   // the X kills: a dying dialog is never parked
 		stopPlay();
+		if (bgTimer) bgTimer->stop();
 		dlg->setWindowState(dlg->windowState() & ~Qt::WindowMinimized);
 		dlg->hide();
 		parkTool(scn, dlg, "IPMA radar rain", IC_Rect,
@@ -21646,6 +21654,18 @@ public:
 	void forget() {
 		for (auto it = g_ipmaDlgs.begin(); it != g_ipmaDlgs.end(); )
 			it = (it->second == this) ? g_ipmaDlgs.erase(it) : std::next(it);
+	}
+	// Release everything the dialog holds (frames, backgrounds) at once, without waiting for the
+	// deferred delete: the X means the user is done with it.
+	void dropMemory() {
+		if (bgTimer) bgTimer->stop();
+		pngs.clear();      pngs.shrink_to_fit();
+		newPngs.clear();   newPngs.shrink_to_fit();
+		if (view) {
+			view->bg[0] = IpmaMapView::Layer();
+			view->bg[1] = IpmaMapView::Layer();
+			view->radar.img = QImage();
+		}
 	}
 	~IpmaRadarDialog() { forget(); }
 };
