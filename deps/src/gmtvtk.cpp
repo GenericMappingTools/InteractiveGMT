@@ -36,6 +36,7 @@
 //   70_window     buildAndShow — the Qt main window
 //   77_workspace  status-corner Workspace button: the Julia session's variables (MATLAB's workspace), via src/workspace.jl
 //   69_magfield    Magnetic field lines (3-D): IGRF streamlines traced round a textured globe
+//   76_hydrology   Grid Tools > Drainage analysis: basins, rivers, flow accumulation, TWI (src/hydrology.jl)
 //   80_rubberband  Ctrl+right-drag point-cloud selection
 //   85_polygon     toolbar polygon draw/edit tool (3-D vertices draped on the relief)
 //   87_vtkio       VTK's own file formats (.vtp/.vti/.vtu/... ) read + written natively by VTK
@@ -59,6 +60,7 @@ static void axesPropsOpen(Scene *s, AxesSet *A);   // 56_axesprops.cpp (the Axes
 #include "73_crsselect.cpp"
 static QDialog *faultDemoOpen(QWidget *parent, Scene *scene);
 static QDialog *magFieldOpen(QWidget *parent, Scene *scene);
+static bool hydroOpen(QWidget *parent, Scene *scene);   // 76_hydrology.cpp (Grid Tools > Drainage analysis)
 static bool dayLengthOpen(QWidget *parent, Scene *scene);
 static bool dayLengthPicOpen(QWidget *parent, Scene *scene);
 static bool dayLengthPicWired();
@@ -73,6 +75,7 @@ static void workspaceToggle(Scene *s); // 77_workspace.cpp (that button: show <-
 #include "77_workspace.cpp"
 #include "68_faultdemo.cpp"
 #include "69_magfield.cpp"
+#include "76_hydrology.cpp"
 #include "74_daylength.cpp"
 #include "74_daylength_gmt.cpp"
 #include "74_sunsync.cpp"

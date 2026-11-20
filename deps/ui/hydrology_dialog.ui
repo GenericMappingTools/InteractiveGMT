@@ -1,0 +1,132 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>HydrologyDialog</class>
+ <widget class="QDialog" name="HydrologyDialog">
+  <property name="geometry"><rect><x>0</x><y>0</y><width>300</width><height>318</height></rect></property>
+  <property name="windowTitle"><string>Drainage analysis</string></property>
+  <widget class="QGroupBox" name="gbDep">
+   <property name="geometry"><rect><x>4</x><y>2</y><width>292</width><height>58</height></rect></property>
+   <property name="title"><string>Depressions</string></property>
+   <widget class="QRadioButton" name="radioFill">
+    <property name="geometry"><rect><x>8</x><y>16</y><width>60</width><height>18</height></rect></property>
+    <property name="text"><string>Fill</string></property>
+    <property name="checked"><bool>true</bool></property>
+    <property name="toolTip"><string>Raise every pit or closed hollow of the DEM to the level of its lowest rim, so that water can always flow on (Priority-Flood). Robust; filled hollows become flat areas, and flow on them is routed toward their spill point.</string></property>
+   </widget>
+   <widget class="QRadioButton" name="radioCarve">
+    <property name="geometry"><rect><x>76</x><y>16</y><width>70</width><height>18</height></rect></property>
+    <property name="text"><string>Carve</string></property>
+    <property name="toolTip"><string>Keep each pit at its own elevation and lower a channel from it through its rim instead. Changes fewer cells; suited to DEMs where roads or embankments block valleys.</string></property>
+   </widget>
+   <widget class="QCheckBox" name="chkSea">
+    <property name="geometry"><rect><x>8</x><y>36</y><width>200</width><height>18</height></rect></property>
+    <property name="text"><string>z ≤ 0 is sea (no data)</string></property>
+    <property name="checked"><bool>true</bool></property>
+    <property name="toolTip"><string>Treat cells at or below zero as sea, so that rivers end at the coast. Untick for DEMs with land below sea level or with a different datum.</string></property>
+   </widget>
+  </widget>
+  <widget class="QGroupBox" name="gbRes">
+   <property name="geometry"><rect><x>4</x><y>62</y><width>292</width><height>196</height></rect></property>
+   <property name="title"><string>Results</string></property>
+   <widget class="QLabel" name="lblMinArea">
+    <property name="geometry"><rect><x>190</x><y>14</y><width>94</width><height>14</height></rect></property>
+    <property name="text"><string>min. area</string></property>
+   </widget>
+   <widget class="QCheckBox" name="chkBasins">
+    <property name="geometry"><rect><x>8</x><y>30</y><width>176</width><height>18</height></rect></property>
+    <property name="text"><string>Drainage basins</string></property>
+    <property name="checked"><bool>true</bool></property>
+    <property name="toolTip"><string>Label every cell with the basin (catchment) it drains to. Basins are numbered by decreasing size (1 = largest); those smaller than the minimum area are left out.</string></property>
+   </widget>
+   <widget class="QLineEdit" name="edBasinArea">
+    <property name="geometry"><rect><x>190</x><y>30</y><width>94</width><height>20</height></rect></property>
+    <property name="text"><string>1000</string></property>
+    <property name="toolTip"><string>Smallest basin kept, in the unit chosen below.</string></property>
+   </widget>
+   <widget class="QCheckBox" name="chkStreams">
+    <property name="geometry"><rect><x>8</x><y>52</y><width>176</width><height>18</height></rect></property>
+    <property name="text"><string>Stream network (lines)</string></property>
+    <property name="checked"><bool>true</bool></property>
+    <property name="toolTip"><string>Rivers as lines on top of the display, one line per reach between confluences. A cell is on a river when the area draining through it is at least the minimum area.</string></property>
+   </widget>
+   <widget class="QLineEdit" name="edStreamArea">
+    <property name="geometry"><rect><x>190</x><y>52</y><width>94</width><height>20</height></rect></property>
+    <property name="text"><string>1000</string></property>
+    <property name="toolTip"><string>Upstream area at which a river starts, in the unit chosen below. Also used by Strahler order.</string></property>
+   </widget>
+   <widget class="QCheckBox" name="chkOrder">
+    <property name="geometry"><rect><x>8</x><y>74</y><width>176</width><height>18</height></rect></property>
+    <property name="text"><string>Strahler order</string></property>
+    <property name="toolTip"><string>Grid with the Strahler order of every river cell: 1 for headwater streams, increasing by one where two streams of the same order meet.</string></property>
+   </widget>
+   <widget class="QCheckBox" name="chkAcc">
+    <property name="geometry"><rect><x>8</x><y>96</y><width>176</width><height>18</height></rect></property>
+    <property name="text"><string>Flow accumulation</string></property>
+    <property name="toolTip"><string>Upstream area draining through every cell, as log10 (km² for georeferenced DEMs, number of cells otherwise). D8 sends all water to the steepest neighbour (rivers). MFD and D∞ spread it over several neighbours: better on hillslopes, but they make rivers several cells wide.</string></property>
+   </widget>
+   <widget class="QComboBox" name="cbAccMethod">
+    <property name="geometry"><rect><x>190</x><y>95</y><width>94</width><height>20</height></rect></property>
+    <property name="toolTip"><string>D8: steepest neighbour. MFD: shared among all lower neighbours. D∞: split between the two neighbours bracketing the steepest direction.</string></property>
+   </widget>
+   <widget class="QCheckBox" name="chkTwi">
+    <property name="geometry"><rect><x>8</x><y>118</y><width>176</width><height>18</height></rect></property>
+    <property name="text"><string>Wetness index (TWI)</string></property>
+    <property name="toolTip"><string>Topographic wetness index ln(a / tan β): high in valley bottoms and hollows that collect water (wet soils), low on crests and steep slopes. MFD is the usual method for it.</string></property>
+   </widget>
+   <widget class="QComboBox" name="cbTwiMethod">
+    <property name="geometry"><rect><x>190</x><y>117</y><width>94</width><height>20</height></rect></property>
+    <property name="toolTip"><string>Flow accumulation method used by the wetness index.</string></property>
+   </widget>
+   <widget class="QCheckBox" name="chkDist">
+    <property name="geometry"><rect><x>8</x><y>140</y><width>176</width><height>18</height></rect></property>
+    <property name="text"><string>Flow distance to outlet</string></property>
+    <property name="toolTip"><string>Distance from every cell to its basin outlet, measured along the flow path (km for georeferenced DEMs).</string></property>
+   </widget>
+   <widget class="QCheckBox" name="chkLdd">
+    <property name="geometry"><rect><x>8</x><y>162</y><width>176</width><height>18</height></rect></property>
+    <property name="text"><string>Drain directions (LDD)</string></property>
+    <property name="toolTip"><string>Flow direction of every cell in the PCRaster LDD code (numeric keypad: 8 north, 6 east, 2 south, 4 west, 5 outlet): the drainage map hydrological models such as LISFLOOD read.</string></property>
+   </widget>
+   <widget class="QComboBox" name="cbUnit">
+    <property name="geometry"><rect><x>190</x><y>161</y><width>94</width><height>20</height></rect></property>
+    <property name="toolTip"><string>Unit of the two minimum areas. km² needs a georeferenced DEM (geographic, or projected in metres).</string></property>
+   </widget>
+   <widget class="QLabel" name="lblUnit">
+    <property name="geometry"><rect><x>190</x><y>144</y><width>94</width><height>14</height></rect></property>
+    <property name="text"><string>areas in</string></property>
+   </widget>
+  </widget>
+  <widget class="QProgressBar" name="progress">
+   <property name="geometry"><rect><x>4</x><y>262</y><width>292</width><height>16</height></rect></property>
+   <property name="value"><number>0</number></property>
+  </widget>
+  <widget class="QLabel" name="lblStage">
+   <property name="geometry"><rect><x>4</x><y>279</y><width>292</width><height>14</height></rect></property>
+   <property name="text"><string/></property>
+  </widget>
+  <widget class="QToolButton" name="tutorial">
+   <property name="geometry"><rect><x>4</x><y>294</y><width>22</width><height>22</height></rect></property>
+   <property name="toolTip"><string>Open the help page: every control of this dialog explained.</string></property>
+   <property name="page" stdset="0"><string>83-drainage</string></property>
+  </widget>
+  <widget class="QPushButton" name="link_tutorial">
+   <property name="geometry"><rect><x>30</x><y>294</y><width>72</width><height>22</height></rect></property>
+   <property name="text"><string>Tutorial</string></property>
+   <property name="toolTip"><string>Open the Drainage analysis tutorial: a worked example on central Portugal, step by step.</string></property>
+   <property name="page" stdset="0"><string>83b-drainage-tutorial</string></property>
+  </widget>
+  <widget class="QPushButton" name="btnRun">
+   <property name="geometry"><rect><x>146</x><y>294</y><width>72</width><height>22</height></rect></property>
+   <property name="text"><string>Run</string></property>
+   <property name="toolTip"><string>Compute the ticked results from the grid on display. They are added to this window as new layers.</string></property>
+  </widget>
+  <widget class="QPushButton" name="btnStop">
+   <property name="geometry"><rect><x>224</x><y>294</y><width>72</width><height>22</height></rect></property>
+   <property name="text"><string>Stop</string></property>
+   <property name="enabled"><bool>false</bool></property>
+   <property name="toolTip"><string>Stop the running computation. Nothing is added to the window.</string></property>
+  </widget>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

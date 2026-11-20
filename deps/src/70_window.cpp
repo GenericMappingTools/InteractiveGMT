@@ -34613,6 +34613,16 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	mTransplant->addAction("Keep host resolution",     [menuTransplant]() { menuTransplant(1); });
 	mTransplant->addAction("Adopt implant resolution", [menuTransplant]() { menuTransplant(0); });
 
+	mGridTools->addSeparator();
+	// "Drainage analysis" (76_hydrology.cpp, src/hydrology.jl): basins, rivers, flow accumulation,
+	// wetness index... of the DEM on display, computed by GMT.jl's hydro functions.
+	// Opens WITHOUT a grid too, so its tutorial is always reachable; the dialog then blocks everything
+	// else until a grid is loaded.
+	mGridTools->addAction("Drainage analysis…", [win, s]() {
+		if (!hydroOpen(win, s))
+			QMessageBox::warning(win, "Drainage analysis", "Could not open the dialog (deps/ui/hydrology_dialog.ui).");
+	});
+
 	// Grid Tools > Spectrum — Mirone's three QUICK entries (mirone_uis.m:704-706): the same maths the
 	// FFT tool's buttons run, straight on the window's grid at its own size, with no dialog in
 	// between (GridToolsSectrum_CB's non-'Allopts' path, which never builds the window).
