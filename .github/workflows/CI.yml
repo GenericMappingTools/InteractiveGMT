@@ -59,6 +59,9 @@ jobs:
             libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 \
             libgl1 libglx0 libegl1 libopengl0 libglu1-mesa \
             libxtst6
+      # GMT.jl from master, like every iGMT install: iGMT uses GMT.jl code not yet in a release.
+      - name: GMT.jl from master
+        run: julia --project=. -e 'using Pkg; Pkg.add(url="https://github.com/GenericMappingTools/GMT.jl", rev="master")'
       - uses: julia-actions/julia-buildpkg@v1
       # GMT picks its FFT backend at runtime, and on Apple silicon it picks Accelerate's vDSP —
       # which SEGFAULTS (signal 11) inside vDSP_fft2d_zip, killing the whole test process:

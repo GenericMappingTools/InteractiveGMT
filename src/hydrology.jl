@@ -36,18 +36,18 @@ end
 
 # Are the DEM's cell sizes in metres? Geographic grids: flowdir computes metres itself. Projected
 # grids: when their CRS says metres. A bare Cartesian grid has unknown units.
-function _hydro_metric(G::GMTgrid, F::GMT.FlowNet)::Bool
-	F.geog && return true
+function _hydro_metric(G::GMTgrid, geog::Bool)::Bool
+	geog && return true
 	G.epsg != 0 && return true
 	p = G.proj4 * " " * G.wkt
 	return occursin("+units=m", p) || occursin("UNIT[\"metre\"", p) || occursin("UNIT[\"meter\"", p)
 end
 
 # An area typed in the dialog -> number of cells.
-function _hydro_cells(val::Float64, unit::String, G::GMTgrid, F::GMT.FlowNet)::Float64
+function _hydro_cells(val::Float64, unit::String, G::GMTgrid, geog::Bool, dx::Vector{Float64}, dy::Float64)::Float64
 	unit == "cells" && return val
-	_hydro_metric(G, F) || error("Areas in km² need a georeferenced DEM (geographic, or projected in metres). Use cells.")
-	cellarea = sum(F.dx) / length(F.dx) * F.dy               # m², mean over the rows
+	_hydro_metric(G, geog) || error("Areas in km² need a georeferenced DEM (geographic, or projected in metres). Use cells.")
+	cellarea = sum(dx) / length(dx) * dy               # m², mean over the rows
 	return val * 1e6 / cellarea
 end
 
@@ -98,7 +98,7 @@ function _hydro_compute!(job::_HydroJob, G::GMTgrid, d::Dict{String,String})
 	F = flowdir(G; method = _hydro_flag(d, "carve") ? :carve : :fill, sealevel = sea,
 	            progress = _hydro_reporter(job, 0.0, 0.6, "Flow directions"))
 	unit   = get(d, "unit", "cells")
-	metric = _hydro_metric(G, F)
+	metric = _hydro_metric(G, F.geog)
 	want = [k for k in ("acc", "twi", "dist", "ldd", "order", "streams", "basins") if _hydro_flag(d, k)]
 	n = length(want);  step = 0.4 / max(n, 1)
 	res = job.results
@@ -126,16 +126,16 @@ function _hydro_compute!(job::_HydroJob, G::GMTgrid, d::Dict{String,String})
 			push!(res, ("$src LDD (PCRaster)", ldd(F)))
 		elseif k == "order"
 			_hydro_setstage!(job, base, "Strahler order")
-			thr = _hydro_cells(_hydro_num(d, "stream_area", 1000.0), unit, G, F)
+			thr = _hydro_cells(_hydro_num(d, "stream_area", 1000.0), unit, G, F.geog, F.dx, F.dy)
 			push!(res, ("$src Strahler order", streamorder(F; threshold = thr)))
 		elseif k == "streams"
 			_hydro_setstage!(job, base, "Stream network")
-			thr = _hydro_cells(_hydro_num(d, "stream_area", 1000.0), unit, G, F)
+			thr = _hydro_cells(_hydro_num(d, "stream_area", 1000.0), unit, G, F.geog, F.dx, F.dy)
 			S = streamnet(F; threshold = thr)
 			isempty(S) || push!(res, ("$src streams", S))
 		elseif k == "basins"
 			_hydro_setstage!(job, base, "Drainage basins")
-			amin = _hydro_cells(_hydro_num(d, "basin_area", 1000.0), unit, G, F)
+			amin = _hydro_cells(_hydro_num(d, "basin_area", 1000.0), unit, G, F.geog, F.dx, F.dy)
 			push!(res, ("$src drainage basins", drainagebasins(F; minarea = amin)))
 		end
 	end
