@@ -22,7 +22,9 @@ jobs:
       - uses: julia-actions/cache@v2
       - name: Install docs dependencies
         # GMT.jl from master, like every iGMT install: iGMT uses GMT.jl code not yet in a release.
-        run: julia --project=docs -e 'using Pkg; Pkg.add(url="https://github.com/GenericMappingTools/GMT.jl", rev="master"); Pkg.develop(PackageSpec(path=pwd())); Pkg.instantiate()'
+        # iGMT is developed FIRST: Julia 1.10 ignores docs/Project.toml's [sources], so any resolve
+        # before that would look for the unregistered InteractiveGMT in the registry and fail.
+        run: julia --project=docs -e 'using Pkg; Pkg.develop(PackageSpec(path=pwd())); Pkg.add(url="https://github.com/GenericMappingTools/GMT.jl", rev="master"); Pkg.instantiate()'
       - name: Build and deploy docs
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
