@@ -85,6 +85,7 @@ const titles = Dict(
     "79-mbnavadjust.md" => "MBnavadjust",
     "80-benchmark1.md" => "Catalina Benchmark 1",
     "81-gmtsarplugin.md" => "GMTSAR plugin",
+    "81b-sentinel1-orbits.md" => "Sentinel-1 orbits (GMTSAR)",
     "82-earth-moon.md" => "Tutorial: The Earth-Moon System",
     "83-drainage.md" => "Drainage analysis",
     "83b-drainage-tutorial.md" => "Tutorial: Drainage analysis",

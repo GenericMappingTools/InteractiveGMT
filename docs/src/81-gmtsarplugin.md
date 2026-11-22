@@ -54,6 +54,16 @@ For whole workflows, the gmtsar repository has Julia ports of the csh processing
 which does not see the plugin loaded here: it needs the plugin in `GMT_CUSTOM_LIBS` of its own
 `gmt.conf`, and `GMTSAR_SHAREDIR` set to `<InteractiveGMT>/gmtsar/share/gmtsar`.
 
+## Sentinel-1 orbits
+
+**Geophysics ▸ GMTSAR ▸ Sentinel-1 orbits…** gets the orbit file of each Sentinel-1 scene, the
+`.EOF` GMTSAR's Sentinel-1 preprocessing (`make_s1a_tops`, `align_tops.csh`,
+`preproc_batch_tops.csh`) needs next to the data. It does what GMTSAR's
+`download_sentinel_orbits.csh` does, from the same public archive
+([step.esa.int/auxdata/orbits/Sentinel-1](https://step.esa.int/auxdata/orbits/Sentinel-1/), no
+login), with no `wget`, `unzip` or `date` and on any system. It does not need the plugin.
+Its full manual is [Sentinel-1 orbits](81b-sentinel1-orbits.md).
+
 ## The archive
 
 It is built by the `plugin` and `plugin-windows` jobs of the gmtsar repository's CI

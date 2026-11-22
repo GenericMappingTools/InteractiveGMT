@@ -34144,15 +34144,18 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		reopen();
 	};
 
-	// GMTSAR discipline -- for now only its GMT supplement (the InSAR processing modules), from the
+	// GMTSAR discipline -- its GMT supplement (the InSAR processing modules), from the
 	// joa-quim/gmtsar `gmtsar-latest` release. No Windows GMT brings it, but the archive is built
 	// against GMT_jll, so on Windows it is offered only when the host's GMT is GMT_jll's.
-	*fSar = [mGphy, backItem, reopen, pluginEntry]() {
+	// "Sentinel-1 orbits…": the graphic face of GMTSAR's download_sentinel_orbits.csh (src/s1orbits.jl
+	// over deps/ui/remotes_s1orbits.ui and the generic RemoteSDialog). Needs no plugin: always offered.
+	*fSar = [mGphy, backItem, reopen, pluginEntry, win, s]() {
 		mGphy->clear();
 		mGphy->setTitle("GMTSAR ▾");
 		backItem("GMTSAR");
 		if (!pluginEntry(GMTVTK_PLUGIN_GMTSAR, "GMTSAR", "InteractiveGMT.install_gmtsar_plugin()"))
 			mGphy->addAction("GMTSAR modules not in this GMT")->setEnabled(false);
+		mGphy->addAction("Sentinel-1 orbits…", [win, s]() { openRemoteSDialog(win, s, "s1orbits"); });
 		reopen();
 	};
 

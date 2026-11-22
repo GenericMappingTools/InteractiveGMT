@@ -1,0 +1,269 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>RemoteSS1Orbits</class>
+ <widget class="QDialog" name="RemoteSS1Orbits">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>620</width>
+    <height>506</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>Sentinel-1 orbits</string>
+  </property>
+  <widget class="QGroupBox" name="gb_scenes">
+   <property name="geometry">
+    <rect>
+     <x>11</x>
+     <y>11</y>
+     <width>598</width>
+     <height>196</height>
+    </rect>
+   </property>
+   <property name="title">
+    <string>Sentinel-1 scenes</string>
+   </property>
+   <widget class="QLabel" name="lbl_names">
+    <property name="geometry">
+     <rect>
+      <x>11</x>
+      <y>27</y>
+      <width>54</width>
+      <height>26</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Scenes</string>
+    </property>
+   </widget>
+   <widget class="QListWidget" name="p_names">
+    <property name="geometry">
+     <rect>
+      <x>71</x>
+      <y>27</y>
+      <width>486</width>
+      <height>124</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>The Sentinel-1 scenes whose orbits are wanted; only the CHECKED ones are used. A scene is known by its name: a product (.zip, or the manifest.safe inside a .SAFE folder) or a measurement file (s1a-iw1-slc-vv-....tiff or .xml, as in a GMTSAR raw/ folder). Add more with the ... button (several at once; pressing it again adds more), or every scene of a folder with Add all in folder. Hover a file for its full path.</string>
+    </property>
+    <property name="styleSheet">
+     <string notr="true">QListWidget::indicator { width: 10px; height: 10px; }</string>
+    </property>
+    <property name="input" stdset="0">
+     <bool>true</bool>
+    </property>
+    <property name="refresh" stdset="0">
+     <bool>true</bool>
+    </property>
+   </widget>
+   <widget class="QToolButton" name="browse_p_names">
+    <property name="geometry">
+     <rect>
+      <x>563</x>
+      <y>27</y>
+      <width>24</width>
+      <height>20</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>Add Sentinel-1 scenes (for a .SAFE folder, choose the manifest.safe inside it)</string>
+    </property>
+    <property name="text">
+     <string>...</string>
+    </property>
+    <property name="filter" stdset="0">
+     <string>Sentinel-1 scenes (*.zip manifest.safe *.tiff *.tif *.xml);;All files (*)</string>
+    </property>
+   </widget>
+   <widget class="QLabel" name="lbl_scandir">
+    <property name="geometry">
+     <rect>
+      <x>11</x>
+      <y>159</y>
+      <width>54</width>
+      <height>26</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Folder</string>
+    </property>
+   </widget>
+   <widget class="QLineEdit" name="p_scandir">
+    <property name="geometry">
+     <rect>
+      <x>71</x>
+      <y>159</y>
+      <width>380</width>
+      <height>26</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>A folder that holds Sentinel-1 scenes: .SAFE folders and .zip products or, when it has none, measurement files (a GMTSAR raw/ folder). Add all in folder puts every one of them in the list.</string>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="run_scan">
+    <property name="geometry">
+     <rect>
+      <x>457</x>
+      <y>159</y>
+      <width>130</width>
+      <height>26</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>Add every Sentinel-1 scene of the Folder to the list.</string>
+    </property>
+    <property name="text">
+     <string>Add all in folder</string>
+    </property>
+    <property name="busy" stdset="0">
+     <string>Looking for Sentinel-1 scenes in the folder…</string>
+    </property>
+   </widget>
+  </widget>
+  <widget class="QGroupBox" name="gb_orbits">
+   <property name="geometry">
+    <rect>
+     <x>11</x>
+     <y>213</y>
+     <width>598</width>
+     <height>94</height>
+    </rect>
+   </property>
+   <property name="title">
+    <string>Orbits (ESA, step.esa.int)</string>
+   </property>
+   <widget class="QLabel" name="lbl_kind">
+    <property name="geometry">
+     <rect>
+      <x>11</x>
+      <y>27</y>
+      <width>54</width>
+      <height>26</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Type</string>
+    </property>
+   </widget>
+   <widget class="QComboBox" name="p_kind">
+    <property name="geometry">
+     <rect>
+      <x>71</x>
+      <y>27</y>
+      <width>516</width>
+      <height>26</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>Precise orbits (POEORB) are what InSAR wants; they are published about 20 days after the acquisition. Until then only the restituted ones (RESORB, a few hours after) exist. The first choice takes the precise orbit where there is one and the restituted one otherwise.</string>
+    </property>
+   </widget>
+   <widget class="QLabel" name="lbl_outdir">
+    <property name="geometry">
+     <rect>
+      <x>11</x>
+      <y>59</y>
+      <width>54</width>
+      <height>26</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Save in</string>
+    </property>
+   </widget>
+   <widget class="QLineEdit" name="p_outdir">
+    <property name="geometry">
+     <rect>
+      <x>71</x>
+      <y>59</y>
+      <width>516</width>
+      <height>26</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>The folder the orbit files (.EOF, unzipped, as GMTSAR reads them) are written to; created when missing. Empty = the folder of the first scene. An orbit file already there is not downloaded again.</string>
+    </property>
+   </widget>
+  </widget>
+  <widget class="QPlainTextEdit" name="p_log">
+   <property name="geometry">
+    <rect>
+     <x>11</x>
+     <y>313</y>
+     <width>598</width>
+     <height>110</height>
+    </rect>
+   </property>
+   <property name="toolTip">
+    <string>One line per scene: its satellite and start time, then the orbit file it got (or why it got none).</string>
+   </property>
+   <property name="readOnly">
+    <bool>true</bool>
+   </property>
+   <property name="lineWrapMode">
+    <enum>QPlainTextEdit::NoWrap</enum>
+   </property>
+  </widget>
+  <widget class="QLabel" name="lbl_status">
+   <property name="geometry">
+    <rect>
+     <x>11</x>
+     <y>429</y>
+     <width>598</width>
+     <height>36</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string/>
+   </property>
+   <property name="wordWrap">
+    <bool>true</bool>
+   </property>
+  </widget>
+  <widget class="QToolButton" name="tutorial">
+   <property name="geometry">
+    <rect>
+     <x>11</x>
+     <y>472</y>
+     <width>24</width>
+     <height>24</height>
+    </rect>
+   </property>
+   <property name="toolTip">
+    <string>Open the Sentinel-1 orbits page of the manual: every field of this dialog explained, with typical uses.</string>
+   </property>
+   <property name="text">
+    <string>?</string>
+   </property>
+   <property name="page" stdset="0">
+    <string>81b-sentinel1-orbits</string>
+   </property>
+  </widget>
+  <widget class="QPushButton" name="run_download">
+   <property name="geometry">
+    <rect>
+     <x>478</x>
+     <y>471</y>
+     <width>131</width>
+     <height>26</height>
+    </rect>
+   </property>
+   <property name="toolTip">
+    <string>Find the orbit of every checked scene in ESA's archive, download it and unzip the .EOF into Save in.</string>
+   </property>
+   <property name="text">
+    <string>Download orbits</string>
+   </property>
+   <property name="busy" stdset="0">
+    <string>Downloading the Sentinel-1 orbits…</string>
+   </property>
+  </widget>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

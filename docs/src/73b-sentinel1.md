@@ -55,6 +55,9 @@ shorten the period to see them.
 folder inside it. A scene already in the folder is marked *(on disk)* and is not downloaded again.
 A progress bar shows the megabytes received.
 
+For interferometry with GMTSAR, each SLC also needs its orbit file: [Sentinel-1 orbits](81b-sentinel1-orbits.md)
+(*Geophysics → GMTSAR → Sentinel-1 orbits…*) gets them for the scenes of this Folder.
+
 ## Show a GRD
 
 **Download and show** downloads the scene if needed. It then reads the chosen **polarisation**
