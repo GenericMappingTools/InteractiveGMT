@@ -1923,7 +1923,12 @@ end
 #
 # `drape` (a GMTimage over the grid's box) is painted ON this grid's own surface, through the image
 # arguments `gmtvtk_add_surface_h` has always had. `nothing` = the call it always was.
-function _add_grid_to_scene(scene::Ptr{Cvoid}, G::GMTgrid, name; cmap=:auto, color=nothing, promote=false, source="", record=true, zrange=nothing, geographic=nothing, drape::Union{Nothing,GMTimage}=nothing)
+#
+# `classes` (a function class::Int -> (r,g,b) in 0..1) says the grid holds CLASSES, not a quantity
+# (basin numbers, LDD codes): one flat colour per class (`_class_nodes`, step nodes instead of a ramp)
+# and the layer drawn as classes (gmtvtk_set_grid_categorical_h: each node its own square, no light).
+# `nothing` = a plain grid, the call it always was.
+function _add_grid_to_scene(scene::Ptr{Cvoid}, G::GMTgrid, name; cmap=:auto, color=nothing, promote=false, source="", record=true, zrange=nothing, geographic=nothing, drape::Union{Nothing,GMTimage}=nothing, classes::Union{Nothing,Function}=nothing)
 	# A cube must never reach here (the cube-detection probe in _on_drop is supposed to intercept it
 	# first); fail loudly if it ever does, instead of silently rendering wrong/truncated data.
 	ndims(G.z) == 3 && error("_add_grid_to_scene got a 3-D cube grid ($(size(G.z))) -- cube detection missed it upstream")
@@ -1934,7 +1939,8 @@ function _add_grid_to_scene(scene::Ptr{Cvoid}, G::GMTgrid, name; cmap=:auto, col
 	# all-equal z would otherwise collapse _cpt_nodes to the viewer's blue ramp). `zrange` (zmn,zmx)
 	# overrides the CPT's own autoscale (used by the cube layer slider's "global min/max" checkbox
 	# to scale every slice off the whole cube's range instead of each slice's own narrower one).
-	cz, crgb, ncolor = color !== nothing ? ([-1.0, 1.0], Float64[color[1], color[2], color[3], color[1], color[2], color[3]], 2) :
+	cz, crgb, ncolor = classes !== nothing ? _class_nodes(G, classes) :
+		color !== nothing ? ([-1.0, 1.0], Float64[color[1], color[2], color[3], color[1], color[2], color[3]], 2) :
 		zrange !== nothing ? _cpt_nodes_range(zrange[1], zrange[2], cmap) : _cpt_nodes(G, cmap)
 	# guessgeog (not isgeog): a plain lon/lat grid with no embedded proj still reads geographic via
 	# the [-180 360 -90 90] range heuristic, so the Geography menu can be activated (see _apply_crs! below).
@@ -1959,6 +1965,8 @@ function _add_grid_to_scene(scene::Ptr{Cvoid}, G::GMTgrid, name; cmap=:auto, col
 		  scene, z, nx, ny, r[1], r[2], r[3], r[4], Cint(geog),
 		  cz, crgb, Cint(ncolor), dbuf, Cint(dw), Cint(dh), Cint(db), Cint(0), String(name), zlay)
 	ok == 0 && @warn "drop: window is closed; grid not added"
+	(ok != 0 && classes !== nothing) &&
+		ccall(_fn(:gmtvtk_set_grid_categorical_h), Cint, (Ptr{Cvoid}, Cstring), scene, String(name))
 	ok != 0 && _remember_object!(scene, :grid, name, G)   # Scene Objects "Save…" / File>Save can write it
 	# Save Session: known file path -> store a file ref (:file); no path -> serialize the grid (:generated).
 	# `record=false` suppresses this when a higher-level tool logs its own (menu) recipe (e.g. basemap).

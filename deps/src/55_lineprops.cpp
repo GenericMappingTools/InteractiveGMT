@@ -57,6 +57,52 @@ static void lineApplyStyle(Scene *s, const LineRef &lr, int style) {
 	if (s->widget) s->widget->renderWindow()->Render();
 }
 
+// ONE COLOUR PER SEGMENT on an overlay (Overlay::segRGB): `rgb` = nseg*3 bytes, one colour per segment
+// in segment order, painted on that segment's line cell; nullptr = back to the overlay's one line
+// colour. Each line cell is matched to its segment by its first point (addOverlay skips a segment of
+// a lone point and a contour's label gaps split one segment into several cells, so the cell index is
+// not the segment index). The colours ride the polydata's cell data, which every filter between it
+// and the mapper (tube, clamp) carries through.
+static void overlaySetSegColors(Scene *s, Overlay &o, const unsigned char *rgb) {
+	if (!s || !o.actor || !o.baseLine) return;
+	vtkPolyDataMapper *mp = vtkPolyDataMapper::SafeDownCast(o.actor->GetMapper());
+	if (!rgb || o.nseg <= 0 || (int)o.segoff.size() != o.nseg + 1) {
+		o.segRGB.clear();
+		o.baseLine->GetCellData()->RemoveArray("segRGB");
+		o.baseLine->Modified();
+		if (mp) mp->ScalarVisibilityOff();
+		return;
+	}
+	o.segRGB.assign(rgb, rgb + (size_t)o.nseg * 3);
+	vtkCellArray *lines = o.baseLine->GetLines();
+	const vtkIdType nc = o.baseLine->GetNumberOfCells();
+	vtkNew<vtkUnsignedCharArray> col;
+	col->SetName("segRGB");
+	col->SetNumberOfComponents(3);
+	col->SetNumberOfTuples(nc);
+	const vtkIdType nVerts = o.baseLine->GetNumberOfVerts();   // cell order: verts, then lines
+	for (vtkIdType c = 0; c < nc; ++c) col->SetTypedTuple(c, rgb);
+	if (lines) {
+		vtkNew<vtkIdList> ids;
+		for (vtkIdType c = 0; c < lines->GetNumberOfCells(); ++c) {
+			lines->GetCellAtId(c, ids);
+			if (ids->GetNumberOfIds() < 1) continue;
+			const int p = (int)ids->GetId(0);
+			const auto it = std::upper_bound(o.segoff.begin(), o.segoff.end(), p);
+			const int k = (int)(it - o.segoff.begin()) - 1;
+			if (k >= 0 && k < o.nseg) col->SetTypedTuple(nVerts + c, rgb + (size_t)3 * k);
+		}
+	}
+	o.baseLine->GetCellData()->AddArray(col);
+	o.baseLine->Modified();
+	if (mp) {
+		mp->ScalarVisibilityOn();
+		mp->SetScalarModeToUseCellFieldData();
+		mp->SelectColorArray("segRGB");
+		mp->SetColorModeToDirectScalars();
+	}
+}
+
 // The dialog. Live-applies every change to the actor; add a row to extend it.
 static void showLineProperties(Scene *s, const LineRef &lr) {
 	if (!s || !lr.actor) return;
@@ -78,6 +124,10 @@ static void showLineProperties(Scene *s, const LineRef &lr) {
 										  &dlg, "Line color");
 		if (!q.isValid()) return;
 		a->GetProperty()->SetColor(q.redF(), q.greenF(), q.blueF());
+		// A line painted ONE COLOUR PER SEGMENT (river systems) takes the picked colour as a whole: the
+		// segment colours go, or this button would change a colour nobody can see.
+		if (lr.kind == LK_Overlay)
+			for (auto &o : s->overlays) if (o.actor.Get() == a && !o.segRGB.empty()) overlaySetSegColors(s, o, nullptr);
 		paintSwatch(q);
 		lineApplyStyle(s, lr, lineCurrentStyle(s, lr));    // refresh the stipple colour if dashed/dotted
 		if (s->widget) s->widget->renderWindow()->Render();
@@ -326,17 +376,32 @@ static bool lineWriteTable(Scene *s, const std::vector<std::vector<std::array<do
 // plain table extension (.txt/.dat) is written directly; an OGR vector extension (.gpkg/.shp/.kml)
 // is written by handing a temp table to GMT.gmtwrite in Julia (the C++ viewer has no GMT) — GMT
 // picks the format from the extension. `g_juliaEval` is the in-process bridge to the host session.
-static void lineSavePoints(Scene *s, const LineRef &lr) {
-	std::vector<std::vector<std::array<double,3>>> polylines;
-	lineGatherPolylines(s, lr, polylines);
-	if (polylines.empty()) return;
-	const bool isPoly = (lr.kind == LK_Polygon);
+// Is this element PURE 2-D data — its source had x,y only, and every z it carries is the renderer's
+// 0 filler (Overlay::zIsPlaceholder / Polygon::zIsPlaceholder)? The ONE test for it: the data table
+// shows no Z column for it, and "Save line/polygon…" saves it as x,y only.
+static bool lineSourceIsXY(Scene *s, const LineRef &lr) {
+	if (lr.kind == LK_Overlay) {
+		for (const auto &o : s->overlays) if (o.actor.Get() == lr.actor) return o.zIsPlaceholder;
+		return false;
+	}
+	if (lr.kind == LK_Polygon)
+		for (const auto &pg : s->polys)
+			if (pg.line.Get() == lr.actor || pg.fill.Get() == lr.actor) return pg.zIsPlaceholder;
+	return false;
+}
 
+// Does "Save line/polygon…" offer the 3-D (x y z) choice for this element? The save dialog and its
+// test hook both ask here.
+static bool lineSaveOffers3D(Scene *s, const LineRef &lr,
+                             const std::vector<std::vector<std::array<double,3>>> &polylines) {
 	// A 3-D save needs a z to save: a grid under the line (z sampled from it), or vertices that
 	// actually carry different z's. A line drawn on a flat 2-D backdrop has neither, so the choice
-	// is not offered at all — it would only write a constant third column.
-	bool have3D = !s->gridZ.empty();
-	if (!have3D) {
+	// is not offered at all — it would only write a constant third column. PURE 2-D data (a source
+	// with x,y only: basin outlines, an x,y table, …) is saved as x,y and nothing else, grid under it
+	// or not: a z sampled from a grid it never had is invented data.
+	const bool pureXY = lineSourceIsXY(s, lr);
+	bool have3D = !pureXY && !s->gridZ.empty();
+	if (!have3D && !pureXY) {
 		double z0 = 0.0; bool first = true;
 		for (auto &pl : polylines) {
 			for (auto &p : pl) {
@@ -346,6 +411,15 @@ static void lineSavePoints(Scene *s, const LineRef &lr) {
 			if (have3D) break;
 		}
 	}
+	return have3D;
+}
+
+static void lineSavePoints(Scene *s, const LineRef &lr) {
+	std::vector<std::vector<std::array<double,3>>> polylines;
+	lineGatherPolylines(s, lr, polylines);
+	if (polylines.empty()) return;
+	const bool isPoly = (lr.kind == LK_Polygon);
+	const bool have3D = lineSaveOffers3D(s, lr, polylines);
 
 	const QString title = isPoly ? "Save polygon" : "Save line";
 	QDialog dlg(s->win);
@@ -670,10 +744,8 @@ static void showLineDataTable(Scene *s, const LineRef &lr, const QString &name) 
 	// UNLESS the source itself was 2-column and z=0 is only a placeholder (zIsPlaceholder): there is
 	// no real Z to show, so never invent one.
 	// Same veto for a polygon whose source had no Z (Polygon::zIsPlaceholder, gmtvtk_add_poly_full).
-	bool polyNoZ = false;
-	if (lr.kind == LK_Polygon)
-		for (const auto &pg : s->polys) if (pg.line.Get() == actor || pg.fill.Get() == actor) { polyNoZ = pg.zIsPlaceholder; break; }
-	const bool showZ  = (!s->flat2d || lr.kind == LK_Overlay) && !(ovp && ovp->zIsPlaceholder) && !polyNoZ;
+	// Both vetoes are lineSourceIsXY, the one test "Save line/polygon…" applies too.
+	const bool showZ  = (!s->flat2d || lr.kind == LK_Overlay) && !lineSourceIsXY(s, lr);
 	QStringList hdr;   hdr << "#" << "X" << "Y";   if (showZ) hdr << "Z";
 
 	// THE SOURCE TABLE WINS. When the overlay carries the data it was built from (Overlay::dataHdr /
@@ -1539,6 +1611,45 @@ static bool lineGroupIsGuide(Scene *s, const std::string &gname) {
 	return any;
 }
 
+// SAVE A RIVER AND EVERYTHING UPSTREAM OF IT. Segment `seg` of the river network `ov` (Overlay::riverNet,
+// one segment per reach) is the river the user right-clicked; the host knows the network's topology
+// (src/hydrology.jl `_hydro_save_upstream`: each reach starts where the reaches above it end) and writes
+// that reach plus every reach draining into it, recursively, to the file picked here — a GMT ASCII
+// multisegment table, or a GeoPackage / Shapefile / KML / GeoJSON, by the extension. The reach is
+// named to the host by its index AND its two ends, so the host can check it is talking about the same line.
+static void riverSaveUpstream(Scene *s, const Overlay &ov, int seg) {
+	if (!s || seg < 0 || seg >= ov.nseg) return;
+	if (!g_juliaEval) {
+		QMessageBox::warning(s->win, "Save river", "Saving a river needs the Julia/GMT host.");
+		return;
+	}
+	std::vector<std::vector<std::array<double,3>>> pl;
+	lineGatherPolylines(s, LineRef{ LK_Overlay, ov.actor.Get() }, pl);
+	if (seg >= (int)pl.size() || pl[seg].size() < 2) return;
+	const auto &a = pl[seg].front(), &b = pl[seg].back();
+	QString fn = QFileDialog::getSaveFileName(s->win, "Save river and its upstream network",
+		prefStartDir("river_upstream.txt"),
+		"GMT multisegment table (*.txt *.dat *.gmt);;GeoPackage (*.gpkg);;Shapefile (*.shp);;KML (*.kml);;"
+		"GeoJSON (*.geojson);;All files (*)");
+	if (fn.isEmpty()) return;
+	rememberStartDir(fn);
+	auto num = [](double v) { return QString::number(v, 'g', 17); };
+	const QString cmd = QString("InteractiveGMT._hydro_save_upstream(Ptr{Cvoid}(UInt(%1)), raw\"%2\", %3, %4, %5, %6, %7, raw\"%8\")")
+		.arg((qulonglong)reinterpret_cast<uintptr_t>(s)).arg(QString::fromStdString(ov.name)).arg(seg)
+		.arg(num(a[0])).arg(num(a[1])).arg(num(b[0])).arg(num(b[1])).arg(QDir::toNativeSeparators(fn));
+	std::vector<char> buf(1 << 14);
+	QApplication::setOverrideCursor(Qt::WaitCursor);
+	const int n = g_juliaEval(s, cmd.toUtf8().constData(), buf.data(), (int)buf.size());
+	QApplication::restoreOverrideCursor();
+	QString out = QString::fromUtf8(buf.data(), n < 0 ? -n : n).trimmed();
+	if (out.size() >= 2 && out.startsWith('"') && out.endsWith('"')) out = out.mid(1, out.size() - 2);
+	if (n < 0 || !out.startsWith("ok|")) {
+		QMessageBox::warning(s->win, "Save river", out.isEmpty() ? QString("Could not save the river.") : out);
+		return;
+	}
+	if (s->win) s->win->statusBar()->showMessage(out.mid(3), 6000);
+}
+
 // The unified right-click menu for a line object: "Line properties…" plus the kind's own actions
 // (profile: save / delete; overlay & polygon: hide; polygon: delete). Shared by the 3-D-view
 // right-click hit-test and the Scene Objects list rows, so both routes give the same menu.
@@ -1571,6 +1682,38 @@ static void popupLineObjectMenu(Scene *s, const LineRef &lr, const QString &name
 		const std::string tool = ovp->pickTool, verb = ovp->pickVerb, nm = ovp->name;
 		m.addAction(QString::fromStdString(ovp->pickLabel.empty() ? "Pick in the tool" : ovp->pickLabel),
 		            [s, tool, verb, nm]() { if (g_overlayToolPick) g_overlayToolPick(s, tool, verb, nm); });
+		m.addSeparator();
+	}
+
+	// A RIVER NETWORK: save the river under the cursor with every river upstream of it. Only a
+	// right-click ON a river in the view says which one (Scene::menuSeg); from the Scene Objects row
+	// there is no river to start from, so the item says how to get one.
+	if (ovp && ovp->riverNet) {
+		const int seg = s->menuSeg;
+		if (seg >= 0) {
+			vtkActor *ra = ovp->actor.Get();      // re-found by its actor: the overlay list may move meanwhile
+			m.addAction("Save this river and its upstream network…", [s, ra, seg]() {
+				for (const auto &o : s->overlays) if (o.actor.Get() == ra) { riverSaveUpstream(s, o, seg); return; }
+			});
+		}
+		else
+			m.addAction("Save a river and its upstream network: right-click the river in the view")->setEnabled(false);
+		// Each river SYSTEM (an outlet and every river draining to it) in a colour of its own, or the
+		// whole network back in its line colour. The host knows the topology (_hydro_paint_systems).
+		const std::string net = ovp->name;
+		QAction *paint = m.addAction("Paint each river system in its own colour");
+		paint->setCheckable(true);
+		paint->setChecked(!ovp->segRGB.empty());
+		QObject::connect(paint, &QAction::toggled, [s, net](bool on) {
+			if (!g_juliaEval || !sceneAlive(s)) return;
+			const QString cmd = QString("InteractiveGMT._hydro_paint_systems(Ptr{Cvoid}(UInt(%1)), raw\"%2\", %3)")
+				.arg((qulonglong)reinterpret_cast<uintptr_t>(s)).arg(QString::fromStdString(net)).arg(on ? "true" : "false");
+			std::vector<char> buf(1 << 12);
+			const int n = g_juliaEval(s, cmd.toUtf8().constData(), buf.data(), (int)buf.size());
+			QString out = QString::fromUtf8(buf.data(), n < 0 ? -n : n).trimmed();
+			if (out.size() >= 2 && out.startsWith('"') && out.endsWith('"')) out = out.mid(1, out.size() - 2);
+			if (n < 0 || !out.isEmpty()) QMessageBox::warning(s->win, "River systems", out.isEmpty() ? QString("Failed.") : out);
+		});
 		m.addSeparator();
 	}
 

@@ -210,7 +210,7 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_set_image_resize_callback, :gmtvtk_resize_set_size, :gmtvtk_set_floodfill_callback,
 	:gmtvtk_set_classify_callback, :gmtvtk_classify_set_classes,
 	:gmtvtk_image_set_palette_h, :gmtvtk_image_set_class_names_h, :gmtvtk_image_set_has_orig_h, :gmtvtk_image_set_dn_h, :gmtvtk_image_set_dn_view_h, :gmtvtk_active_element_h, :gmtvtk_displayed_at_h,
-	:gmtvtk_set_image_flip_callback, :gmtvtk_image_set_pixels_h, :gmtvtk_image_set_alpha_mask_h, :gmtvtk_set_shade_intensity_named_h,
+	:gmtvtk_set_image_flip_callback, :gmtvtk_image_set_pixels_h, :gmtvtk_image_set_alpha_mask_h, :gmtvtk_set_shade_intensity_named_h, :gmtvtk_set_grid_categorical_h, :gmtvtk_overlay_set_river_net_h, :gmtvtk_overlay_seg_colors_h,
 	:gmtvtk_set_rgbexplore_callback, :gmtvtk_rgbexp_set_thumbs, :gmtvtk_image_set_rgb_h,
 	:gmtvtk_set_mask_flag_h, :gmtvtk_set_source_files_h, :gmtvtk_set_source_bands_h, :gmtvtk_set_band_row_callback, :gmtvtk_image_probe_h, :gmtvtk_scene_row_click_h, :gmtvtk_scene_child_row_click_h, :gmtvtk_layer_opacity_h,
 	:gmtvtk_set_clipgrid_callback, :gmtvtk_set_empilhador_callback, :gmtvtk_set_gridcalc_callback, :gmtvtk_set_synthterrain_callback, :gmtvtk_set_grdtrend_callback, :gmtvtk_set_grdlandmask_callback, :gmtvtk_set_grdblend_callbacks, :gmtvtk_set_grdfilter_callback, :gmtvtk_set_grdfft_callback, :gmtvtk_set_grdhisteq_callback, :gmtvtk_set_xyz2grd_callback, :gmtvtk_set_grdfill_callback, :gmtvtk_set_trend2d_callback, :gmtvtk_set_cptbuild_callback,

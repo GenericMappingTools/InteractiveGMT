@@ -2332,7 +2332,55 @@ static void ensureApp() {
 	if (!modDir.isEmpty()) QCoreApplication::addLibraryPath(modDir);
 	QSurfaceFormat::setDefaultFormat(QVTKOpenGLNativeWidget::defaultFormat());
 	g_app = new QApplication(s_argc, s_argv);
+#ifdef Q_OS_MACOS
+	// macOS: the Dock icon is set by COCOA, never through QGuiApplication::setWindowIcon.
+	// Qt's route (QCocoaIntegration::setApplicationIcon -> [NSImage imageFromQImage:] ->
+	// QImage::toCGImage) carries QTBUG-147602 in Qt 6.11: qt_mac_cgImageFormatForImage releases the
+	// CGColorSpace it creates BEFORE CGImageCreate uses it, so CGColorSpaceGetType reads freed memory
+	// (user's crash reports 2026-11-17 and 2026-11-20, both inside ensureApp). Clearing the icon's colour
+	// space (appIcon()) did not avoid it — the default sRGB branch has the same use-after-free. Here
+	// NSImage decodes the embedded PNG itself: no QImage, no toCGImage, no Qt colour space at all.
+	// Per-window setWindowIcon calls are safe on macOS: QCocoaWindow::setWindowIcon converts nothing
+	// unless the window has a document file path, and no iGMT window sets one.
+	// Plain Objective-C runtime calls looked up with dlsym: libobjc and AppKit are already in the process
+	// (Qt's cocoa plugin loads them), and this single C++ translation unit cannot include AppKit headers.
+	{
+		using objc_obj        = void *;
+		using sel_t       = void *;
+		using class_fn    = objc_obj(*)(const char *);
+		using sel_fn      = sel_t(*)(const char *);
+		using push_fn     = void *(*)();
+		using pop_fn      = void(*)(void *);
+		using send0_fn    = objc_obj(*)(objc_obj, sel_t);
+		using send1_fn    = objc_obj(*)(objc_obj, sel_t, objc_obj);
+		using sendbuf_fn  = objc_obj(*)(objc_obj, sel_t, const void *, unsigned long);
+		auto get_class = reinterpret_cast<class_fn>(dlsym(RTLD_DEFAULT, "objc_getClass"));
+		auto sel       = reinterpret_cast<sel_fn>(dlsym(RTLD_DEFAULT, "sel_registerName"));
+		auto pool_push = reinterpret_cast<push_fn>(dlsym(RTLD_DEFAULT, "objc_autoreleasePoolPush"));
+		auto pool_pop  = reinterpret_cast<pop_fn>(dlsym(RTLD_DEFAULT, "objc_autoreleasePoolPop"));
+		void *msg      = dlsym(RTLD_DEFAULT, "objc_msgSend");
+		if (get_class && sel && pool_push && pool_pop && msg) {
+			auto send0      = reinterpret_cast<send0_fn>(msg);
+			auto send1      = reinterpret_cast<send1_fn>(msg);
+			auto send_bytes = reinterpret_cast<sendbuf_fn>(msg);
+			void *pool = pool_push();
+			objc_obj ns_data  = get_class("NSData");
+			objc_obj ns_image = get_class("NSImage");
+			objc_obj ns_app   = get_class("NSApplication");
+			if (ns_data && ns_image && ns_app) {
+				objc_obj data = send_bytes(ns_data, sel("dataWithBytes:length:"), kAppIconPng, (unsigned long)kAppIconPngLen);
+				objc_obj img  = data ? send1(send0(ns_image, sel("alloc")), sel("initWithData:"), data) : nullptr;
+				if (img) {
+					send1(send0(ns_app, sel("sharedApplication")), sel("setApplicationIconImage:"), img);
+					send0(img, sel("release"));   // NSApp holds its own reference
+				}
+			}
+			pool_pop(pool);
+		}
+	}
+#else
 	g_app->setWindowIcon(appIcon());   // taskbar / app-wide default icon
+#endif
 	// A PUSHED BUTTON MUST LOOK PUSHED. Windows' default style moves a button's face by a hair and
 	// nothing else, which on a dialog full of buttons reads as "did that click even land?". One
 	// app-wide rule (never per-dialog, so no button can be left out): pressed = a clearly darker

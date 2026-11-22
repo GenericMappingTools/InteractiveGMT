@@ -303,6 +303,11 @@ struct Overlay {
 	// sends it (g_overlayToolPick, 55_lineprops.cpp). Set by gmtvtk_overlay_set_tool_pick_h. Non-empty =
 	// a guide, not data: its menus drop "Clamp to ground", "Fill polygons" and "Show names".
 	std::string pickTool, pickVerb, pickLabel;
+	std::vector<unsigned char> segRGB;       // ONE COLOUR PER SEGMENT (nseg*3, 0..255) drawn instead of the line
+	                                          // colour; empty = the line colour (overlaySetSegColors, 55_lineprops.cpp)
+	bool riverNet = false;                   // a RIVER NETWORK (Drainage analysis' streams, one segment per
+	                                          // reach): the menu offers saving the right-clicked river with
+	                                          // all its upstream reaches (riverSaveUpstream, 55_lineprops.cpp)
 	std::string coastRes;                    // a GSHHG COASTLINE's resolution letter (l/i/h/f/c/a), set by
 	                                          // gmtvtk_overlay_set_coastres_h. Non-empty = the line menu offers
 	                                          // "Mask > Land/Ocean" (grdlandmask at this same resolution).
@@ -1045,6 +1050,8 @@ struct ExtraObj {
 	vtkSmartPointer<vtkActor>       nanPlane;
 	vtkSmartPointer<vtkPlaneSource> nanPlaneSrc;
 	bool   gridHasNaN = false;               // set where this layer's z is stored (gmtvtk_add_surface_h)
+	bool   categorical = false;              // its values are CLASSES (basins, LDD…): each node its own square,
+	                                         // no light (gmtvtk_set_grid_categorical_h)
 	// THIS GRID'S OWN ZOOM PYRAMID — the base's tiled LOD (QuadNode, buildQuadNode, the same refine
 	// test), so a grid opened second sharpens on zoom exactly like one opened first. The actor stays ONE
 	// actor (everything that styles, stacks, hides or globes a layer talks to it); its mapper reads
@@ -1473,6 +1480,7 @@ struct Scene {
 	vtkSmartPointer<vtkActor>             nanPlane;
 	vtkSmartPointer<vtkPlaneSource>       nanPlaneSrc;
 	bool                                  gridHasNaN = false;   // set where the z layer is stored
+	bool                                  baseCategorical = false;   // the base's values are CLASSES (ExtraObj::categorical)
 	double                                clipBounds[6] = { 1, -1, 1, -1, 1, -1 };   // visible bounds the depth range was last fitted to (syncClipToVisible)
 	double                                clipRange[2] = { 0, 0 };                    // ...and the range that fit gave (someone else's reset changes it)
 	// The BASE surface's OWN axes (SACRED_LAW.md Raster-own-axes law -- see AxesSet above). This is
@@ -4081,7 +4089,9 @@ makeGridCTF(const Scene *s, const double *cz, const double *crgb, int ncolor) {
 		vtkSmartPointer<vtkDiscretizableColorTransferFunction>::New();
 	for (int i = 0; i < ncolor; ++i)
 		ctf->AddRGBPoint(cz[i], crgb[3*i], crgb[3*i+1], crgb[3*i+2]);
-	ctf->SetNumberOfValues(1024);
+	// 1024 entries for any ordinary palette; a CLASS palette (two nodes per class, _class_nodes) needs
+	// several entries per class or neighbouring classes share one, so the table grows with the nodes.
+	ctf->SetNumberOfValues(std::max(1024, 8 * ncolor));
 	ctf->DiscretizeOn();
 	if (s) applyNanColorToLut(ctf, s->nanColor);
 	return ctf;

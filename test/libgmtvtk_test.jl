@@ -102,6 +102,7 @@ const _TEST_SYMBOLS = (
 	:gmtvtk_movie_parked_test, :gmtvtk_movie_delete_dialog_test,
 	:gmtvtk_landmask_open_dialog_test, :gmtvtk_landmask_leave_dialog_test,
 	:gmtvtk_landmask_parked_test, :gmtvtk_landmask_delete_dialog_test,
+	:gmtvtk_overlay_seg_colors_test, :gmtvtk_line_save_offers3d_test, :gmtvtk_hydro_open_dialog_test, :gmtvtk_hydro_leave_dialog_test, :gmtvtk_hydro_parked_test, :gmtvtk_hydro_delete_dialog_test,
 	:gmtvtk_ttt_open_dialog_test, :gmtvtk_ttt_leave_dialog_test, :gmtvtk_ttt_parked_test, :gmtvtk_ttt_delete_dialog_test, :gmtvtk_ttt_place_source_test, :gmtvtk_ttt_src_fill_test,
 	:gmtvtk_synthterrain_open_dialog_test, :gmtvtk_gridcalc_open_dialog_test, :gmtvtk_gridcalc_leave_dialog_test, :gmtvtk_gridcalc_parked_test,
 	:gmtvtk_gridcalc_delete_dialog_test, :gmtvtk_gridcalc_compute_test, :gmtvtk_gridcalc_close_button_test, :gmtvtk_gridcalc_type_test, :gmtvtk_objicon_test, :gmtvtk_objicon_png_test, :gmtvtk_set_menu_seg_test, :gmtvtk_overlay_nseg_test,

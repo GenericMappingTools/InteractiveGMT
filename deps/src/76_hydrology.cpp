@@ -32,6 +32,56 @@ public:
 	bool asking = false;
 	bool running = false;
 	bool blocked = false;
+	bool parked = false;
+	bool reallyClose = false;          // set by the parked row's "Delete": lets the next close through
+
+	// PARKED LIKE EVERY TOOL WINDOW: the X, minimise and Esc hide it into the Scene Objects of the
+	// window it was opened from (the shared parkTool / parkOnMinimise, 50_scene.cpp; TttDialog is the
+	// model). The row brings it back with its settings intact; only the row's "Delete" ends it. A run
+	// going on while it is parked carries on: the dialog's timer still collects it.
+	void unpark() {
+		if (!dlg) return;
+		parked = false;
+		unparkTool(scn, dlg);
+		dlg->setWindowState(dlg->windowState() & ~Qt::WindowMinimized);
+		dlg->showNormal();
+		dlg->raise();
+		dlg->activateWindow();
+	}
+
+	std::function<void(const QPoint &)> parkedMenu() {
+		return [this](const QPoint &g) {
+			QMenu m;
+			QAction *aShow = m.addAction("Show");
+			m.addSeparator();
+			QAction *aDel = m.addAction("Delete");
+			QAction *pick = m.exec(g);
+			if (pick == aShow) unpark();
+			else if (pick == aDel) {
+				reallyClose = true;
+				unparkTool(scn, dlg);
+				dlg->deleteLater();              // destroyed -> this wrapper goes with it
+			}
+		};
+	}
+
+	// Every way out lands here; idempotent, so parking twice leaves one row. False when there is no
+	// window to park in: the close then really closes.
+	bool parkNow() {
+		if (reallyClose || !dlg || !sceneAlive(scn)) return false;
+		if (parked) {
+			dlg->hide();
+			return true;
+		}
+		parked = true;
+		dlg->setWindowState(dlg->windowState() & ~Qt::WindowMinimized);
+		dlg->hide();
+		parkTool(scn, dlg, "Drainage analysis", IC_Rect,
+		         "Closed Drainage analysis — double-click to bring it back, click for Show / Delete",
+		         [this]() { unpark(); }, parkedMenu());
+		unfoldSceneObjects(scn);
+		return true;
+	}
 
 	explicit HydroDialog(QWidget *parent, Scene *scene) : scn(scene) {
 		QUiLoader loader;
@@ -46,11 +96,30 @@ public:
 			qWarning("HydroDialog: QUiLoader failed to load the .ui");
 			return;
 		}
-		dlg->setAttribute(Qt::WA_DeleteOnClose);
-		dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint);
+		// No WA_DeleteOnClose: a parked dialog has to survive its close.
+		dlg->setWindowFlags(Qt::Window | Qt::WindowCloseButtonHint | Qt::WindowMinimizeButtonHint);
 		dlg->setWindowModality(Qt::NonModal);
 		dlg->setWindowTitle("Drainage analysis");
 		QDialog *d = dlg;
+		struct CloseParks : QObject {
+			HydroDialog *hd;
+			CloseParks(QObject *p, HydroDialog *h) : QObject(p), hd(h) {}
+			bool eventFilter(QObject *o, QEvent *e) override {
+				if (e->type() == QEvent::Close) {
+					if (hd->parkNow()) {
+						e->ignore();
+						return true;
+					}
+					hd->dlg->deleteLater();
+				}
+				return QObject::eventFilter(o, e);
+			}
+		};
+		d->installEventFilter(new CloseParks(d, this));
+		parkOnMinimise(d, [this]() { parkNow(); });               // the shared handler (50_scene.cpp)
+		QObject::connect(d, &QDialog::rejected, d, [this]() {     // Esc
+			if (!parkNow()) dlg->deleteLater();
+		});
 
 		radioCarve   = d->findChild<QRadioButton *>("radioCarve");
 		chkSea       = d->findChild<QCheckBox *>("chkSea");
@@ -135,13 +204,18 @@ public:
 		QObject::connect(timer, &QTimer::timeout, d, [this]() { poll(); });
 		if (btnRun)   QObject::connect(btnRun,   &QPushButton::clicked, d, [this]() { run(); });
 		if (btnStop)  QObject::connect(btnStop,  &QPushButton::clicked, d, [this]() { stop(); });
-		// Closing the dialog while a run goes on stops that run: nobody is left to collect its results.
+		// Destroying the dialog (the parked row's Delete, or its window going away) while a run goes on
+		// stops that run: nobody is left to collect its results. A close only parks, so it does not.
 		QObject::connect(d, &QObject::destroyed, [this]() {
-			if (running && sceneAlive(scn) && g_juliaEval) {
-				QString r;
-				ask(QString("InteractiveGMT._hydro_stop(%1)").arg(scenePtr()), r);
+			if (sceneAlive(scn)) {
+				unparkTool(scn, dlg);          // never leave a row pointing at a dead window
+				if (running && g_juliaEval) {
+					QString r;
+					ask(QString("InteractiveGMT._hydro_stop(%1)").arg(scenePtr()), r);
+				}
 			}
-			g_hydroDlgs.erase(scn);
+			for (auto it = g_hydroDlgs.begin(); it != g_hydroDlgs.end(); )
+				it = (it->second == this) ? g_hydroDlgs.erase(it) : std::next(it);
 			delete this;
 		});
 	}
@@ -304,9 +378,7 @@ static bool hydroOpen(QWidget *parent, Scene *scene) {
 	auto it = g_hydroDlgs.find(scene);
 	if (it != g_hydroDlgs.end() && it->second && it->second->dlg) {
 		it->second->checkGrid();
-		it->second->dlg->show();
-		it->second->dlg->raise();
-		it->second->dlg->activateWindow();
+		it->second->unpark();              // a parked one comes back, with its settings intact
 		return true;
 	}
 	auto *w = new HydroDialog(parent, scene);

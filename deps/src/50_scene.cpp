@@ -67,6 +67,7 @@ static void sceneSetGridLayer(Scene *s, const float *z, int nx, int ny,
 	// (nanPlaneUpdate) is shown only for a grid that needs one, and applyVE must not rescan a grid on
 	// every camera-driven call.
 	s->gridHasNaN = false;
+	s->baseCategorical = false;          // a new grid is a quantity until its host says it holds classes
 	if (!placeholder)
 		for (float v : s->gridZ) if (std::isnan(v)) { s->gridHasNaN = true; break; }
 	// The hover readout's ROUTING must follow the layer it reads — the two are one fact, so they are

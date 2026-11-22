@@ -619,8 +619,9 @@ static void bakeLayerRGBA(Scene *s, const float *z, int nx, int ny, double gx0, 
                           double sideZfac = 0.0) {   // the side's OWN axis mapping (0 = the window's)
 	out.assign((size_t)txW * txH * 4, 0);
 	if ((!ctf && !baseRGBA) || dx == 0.0 || dy == 0.0) return;
-	// discretize the CPT once (skipped when a host composite supplies the albedo)
-	const int NT = 1024;
+	// discretize the CPT once (skipped when a host composite supplies the albedo); grows with the CPT's
+	// nodes exactly as makeGridCTF's own table does, so a class palette keeps one colour per class here too
+	const int NT = ctf ? std::max(1024, 8 * ctf->GetSize()) : 1024;
 	std::vector<unsigned char> tbl(baseRGBA ? 0 : (size_t)NT * 3);
 	if (!baseRGBA) {
 		const double span = (hi > lo) ? (hi - lo) : 1.0;

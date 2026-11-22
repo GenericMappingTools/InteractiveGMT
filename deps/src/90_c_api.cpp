@@ -4698,6 +4698,51 @@ GMTVTK_API void gmtvtk_set_shade_intensity_named_h(void *handle, const char *nam
 		gmtvtk_set_shade_intensity_h(handle, inten, nx, ny, x0, x1, y0, y1, model, 0);
 }
 
+// THE GRID NAMED `name` HOLDS CLASSES, NOT A QUANTITY (drainage basins, LDD codes, any label grid).
+// Drawn as one: each node its OWN square in its own colour — makeGridTile's per-node squares, the
+// same tiles a grid with NaNs already gets, coloured per cell so no colour is ever blended across a
+// cell from the class next door — and with NO light, because the "slope" between class 5 and class 9
+// is not relief and shading it paints dark and bright fringes along every class border. The zoom
+// pyramid is rebuilt on the spot (the same rebuild gmtvtk_set_grid_frame_h does), so the tiles
+// already on screen are replaced, never mixed with smooth ones. The base ("" or its own name) or an
+// extra by name. Returns 1 done, 0 no such grid.
+GMTVTK_API int gmtvtk_set_grid_categorical_h(void *handle, const char *name) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !name) return 0;
+	auto unlit = [](LayerShade &lk, ExternShade &es) {   // no light of any kind on this layer
+		lk.noShade = true;  lk.useHillshade = false;  lk.hillGrd = false;  lk.litBake = false;  lk.pbrBake = false;
+		es = ExternShade();
+	};
+	for (auto &ex : s->extras) {
+		if (ex.isImage || ex.isMesh || ex.name != name || ex.gnx < 2 || ex.gny < 2) continue;
+		ex.categorical = true;
+		unlit(ex.look, ex.shadeIn);
+		if (ex.lodRoot) {
+			extraLodFree(ex);
+			ex.lodRoot = buildQuadNode(0, ex.gnx - 1, 0, ex.gny - 1, 0, ex.gx0, (ex.gx1 - ex.gx0) / (ex.gnx - 1),
+			                           ex.gy0, (ex.gy1 - ex.gy0) / (ex.gny - 1));
+			refineExtraLod(s, ex);
+		}
+		applyShading(s);
+		if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+		return 1;
+	}
+	if (s->surf && !s->gridZ.empty() && s->gnx > 1 && s->gny > 1 && (!*name || s->surfName == name)) {
+		s->baseCategorical = true;
+		unlit(s->look, s->shadeIn);
+		if (s->quadRoot) {
+			freeSubtreeActors(s, s->quadRoot);
+			quadFreeTree(s->quadRoot);
+			s->quadRoot = buildQuadNode(0, s->gnx - 1, 0, s->gny - 1, 0, s->gx0, s->gdx, s->gy0, s->gdy);
+			refineQuadtree(s);
+		}
+		applyShading(s);
+		if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+		return 1;
+	}
+	return 0;
+}
+
 // DAY / NIGHT: darken the night side of the Earth, for ONE instant.
 //
 // `on` = 0 switches it off and puts every layer back exactly as it was (an image extra's texture is
@@ -8282,6 +8327,33 @@ GMTVTK_API int gmtvtk_overlay_set_tool_pick_h(void *scene, const char *name, con
 	return 0;
 }
 
+// Mark every overlay named (or grouped as) `name` as a RIVER NETWORK (Overlay::riverNet): its
+// right-click menu then offers "Save this river and its upstream network…". Returns how many.
+GMTVTK_API int gmtvtk_overlay_set_river_net_h(void *scene, const char *name) {
+	Scene *s = (Scene*)scene;
+	if (!s || !sceneAlive(s) || !name || !name[0]) return 0;
+	int n = 0;
+	for (auto &o : s->overlays)
+		if (o.name == name || o.groupName == name) { o.riverNet = true; ++n; }
+	return n;
+}
+
+// ONE COLOUR PER SEGMENT on the overlay named `name` (Overlay::segRGB, overlaySetSegColors): `rgb` =
+// n*3 bytes, n = its segment count, in segment order; `rgb` NULL (or n 0) = back to its line colour.
+// Returns 1 done, 0 no such overlay or n is not its segment count.
+GMTVTK_API int gmtvtk_overlay_seg_colors_h(void *scene, const char *name, const unsigned char *rgb, int n) {
+	Scene *s = (Scene*)scene;
+	if (!s || !sceneAlive(s) || !name || !name[0]) return 0;
+	for (auto &o : s->overlays) {
+		if (o.name != name || !o.actor) continue;
+		if (rgb && n != o.nseg) return 0;
+		overlaySetSegColors(s, o, (rgb && n > 0) ? rgb : nullptr);
+		if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+		return 1;
+	}
+	return 0;
+}
+
 GMTVTK_API int gmtvtk_line_clamp_h(void *scene, const char *name, int on) {
 	Scene *s = (Scene*)scene;
 	if (!s || !sceneAlive(s) || !name || !name[0]) return 0;
@@ -11604,6 +11676,80 @@ GMTVTK_API int gmtvtk_landmask_delete_dialog_test(void *handle) {
 	if (!g) return 0;
 	testDeleteParkedDialog(&g);
 	return landmaskTestDlg(handle) == nullptr ? 1 : 0;
+}
+
+// "Save line/polygon…" on every overlay named (or grouped as) `name`: how many of them would be
+// offered the 3-D (x y z) choice. -1 = no such overlay. Pure x,y data must give 0.
+GMTVTK_API int gmtvtk_line_save_offers3d_test(void *scene, const char *name) {
+	Scene *s = (Scene*)scene;
+	if (!s || !name) return -1;
+	testBorrowScene(s);                  // a window of gmtvtk.dll: known to this DLL's registry too
+	int found = 0, n3 = 0;
+	for (auto &o : s->overlays) {
+		if (!o.actor || (o.name != name && o.groupName != name)) continue;
+		++found;
+		LineRef lr{ LK_Overlay, o.actor.Get() };
+		std::vector<std::vector<std::array<double,3>>> pl;
+		lineGatherPolylines(s, lr, pl);
+		if (lineSaveOffers3D(s, lr, pl)) ++n3;
+	}
+	return found ? n3 : -1;
+}
+
+// How many per-segment colours (Overlay::segRGB) the overlay named `name` carries: 0 = drawn in its
+// line colour, -1 = no such overlay. With `out3` non-null, segment `seg`'s colour is copied there.
+GMTVTK_API int gmtvtk_overlay_seg_colors_test(void *scene, const char *name, int seg, unsigned char *out3) {
+	Scene *s = (Scene*)scene;
+	if (!s || !name) return -1;
+	testBorrowScene(s);
+	for (auto &o : s->overlays) {
+		if (o.name != name || !o.actor) continue;
+		const int n = (int)o.segRGB.size() / 3;
+		if (out3 && seg >= 0 && seg < n) for (int b = 0; b < 3; ++b) out3[b] = o.segRGB[(size_t)3 * seg + b];
+		return n;
+	}
+	return -1;
+}
+
+// Drainage analysis (Grid Tools): the same park contract. `how`: 0 = the X, 1 = minimise, 2 = Esc.
+static HydroDialog *hydroTestDlg(void *handle) {
+	auto it = g_hydroDlgs.find(static_cast<Scene *>(handle));
+	return (it == g_hydroDlgs.end()) ? nullptr : it->second;
+}
+// Opens it the way its menu entry does (hydroOpen): a parked one comes back. 1 = on screen.
+GMTVTK_API int gmtvtk_hydro_open_dialog_test(void *handle) {
+	ensureApp();
+	Scene *s = static_cast<Scene *>(handle);
+	if (!s || !s->win) return 0;
+	testBorrowScene(s);
+	const int ok = hydroOpen(s->win, s) ? 1 : 0;
+	QApplication::processEvents();
+	return ok;
+}
+GMTVTK_API void gmtvtk_hydro_leave_dialog_test(void *handle, int how) {
+	HydroDialog *h = hydroTestDlg(handle);
+	if (!h || !h->dlg) return;
+	if (how == 1)      h->dlg->setWindowState(h->dlg->windowState() | Qt::WindowMinimized);
+	else if (how == 2) h->dlg->reject();
+	else               h->dlg->close();
+	QApplication::processEvents();
+}
+// 1 = parked (hidden + a Scene Objects row), 0 = on screen, -1 = no dialog.
+GMTVTK_API int gmtvtk_hydro_parked_test(void *handle) {
+	Scene *s = static_cast<Scene *>(handle);
+	HydroDialog *h = hydroTestDlg(handle);
+	if (!h || !h->dlg) return -1;
+	const bool hidden = !h->dlg->isVisible();
+	bool row = false;
+	if (s) for (auto &pt : s->parkedTools) if (pt.win == h->dlg) row = true;
+	return (hidden && row) ? 1 : 0;
+}
+// The parked row's own "Delete". 1 = it is gone.
+GMTVTK_API int gmtvtk_hydro_delete_dialog_test(void *handle) {
+	HydroDialog *h = hydroTestDlg(handle);
+	if (!h) return 0;
+	testDeleteParkedDialog(&h);
+	return hydroTestDlg(handle) == nullptr ? 1 : 0;
 }
 
 // Tsunami travel times (Geophysics > Tsunamis): the same park contract. `how`: 0 = the X, 1 =

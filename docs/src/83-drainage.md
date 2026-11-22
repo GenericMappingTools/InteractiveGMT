@@ -38,7 +38,7 @@ Tick what you want. Each one is added to the window as a new layer, named after 
 
 | Result | What it is |
 |---|---|
-| Drainage basins | every cell labelled with the basin it drains to; 1 = the largest |
+| Drainage basins | every cell labelled with the basin it drains to; 1 = the largest. Basins smaller than the min. area are lumped into one class, **0 = coastal / residual drainage** (light grey): along a coast, the many small catchments that run straight into the sea instead of joining a river. The basin limits also come as lines on top of the display ("… basin outlines"), like the rivers |
 | Stream network (lines) | the rivers as lines on top of the display, one line per reach |
 | Strahler order | a grid with the order of each river cell |
 | Flow accumulation | log10 of the upstream area draining through each cell (km²) |
@@ -66,11 +66,34 @@ wetness index:
 For the accumulation map as a picture of the rivers, use D8. For the wetness index and anything about
 hillslopes (soil moisture, erosion, landslide susceptibility), use MFD — the usual choice — or D∞.
 
+## Saving a river with its upstream network
+
+Right-click a river **in the view** and choose *Save this river and its upstream network…*. What is
+saved is that river — from the point you clicked down to its next junction — plus every river that
+flows into it, and every river that flows into those, up to the sources: the whole drainage network
+above that point. One segment per reach, each with its Strahler order.
+
+The file type follows the extension: a GMT multisegment table (`.txt`, `.dat`, `.gmt`: x, y, z and
+order, one `>` segment per reach) or a GeoPackage, Shapefile, KML or GeoJSON (the order is a field of
+each line).
+
+## Painting each river system in its own colour
+
+Right-click the rivers (in the view or on their Scene Objects row) and tick *Paint each river system
+in its own colour*. A river system is a river that reaches the sea (or the edge of the grid) together
+with every tributary that drains into it; each one gets a colour of its own. Untick it to put the
+whole network back in one colour. Picking a colour in *Line properties* does the same: the network
+takes the picked colour as a whole.
+
 ## Run and Stop
 
 **Run** computes the ticked results. The bar and the line under it follow the computation (*Filling
 depressions*, *Flow directions*, *Flow accumulation*…); the window stays usable meanwhile. **Stop**
 ends the run, and nothing is added.
+
+Closing the dialog (the X, minimise or Esc) **parks** it in the window's Scene Objects, settings
+intact: double-click its row to bring it back, or use the row's *Delete* to end it. A run going on
+when it is parked carries on, and its results are added as usual.
 
 Almost all the time goes into removing the depressions. Measured times:
 

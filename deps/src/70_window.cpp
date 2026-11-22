@@ -2766,7 +2766,7 @@ static void ensureNodeActor(Scene *s, QuadNode *n) {
 	auto tpd = makeGridTile(s->gridZ.data(), s->gnx, s->gny,
 							n->i0, n->i1, n->j0, n->j1, s->gx0, s->gdx, s->gy0, s->gdy, s->zmin, n->step,
 							s->aquaWindow,
-							/*pixelCells=*/s->gridHasNaN && !s->aquaWindow,   // NaNs: each node its own square
+							/*pixelCells=*/(s->gridHasNaN || s->baseCategorical) && !s->aquaWindow,   // NaNs or classes: each node its own square
 							s->gridZ.layout());                                 // read where it lies
 	vtkNew<vtkPolyDataMapper> m; m->SetInputData(tpd);
 	configureGridMapper(m, s->surfLut, s->zmin, s->zmax, s->surfCtfRange);
@@ -2831,7 +2831,7 @@ static void ensureNodeCoarse(Scene *s, QuadNode *n) {
 	}
 	auto tpd = makeGridTile(s->gridZ.data(), s->gnx, s->gny,
 	                        n->i0, n->i1, n->j0, n->j1, s->gx0, s->gdx, s->gy0, s->gdy, s->zmin, lodCoarseStep(n),
-	                        s->aquaWindow, /*pixelCells=*/s->gridHasNaN && !s->aquaWindow, s->gridZ.layout());
+	                        s->aquaWindow, /*pixelCells=*/(s->gridHasNaN || s->baseCategorical) && !s->aquaWindow, s->gridZ.layout());
 	vtkNew<vtkPolyDataMapper> m; m->SetInputData(tpd);
 	configureGridMapper(m, s->surfLut, s->zmin, s->zmax, s->surfCtfRange);
 	auto a = vtkSmartPointer<vtkActor>::New(); a->SetMapper(m);
@@ -3202,7 +3202,7 @@ static bool refineExtraLod(Scene *s, ExtraObj &ex) {
 	const double tanHalf = std::tan(vtkMath::RadiansFromDegrees(cam->GetViewAngle() * 0.5));
 	ex.lodFrame++;
 	const double dx = (ex.gx1 - ex.gx0) / (ex.gnx - 1), dy = (ex.gy1 - ex.gy0) / (ex.gny - 1);
-	const bool pix = ex.gridHasNaN && !s->aquaWindow;           // the base's own switch (ensureNodeActor)
+	const bool pix = (ex.gridHasNaN || ex.categorical) && !s->aquaWindow;   // the base's own switch (ensureNodeActor)
 	auto show = [&](QuadNode *q) {
 		if (!q->tilePD) {
 			q->tilePD = makeGridTile(ex.gridZ.data(), ex.gnx, ex.gny, q->i0, q->i1, q->j0, q->j1,

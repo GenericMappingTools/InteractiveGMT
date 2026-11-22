@@ -50,6 +50,32 @@ function _cpt_nodes(G::GMTgrid, cmap)
 	return _cpt_nodes_range(zmn, zmx, cmap)
 end
 
+# CPT nodes for a grid of CLASSES: every integer class k in the grid's range gets ONE flat colour,
+# `colorof(k)` -> (r,g,b) in 0..1, over [k-0.5, k+0.5). Two nodes per class with the SAME colour, so
+# the viewer's transfer function is a staircase: a class can never come out tinted by the colour of
+# the class next to it, which a ramp through one node per class does (and its 1024-entry table makes
+# visible). The step between classes sits half way, never on a class value.
+function _class_nodes(G::GMTgrid, colorof::Function)
+	k0, k1 = typemax(Int), typemin(Int)
+	@inbounds for v in G.z
+		isfinite(v) || continue
+		k = round(Int, v)
+		(k < k0) && (k0 = k)
+		(k > k1) && (k1 = k)
+	end
+	k0 > k1 && return (Float64[], Float64[], 0)
+	n = k1 - k0 + 1
+	cz = Vector{Float64}(undef, 2n);  crgb = Vector{Float64}(undef, 6n)
+	for (i, k) in enumerate(k0:k1)
+		c = colorof(k)
+		cz[2i-1] = k - 0.5;  cz[2i] = k + 0.5 - 1e-3
+		for j in 0:1, b in 1:3
+			crgb[6(i-1) + 3j + b] = Float64(c[b])
+		end
+	end
+	return (cz, crgb, 2n)
+end
+
 # CPT control nodes (z + rgb) over an explicit [zmn,zmx] range. Returns (Float64[], Float64[], 0)
 # on failure -> viewer falls back to its built-in ramp.
 function _cpt_nodes_range(zmn, zmx, cmap)
