@@ -33,6 +33,8 @@ GMTSAR's Sentinel-1 preprocessing (`make_s1a_tops`, `align_tops.csh`, `preproc_b
 
 The dialog has two boxes, a log, a status line and one action button.
 
+![The Sentinel-1 orbits dialog after a download: two older scenes got precise orbits, a recent one a restituted orbit](assets/s1orbits_dialog.png)
+
 ### Sentinel-1 scenes
 
 **Scenes** is the list of scenes whose orbits you want. Only the **checked** scenes are used:
