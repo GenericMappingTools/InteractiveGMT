@@ -2842,6 +2842,124 @@ static void textBatchDelete(Scene *s, const std::string &gn) {
 	                      GroupChild(GroupChild::SymbolLayer, gn + " (points)") });
 }
 
+// ── A MASTER HANDLE OVER GRIDS ── A tool that delivers MANY grids from one run (the HLS time series:
+// one index grid per date) declares each under ONE master (gmtvtk_set_grid_group_h). Each grid keeps
+// its own ordinary group, built by the same builder as always and only PARENTED to the master
+// (rebuildSceneObjects); the master adds what only a set of grids has: one colour palette for them
+// all, and one Remove that takes them all. Members are found BY NAME through Scene::groupMaster, the
+// same child -> master map every other master reads — never by position.
+struct GridGroupMember { int tag; double zmin, zmax; };   // tag -1 = the window's base relief
+
+static std::string gridGroupMasterOf(Scene *s, const std::string &nm) {
+	auto it = s->groupMaster.find(nm);
+	return (it == s->groupMaster.end()) ? std::string() : it->second;
+}
+
+static std::vector<GridGroupMember> gridGroupMembers(Scene *s, const std::string &m) {
+	std::vector<GridGroupMember> out;
+	if (!s || m.empty()) return out;
+	if (!s->imageOnly && !s->surfCloud && !s->emptyStart && surfProp(s) && gridGroupMasterOf(s, s->surfName) == m)
+		out.push_back({ -1, s->zmin, s->zmax });
+	for (const auto &ex : s->extras)
+		if (!ex.isImage && !ex.isMesh && gridGroupMasterOf(s, ex.name) == m)
+			out.push_back({ ex.tag, ex.zmin, ex.zmax });
+	return out;
+}
+
+// Does the master hold any RASTER (a grid or an image, base or extra)? Grids and images both hang under
+// a raster master (a true-colour series is one image per date); only grids take its palette entries.
+static bool rasterGroupHas(Scene *s, const std::string &m) {
+	if (!s || m.empty()) return false;
+	if (!s->emptyStart && !s->surfCloud && gridGroupMasterOf(s, s->surfName) == m && (surfProp(s) || s->drape)) return true;
+	for (const auto &ex : s->extras) if (!ex.isMesh && gridGroupMasterOf(s, ex.name) == m) return true;
+	return false;
+}
+
+// The master's box is the OR of what its rasters show (group-uncheck law).
+static bool gridGroupVisible(Scene *s, const std::string &m) {
+	if (!s->surfCloud && !s->emptyStart && gridGroupMasterOf(s, s->surfName) == m) {
+		if (s->imageOnly) { if (s->drape && s->drape->GetVisibility() != 0) return true; }
+		else if (vtkProp3D *sp = surfProp(s)) { if (sp->GetVisibility() != 0) return true; }
+	}
+	for (const auto &ex : s->extras)
+		if (!ex.isMesh && gridGroupMasterOf(s, ex.name) == m && ex.actor && ex.actor->GetVisibility() != 0)
+			return true;
+	return false;
+}
+
+// One colormap on EVERY grid of the master, through THE one grid recolour (`_recolor_grid`, the same
+// host function a grid's own Color Bar row reaches through applyColormap). `common`: every grid on
+// the group's global min/max, so equal values wear equal colours from one date to the next;
+// otherwise each grid spans its own range.
+static void gridGroupRecolor(Scene *s, const std::string &m, const QString &cmap, bool common) {
+	if (!s || !g_juliaEval || cmap.isEmpty()) return;
+	const std::vector<GridGroupMember> mem = gridGroupMembers(s, m);
+	double lo = INFINITY, hi = -INFINITY;
+	for (const auto &g : mem) {
+		if (std::isfinite(g.zmin)) lo = std::min(lo, g.zmin);
+		if (std::isfinite(g.zmax)) hi = std::max(hi, g.zmax);
+	}
+	const bool useCommon = common && lo < hi;
+	const std::string ptr = std::to_string((unsigned long long)reinterpret_cast<uintptr_t>(s));
+	QApplication::setOverrideCursor(Qt::WaitCursor);   // one recolour per grid: show it is working
+	for (const auto &g : mem) {
+		char rng[96];
+		snprintf(rng, sizeof rng, "%.17g, %.17g, %d", useCommon ? lo : g.zmin, useCommon ? hi : g.zmax, g.tag);
+		const std::string cmd = "InteractiveGMT._recolor_grid(Ptr{Cvoid}(UInt(" + ptr + ")), \"" +
+		                        cmap.toStdString() + "\", " + rng + ")";
+		std::vector<char> buf(1 << 12);
+		const int n = g_juliaEval(s, cmd.c_str(), buf.data(), (int)buf.size());
+		if (n < 0) { sceneLogError(s, QString::fromUtf8(buf.data(), -n)); break; }
+	}
+	QApplication::restoreOverrideCursor();
+}
+
+// Remove EVERY grid of the master — each through the deleter its own row's Remove uses
+// (sceneRemoveExtraAt / sceneRemoveSurface) — plus any non-grid member, as the generic master does.
+static void gridGroupRemove(Scene *s, const std::string m) {   // by value: the row whose menu called this dies in the rebuild
+	if (!s || m.empty()) return;
+	for (size_t i = s->extras.size(); i-- > 0; ) {
+		if (i >= s->extras.size()) continue;            // a removal may have shortened the list
+		const ExtraObj &ex = s->extras[i];
+		if (gridGroupMasterOf(s, ex.name) == m) sceneRemoveExtraAt(s, i);     // grids and images alike
+	}
+	if (!s->emptyStart && (surfProp(s) || s->drape) && gridGroupMasterOf(s, s->surfName) == m)
+		sceneRemoveSurface(s);
+	std::vector<GroupChild> kids;
+	for (const auto &kv : s->groupMaster) {
+		if (kv.second != m) continue;
+		kids.push_back(GroupChild(GroupChild::Overlays,    kv.first));
+		kids.push_back(GroupChild(GroupChild::Polygons,    kv.first));
+		kids.push_back(GroupChild(GroupChild::SymbolLayer, kv.first));
+		kids.push_back(GroupChild(GroupChild::TextBatch,   kv.first));
+	}
+	sceneDeleteGroup(s, kids);
+	for (auto it = s->groupMaster.begin(); it != s->groupMaster.end(); )
+		it = (it->second == m) ? s->groupMaster.erase(it) : std::next(it);
+	s->objExpanded.erase(m);
+	rebuildSceneObjects(s);
+}
+
+static void gridGroupMenu(Scene *s, const std::string m, const QPoint &g) {
+	if (!s) return;
+	QMenu mm(s->widget);
+	QAction *aCommon = nullptr, *aOwn = nullptr;
+	if (!gridGroupMembers(s, m).empty()) {           // a palette is for grids; images keep their colours
+		aCommon = mm.addAction("Color palette for all grids — one common range…");
+		aCommon->setToolTip("Every grid on the global min/max of the group: equal values, equal colours");
+		aOwn    = mm.addAction("Color palette for all grids — each its own range…");
+		mm.addSeparator();
+	}
+	QAction *aRem    = mm.addAction("Remove all");
+	mm.setToolTipsVisible(true);
+	QAction *c = mm.exec(g);
+	if (!c) return;
+	if (c == aRem) { gridGroupRemove(s, m); return; }
+	if (!c || (c != aCommon && c != aOwn)) return;
+	const bool common = (c == aCommon);
+	chooseColormap(s, g, [s, m, common](const QString &nm) { gridGroupRecolor(s, m, nm, common); });
+}
+
 // THE properties menu of a batch of text labels, wherever its row happens to sit: standalone (File >
 // Open xy(z) > Import text, its own top-level group) or nested as the "Labels" sub-handle of the
 // overlay that plotted it ("Show point labels"). ONE menu for one kind of thing — the row's position
@@ -3216,6 +3334,21 @@ static void rebuildSceneObjects(Scene *s) {
 		}
 		auto it = masterItems.find(m);
 		if (it != masterItems.end()) return it->second;
+		// A master over GRIDS (gmtvtk_set_grid_group_h) carries the grid-set menu: one palette for all,
+		// Remove all. Its box is the OR of its grids.
+		if (rasterGroupHas(s, m)) {
+			std::function<void(const QPoint&)> gmenu = [s, m](const QPoint &g) { gridGroupMenu(s, m, g); };
+			QTreeWidgetItem *save = curParent;
+			curParent = nullptr;                          // a master is always a top-level row
+			QTreeWidgetItem *grp = beginGroupHandle(QString::fromStdString(m), IC_Surface, gridGroupVisible(s, m),
+			                                        gmenu, gmenu,
+			                                        "Everything this run produced — click for Remove all (and, for grids, one colour palette for all)",
+			                                        /*startFolded=*/true);
+			endGroup();
+			curParent = save;
+			masterItems[m] = grp;
+			return grp;
+		}
 		// The master's Remove takes EVERY declared member with it, in ONE sceneDeleteGroup call --
 		// the same deleter each member's own row uses, never a second removal path.
 		auto menu = [s, m](const QPoint &g) {
@@ -3605,6 +3738,10 @@ static void rebuildSceneObjects(Scene *s) {
 			// then dragged every child's box down with it. Its toggle still cascades to every child.
 			const bool baseVis = sp->GetVisibility() != 0;
 			const bool baseGrpOn = baseGrpOnOf(sp);    // what its rows show — see baseGrpOnOf
+			// Declared under a grid master (gmtvtk_set_grid_group_h): the SAME group, parented to it.
+			QTreeWidgetItem *baseMasterSave = curParent;
+			if (!aquaWrap)
+				if (QTreeWidgetItem *mi = masterItemFor(s->surfName)) curParent = mi;
 			beginGroupHandle(nm, IC_Surface, baseGrpOn,
 			        nullptr,                                              // container does NOT fold the Shading dock (the Surface leaf does)
 			        [s](const QPoint &g) { if (s->fvTrueScale) baseMeshObjectMenu(s, g); else surfaceObjectMenu(s, g); },
@@ -3639,6 +3776,7 @@ static void rebuildSceneObjects(Scene *s) {
 			axesRow(&s->baseAxes);               // the BASE raster's OWN set
 			sourceFileRows(s->surfName);
 			endGroup();
+			curParent = baseMasterSave;
 		}
 	} else if (s->drape) {                                  // bare image (view_image) group — header IS the image handle
 		const QString nm = s->surfName.empty() ? QString("Image") : QString::fromStdString(s->surfName);
@@ -3649,6 +3787,9 @@ static void rebuildSceneObjects(Scene *s) {
 		const bool imgGrpOn = imgVis || s->baseAxes.shown || (s->palette.n > 0 && s->palette.show);
 		// a MASK (two states, flagged by the host: gmtvtk_set_mask_flag_h) wears the mask icon
 		const int imgIcon = (s->maskNames.count(s->surfName) || s->maskNames.count(std::string())) ? IC_Mask : IC_Image;
+		// Declared under a raster master (gmtvtk_set_grid_group_h): the SAME group, parented to it.
+		QTreeWidgetItem *imgMasterSave = curParent;
+		if (QTreeWidgetItem *mi = masterItemFor(s->surfName)) curParent = mi;
 		beginGroupHandle(nm, imgIcon, imgGrpOn,
 		        imgMenu, imgMenu,
 		        "Left- or right-click for properties (save / remove)",
@@ -3668,6 +3809,7 @@ static void rebuildSceneObjects(Scene *s) {
 		axesRow(&s->baseAxes);                             // the primary IMAGE's OWN set
 		sourceFileRows(s->surfName);
 		endGroup();
+		curParent = imgMasterSave;
 	}
 
 	// Dropped grids / images: one group each. In an Aquamoto window the FILE's own elements (tagged
@@ -3676,6 +3818,10 @@ static void rebuildSceneObjects(Scene *s) {
 	// the tsunami file's group, and that group's Remove deleted them all.
 	auto emitExtra = [&](ExtraObj &ex) {
 		const QString nm = QString::fromStdString(ex.name);
+		// A grid declared under a grid master (gmtvtk_set_grid_group_h): the SAME group, parented to it.
+		QTreeWidgetItem *exMasterSave = curParent;
+		if (!inFile(ex))
+			if (QTreeWidgetItem *mi = masterItemFor(ex.name)) curParent = mi;
 		if (ex.isImage) {                                  // dropped image group — header IS the image handle
 			vtkProp3D *a = ex.actor.Get();
 			const int imgIcon = s->maskNames.count(ex.name) ? IC_Mask : IC_Image;   // a mask wears the mask icon
@@ -3718,6 +3864,7 @@ static void rebuildSceneObjects(Scene *s) {
 		}
 		sourceFileRows(ex.name);
 		endGroup();
+		curParent = exMasterSave;
 	};
 	for (auto &ex : s->extras) if (inFile(ex)) emitExtra(ex);
 
@@ -6030,8 +6177,21 @@ static void symbolLayerMenu(Scene *s, vtkActor *act, const QPoint &gp) {
 		plotTidesCalA = m.addAction("Plot tides (calendar)");
 		m.addSeparator();
 	}
+	// A window holding a 3-D CUBE (a netCDF cube, a band stack, a time series of grids): the series of
+	// the cube THROUGH this symbol — every layer interpolated at its location (GMT's grdinterpolate -S,
+	// on the Julia side), shown in the X,Y plot tool. Mirone's "3D interpolation". The clicked symbol,
+	// or every symbol of the layer when the menu came from its Scene Objects row.
 	QAction *tblA  = m.addAction("Show data table…");     // THE shared table dialog (Save button included)
 	QAction *saveA = m.addAction("Save data…");           // …and the same save that button calls
+	QAction *interp3A = nullptr;                          // right after "Save data…" (user's order)
+	{
+		bool hasCube = s->cubeNLayers > 1;
+		for (const auto &ex : s->extras) if (ex.cubeLayers > 1) { hasCube = true; break; }
+		if (hasCube && g_juliaEval) {
+			interp3A = m.addAction("3D interpolation");
+			interp3A->setToolTip("The cube's value at this symbol in every layer, as a series in the X,Y plot tool");
+		}
+	}
 	QAction *clipA = m.addAction("Copy to Clipboard");    // the same text, to the clipboard (symbolDataText)
 	// Any linked name labels (Cities' city names) get their OWN properties menu on a right-click of
 	// the LABEL itself (70_window.cpp's view dispatch -> batchTextLabelsDialog) — never nested in
@@ -6147,6 +6307,37 @@ static void symbolLayerMenu(Scene *s, vtkActor *act, const QPoint &gp) {
 			ans = askJulia(QString("width=%1\n").arg(w, 0, 'f', 3));
 		}
 		if (!ans.isEmpty() && s->win) s->win->statusBar()->showMessage(ans, 5000);
+		return;
+	}
+	if (interp3A && ch == interp3A) {
+		// The points in DATA coordinates (the world x carries the window's xfac), as "x y;x y;…".
+		vtkPolyData *pd = symInputPD(*sl);
+		if (!pd || !pd->GetPoints()) return;
+		const int n = (int)pd->GetPoints()->GetNumberOfPoints();
+		const double xfacInv = (s->xfac != 0.0) ? 1.0 / s->xfac : 1.0;
+		std::string pts;
+		for (int k = 0; k < n; ++k) {
+			if (clickedPt >= 0 && k != clickedPt) continue;
+			double p[3];  pd->GetPoints()->GetPoint(k, p);
+			char b[80];
+			snprintf(b, sizeof b, "%s%.17g %.17g", pts.empty() ? "" : ";", p[0] * xfacInv, p[1]);
+			pts += b;
+		}
+		if (pts.empty()) return;
+		std::string nm = sl->name;
+		for (char &c : nm) if (c == '"' || c == '\\' || c == '$') c = '_';   // a Julia string literal
+		const std::string cmd = "InteractiveGMT._cube_point_series(Ptr{Cvoid}(UInt(" +
+		                        std::to_string((unsigned long long)reinterpret_cast<uintptr_t>(s)) + ")), \"" +
+		                        pts + "\", \"" + nm + "\")";
+		showBusyDialog("Interpolating the cube at the symbol…");
+		std::vector<char> buf(1 << 12);
+		const int r = g_juliaEval(s, cmd.c_str(), buf.data(), (int)buf.size());
+		closeBusyDialog();
+		if (r < 0) {
+			const QString err = QString::fromUtf8(buf.data(), -r);
+			sceneLogError(s, err);
+			QMessageBox::warning(s->widget, "3D interpolation", err);
+		}
 		return;
 	}
 	if (ch == tblA)  { showSymbolDataTable(s, act, QString::fromStdString(sl->name)); return; }

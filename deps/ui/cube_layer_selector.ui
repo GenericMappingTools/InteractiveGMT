@@ -97,6 +97,16 @@
        </property>
       </widget>
      </item>
+     <item row="1" column="3">
+      <widget class="QToolButton" name="toBarBtn">
+       <property name="toolTip">
+        <string>Move the layer slider into the window toolbar</string>
+       </property>
+       <property name="autoRaise">
+        <bool>true</bool>
+       </property>
+      </widget>
+     </item>
     </layout>
    </item>
    <item>

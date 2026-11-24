@@ -967,6 +967,9 @@ function _cube_from_slabs(z3::Array{Float32,3}, g1::GMTgrid)::GMTgrid
 	end
 	C = GMT.mat2grid(z3; x = g1.x, y = g1.y, v = collect(1.0:size(z3, 3)))
 	isempty(g1.layout) || (C.layout = g1.layout)
+	# …AND THE LAYERS' REFERENCING SYSTEM: `mat2grid` knows nothing of it, so a stacked cube came out
+	# unreferenced and its window showed EPSG:000 for a UTM 29N cube whose every layer says so.
+	C.proj4 = g1.proj4;  C.wkt = g1.wkt;  C.epsg = g1.epsg;  C.geog = g1.geog
 	return C
 end
 
@@ -979,8 +982,18 @@ function _on_3d_cube_dropped(scene::Ptr{Cvoid}, path::String, name::AbstractStri
 	# the axes set that layer owns, and an extra cube's set is rebuilt on every switch.)
 	ccall(_fn(:gmtvtk_show_cube_layer_dialog), Cvoid,
 		(Ptr{Cvoid}, Cstring, Cint), scene, name, n_layers)   # fires layer 1 on the base surface + opens the dock
+	_cube_dock_saveable!(scene, path)
 	_finish_cube_element!(scene, String(name), n_layers)
 end
+
+# Is the cube's source ALREADY a 3-D netCDF? Then the dock's "Save as 3-D netCDF…" has nothing to do
+# and is not offered; it is for what is not one yet (a band stack .vrt, a multi-band GeoTIFF).
+# `path` may carry a "?variable" subdataset suffix.
+_cube_is_netcdf(path::AbstractString)::Bool =
+	lowercase(splitext(first(split(String(path), '?')))[2]) in (".nc", ".nc4", ".cdf", ".netcdf", ".grd")
+
+_cube_dock_saveable!(scene::Ptr{Cvoid}, path::AbstractString) =
+	ccall(_fn(:gmtvtk_cube_dock_saveable_h), Cvoid, (Ptr{Cvoid}, Cint), scene, Cint(!_cube_is_netcdf(path)))
 
 # Load an EXTRA cube (one of several selected variables that is 3-D): read it fully (prescan into RAM),
 # mount its first layer as an extra surface, and register it -- but do NOT auto-open the slider (the
@@ -1038,6 +1051,7 @@ function _on_cube_slider(scene::Ptr{Cvoid}, cname::Cstring)::Cvoid
 		info = _CUBE_INFO[scene]
 		ccall(_fn(:gmtvtk_show_cube_layer_dialog), Cvoid,
 			(Ptr{Cvoid}, Cstring, Cint), scene, name, info.n_layers)
+		_cube_dock_saveable!(scene, info.path)
 	catch e
 		@error "Cube layers menu failed" exception=(e, catch_backtrace())
 	end
@@ -1432,6 +1446,138 @@ function _on_cube_save(scene::Ptr{Cvoid}, cpath::Cstring)::Cint
 		@error "Saving the cube failed" exception=(e, catch_backtrace())
 		return Cint(2)
 	end
+end
+
+# The coordinate of each of a cube's `n` layers (a date, a depth, a level) — what the file route's
+# grdinterpolate puts in its first column, so the RAM route gives the SAME series. From the netCDF
+# HEADER (GDAL's NETCDF_DIM_<dim>_VALUES, no data read), because a cube stacked layer by layer into RAM
+# (`_cube_from_slabs`) carries only 1..n. Falls back to the cube's own `v`, then to 1..n.
+function _cube_layer_coords(path::String, C::GMTgrid, n::Int)::Vector{Float64}
+	if _cube_is_netcdf(path)
+		try
+			for l in split(GMT.gdalinfo(_gmt_safe_path(path; quoted = false)), '\n')
+				m = match(r"NETCDF_DIM_\w+_VALUES=\{([^}]*)\}", l)
+				m === nothing && continue
+				v = tryparse.(Float64, split(m.captures[1], ','))
+				(length(v) == n && !any(isnothing, v)) && return Float64.(v)
+			end
+		catch
+		end
+	end
+	(C.v isa AbstractVector && length(C.v) == n) && return Float64.(C.v)
+	return collect(1.0:n)
+end
+
+# "3D interpolation" on a symbol (its properties menu, 50_scene.cpp): the cube's value at each symbol
+# in EVERY layer — GMT's own `grdinterpolate -S x/y`, never an interpolation of ours — shown in the
+# X,Y plot tool, one series per symbol, the layer coordinate (a date, a depth, a level) along x.
+# `pts` = "x y;x y;…" in the window's data coordinates. The cube is the window's ACTIVE one when the
+# symbol is over it, else the first other cube that has data there. The cube in RAM is used when it is
+# there. NOTHING IS READ WHOLE for one point: a 3-D netCDF goes to GMT by its file name, and GMT.jl
+# limits the read of every layer to a few cells around the point (-R); a band stack (a .vrt, a
+# multi-band GeoTIFF) is interpolated by GDAL at the point (GDALRasterInterpolateAtPoint), which reads
+# only the blocks under it in each band.
+function _cube_point_series(scene::Ptr{Cvoid}, pts::String, symname::String)
+	_snapshot_cube!(scene)                                    # the active cube's latest state
+	reg = get(_CUBES, scene, nothing)
+	(reg === nothing || isempty(reg)) && error("This window holds no 3-D cube.")
+	act = get(_CUBE_ACTIVE, scene, "")
+	names = sort!(collect(keys(reg)), by = k -> k == act ? 0 : 1)
+	xy = NTuple{2,Float64}[]
+	for p in split(pts, ';'; keepempty = false)
+		v = tryparse.(Float64, split(p))
+		(length(v) == 2 && !any(isnothing, v)) && push!(xy, (v[1], v[2]))
+	end
+	isempty(xy) && error("No symbol location to interpolate at.")
+	# Each cube's source, opened once: (kind, object, x/y box). The box says whether the symbol is over
+	# it — GMT.jl's grdinterpolate builds an inverted -R for a point outside a file and errors.
+	src = Dict{String,Any}()
+	cubesrc(nm) = get!(src, nm) do
+		info = reg[nm].info
+		# THE CUBE IN RAM, WHEN IT IS LOADED: nothing is read. It is NOT handed to GMT.jl's in-memory
+		# grdinterpolate — that slices with `slicecube`, which assumes Julia dims (ny, nx), while a cube
+		# stacked from row-major layers keeps (nx, ny) (`_cube_from_slabs`), and it dies on a BoundsError.
+		# Each layer is taken through `_cube_layer_view`, the one layout-aware slicer (see `ramseries`).
+		ram = reg[nm].ram
+		(ram isa GMTgrid && ndims(ram.z) == 3) && return (:ram, ram, Float64.(ram.range[1:4]))
+		if _cube_is_netcdf(info.path)
+			f = _gmt_safe_path(info.path)
+			return (:file, f, Float64.(GMT.gmt_grdinfo_C(f)[1:4]))
+		end
+		ds = GMT.Gdal.read(_is_band_cube(info.path) ? _emp_vsi(info.path) : info.path)
+		x0, x1, y0, y1 = GMT.Gdal.gdal_get_limits(ds)[1:4]
+		return (:gdal, ds, [x0, x1, y0, y1])
+	end
+	# RAM cube: per layer, the 8x8 nodes around the point, read through `_zmat` of the layer's view (no
+	# copy of the layer), become a tiny grid, and GMT's own `grdtrack` interpolates it at the point —
+	# the same interpolator, the same default, as the file route's grdinterpolate.
+	function ramseries(C::GMTgrid, path::String, x, y)
+		G1 = _cube_layer_view(C, 1)
+		nx, ny = _grid_dims(G1)
+		dx, dy = Float64(C.inc[1]), Float64(C.inc[2])
+		h  = C.registration == 1 ? 0.5 : 0.0
+		x1, y1 = C.range[1] + h * dx, C.range[3] + h * dy          # first node, south-west
+		i = clamp(floor(Int, (x - x1) / dx) + 1, 1, nx);  j = clamp(floor(Int, (y - y1) / dy) + 1, 1, ny)
+		ia, ib = max(1, i - 3), min(nx, i + 4);  ja, jb = max(1, j - 3), min(ny, j + 4)
+		xs = [x1 + (k - 1) * dx for k in ia:ib];  ys = [y1 + (k - 1) * dy for k in ja:jb]
+		nl = size(C.z, 3)
+		v  = Vector{Float64}(undef, nl)
+		for k in 1:nl
+			Z = _zmat(_cube_layer_view(C, k))                       # z[iy, ix], row 1 = south, a view
+			W = Float32[Z[jj, ii] for jj in ja:jb, ii in ia:ib]
+			D = GMT.grdtrack(GMT.mat2grid(W; x = xs, y = ys), [x y])
+			v[k] = (D isa GMTdataset && size(D.data, 2) >= 3) ? Float64(D.data[1, 3]) : NaN
+		end
+		return (_cube_layer_coords(path, C, nl), v)
+	end
+	function series(nm, x, y)
+		kind, obj, _ = cubesrc(nm)
+		kind === :ram && return ramseries(obj, reg[nm].info.path, x, y)
+		if kind === :gdal
+			# GDAL's pixel/line from the geotransform (pixel EDGES, line counted from the top). Not
+			# GMT.jl's `gdalrasterinterpolate(file, points)`: it places the point half a pixel off.
+			gt = GMT.Gdal.getgeotransform(obj)
+			r  = GMT.Gdal.gdalrasterinterpolate(obj, [(x - gt[1]) / gt[2] (y - gt[4]) / gt[6]];
+			                                    method = GMT.Gdal.GRIORA_Bilinear)
+			v = Float64.(vec(r))
+			return (collect(1.0:length(v)), v)
+		end
+		D = GMT.grdinterpolate(obj; S = (x, y))
+		D isa Vector && (D = isempty(D) ? nothing : D[1])
+		(D isa GMTdataset && size(D.data, 1) > 0 && size(D.data, 2) >= 2) || return nothing
+		return (Float64.(D.data[:, 1]), Float64.(D.data[:, end]))
+	end
+	p = nothing
+	nfound = 0
+	for (k, (x, y)) in enumerate(xy)
+		got = nothing
+		for nm in names
+			b = cubesrc(nm)[3]
+			(b[1] <= x <= b[2] && b[3] <= y <= b[4]) || continue
+			zs = series(nm, x, y)
+			(zs === nothing || !any(isfinite, zs[2])) && continue   # no data there: try the next cube
+			got = (nm, zs[1], zs[2]);  break
+		end
+		got === nothing && continue
+		nm, z, v = got
+		lbl = length(xy) == 1 ? "Point" : "Point $(k)"             # a legend is a SHORT text: no coordinates
+		if p === nothing
+			p = _xyplot(z, v; name = lbl, title = "3D interpolation — $(nm)", xlabel = "Layer", ylabel = nm)
+		else
+			_xyadd!(p, z, v; name = lbl)
+		end
+		nfound += 1
+	end
+	nfound == 0 && error("No cube in this window has data at the symbol location.")
+	# THE X,Y WINDOW COMES TO THE FRONT, every time (user order): a new page on a window hidden behind the
+	# map, or parked in Scene Objects, would look as if nothing had happened.
+	ccall(_fn(:gmtvtk_xyplot_bring_front), Cvoid, (Ptr{Cvoid},), p.h)
+	# …and again once the caller's busy notice has closed: closing it hands the focus back to the map.
+	let h = p.h
+		Timer(_ -> (ccall(_fn(:gmtvtk_xyplot_is_alive), Cint, (Ptr{Cvoid},), h) != 0 &&
+		            ccall(_fn(:gmtvtk_xyplot_bring_front), Cvoid, (Ptr{Cvoid},), h)), 0.3)
+	end
+	return "3D interpolation: $(nfound) series"
 end
 
 # Register the cube layer callbacks (lazy registration): the per-layer slider callback, the

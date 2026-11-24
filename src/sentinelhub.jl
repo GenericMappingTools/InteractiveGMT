@@ -390,7 +390,7 @@ _shub_ogc(base::String, service::String, instance::String)::String =
 	base * "/ogc/" * lowercase(service) * "/" * instance
 
 const _SHUB_MIME = Dict("PNG" => "image/png", "JPEG" => "image/jpeg", "TIFF" => "image/tiff")
-const _SHUB_EXT  = Dict("PNG" => ".png",      "JPEG" => ".jpg",       "TIFF" => ".tif")
+const _SHUB_EXT  = Dict("PNG" => ".png",      "JPEG" => ".jpg",       "TIFF" => ".tiff")
 
 # A GetMap, WMS 1.1.1 (see the header comment on why not 1.3.0).
 function _shub_getmap_url(d::Dict{String,String}, base::String, instance::String, layer::String,
@@ -514,8 +514,8 @@ end
 # nothing about the CRS), the corners are stamped into a GeoTIFF copy with GDAL, and THAT is what
 # the window is given. A TIFF from the service is already a GeoTIFF and is left alone.
 function _shub_georef(path::String, crs::String, bb::NTuple{4,Float64})::String
-	endswith(lowercase(path), ".tif") && return path
-	out = first(path, length(path) - length(splitext(path)[2])) * ".tif"
+	lowercase(splitext(path)[2]) in (".tif", ".tiff") && return path
+	out = first(path, length(path) - length(splitext(path)[2])) * ".tiff"
 	GMT.gdaltranslate(path, ["-a_srs", isempty(crs) ? "EPSG:4326" : crs,
 	                         "-a_ullr", string(bb[1]), string(bb[4]), string(bb[3]), string(bb[2])];
 	                  dest = out)

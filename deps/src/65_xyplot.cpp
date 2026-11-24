@@ -235,10 +235,11 @@ struct XYPage {
 	double                      sgR = 0, sgG = 0, sgB = 0;   // its colour: black first, random after (mkAnother)
 	std::vector<XYSGLine>       sgLines;          // the fit lines kept (ecran 'FitLine's)
 	int                         sgEdit = -1, sgEditEnd = 0;  // the line / end being dragged
-	// Curve marker — the same gestures as the Profile panel's: a click ON a curve drops a circle there,
-	// dragging slides it ALONG that curve with an "x,  y" label beside it, a double-click on it removes
-	// it. Position = fractional row index into series[markSel] (row i + t towards row i+1), so it works
-	// for any curve, not only one whose x ascends. Drawn by the chart itself (xyMarkPaint).
+	// Curve marker: a click ON a curve drops a circle on its nearest VERTEX (a data point, never between),
+	// dragging jumps it from vertex to vertex along that curve with an "x,  y" label beside it, a
+	// double-click or its right-click "Remove" removes it. Position = row index into series[markSel]
+	// (whole for a click/drag; fractional only when a linked Profile panel sets it). Drawn by the chart
+	// itself (xyMarkPaint).
 	int                         markSel = -1;
 	double                      markU = 0.0;
 	bool                        markDrag = false, markNew = false, markMoved = false;
@@ -1810,6 +1811,58 @@ static void xyLineProperties(XYPlot *s, int idx) {
 	dlg.exec();
 }
 
+// THE rename of a series -- its legend text. ONE function for both doors: the Object Manager row's
+// "Rename…" and a double-click on the series' entry in the chart legend (XYLegendFilter).
+// THE setter of a series' name — its legend text. Every door that changes it ends here.
+static void xySetSeriesName(XYPlot *s, int idx, const QString &nn) {
+	if (!s || !xyAlive(s) || nn.isEmpty()) return;
+	std::vector<XYSeries> &series = xyCur(s).series;
+	if (idx < 0 || idx >= (int)series.size() || series[idx].name == nn.toStdString()) return;
+	for (XYLabel &l : xyCur(s).labels)                  // its labels follow it to the new name
+		if (!l.owner.empty() && l.owner == series[idx].name) l.owner = nn.toStdString();
+	series[idx].name = nn.toStdString();
+	if (series[idx].plot) series[idx].plot->SetLabel(nn.toStdString());
+}
+static void xyRenameSeries(XYPlot *s, int idx) {
+	if (!s || !xyAlive(s)) return;
+	std::vector<XYSeries> &series = xyCur(s).series;
+	if (idx < 0 || idx >= (int)series.size()) return;
+	bool ok = false;
+	const QString nn = QInputDialog::getText(s->win, "Rename series", "Name:",
+		QLineEdit::Normal, QString::fromStdString(series[idx].name), &ok);
+	if (ok && !nn.isEmpty()) {
+		xySetSeriesName(s, idx, nn);
+		xyRebuildObjMgr(s);
+		if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+	}
+}
+// The Legend row's "Edit…": every entry of the legend, one line each, editable together.
+static void xyEditLegend(XYPlot *s) {
+	if (!s || !xyAlive(s)) return;
+	std::vector<XYSeries> &series = xyCur(s).series;
+	QDialog dlg(s->win);
+	dlg.setObjectName("xyLegendEdit");
+	dlg.setWindowTitle("Edit legend");
+	QFormLayout *fl = new QFormLayout(&dlg);
+	std::vector<std::pair<int, QLineEdit *>> eds;
+	for (int k = 0; k < (int)series.size(); ++k) {
+		if (!series[k].inLegend || !series[k].plot) continue;
+		QLineEdit *e = new QLineEdit(QString::fromStdString(series[k].name), &dlg);
+		e->setObjectName(QString("legendEntry%1").arg(eds.size()));
+		fl->addRow(QString("Entry %1:").arg(eds.size() + 1), e);
+		eds.push_back({ k, e });
+	}
+	if (eds.empty()) return;
+	QDialogButtonBox *bb = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+	fl->addRow(bb);
+	QObject::connect(bb, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+	QObject::connect(bb, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+	if (dlg.exec() != QDialog::Accepted) return;
+	for (const auto &pe : eds) xySetSeriesName(s, pe.first, pe.second->text().trimmed());
+	xyRebuildObjMgr(s);
+	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+}
+
 // Right-click on the Object Manager: properties / rename / delete the clicked series.
 static void xyObjMgrMenu(XYPlot *s, const QPoint &pos) {
 	QTreeWidgetItem *it = s->objMgr->itemAt(pos);
@@ -1886,9 +1939,11 @@ static void xyObjMgrMenu(XYPlot *s, const QPoint &pos) {
 	}
 	if (idx == -2) {                                   // "Legend" row: font size + its own show/hide
 		QMenu lm(s->objMgr);
+		QAction *aEdit = lm.addAction("Edit…");
 		QAction *aFont = lm.addAction("Font size…");
 		QAction *aHide = lm.addAction(xyCur(s).chart->GetShowLegend() ? "Hide" : "Show");
 		QAction *lpick = lm.exec(s->objMgr->viewport()->mapToGlobal(pos));
+		if (lpick == aEdit) { xyEditLegend(s); return; }
 		if (lpick == aFont) {
 			// Live-apply, same pattern as the Info row's Font size… above.
 			QDialog dlg(s->win);
@@ -1953,18 +2008,8 @@ static void xyObjMgrMenu(XYPlot *s, const QPoint &pos) {
 	else if (pick == aDel) {
 		xyDeleteSeries(s, idx);
 	}
-	else if (pick == aRen && idx >= 0 && idx < (int)series.size()) {
-		bool ok = false;
-		const QString nn = QInputDialog::getText(s->win, "Rename series", "Name:",
-			QLineEdit::Normal, QString::fromStdString(series[idx].name), &ok);
-		if (ok && !nn.isEmpty()) {
-			for (XYLabel &l : xyCur(s).labels)              // its labels follow it to the new name
-				if (!l.owner.empty() && l.owner == series[idx].name) l.owner = nn.toStdString();
-			series[idx].name = nn.toStdString();
-			if (series[idx].plot) series[idx].plot->SetLabel(nn.toStdString());
-			xyRebuildObjMgr(s);
-			if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
-		}
+	else if (pick == aRen) {
+		xyRenameSeries(s, idx);
 	}
 }
 
@@ -2843,6 +2888,36 @@ static bool xyCurveNearest(XYPage &pg, int only, double sx, double sy, double to
 	}
 	return hit;
 }
+// The point of series `sel` at the cursor's x, scene px: among the segments whose x span holds sx, the
+// one passing closest to sy (a curve whose x doubles back has several). u = fractional row. False when
+// no segment spans sx (the cursor is past the curve's ends).
+static bool xyCurveAtX(XYPage &pg, int sel, double sx, double sy, double &u) {
+	if (sel < 0 || sel >= (int)pg.series.size() || !xyMarkable(pg.series[sel])) return false;
+	vtkTable *t = pg.series[sel].table;
+	const vtkIdType n = t->GetNumberOfRows();
+	double best = std::numeric_limits<double>::infinity();
+	double ax = 0, ay = 0;
+	bool aok = false, hit = false;
+	for (vtkIdType r = 0; r < n; ++r) {
+		double x, y, bx, by;
+		xyRowXY(t, r, x, y);
+		const bool bok = xyDataToScene(pg, x, y, bx, by);
+		if (aok && bok && std::min(ax, bx) <= sx && sx <= std::max(ax, bx)) {
+			const double f  = (bx != ax) ? (sx - ax) / (bx - ax) : 0.5;   // a vertical segment: its middle
+			const double yy = ay + f * (by - ay);
+			const double d  = (bx != ax) ? std::abs(yy - sy)
+			                             : std::max(0.0, std::max(std::min(ay, by) - sy, sy - std::max(ay, by)));
+			if (d < best) {
+				best = d;  hit = true;
+				u = (double)(r - 1) + ((bx != ax) ? std::clamp(f, 0.0, 1.0)
+				                                  : std::clamp((by != ay) ? (sy - ay) / (by - ay) : 0.0, 0.0, 1.0));
+			}
+		}
+		ax = bx;  ay = by;  aok = bok;
+	}
+	return hit;
+}
+
 // The panel's marker (an x — distance along the profile) onto the linked curve: the fractional row
 // where that x falls (the profile's x ascends). NaN removes it.
 static void xyMarkFromPanel(XYPlot *s, double x) {
@@ -3410,11 +3485,22 @@ protected:
 		const double tol = 6.0 * s->widget->devicePixelRatioF();
 		int sel = -1;
 		double u = 0.0;
+		if (t == QEvent::MouseButtonPress && me->button() == Qt::RightButton && xyMarkHit(s, qp)) {
+			// its own menu: the way to get rid of it that does not depend on a double-click landing on it
+			QMenu m(s->widget);
+			QAction *aRem = m.addAction("Remove");
+			if (m.exec(me->globalPosition().toPoint()) == aRem) {
+				pg.markSel = -1;  pg.markDrag = false;  pg.markNew = false;
+				xyMarkToPanel(s);
+				render();
+			}
+			return true;
+		}
 		if (t == QEvent::MouseButtonPress && me->button() == Qt::LeftButton) {
 			pg.markPress = qp;  pg.markMoved = false;
 			if (xyMarkHit(s, qp)) { pg.markDrag = true; pg.markNew = false; return true; }
 			if (xyCurveNearest(pg, -1, sx, sy, tol, sel, u) && xyMarkable(pg, sel)) {   // click ON a curve: drop it there, grabbed
-				pg.markSel = sel;  pg.markU = u;  pg.markDrag = true;  pg.markNew = true;
+				pg.markSel = sel;  pg.markU = std::round(u);  pg.markDrag = true;  pg.markNew = true;
 				xyMarkToPanel(s);
 				render();
 				return true;
@@ -3432,7 +3518,7 @@ protected:
 				return true;
 			}
 			if (xyCurveNearest(pg, -1, sx, sy, tol, sel, u) && xyMarkable(pg, sel)) {
-				pg.markSel = sel;  pg.markU = u;  pg.markNew = false;
+				pg.markSel = sel;  pg.markU = std::round(u);  pg.markNew = false;
 				xyMarkToPanel(s);
 				render();
 				return true;
@@ -3441,9 +3527,12 @@ protected:
 		else if (t == QEvent::MouseMove) {
 			if (pg.markDrag) {
 				if (!pg.markMoved && (qp - pg.markPress).manhattanLength() > 3) pg.markMoved = true;
-				// slide along ITS curve: the nearest point of that series, however far the cursor strays
-				if (pg.markMoved && xyCurveNearest(pg, pg.markSel, sx, sy, 1e9, sel, u)) {
-					pg.markU = u;
+				// THE MARKER SITS ON THE CURVE'S VERTICES ONLY (its data points): the vertex nearest the
+				// cursor's x along its curve, so dragging jumps it from one data point to the next. Past the
+				// curve's ends: its nearest vertex.
+				if (pg.markMoved && (xyCurveAtX(pg, pg.markSel, sx, sy, u) ||
+				                     xyCurveNearest(pg, pg.markSel, sx, sy, 1e9, sel, u))) {
+					pg.markU = std::round(u);   // ON A VERTEX: it jumps from data point to data point, never between (user order)
 					xyMarkToPanel(s);
 					render();
 				}
@@ -3468,6 +3557,36 @@ protected:
 // (vtkChartXY::SetLegendPosition) and it stays where it was dropped. Installed LAST, so it sees a
 // press before every tool's filter: the legend is drawn on top of the curves, so a press on it is
 // the legend's.
+// Which series a point inside the chart legend belongs to, or -1. The legend lists, top to bottom, the
+// chart's plots that are visible, in the legend and labelled, one equal row each; the box's vertical
+// extent at x is found with the legend's own Hit (the box as last painted).
+static int xyLegendEntryAt(XYPlot *s, vtkChartXY *chart, vtkChartLegend *lg, double sx, double sy) {
+	std::vector<vtkPlot *> rows;
+	for (vtkIdType i = 0; i < chart->GetNumberOfPlots(); ++i) {
+		vtkPlot *p = chart->GetPlot(i);
+		if (p && p->GetVisible() && p->GetLegendVisibility() && p->GetNumberOfLabels() > 0 &&
+		    !p->GetLabel(0).empty())
+			rows.push_back(p);
+	}
+	if (rows.empty()) return -1;
+	auto hitAt = [&](double y) {
+		vtkContextMouseEvent cm;
+		cm.SetPos(vtkVector2f((float)sx, (float)y));
+		return lg->Hit(cm);
+	};
+	double top = sy, bot = sy;
+	while (hitAt(top + 1.0) && top - sy < 4000.0) top += 1.0;
+	while (hitAt(bot - 1.0) && sy - bot < 4000.0) bot -= 1.0;
+	const double pad = std::min(5.0, (top - bot) / 4.0);   // vtkChartLegend's padding above / below the rows
+	const double rowH = (top - bot - 2.0 * pad) / rows.size();
+	if (rowH <= 0.0) return -1;
+	const int r = std::clamp((int)std::floor((top - pad - sy) / rowH), 0, (int)rows.size() - 1);
+	const std::vector<XYSeries> &series = xyCur(s).series;
+	for (int k = 0; k < (int)series.size(); ++k)
+		if (series[k].plot == rows[r]) return k;
+	return -1;
+}
+
 class XYLegendFilter : public QObject {
 public:
 	XYPlot *s = nullptr;
@@ -3513,6 +3632,12 @@ protected:
 			return true;                              // over the legend, no other tool's hover
 		}
 		if (!over || me->button() != Qt::LeftButton) return QObject::eventFilter(obj, ev);
+		if (t == QEvent::MouseButtonDblClick) {        // a double-click on an ENTRY renames that series
+			drag = false;
+			const int idx = xyLegendEntryAt(s, chart, lg, sx, sy);
+			if (idx >= 0) xyRenameSeries(s, idx);
+			return true;
+		}
 		if (t == QEvent::MouseButtonPress) {
 			if (lg->GetHorizontalAlignment() != vtkChartLegend::CUSTOM) {   // first grab: from where it is
 				XYChart *c = static_cast<XYChart *>(chart);

@@ -68,9 +68,9 @@ sensors' bands are adjusted to each other, so their dates can be mixed in one se
 ## Keeping the results
 
 Give a file name under **Save to files**, e.g. `D:/hls/ferreira.nc`, and run again. Its folder
-receives one GeoTIFF per date (`ferreira_20260404_S30.tif`, …), all dates in one cube
-(`ferreira_cube.nc`, opened in the window with a slider to step through the dates), and
-`ferreira_series.csv`: date, satellite, mean, clear share — the numbers behind the plot above, ready
+receives one GeoTIFF per date (`ferreira_20260404_S30.tiff`, …), all dates in one cube
+(`ferreira.nc`, opened in the window with a slider to step through the dates), and
+`ferreira_series.csv`: date, mean, clear share, satellite — the numbers behind the plot above, ready
 for a spreadsheet.
 
 The plot itself was drawn from Julia with the function the dialog runs:

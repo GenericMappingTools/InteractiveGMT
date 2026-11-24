@@ -46,6 +46,7 @@ const _HLS_INDEX = Dict{String,Vector{String}}(
 	"NDMI"   => ["nir", "swir1"],
 	"NDREI1" => ["redEdge1", "redEdge2"],      # S30 only: Landsat has no red-edge bands
 	"NDREI2" => ["redEdge1", "redEdge3"],      # S30 only
+	"RGB"    => ["red", "green", "blue"],      # not an index: each date's TRUE COLOUR image (`_rgb_image`)
 )
 
 # Fmask bits that make a pixel unusable: 0 cirrus, 1 cloud, 2 adjacent to cloud/shadow, 3 cloud shadow,
@@ -177,7 +178,11 @@ function _hls_item(f)::Union{HLSItem,Nothing}
 		href = _shub_str(a, "href")
 		startswith(href, "https://") && endswith(href, ".tif") && (assets[k] = href)
 	end
-	return HLSItem(id, String(m[1]), String(m[2]), t, isa(cc, Real) ? Float64(cc) : NaN, assets, 0.0001, 0.0, -9999f0)
+	# Scale 1, offset 0: an HLS COG is Int16 with its OWN scale (0.0001) and fill (-9999) in its
+	# metadata, and the reader (GMT.gd2gmt) already applies both, so a band arrives as reflectance with
+	# NaN holes. Scaling it again here sent red 0.117 to 0.0000117: the normalized differences cancel
+	# the scale and looked right, SAVI/MSAVI/EVI (which add constants) collapsed to ~0.
+	return HLSItem(id, String(m[1]), String(m[2]), t, isa(cc, Real) ? Float64(cc) : NaN, assets, 1.0, 0.0, -9999f0)
 end
 
 # One Earth Search feature ("S2B_29SNC_20261030_0_L2A") -> HLSItem. The scale is the scene's own
@@ -302,8 +307,8 @@ dates `from` and `to`. Only the region's pixels are read (COG windows), never wh
   (not cirrus, cloud, cloud-adjacent, shadow or snow).
 - `tile`: MGRS tile to use (e.g. "T29SNB"). Empty: the tile most items over the region share, so every
   date is on the same pixel grid.
-- `outdir`: when given, each date is written there as `<prefix>_<yyyymmdd>_<L30|S30>.tif`, the stack as
-  `<prefix>_cube.nc` and the region means as `<prefix>_series.csv`.
+- `outdir`: when given, each date is written there as `<prefix>_<yyyymmdd>_<L30|S30>.tiff`, the stack as
+  `<prefix>.nc` and the region means as `<prefix>_series.csv`.
 - `progress`: a function `(percent::Int, message::String)` called as the work advances.
 
 Needs a NASA Earthdata login in the .netrc file (`urs.earthdata.nasa.gov` entry), the one the Account
@@ -381,7 +386,8 @@ function _index_series(items::Vector{HLSItem}, region::Vector{Float64}, idx::Str
 	isempty(items) && error("no scene on tile $tile has the bands $(join(roles, ", "))")
 
 	W, E, S, N = region
-	times = DateTime[];  prodv = String[];  grids = GMTgrid[];  means = Float64[];  clears = Float64[]
+	rgb = (idx == "RGB")                       # true colour: one IMAGE per date, no index, no mean
+	times = DateTime[];  prodv = String[];  grids = Union{GMTgrid,GMTimage}[];  means = Float64[];  clears = Float64[]
 	# The pixel grid every read lands on: the region's window of the first date's first band.
 	progress(4, "Tile $(tile): setting up the pixel grid…")
 	R = _hls_read(items[1].assets[key(items[1], roles[1])], W, E, S, N)
@@ -415,12 +421,24 @@ function _index_series(items::Vector{HLSItem}, region::Vector{Float64}, idx::Str
 		it, bad, clear = items[k], bads[i], clr[i]
 		bands = GMTgrid[bandv[(i - 1) * nb + j] for j in 1:nb]
 		sc, of, fv = Float32(it.scale), Float32(it.offset), it.fill
+		scaled = (sc != 1 || of != 0)          # false for HLS: its reader already scaled it
 		for (j, B) in enumerate(bands)
 			size(B.z) == size(bad) || error("$(it.id): band $(roles[j]) and mask windows differ in size")
 			z = B.z
-			@inbounds for q in eachindex(z)
-				z[q] = (z[q] == fv || bad[q]) ? NaN32 : z[q] * sc + of
+			if scaled
+				@inbounds for q in eachindex(z)
+					z[q] = (z[q] == fv || bad[q]) ? NaN32 : z[q] * sc + of
+				end
+			else
+				@inbounds for q in eachindex(z)
+					bad[q] && (z[q] = NaN32)
+				end
 			end
+		end
+		if rgb
+			push!(times, it.time);  push!(prodv, it.product);  push!(grids, _rgb_image(bands...))
+			push!(means, NaN);  push!(clears, clear)
+			continue
 		end
 		v = nb == 3 ? sp_indices(bands[1].z, bands[2].z, bands[3].z; index = idx) :
 		              sp_indices(bands[1].z, bands[2].z; index = idx)
@@ -443,20 +461,54 @@ function _index_series(items::Vector{HLSItem}, region::Vector{Float64}, idx::Str
 	isempty(grids) && error("no date over that region is at least $(round(Int, 100 * minclear)) % clear")
 
 	if !isempty(outdir)
-		progress(96, "Writing the grids, the cube and the series to $(outdir)…")
+		progress(96, rgb ? "Writing the images and the list to $(outdir)…" :
+		                   "Writing the grids, the cube and the series to $(outdir)…")
 		files = String[]
 		for (t, p, G) in zip(times, prodv, grids)
-			f = joinpath(outdir, "$(prefix)_$(GMT.Dates.format(t, "yyyymmdd"))_$(p).tif")
+			f = joinpath(outdir, "$(prefix)_$(GMT.Dates.format(t, "yyyymmdd"))_$(p).tiff")
 			InteractiveGMT._gmtwrite(f, G)
 			push!(files, f)
 		end
-		stackgrids(files, times; z_unit = "decimalyear", save = joinpath(outdir, "$(prefix)_cube.nc"))
+		# A cube is ONE quantity per layer; three colour bands per date are not one, so true colour
+		# writes the images and the list of dates, and no cube.
+		rgb || stackgrids(files, times; z_unit = "decimalyear", save = joinpath(outdir, "$(prefix).nc"))
 		open(joinpath(outdir, "$(prefix)_series.csv"), "w") do io
-			println(io, "date,product,$(lowercase(idx))_mean,clear_fraction")
+			println(io, rgb ? "date,clear_fraction,product" : "date,$(lowercase(idx))_mean,clear_fraction,product")
 			for (t, p, m, c) in zip(times, prodv, means, clears)
-				println(io, Date(t), ",", p, ",", @sprintf("%.4f", m), ",", @sprintf("%.3f", c))
+				rgb ? println(io, Date(t), ",", @sprintf("%.3f", c), ",", p) :
+				      println(io, Date(t), ",", @sprintf("%.4f", m), ",", @sprintf("%.3f", c), ",", p)
 			end
 		end
 	end
 	return (time = times, product = prodv, grids = grids, mean = means, clear = clears, tile = tile)
+end
+
+# One date's TRUE COLOUR image from its red, green and blue reflectance grids (masked pixels NaN):
+# reflectance back to the 16-bit numbers the product stores (x 10000; NaN and negatives 0), then the
+# AUTOMATIC HISTOGRAM STRETCH iGMT already gives a 16-bit image — `GMT.mat2img(I; stretch=true)`, the
+# call behind an image handle's "Auto histogram stretch" (savefile.jl `_img_stretch_replace!`). The
+# buffer keeps the bands' own memory order and their layout travels with it (`mat2img(img, G)`).
+function _rgb_image(R::GMTgrid, G::GMTgrid, B::GMTgrid)::GMTimage
+	n = length(R.z)
+	img = Array{UInt16}(undef, size(R.z)..., 3)
+	nodata = falses(n)                         # a pixel NaN in any band (cloud mask, fill)
+	for (b, X) in enumerate((R, G, B))
+		z = X.z
+		size(z) == size(R.z) || error("the red, green and blue windows differ in size")
+		off = (b - 1) * n
+		@inbounds for q in 1:n
+			v = z[q]
+			isnan(v) && (nodata[q] = true)
+			img[off + q] = (isnan(v) || v <= 0) ? 0x0000 : UInt16(min(round(Float64(v) * 10000), 65535.0))
+		end
+	end
+	I = GMT.mat2img(GMT.mat2img(img, R); stretch = true)
+	# NODATA WEARS THE PREFERENCES NaN COLOUR (SACRED_LAW.md, preference-application law): the one value
+	# every grid's LUT gets from makeGridCTF, asked of the viewer through the one host accessor.
+	nan = InteractiveGMT._aqua_nan_rgb()
+	@inbounds for q in 1:n
+		nodata[q] || continue
+		for b in 1:3  I.image[(b - 1) * n + q] = nan[b]  end
+	end
+	return I
 end

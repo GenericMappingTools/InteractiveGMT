@@ -1109,7 +1109,10 @@ end
 		@test IG._find_object_exact(scene, :grid, "PT (earth_geoid 10m)") === nothing
 		# An IMAGE layer of that name counts just as much as a grid.
 		IG._SCENE_OBJS[scene] = Tuple{Symbol,String,Any}[(:image, "Azov (earth_day 30s)", G)]
-		@test call(["mode=raster", "region=34/39/45/47", "name=Azov",
+		# `code=`, not `name=` (see above): with `name=` the request was titled "Region 34/39/45/47 (…)",
+		# was NOT recognised, and really downloaded @earth_day_30s — which also left GMT.jl's session
+		# geographic for the next grid read (docs/GMTJL_EARTHREGIONS_GEOG_LEAK.md).
+		@test call(["mode=raster", "region=34/39/45/47", "code=Azov",
 		            "dataset=earth_day", "res=30s"]) == 1
 	finally
 		delete!(IG._SCENE_OBJS, scene)

@@ -3040,10 +3040,19 @@ static bool sceneUpdateBaseGridZ(Scene *s, const float *z, int nx, int ny,
 
 	s->gridZ.set(z, nx, ny, zlayout);          // the host's buffer, read where it lies -- never a copy
 	double zmin = 1e30, zmax = -1e30;
-	for (const float zz : s->gridZ)           // order-free scan of the raw storage
-		if (!std::isnan(zz)) { if (zz < zmin) zmin = zz; if (zz > zmax) zmax = zz; }
+	bool hasNaN = false;
+	for (const float zz : s->gridZ) {         // order-free scan of the raw storage
+		if (std::isnan(zz)) { hasNaN = true; continue; }
+		if (zz < zmin) zmin = zz; if (zz > zmax) zmax = zz;
+	}
 	if (zmin > zmax) { zmin = 0.0; zmax = 1.0; }
 	s->zmin = zmin; s->zmax = zmax;
+	// THE NEW LAYER'S HOLES wear the Preferences NaN colour like the first layer's (SACRED_LAW.md,
+	// preference-application law): the flag sceneSetGridLayer sets for a stored buffer is set for this
+	// one too, and the backdrop follows. Without it a cube whose first layer had no NaN showed every
+	// later layer's holes in the window background.
+	s->gridHasNaN = hasNaN;
+	nanPlaneUpdate(s);
 
 	// The colours, through the same in-place CTF mutation gmtvtk_set_cpt uses (the LUT is shared by
 	// the surface, every tile mapper and the colour bar, so one edit reaches all of them).
@@ -8437,6 +8446,26 @@ static bool actorDisplayedRGB(vtkActor *act, std::vector<unsigned char> &out, in
 	return false;
 }
 
+// A GRID's displayed colours: its z values through ITS OWN colour table — the very mapping its tiles'
+// mappers apply on screen (vtkScalarsToColors::MapScalars, NaN in the LUT's NaN colour). A grid is
+// drawn as a pyramid of LOD tiles under an assembly, so there is no single actor whose scalars could
+// be read back, and the histogram refused every grid window ("no displayed image").
+static bool gridDisplayedRGB(vtkScalarsToColors *lut, const GridZ &z, std::vector<unsigned char> &out, int &nb) {
+	out.clear(); nb = 0;
+	if (!lut || z.empty()) return false;
+	vtkNew<vtkFloatArray> a;
+	a->SetNumberOfComponents(1);
+	a->Allocate((vtkIdType)z.size());
+	for (float v : z) a->InsertNextValue(v);
+	vtkSmartPointer<vtkUnsignedCharArray> c;
+	c.TakeReference(lut->MapScalars(a, VTK_COLOR_MODE_MAP_SCALARS, -1));
+	if (!c || c->GetNumberOfTuples() == 0) return false;
+	nb = c->GetNumberOfComponents();
+	const unsigned char *p = c->GetPointer(0);
+	out.assign(p, p + (size_t)c->GetNumberOfTuples() * nb);
+	return true;
+}
+
 // Resolve "the image on display" for this window (optionally the Scene Objects element `name`) and
 // hand back its pixels. Order mirrors what the user sees: a named element first, then the primary
 // bare image / flat-2-D drape, then the grid surface, then the first visible image extra.
@@ -8448,8 +8477,11 @@ static bool sceneDisplayedRGB(Scene *s, const char *name, std::vector<unsigned c
 			if (ex.name != name) continue;
 			label = QString::fromStdString(ex.name);
 			if (actorDisplayedRGB(ex.drape, out, nb)) return true;
-			return actorDisplayedRGB(ex.actor, out, nb);
+			if (!ex.isImage && gridDisplayedRGB(ex.lut, ex.gridZ, out, nb)) return true;
+			return actorDisplayedRGB(vtkActor::SafeDownCast(ex.actor.Get()), out, nb);
 		}
+		if (!s->imageOnly && !s->surfName.empty() && s->surfName == name &&
+		    gridDisplayedRGB(s->surfLut, s->gridZ, out, nb)) { label = QString::fromStdString(s->surfName); return true; }
 	}
 	// Image EXTRAS come FIRST, newest last-added first. Every derived image in iGMT — a contrast or
 	// decorrelation stretch, a crop, a mask — is added as an extra ON TOP of the source, so the most
@@ -8473,11 +8505,36 @@ static bool sceneDisplayedRGB(Scene *s, const char *name, std::vector<unsigned c
 		label = "surface";
 		return true;
 	}
+	// The base GRID, drawn as LOD tiles (no single actor to read): its z through its own LUT.
+	if (!s->imageOnly && !s->gridPlaceholder) {
+		vtkProp3D *sp = surfProp(s);
+		if (sp && sp->GetVisibility() && gridDisplayedRGB(s->surfLut, s->gridZ, out, nb)) {
+			label = s->surfName.empty() ? QString("surface") : QString::fromStdString(s->surfName);
+			return true;
+		}
+	}
 	for (size_t k = s->extras.size(); k-- > 0; ) {     // anything else still visible (grid / mesh)
 		auto &ex = s->extras[k];
-		vtkActor *a = ex.drape ? ex.drape.Get() : ex.actor.Get();
-		if (!a || !a->GetVisibility()) continue;
-		if (actorDisplayedRGB(a, out, nb)) { label = QString::fromStdString(ex.name); return true; }
+		vtkProp3D *pa = ex.drape ? static_cast<vtkProp3D *>(ex.drape.Get()) : ex.actor.Get();
+		if (!pa || !pa->GetVisibility()) continue;
+		if (actorDisplayedRGB(vtkActor::SafeDownCast(pa), out, nb) ||
+		    (!ex.isImage && gridDisplayedRGB(ex.lut, ex.gridZ, out, nb))) {
+			label = QString::fromStdString(ex.name);
+			return true;
+		}
+	}
+	// NOTHING resolved but the window shows something: its rendered frame. "Image -> Show Histogram"
+	// never refuses what is on screen, whatever made it.
+	if (s->widget && s->widget->renderWindow()) {
+		const QImage img = s->widget->grabFramebuffer().convertToFormat(QImage::Format_RGBA8888);
+		if (!img.isNull() && img.width() > 0 && img.height() > 0) {
+			nb = 4;
+			out.resize((size_t)img.width() * img.height() * 4);
+			for (int j = 0; j < img.height(); ++j)
+				memcpy(out.data() + (size_t)j * img.width() * 4, img.constScanLine(j), (size_t)img.width() * 4);
+			label = "window";
+			return true;
+		}
 	}
 	return false;
 }
@@ -20183,8 +20240,8 @@ public:
 			});
 		if (btnFile)
 			QObject::connect(btnFile, &QPushButton::clicked, d, [this, d]() {
-				QString p = QFileDialog::getSaveFileName(d, "Mosaic file", prefStartDir("mosaic.tif"),
-				                                         "GeoTIFF (*.tif *.tiff);;netCDF (*.nc);;All files (*)");
+				QString p = QFileDialog::getSaveFileName(d, "Mosaic file", prefStartDir("mosaic.tiff"),
+				                                         "GeoTIFF (*.tiff *.tif);;netCDF (*.nc);;All files (*)");
 				if (p.isEmpty()) return;
 				if (outFile) outFile->setText(QDir::toNativeSeparators(p));
 				rememberStartDir(QFileInfo(p).absolutePath());
@@ -20557,7 +20614,7 @@ public:
 			});
 		QObject::connect(bFile, &QPushButton::clicked, d, [this, d]() {
 			QString p = QFileDialog::getSaveFileName(d, "Save the DTM grid", prefStartDir("emodnet.nc"),
-			                                         "netCDF (*.nc *.grd);;GeoTIFF (*.tif *.tiff);;All files (*)");
+			                                         "netCDF (*.nc *.grd);;GeoTIFF (*.tiff *.tif);;All files (*)");
 			if (p.isEmpty()) return;
 			outFile->setText(QDir::toNativeSeparators(p));
 			rememberStartDir(QFileInfo(p).absolutePath());
@@ -21399,11 +21456,11 @@ public:
 		QString fn = QFileDialog::getSaveFileName(dlg, "Save the map as an image", prefStartDir(
 		                 labels.isEmpty() ? QString("ipma_radar.png")
 		                                  : QString("ipma_radar_%1.png").arg(QString(labels[slider->value()]).remove('-').remove(':').replace(' ', 'T'))),
-		                 "PNG (*.png);;JPEG (*.jpg *.jpeg);;GeoTIFF (*.tif *.tiff)", &filter);
+		                 "PNG (*.png);;JPEG (*.jpg *.jpeg);;GeoTIFF (*.tiff *.tif)", &filter);
 		if (fn.isEmpty()) return;
 		rememberStartDir(fn);
 		const QString ext = QFileInfo(fn).suffix().toLower();
-		if (filter.startsWith("GeoTIFF") && ext != "tif" && ext != "tiff") fn += ".tif";
+		if (filter.startsWith("GeoTIFF") && ext != "tif" && ext != "tiff") fn += ".tiff";
 		writeImage(fn);
 	}
 	// The writing half of "Save image…" (the format follows the file's extension).
@@ -28466,8 +28523,12 @@ static void showCubeLayerDialog(Scene *s, const QString &cubeName, int nLayers) 
 	// Re-drop into a window that already has the cube dock open: just re-point its range at the new
 	// cube and raise it.
 	if (s->cubeDlg) {
-		auto *sb  = s->cubeDlg->findChild<QScrollBar *>("layerScrollBar");
-		auto *spn = s->cubeDlg->findChild<QSpinBox  *>("layerSpin");
+		// The slider + spin box may be sitting in the window's toolbar (the dialog's "to toolbar"
+		// button): then they are children of that bar, not of the dialog, and the dialog stays hidden.
+		QWidget *bar   = qobject_cast<QWidget *>(s->cubeDlg->property("layerBar").value<QObject *>());
+		QObject *ctrls = bar ? static_cast<QObject *>(bar) : static_cast<QObject *>(s->cubeDlg);
+		auto *sb  = ctrls->findChild<QScrollBar *>("layerScrollBar");
+		auto *spn = ctrls->findChild<QSpinBox  *>("layerSpin");
 		auto *chk = s->cubeDlg->findChild<QCheckBox  *>("globalScaleCheck");
 		auto *lbl = s->cubeDlg->findChild<QLabel     *>("infoLabel");   // optional (absent in current .ui)
 		if (sb)  { sb->setRange(1, nLayers);  sb->setValue(1); }
@@ -28481,8 +28542,10 @@ static void showCubeLayerDialog(Scene *s, const QString &cubeName, int nLayers) 
 			rb->setText("Load all in RAM");
 			rb->setEnabled(true);
 		}
-		s->cubeDlg->show();
-		s->cubeDlg->raise();
+		if (!bar) {
+			s->cubeDlg->show();
+			s->cubeDlg->raise();
+		}
 		if (sb && chk && g_juliaCubeLayer) g_juliaCubeLayer(s, sb->value() - 1, chk->isChecked() ? 1 : 0);   // show layer 1 of the new cube
 		return;
 	}
@@ -28548,9 +28611,9 @@ static void showCubeLayerDialog(Scene *s, const QString &cubeName, int nLayers) 
 	// The .ui's OWN size, verbatim, centred on the viewer window.
 	dock->resize(content->sizeHint());
 	dock->move(mw->mapToGlobal(mw->rect().center()) - QPoint(dock->width() / 2, dock->height() / 2));
-	parkOnMinimise(dock, [s, dock, cubeName, nLayers]() {
+	auto parkCube = [s, dock, cubeName, nLayers]() {
 		parkTool(s, dock, QString("Cube layers (%1)").arg(nLayers), IC_Rect,
-		         QString("Minimised cube layer selector — %1, %2 layers. Double-click to bring it back.")
+		         QString("Parked cube layer selector — %1, %2 layers. Double-click to bring it back.")
 		             .arg(cubeName).arg(nLayers),
 		         [s, dock]() {                       // the shared unpark: drop the handle, show the window
 		             unparkTool(s, dock);
@@ -28558,7 +28621,26 @@ static void showCubeLayerDialog(Scene *s, const QString &cubeName, int nLayers) 
 		             dock->showNormal();  dock->raise();  dock->activateWindow();
 		         },
 		         nullptr);
-	});
+	};
+	parkOnMinimise(dock, parkCube);
+	// The X PARKS it too, it never deletes it: the cube stays loaded, so its selector must stay
+	// reachable. Only a SPONTANEOUS close (the user's X, from the window manager) is turned into a park
+	// — a programmatic close (window teardown, application quit) still closes it, so nothing that needs
+	// the dialog gone is blocked by it.
+	struct CubeCloseParks : QObject {
+		std::function<void()> park;
+		CubeCloseParks(QObject *parent, std::function<void()> p) : QObject(parent), park(std::move(p)) {}
+		bool eventFilter(QObject *o, QEvent *e) override {
+			if (e->type() == QEvent::Close && e->spontaneous()) {
+				e->ignore();
+				if (auto *w = qobject_cast<QWidget *>(o)) w->hide();
+				park();
+				return true;
+			}
+			return QObject::eventFilter(o, e);
+		}
+	};
+	dock->installEventFilter(new CubeCloseParks(dock, parkCube));
 	QObject::connect(dock, &QObject::destroyed, mw, [s, dock]{ if (sceneAlive(s)) unparkTool(s, dock); });
 
 	s->cubeDlg = dock;
@@ -28666,6 +28748,68 @@ static void showCubeLayerDialog(Scene *s, const QString &cubeName, int nLayers) 
 			else {
 				QMessageBox::warning(dock, "Save as 3-D netCDF", "Failed to write the cube.");
 			}
+		});
+	}
+
+	// "To toolbar" (toBarBtn): the slider + spin box MOVE into the window's own toolbar row, at its
+	// right end, and the dialog hides — so scrubbing layers needs no window over the display. They are
+	// the SAME two widgets, re-parented, so every connection above (sync, fire, the re-drop branch)
+	// keeps serving them; nothing is duplicated. The bar's own restore button moves them back into
+	// their .ui cells and shows the dialog again. The bar lives in the toolbar as two QWidgetActions
+	// (an expanding spacer + the bar), held by QPointer: deleting an action removes it from the
+	// toolbar and deletes its widget.
+	auto *grid = content->findChild<QGridLayout *>("controlsGrid");
+	if (auto *toBarBtn = content->findChild<QToolButton *>("toBarBtn"); toBarBtn && grid) {
+		if (toBarBtn->icon().isNull()) toBarBtn->setIcon(dock->style()->standardIcon(QStyle::SP_ArrowUp));
+		auto spacerAct = std::make_shared<QPointer<QAction>>();
+		auto barAct    = std::make_shared<QPointer<QAction>>();
+		QPointer<QDialog> dlgP(dock);
+
+		auto toDialog = [s, dlgP, sb, spn, grid, spacerAct, barAct]() {
+			if (!dlgP) return;
+			grid->addWidget(sb,  1, 0);         // back to the .ui's own cells (re-parents them)
+			grid->addWidget(spn, 1, 1);
+			sb->setMinimumWidth(0);
+			dlgP->setProperty("layerBar", QVariant::fromValue<QObject *>(nullptr));
+			// deleteLater: this runs inside the bar's own button click, which must not delete itself.
+			if (QAction *a = spacerAct->data()) a->deleteLater();
+			if (QAction *a = barAct->data())    a->deleteLater();
+			spacerAct->clear();
+			barAct->clear();
+			if (sceneAlive(s)) unparkTool(s, dlgP);
+			dlgP->showNormal();  dlgP->raise();  dlgP->activateWindow();
+		};
+
+		QObject::connect(toBarBtn, &QToolButton::clicked, dock, [s, dock, sb, spn, spacerAct, barAct, toDialog]() {
+			if (!sceneAlive(s) || !s->win || *barAct) return;
+			QToolBar *tb = s->win->findChild<QToolBar *>("mainToolBar");
+			if (!tb) return;
+			auto *spacer = new QWidget(tb);    // pushes the bar to the far right of the icon row
+			spacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+			auto *bar = new QWidget(tb);
+			bar->setObjectName("cubeLayerBar");
+			auto *h = new QHBoxLayout(bar);
+			h->setContentsMargins(0, 0, 4, 0);
+			h->setSpacing(2);
+			sb->setMinimumWidth(220);
+			h->addWidget(sb);                  // re-parents them out of the dialog
+			h->addWidget(spn);
+			auto *back = new QToolButton(bar);
+			back->setAutoRaise(true);
+			back->setIcon(bar->style()->standardIcon(QStyle::SP_TitleBarNormalButton));
+			back->setToolTip("Put the layer slider back in the cube layers dialog");
+			h->addWidget(back);
+			QObject::connect(back, &QToolButton::clicked, bar, [toDialog]() { toDialog(); });
+			*spacerAct = tb->addWidget(spacer);
+			*barAct    = tb->addWidget(bar);
+			dock->setProperty("layerBar", QVariant::fromValue<QObject *>(bar));
+			dock->hide();
+		});
+		// The dialog dies (its window closing, or anything else that closes it) while the controls
+		// are in the bar: the bar goes with it — there is nothing left for it to drive.
+		QObject::connect(dock, &QObject::destroyed, mw, [spacerAct, barAct]() {
+			delete spacerAct->data();
+			delete barAct->data();
 		});
 	}
 
@@ -32830,7 +32974,7 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 			return;
 		}
 		QString fn = QFileDialog::getSaveFileName(s->win, "Save screenshot as GeoTIFF",
-												   prefStartDir("gmtvtk.tif"), "GeoTIFF (*.tif *.tiff)");
+												   prefStartDir("gmtvtk.tiff"), "GeoTIFF (*.tiff *.tif)");
 		if (fn.isEmpty()) return;
 		rememberStartDir(fn);
 		if (!g_juliaSaveGeoTiff) {

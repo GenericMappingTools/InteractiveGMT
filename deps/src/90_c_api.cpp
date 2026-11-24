@@ -7161,6 +7161,31 @@ GMTVTK_API int gmtvtk_set_group_master_h(void *handle, const char *child, const 
 	return 1;
 }
 
+// The same declaration for a GRID `child` (a tool delivering many grids from one run — the HLS time
+// series, one per date): its group hangs under `master`, whose own menu offers one colour palette for
+// all its grids and Remove all (gridGroupMenu, 50_scene.cpp). The master is OPENED, so a new grid
+// declared under it is revealed in Scene Objects (derived-variable display law); the user may fold it.
+GMTVTK_API int gmtvtk_set_grid_group_h(void *handle, const char *child, const char *master) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !child || !child[0]) return 0;
+	if (master && master[0]) {
+		s->groupMaster[std::string(child)] = std::string(master);
+		s->objExpanded.insert(std::string(master));
+	}
+	else
+		s->groupMaster.erase(std::string(child));
+	rebuildSceneObjects(s);
+	return 1;
+}
+
+// The cube dock's "Save as 3-D netCDF…" button: offered only when the cube the dock drives is NOT
+// already a 3-D netCDF (a band stack, a multi-band GeoTIFF). The host decides, from the cube's source.
+GMTVTK_API void gmtvtk_cube_dock_saveable_h(void *handle, int saveable) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !s->cubeDlg) return;
+	if (auto *b = s->cubeDlg->findChild<QPushButton *>("saveCubeBtn")) b->setVisible(saveable != 0);
+}
+
 GMTVTK_API int gmtvtk_remove_polys_h(void *handle, const char *groupName) {
 	Scene *s = static_cast<Scene*>(handle);
 	if (!sceneAlive(s) || !groupName || !*groupName) return 0;
@@ -9635,14 +9660,26 @@ GMTVTK_API int gmtvtk_xyplot_mark_test(void *handle, double x, double y, int ges
 		               bs, Qt::NoModifier);
 		QCoreApplication::sendEvent(p->widget, &ev);
 	};
-	if (gesture == 2) {
+	if (gesture == 2 || gesture == 3) {                      // 3 = the same drag in 40 small steps, as a hand moves
 		double mx, my, msx, msy;
 		if (!xyMarkPoint(pg, mx, my) || !xyDataToScene(pg, mx, my, msx, msy)) return -4;
 		const QPointF from = toQt(msx, msy);
 		send(QEvent::MouseButtonPress, from, Qt::LeftButton);
-		send(QEvent::MouseMove, (from + at) / 2, Qt::LeftButton);
-		send(QEvent::MouseMove, at, Qt::LeftButton);
+		const int steps = gesture == 3 ? 40 : 2;
+		for (int k = 1; k <= steps; ++k) send(QEvent::MouseMove, from + (at - from) * (double(k) / steps), Qt::LeftButton);
 		send(QEvent::MouseButtonRelease, at, Qt::NoButton);
+	}
+	else if (gesture == 4) {                                 // right-click ON the marker, pick "Remove"
+		double mx, my, msx, msy;
+		if (!xyMarkPoint(pg, mx, my) || !xyDataToScene(pg, mx, my, msx, msy)) return -4;
+		const QPointF on = toQt(msx, msy);
+		QTimer::singleShot(300, []() {
+			for (QWidget *w : QApplication::topLevelWidgets())
+				if (QMenu *m = qobject_cast<QMenu *>(w)) if (m->isVisible())
+					for (QAction *a : m->actions()) if (a->text() == "Remove") { m->setActiveAction(a); QKeyEvent k(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier); QCoreApplication::sendEvent(m, &k); return; }
+		});
+		QMouseEvent ev(QEvent::MouseButtonPress, on, p->widget->mapToGlobal(on), Qt::RightButton, Qt::RightButton, Qt::NoModifier);
+		QCoreApplication::sendEvent(p->widget, &ev);
 	}
 	else if (gesture >= 0) {                                 // -1 = no gesture: only report
 		send(QEvent::MouseButtonPress, at, Qt::LeftButton);
@@ -9660,6 +9697,123 @@ GMTVTK_API int gmtvtk_xyplot_mark_test(void *handle, double x, double y, int ges
 		for (int i = 0; i < img.width(); ++i)
 			if (img.pixel(i, j) == qRgb(255, 255, 225)) { out[2] = 1; break; }
 	return pg.markSel;
+}
+
+// test hook: DOUBLE-CLICK entry `entry` (0 = top) of the current page's chart legend with real Qt mouse
+// events, answer the rename dialog that opens with `newName`, and write the series' name afterwards
+// into buf. Returns 1 when a dialog opened and was answered, 0 when none did, <0 on a bad call.
+GMTVTK_API int gmtvtk_xyplot_legend_dblclick_test(void *handle, int entry, const char *newName, char *buf, int cap) {
+	XYPlot *p = static_cast<XYPlot*>(handle);
+	if (!p || !p->win || !p->widget || p->pages.empty() || !buf || cap < 2) return -2;
+	buf[0] = '\0';
+	p->widget->renderWindow()->Render();
+	vtkChartXY *chart = xyCur(p).chart;
+	vtkChartLegend *lg = chart ? chart->GetLegend() : nullptr;
+	if (!lg) return -3;
+	const int *sz = p->widget->renderWindow()->GetSize();
+	// the legend's box, found with its own Hit over the scene (a 2 px raster)
+	double x0 = 1e9, x1 = -1e9, y0 = 1e9, y1 = -1e9;
+	for (int sy = 0; sy < sz[1]; sy += 2)
+		for (int sx = 0; sx < sz[0]; sx += 2) {
+			vtkContextMouseEvent cm;  cm.SetPos(vtkVector2f((float)sx, (float)sy));
+			if (lg->Hit(cm)) { x0 = std::min(x0, (double)sx); x1 = std::max(x1, (double)sx);
+			                   y0 = std::min(y0, (double)sy); y1 = std::max(y1, (double)sy); }
+		}
+	if (x1 < x0) return -4;
+	int n = 0;
+	for (vtkIdType i = 0; i < chart->GetNumberOfPlots(); ++i) {
+		vtkPlot *pl = chart->GetPlot(i);
+		if (pl && pl->GetVisible() && pl->GetLegendVisibility() && pl->GetNumberOfLabels() > 0 && !pl->GetLabel(0).empty()) ++n;
+	}
+	if (entry < 0 || entry >= n) return -5;
+	const double pad = std::min(5.0, (y1 - y0) / 4.0), rowH = (y1 - y0 - 2.0 * pad) / n;
+	const double sx = (x0 + x1) / 2, sy = y1 - pad - (entry + 0.5) * rowH;
+	const double dpr = p->widget->devicePixelRatioF();
+	const QPointF at(sx / dpr, (sz[1] - sy) / dpr);
+	bool answered = false;
+	const std::string nn = newName ? newName : "";
+	QTimer::singleShot(300, [&answered, nn]() {
+		for (QWidget *w : QApplication::topLevelWidgets())
+			if (auto *d = qobject_cast<QInputDialog *>(w)) if (d->isVisible()) {
+				d->setTextValue(QString::fromStdString(nn));  d->accept();  answered = true;  return;
+			}
+	});
+	auto send = [&](QEvent::Type t) {
+		QMouseEvent ev(t, at, p->widget->mapToGlobal(at), Qt::LeftButton,
+		               t == QEvent::MouseButtonRelease ? Qt::NoButton : Qt::LeftButton, Qt::NoModifier);
+		QCoreApplication::sendEvent(p->widget, &ev);
+	};
+	send(QEvent::MouseButtonPress);  send(QEvent::MouseButtonRelease);
+	send(QEvent::MouseButtonDblClick);  send(QEvent::MouseButtonRelease);
+	if (!answered) {                                       // no modal opened: let the timer fire harmlessly
+		QElapsedTimer et; et.start();
+		while (et.elapsed() < 500) QCoreApplication::processEvents();
+	}
+	const std::vector<XYSeries> &se = xyCur(p).series;
+	std::string names;
+	for (const auto &s : se) { if (!names.empty()) names += "|"; names += s.name; }
+	snprintf(buf, cap, "%s", names.c_str());
+	return answered ? 1 : 0;
+}
+
+// test hook: what "Image -> Show Histogram" gets from the window — sceneDisplayedRGB, the pixels it
+// histograms. Returns the pixel count (0 = it would refuse), *nb = bytes per pixel; the label into buf.
+GMTVTK_API int gmtvtk_displayed_rgb_test(void *handle, const char *name, int *nb, char *buf, int cap) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!s || !nb) return -1;
+	std::vector<unsigned char> px;
+	QString label;
+	*nb = 0;
+	if (!sceneDisplayedRGB(s, name, px, *nb, label) || *nb < 1) return 0;
+	if (buf && cap > 1) snprintf(buf, cap, "%s", label.toUtf8().constData());
+	return (int)(px.size() / (size_t)*nb);
+}
+
+// test hook: the Object Manager's "Legend" row -> right-click -> "Edit…", type `texts` ("|"-separated,
+// one per legend entry, top to bottom) into the dialog and press OK. Writes the series names after it
+// ("|"-separated) into buf. Returns 1 when the dialog opened and was accepted, 0 otherwise.
+GMTVTK_API int gmtvtk_xyplot_legend_edit_test(void *handle, const char *texts, char *buf, int cap) {
+	XYPlot *p = static_cast<XYPlot*>(handle);
+	if (!p || !p->objMgr || p->pages.empty() || !texts || !buf || cap < 2) return -2;
+	buf[0] = '\0';
+	QTreeWidgetItem *row = nullptr;
+	for (QTreeWidgetItemIterator it(p->objMgr); *it; ++it)
+		if ((*it)->data(0, Qt::UserRole).toInt() == -2) { row = *it; break; }
+	if (!row) return -3;
+	const QPoint pos = p->objMgr->visualItemRect(row).center();
+	const QStringList want = QString::fromUtf8(texts).split('|');
+	bool done = false;
+	std::string seen;
+	QTimer::singleShot(300, [&done, &seen, want]() {
+		for (QWidget *w : QApplication::topLevelWidgets())
+			if (QMenu *m = qobject_cast<QMenu *>(w)) if (m->isVisible()) {
+				for (QAction *a : m->actions()) seen += a->text().toStdString() + ";";
+			}
+		for (QWidget *w : QApplication::topLevelWidgets())
+			if (QMenu *m = qobject_cast<QMenu *>(w)) if (m->isVisible())
+				for (QAction *a : m->actions()) if (a->text() == "Edit…") {
+					auto poll = std::make_shared<std::function<void(int)>>();
+					*poll = [&done, want, poll](int left) {
+						for (QWidget *w2 : QApplication::topLevelWidgets())
+							if (QDialog *d = qobject_cast<QDialog *>(w2)) if (d->isVisible() && d->objectName() == "xyLegendEdit") {
+								for (int k = 0; k < want.size(); ++k)
+									if (QLineEdit *e = d->findChild<QLineEdit *>(QString("legendEntry%1").arg(k))) e->setText(want[k]);
+								d->accept();  done = true;  return;
+							}
+						if (left > 0) QTimer::singleShot(50, [poll, left]() { (*poll)(left - 1); });
+					};
+					QTimer::singleShot(50, [poll]() { (*poll)(60); });
+					m->setActiveAction(a);
+					QKeyEvent k(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
+					QCoreApplication::sendEvent(m, &k);
+					return;
+				}
+	});
+	p->objMgr->customContextMenuRequested(pos);   // the REAL handler (gmtvtk.dll), as a right-click
+	std::string names;
+	for (const auto &se : xyCur(p).series) { if (!names.empty()) names += "|"; names += se.name; }
+	snprintf(buf, cap, "%s", done ? names.c_str() : ("menu: " + seen + " names: " + names).c_str());
+	return done ? 1 : 0;
 }
 
 // test hooks for the X,Y "Geomagnetic bar code" tools (65_xyplot.cpp) — the user's gestures, through
@@ -15038,6 +15192,27 @@ GMTVTK_API int gmtvtk_pbr_render_offscreen_tex(const float *z, int nx, int ny, i
 GMTVTK_API void gmtvtk_pref_nan_color(double *rgb) {
 	if (!rgb) return;
 	prefNanColorRGB(rgb[0], rgb[1], rgb[2]);
+}
+
+// A host tool's own remembered value (a dialog's last region, …), kept in the SAME ~/.gmt/iGMT.ini
+// every iGMT preference lives in (igmtSettings, 30_app.cpp) — never a file of the tool's own, never
+// the registry. `key` is a QSettings key ("remotes/hls_region").
+// get: writes the value (UTF-8, NUL-terminated, truncated to cap) and returns its length; -1 = unset.
+GMTVTK_API int gmtvtk_setting_get(const char *key, char *buf, int cap) {
+	if (!key || !key[0] || !buf || cap <= 0) return -1;
+	QSettings st = igmtSettings();
+	if (!st.contains(QString::fromUtf8(key))) return -1;
+	const QByteArray v = st.value(QString::fromUtf8(key)).toString().toUtf8();
+	const int n = std::min((int)v.size(), cap - 1);
+	memcpy(buf, v.constData(), (size_t)n);
+	buf[n] = '\0';
+	return n;
+}
+GMTVTK_API void gmtvtk_setting_set(const char *key, const char *val) {
+	if (!key || !key[0]) return;
+	QSettings st = igmtSettings();
+	st.setValue(QString::fromUtf8(key), QString::fromUtf8(val ? val : ""));
+	st.sync();
 }
 
 // DRIVE THE TILE PYRAMID TO CONVERGENCE, and say how many passes it took.

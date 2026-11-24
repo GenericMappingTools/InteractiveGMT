@@ -1849,7 +1849,7 @@ struct SaveFmt { const char *label; const char *code; const char *filter; const 
 // keeps those in-process and hands them to vtkioSaveObject (87_vtkio.cpp) instead of Julia.
 static const SaveFmt kGridFmts[] = {
 	{ "netCDF grid",       "nc",         "netCDF grid (*.nc *.grd)",      ".nc"  },
-	{ "GeoTIFF",           "gtiff",      "GeoTIFF (*.tif *.tiff)",        ".tif" },
+	{ "GeoTIFF",           "gtiff",      "GeoTIFF (*.tiff *.tif)",        ".tiff" },
 	{ "JPEG2000",          "jp2",        "JPEG2000 (*.jp2)",              ".jp2" },
 	{ "Erdas Imagine",     "erdas",      "Erdas Imagine (*.img)",         ".img" },
 	{ "Surfer 6 grid",     "surfer",     "Surfer 6 grid (*.grd)",         ".grd" },
@@ -1861,13 +1861,13 @@ static const SaveFmt kGridFmts[] = {
 // Images always go through GMT.gdalwrite (driver by extension) — except the VTK entries, which
 // write the layer's own texture raster as a vtkImageData (same in-process path as the grid case).
 static const SaveFmt kImageFmts[] = {
-	{ "GeoTIFF",           "gtiff",      "GeoTIFF (*.tif *.tiff)",        ".tif" },
+	{ "GeoTIFF",           "gtiff",      "GeoTIFF (*.tiff *.tif)",        ".tiff" },
 	{ "JPEG2000",          "jp2",        "JPEG2000 (*.jp2)",              ".jp2" },
 	{ "Erdas Imagine",     "erdas",      "Erdas Imagine (*.img)",         ".img" },
 	{ "ENVI",              "envi",       "ENVI (*.hdr)",                  ".hdr" },
 	{ "JPEG",              "jpg",        "JPEG (*.jpg *.jpeg)",           ".jpg" },
 	{ "PNG",               "png",        "PNG (*.png)",                   ".png" },
-	{ "TIFF",              "tif",        "TIFF (*.tif)",                  ".tif" },
+	{ "TIFF",              "tif",        "TIFF (*.tiff *.tif)",            ".tiff" },
 	{ "BMP",               "bmp",        "BMP (*.bmp)",                   ".bmp" },
 	{ "VTK XML ImageData", "vtk_vti",    "VTK XML ImageData (*.vti)",     ".vti" },
 	{ "VTK legacy",        "vtk_legacy", "VTK legacy (*.vtk)",            ".vtk" },

@@ -138,10 +138,10 @@ function _find_base_named(scene::Ptr{Cvoid}, kind::Symbol, name::AbstractString)
 end
 
 # Canonical on-disk extension for each format code (kept in sync with the C++ dialog filters).
-const _GRID_EXT = Dict("nc"=>".nc", "surfer"=>".grd", "gtiff"=>".tif",
+const _GRID_EXT = Dict("nc"=>".nc", "surfer"=>".grd", "gtiff"=>".tiff",
 					   "jp2"=>".jp2", "erdas"=>".img", "envi"=>".hdr")
-const _IMG_EXT  = Dict("gtiff"=>".tif", "jp2"=>".jp2", "erdas"=>".img", "envi"=>".hdr",
-					   "jpg"=>".jpg", "png"=>".png", "tif"=>".tif", "bmp"=>".bmp")
+const _IMG_EXT  = Dict("gtiff"=>".tiff", "jp2"=>".jp2", "erdas"=>".img", "envi"=>".hdr",
+					   "jpg"=>".jpg", "png"=>".png", "tif"=>".tiff", "bmp"=>".bmp")
 
 # Append the format's canonical extension ONLY when the chosen name has NO extension at all (a bare
 # name typed in the box). A name that already has one — an existing file picked in the dialog above
@@ -240,12 +240,12 @@ function _on_save(scene::Ptr{Cvoid}, req::Cstring)::Cvoid
 		elseif (kind == "image")
 			I = _find_object(scene, :image, name)
 			I === nothing && error("No image to save in this window")
-			path = _ensure_ext(path, get(_IMG_EXT, fmt, ".tif"), _IMG_EXT)
+			path = _ensure_ext(path, get(_IMG_EXT, fmt, ".tiff"), _IMG_EXT)
 			_save_image(I, fmt, path)
 		elseif (kind == "gridimage")
 			G = _find_object(scene, :grid, name)
 			G === nothing && error("No grid to save in this window")
-			path = _ensure_ext(path, get(_IMG_EXT, fmt, ".tif"), _IMG_EXT)
+			path = _ensure_ext(path, get(_IMG_EXT, fmt, ".tiff"), _IMG_EXT)
 			_save_image(_grid_picture(scene, name, G), fmt, path)
 		elseif (kind == "mesh")
 			# only the GLB comes here: the VTK mesh formats are written by the viewer itself
@@ -312,6 +312,24 @@ function _on_move(scene::Ptr{Cvoid}, req::Cstring)::Cint
 		parts = split(unsafe_string(req), ';', limit=2)
 		kind = strip(parts[1])
 		name = length(parts) >= 2 ? String(strip(parts[2])) : ""
+		# A CUBE moves WHOLE: its row's grid is only the layer on show, so re-opening that grid moved one
+		# frame. The new window opens the cube's own source through the open-a-file door every cube
+		# takes (`_open_spec_into` -> `_on_3d_cube_dropped`): every layer, its slider, its range.
+		_snapshot_cube!(scene)                     # the active cube's latest state into the registry
+		cubes = get(_CUBES, scene, nothing)
+		if kind == "grid" && cubes !== nothing && haskey(cubes, name)
+			info = cubes[name].info
+			h = ccall(_fn(:gmtvtk_open_empty), Ptr{Cvoid}, (Cstring,), name)
+			h == C_NULL && error("could not open the window")
+			_load_dialog_begin("Moving $(name)…")    # the open door's own busy notice
+			try
+				_open_spec_into(h, info.path, name, true; recent = "")
+			finally
+				_load_dialog_end()
+			end
+			_start_pump()
+			return Cint(1)
+		end
 		if kind == "grid"
 			G = _find_object(scene, :grid, name)
 			G === nothing && error("No grid to move in this window")

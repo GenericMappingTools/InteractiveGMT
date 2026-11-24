@@ -48,6 +48,12 @@ a farm, a valley): every date reads the region's pixels again.
 | MNDWI | green, SWIR2 | open water, better near built areas |
 | NBRI | NIR, SWIR2 | burned areas |
 | NDREI1, NDREI2 | red-edge (S30 only) | chlorophyll, late in the season |
+| RGB | red, green, blue | not an index: each clear date as a **true colour image**, auto histogram stretched (10 m with Sentinel-2 L2A) |
+
+With **RGB**, each date arrives as an image (cloud-masked pixels in the Preferences NaN colour), all under the series' master
+handle. With **Save to files** the images are written as `<name>_<yyyymmdd>_<product>.tiff` with the
+list of dates (`<name>_series.csv`: date, clear share, product) — no cube: three colour bands per date
+are not one quantity.
 
 **Sensor** — both products (the default and the densest series), Landsat only, Sentinel-2 only, or
 **Sentinel-2 L2A, 10 m (Earth Search, no login)**: Sentinel-2 at its own resolution, not HLS (see
@@ -60,13 +66,22 @@ anything is read. Keep it high: a 110 km tile half covered in cloud can still be
 region first, and a date is kept only if at least this share of the region's pixels is free of
 cirrus, cloud, cloud edges, cloud shadow and snow. The masked pixels of a kept date are NaN.
 
-**Save to files (optional)** — empty: every date is added to the window as its own grid. A file name
+**Save to files (optional)** — empty: every date is added to the window as its own grid, all of them
+under one master handle in **Scene Objects** named for the series (index, sensor, tile, first…last
+date). Click that handle for **Color palette for all grids** (one common range — the global min/max of
+the series, so equal values wear equal colours on every date — or each grid its own range) and
+**Remove all**. A file name
 (e.g. `D:/hls/field.nc`): its folder receives
 
-- `field_<yyyymmdd>_<L30|S30>.tif` — each date's index grid (GeoTIFF, UTM);
-- `field_cube.nc` — all dates in one cube, one layer per date (time in decimal years), opened in the
+- `field_<yyyymmdd>_<L30|S30>.tiff` — each date's index grid (GeoTIFF, UTM);
+- `field.nc` (the name given) — all dates in one cube, one layer per date (time in decimal years), opened in the
   window with its layer slider;
-- `field_series.csv` — date, product, region mean of the index, clear share.
+- `field_series.csv` — date, region mean of the index, clear share, product.
+
+**The series at one place.** Over any window that holds a cube (this one, or any 3-D netCDF), plot a
+symbol where you want it and click it: **3D interpolation** interpolates every layer of the cube at
+that point (GMT's `grdinterpolate`) and opens the series in the X,Y plot tool. From the symbol layer's
+Scene Objects row, it does the same for every symbol of the layer, one series each.
 
 **Get the series** — searches NASA's catalogue (CMR-STAC), keeps the MGRS tile most dates share (so
 every date is on the same pixels), reads the cloud masks, then the bands of the clear dates, all in

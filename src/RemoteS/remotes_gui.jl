@@ -1186,7 +1186,7 @@ end
 # of the Account tab; Earth Search needs none.
 
 # The index list, in this order; the text of each is the Spectral indices dialog's own.
-const _RS_HLS_INDICES = ["NDVI", "EVI", "SAVI", "MSAVI", "NDMI", "NDWI", "MNDWI", "NBRI", "NDREI1", "NDREI2"]
+const _RS_HLS_INDICES = ["NDVI", "EVI", "SAVI", "MSAVI", "NDMI", "NDWI", "MNDWI", "NBRI", "NDREI1", "NDREI2", "RGB"]
 const _RS_HLS_PRODUCTS = [["L30", "S30"], ["L30"], ["S30"], ["S2"]]      # p_products, by index; "S2" = Earth Search
 _rs_hls_s2(d::Dict{String,String})::Bool = _rs_idx(d, "p_products") == 3
 
@@ -1251,7 +1251,7 @@ function _rs_window_box(scene::Ptr{Cvoid})
 end
 
 function _rs_hls_init(scene::Ptr{Cvoid}, d::Dict{String,String}, io::IOBuffer)::Bool
-	_rs_items(io, "p_index", String["$(n) — $(_rs_index_text(n))" for n in _RS_HLS_INDICES])
+	_rs_items(io, "p_index", String[n == "RGB" ? "RGB — True color image (automatic histogram stretch)" : "$(n) — $(_rs_index_text(n))" for n in _RS_HLS_INDICES])
 	_rs_set(io, "p_index", 0)
 	f = _rs_netrc_path()
 	u, p, why = try
@@ -1267,9 +1267,31 @@ function _rs_hls_init(scene::Ptr{Cvoid}, d::Dict{String,String}, io::IOBuffer)::
 	if !_rs_empty(scene)
 		b = _rs_window_box(scene)
 		b === nothing || try _rs_set_region!(io, _rs_lonlat_box(scene, b...)) catch end
+	else
+		# No map to take a region from: the one this tool last ran on.
+		b = _rs_hls_last_region()
+		b === nothing || _rs_set_region!(io, b)
 	end
 	return _rs_hls_status(d, io)
 end
+
+# THE REGION THIS TOOL LAST RAN ON, kept in ~/.gmt/iGMT.ini (gmtvtk_setting_get/_set, the file every
+# iGMT preference lives in) as "W/E/S/N" in degrees. Written by each Get the series; read at open.
+const _RS_HLS_REGION_KEY = "remotes/hls_region"
+
+function _rs_hls_last_region()::Union{NTuple{4,Float64},Nothing}
+	buf = Vector{UInt8}(undef, 256)
+	n = ccall(_fn(:gmtvtk_setting_get), Cint, (Cstring, Ptr{UInt8}, Cint), _RS_HLS_REGION_KEY, buf, Cint(length(buf)))
+	n <= 0 && return nothing
+	v = tryparse.(Float64, split(String(buf[1:n]), '/'))
+	(length(v) == 4 && !any(isnothing, v)) || return nothing
+	W, E, S, N = Float64.(v)
+	(W < E && S < N) || return nothing
+	return (W, E, S, N)
+end
+
+_rs_hls_save_region(W::Float64, E::Float64, S::Float64, N::Float64) =
+	ccall(_fn(:gmtvtk_setting_set), Cvoid, (Cstring, Cstring), _RS_HLS_REGION_KEY, "$W/$E/$S/$N")
 
 function _rs_hls_status(d::Dict{String,String}, io::IOBuffer)::Bool
 	ix = _rs_hls_index(d)
@@ -1324,6 +1346,7 @@ function _rs_hls_compute(scene::Ptr{Cvoid}, d::Dict{String,String}, io::IOBuffer
 	any(isnan, (W, E, S, N)) && error("Give the four limits of the region (degrees).")
 	(W < E && S < N) || error("The region must have W < E and S < N.")
 	(-180 <= W && E <= 180 && -90 <= S && N <= 90) || error("The region must be in longitudes -180..180 and latitudes -90..90.")
+	_rs_hls_save_region(W, E, S, N)				# what the dialog opens on next time, over an empty window
 	from, to = first(_rs_get(d, "p_from"), 10), first(_rs_get(d, "p_to"), 10)
 	save = _rs_get(d, "p_save")
 	outdir, prefix = isempty(save) ? ("", "") : (dirname(save), splitext(basename(save))[1])
@@ -1343,20 +1366,28 @@ function _rs_hls_compute(scene::Ptr{Cvoid}, d::Dict{String,String}, io::IOBuffer
 		_rs_prog_close()
 	end
 	# The series as text: one line per date (tabs = new lines on the wire).
-	rows = ["date        product  mean $(ix)  clear"]
+	rgb = (ix == "RGB")							# true colour: one image per date, no index mean
+	rows = [rgb ? "date        product  clear" : "date        product  mean $(ix)  clear"]
 	for (t, p, m, c) in zip(r.time, r.product, r.mean, r.clear)
-		push!(rows, "$(GMT.Dates.Date(t))  $(p)      $(lpad(rpad(string(round(m, digits = 4)), m < 0 ? 7 : 6, '0'), 8))  $(round(Int, 100 * c)) %")
+		push!(rows, rgb ? "$(GMT.Dates.Date(t))  $(p)      $(round(Int, 100 * c)) %" :
+		      "$(GMT.Dates.Date(t))  $(p)      $(lpad(rpad(string(round(m, digits = 4)), m < 0 ? 7 : 6, '0'), 8))  $(round(Int, 100 * c)) %")
 	end
 	_rs_set(io, "p_series", join(rows, '\t'))
-	if isempty(outdir)
-		# Each date its own grid, in time order: the last date is the one left showing.
+	series = "$(ix) $(src) $(r.tile) $(GMT.Dates.Date(first(r.time)))…$(GMT.Dates.Date(last(r.time)))"
+	if isempty(outdir) || rgb					# true colour has no cube: its images always land here
+		# Each date its own grid (true colour: its own image), in time order: the last date is the one left showing. ONE run = ONE
+		# master handle (SACRED_LAW.md, Scene Objects registration law): every date's grid hangs under
+		# `series`, whose menu sets one colour palette on all of them and removes them all. Declared
+		# BEFORE the grid lands, so its row is born inside the master.
 		for (t, p, G) in zip(r.time, r.product, r.grids)
 			nm = "$(ix) $(GMT.Dates.Date(t)) $(p) — $(src) $(r.tile)"
+			ccall(_fn(:gmtvtk_set_grid_group_h), Cint, (Ptr{Cvoid}, Cstring, Cstring), scene, nm, series)
 			_rs_deliver(scene, G, nm, "RemoteS.$(fn)([$W, $E, $S, $N]; from=\"$from\", to=\"$to\", index=\"$ix\")"; flat = true)
 		end
-		_rs_status(io, "$(length(r.grids)) clear date(s) on tile $(r.tile), each added as its own grid.")
+		_rs_status(io, "$(length(r.grids)) clear date(s) on tile $(r.tile), each added as its own $(rgb ? "image" : "grid") under \"$(series)\"." *
+		               (isempty(outdir) ? "" : " $(prefix)_*.tiff and $(prefix)_series.csv written to $(outdir)."))
 	else
-		cube = joinpath(outdir, "$(prefix)_cube.nc")
+		cube = joinpath(outdir, "$(prefix).nc")
 		# A derived cube, one layer per date: into an empty window the open-a-file path, else an extra
 		# cube element (as Compute Euler shows its residues), read whole (prescan: the header has no
 		# z range) and then made what the window shows. Its slider is its "Cube layers…" item.
@@ -1364,12 +1395,15 @@ function _rs_hls_compute(scene::Ptr{Cvoid}, d::Dict{String,String}, io::IOBuffer
 			_on_drop(scene, cube)
 			_unshade_grid!(scene, "")				# "" = the window's base: the cube just opened
 		else
-			cname = "$(ix) $(src) $(r.tile) $(GMT.Dates.Date(first(r.time)))…$(GMT.Dates.Date(last(r.time)))"
+			cname = series
 			_load_cube_element(scene, cube, cname, true)
 			_adopt_derived!(scene, cname, r.grids[1])
 			_unshade_grid!(scene, cname)
+			# ITS SLIDER, opened now: the cube was made to be stepped through. Through the cube's own
+			# "Cube layers…" door (`_on_cube_slider`), the same one its Scene Objects menu opens.
+			GC.@preserve cname _on_cube_slider(scene, Base.unsafe_convert(Cstring, cname))
 		end
-		_rs_status(io, "$(length(r.grids)) clear date(s) on tile $(r.tile): $(prefix)_*.tif, $(basename(cube)) " *
+		_rs_status(io, "$(length(r.grids)) clear date(s) on tile $(r.tile): $(prefix)_*.tiff, $(basename(cube)) " *
 		               "and $(prefix)_series.csv written to $(outdir); the cube is open.")
 	end
 	return true

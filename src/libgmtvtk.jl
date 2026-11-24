@@ -122,7 +122,7 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_view_grid, :gmtvtk_view_demo, :gmtvtk_process_events,
 	:gmtvtk_add_overlay, :gmtvtk_add_overlay_h, :gmtvtk_add_overlay_ex_h, :gmtvtk_add_overlay_ex2_h, :gmtvtk_add_overlay_ex3_h, :gmtvtk_add_overlay_ex4_h, :gmtvtk_ask_two_choices_h, :gmtvtk_add_overlay_bounded_h, :gmtvtk_get_display_bounds_h,
 	:gmtvtk_overlay_points_h, :gmtvtk_remove_overlay_group_h, :gmtvtk_remove_symbols_h,
-	:gmtvtk_remove_polys_h, :gmtvtk_label_width_world_h, :gmtvtk_set_group_master_h,
+	:gmtvtk_remove_polys_h, :gmtvtk_label_width_world_h, :gmtvtk_set_group_master_h, :gmtvtk_set_grid_group_h,
 	:gmtvtk_add_overlay_gapped_h, :gmtvtk_world_per_pixel_h, :gmtvtk_dblclick_test,
 	:gmtvtk_add_symbols_h, :gmtvtk_add_symbols_ex_h, :gmtvtk_symbol_set_table_h, :gmtvtk_is_alive,
 	:gmtvtk_add_arrows_h, :gmtvtk_arrows_set_rgb_h, :gmtvtk_arrows_get_uv_h, :gmtvtk_arrows_set_style_h,
@@ -247,13 +247,13 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_set_meca_props_callback, :gmtvtk_remove_meca_group_h,
 	:gmtvtk_set_cube_layer_callback, :gmtvtk_set_cube_loadall_callback, :gmtvtk_set_cube_axes_zrange, :gmtvtk_show_cube_layer_dialog,
 	:gmtvtk_cube_flat_mode, :gmtvtk_mark_cube, :gmtvtk_pick_netcdf_var,
-	:gmtvtk_set_cube_slider_callback, :gmtvtk_mark_element_cube, :gmtvtk_set_cube_save_callback, :gmtvtk_set_cube_cpt_callback,
+	:gmtvtk_set_cube_slider_callback, :gmtvtk_mark_element_cube, :gmtvtk_set_cube_save_callback, :gmtvtk_set_cube_cpt_callback, :gmtvtk_cube_dock_saveable_h,
 	:gmtvtk_scene_state, :gmtvtk_colorbar_labels_h,
 	:gmtvtk_frame_for_image_h, :gmtvtk_fit2d, :gmtvtk_hide_surface,
 	:gmtvtk_hide_other_grids, :gmtvtk_hide_other_images,
 	:gmtvtk_capture_rect_rgb, :gmtvtk_capture_rect_databaked, :gmtvtk_free_rgb, :gmtvtk_get_crs, :gmtvtk_reframe_h,
 	:gmtvtk_lod_settle_h,          # drive the tile pyramid to convergence before grabbing its pixels
-	:gmtvtk_pref_nan_color,        # THE Preferences NaN fill colour, for a host that paints NaNs itself
+	:gmtvtk_pref_nan_color, :gmtvtk_setting_get, :gmtvtk_setting_set,        # THE Preferences NaN fill colour, for a host that paints NaNs itself
 	:gmtvtk_set_capture_scale_h,   # magnification gmtvtk_capture_rect_rgb photographs a window at
 	:gmtvtk_set_render_size_h,     # size a window's GL surface, for a window that exists to be photographed
 	:gmtvtk_make_photo_window_h,   # …and take it off the screen + strip its chrome: a render target, never seen
