@@ -34090,6 +34090,16 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 		});
 		++n;
 #endif
+		// "3-D mesh (mbmesh)…": MB-System's mbmesh module on any point data, the mesh shown in this window
+		// (src/mbmesh_dialog.jl over deps/ui/remotes_mbmesh.ui and the generic RemoteSDialog). Offered when
+		// the GMT in use has MB-System's modules: the plugin installed (1, 2) or brought by GMT itself (3).
+		{
+			const int st = g_pluginState[GMTVTK_PLUGIN_MBSYSTEM];
+			if (st == 1 || st == 2 || st == 3) {
+				mGphy->addAction("3-D mesh (mbmesh)…", [win, s]() { openRemoteSDialog(win, s, "mbmesh"); });
+				++n;
+			}
+		}
 #ifdef GMTVTK_PCE
 		// EXPERIMENTAL "Point cloud editor (pointCloudEditor)": MB-System's pointCloudEditor, ported (its own
 		// window), on this window's grid. Built only with IGMT_WITH_PCE.

@@ -81,6 +81,7 @@ const titles = Dict(
     "75-mbgrid.md" => "mbgrid",
     "76-cube.md" => "CUBE",
     "77-mbplugin.md" => "MB-System plugin (Linux, macOS)",
+    "77b-mbmesh.md" => "3-D mesh (mbmesh)",
     "78-mbprocess.md" => "mbprocess",
     "79-mbnavadjust.md" => "MBnavadjust",
     "80-benchmark1.md" => "Catalina Benchmark 1",

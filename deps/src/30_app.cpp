@@ -1873,6 +1873,15 @@ static const SaveFmt kImageFmts[] = {
 	{ "VTK legacy",        "vtk_legacy", "VTK legacy (*.vtk)",            ".vtk" },
 };
 
+// A MESH (a GMTfv solid, a VTK surface, an mbmesh reconstruction) is triangles, not a raster: the grid and
+// image writers cannot take it. Its list: GLB, written by MB-System's writer through Julia (savefile.jl, kind "mesh"),
+// and the VTK writers (87_vtkio.cpp, vtkioSaveObject).
+static const SaveFmt kMeshFmts[] = {
+	{ "glTF binary",       "glb",        "glTF binary (*.glb)",           ".glb" },   // MB-System's writer, through Julia
+	{ "VTK XML PolyData",  "vtk_vtp",    "VTK XML PolyData (*.vtp)",      ".vtp" },
+	{ "VTK legacy",        "vtk_legacy", "VTK legacy (*.vtk)",            ".vtk" },
+};
+
 // The "little window" the user asked for: pick an output format from a combo, then a file (Browse
 // runs the native save dialog filtered to that format; changing the format re-suffixes the path).
 // On accept, `code` + `path` carry the choice. isGrid selects the grid vs image format list.
@@ -1894,11 +1903,12 @@ struct SaveFormatDialog : QDialog {
 		if (dot > sep) p = p.left(dot);
 		pathEdit->setText(p + fmts[combo->currentIndex()].ext);
 	}
-	SaveFormatDialog(QWidget *parent, bool isGrid, const QString &objName) : QDialog(parent) {
-		fmts = isGrid ? kGridFmts : kImageFmts;
-		nfmt = isGrid ? (int)(sizeof(kGridFmts) / sizeof(kGridFmts[0]))
+	SaveFormatDialog(QWidget *parent, bool isGrid, const QString &objName, bool isMesh = false) : QDialog(parent) {
+		fmts = isMesh ? kMeshFmts : isGrid ? kGridFmts : kImageFmts;
+		nfmt = isMesh ? (int)(sizeof(kMeshFmts) / sizeof(kMeshFmts[0]))
+		     : isGrid ? (int)(sizeof(kGridFmts) / sizeof(kGridFmts[0]))
 		              : (int)(sizeof(kImageFmts) / sizeof(kImageFmts[0]));
-		setWindowTitle(isGrid ? "Save grid" : "Save image");
+		setWindowTitle(isMesh ? "Save mesh" : isGrid ? "Save grid" : "Save image");
 		QVBoxLayout *v = new QVBoxLayout(this);
 		if (!objName.isEmpty()) v->addWidget(new QLabel("Object:  " + objName, this));
 
@@ -1959,9 +1969,10 @@ static bool vtkioSaveObject(Scene *s, const std::string &name, const std::string
 // File-menu "save the window's grid/image"). nullptr callback -> a status-bar notice.
 static void saveObjectDialog(Scene *s, const char *kind, const QString &name) {
 	const bool isGrid = (QString(kind) == QLatin1String("grid"));
+	const bool isMesh = (QString(kind) == QLatin1String("mesh"));   // only VTK writers: all written here
 	// The VTK entries are written HERE, so the dialog must still open when Julia's save callback is
 	// missing; only the GMT/GDAL formats need it. The check therefore moves below the format choice.
-	SaveFormatDialog dlg(s ? s->win : nullptr, isGrid, name);
+	SaveFormatDialog dlg(s ? s->win : nullptr, isGrid, name, isMesh);
 	if (dlg.exec() != QDialog::Accepted || dlg.path.isEmpty()) return;
 	if (vtkioIsVtkSaveCode(dlg.code)) {
 		std::string err;

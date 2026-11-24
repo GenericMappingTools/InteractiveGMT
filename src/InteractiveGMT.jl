@@ -217,6 +217,7 @@ include("RemoteS/RemoteS.jl") # submodule InteractiveGMT.RemoteS: port of Remote
 include("swot.jl")      # Satellite > SWOT: PO.DAAC L2 search/download/grid (a Remote sensing dialog tool)
 include("s1products.jl") # Satellite > Copernicus > Sentinel-1 SAR products: CDSE search/download/show (a Remote sensing dialog tool)
 include("s1orbits.jl")   # Geophysics > GMTSAR > Sentinel-1 orbits: ESA POEORB/RESORB .EOF per scene (a Remote sensing dialog tool)
+include("mbmesh_dialog.jl") # Geophysics > MB-System > 3-D mesh (mbmesh): MB-System's mbmesh on any point data (a Remote sensing dialog tool)
 include("RemoteS/remotes_gui.jl") # Satellite > Remote sensing: the dialogs over that submodule
 include("crsselect.jl")   # the Coordinate Reference System selector (PROJ catalogue; 73_crsselect.cpp)
 include("gmtsyntax.jl")   # ONE NAME PER JOB: plot/plot!/feather/viz/scatter!/orbits! in GMT.jl's syntax

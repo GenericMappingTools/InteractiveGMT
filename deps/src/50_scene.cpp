@@ -2535,6 +2535,28 @@ static void gridObjectMenu(Scene *s, vtkProp3D *actor, const QPoint &g) {
 	}
 }
 
+// Properties menu of a MESH layer (a GMTfv solid, a VTK surface, an mbmesh reconstruction), the base of a window or
+// an extra: it is triangles, so none of a grid's entries (grid formats, grdinfo, the grid pile) apply to it.
+static void meshObjectMenu(Scene *s, const QString &nm, const std::function<void()> &remove, const QPoint &g) {
+	QMenu m(s->widget);
+	QAction *aSave = m.addAction("Save mesh…");
+	m.addSeparator();
+	QAction *aDel = m.addAction("Remove");
+	QAction *c = m.exec(g);
+	if (c == aSave) { saveObjectDialog(s, "mesh", nm); return; }
+	if (c == aDel) remove();
+}
+static void extraMeshObjectMenu(Scene *s, vtkProp3D *actor, const QPoint &g) {
+	const int idx = extraIndexOfActor(s, actor);
+	if (idx < 0) return;
+	meshObjectMenu(s, QString::fromStdString(s->extras[idx].name),
+	               [s, actor]() { const int i = extraIndexOfActor(s, actor); if (i >= 0) sceneRemoveExtraAt(s, (size_t)i); }, g);
+}
+static void baseMeshObjectMenu(Scene *s, const QPoint &g) {
+	const QString nm = s->surfName.empty() ? QString("Surface") : QString::fromStdString(s->surfName);
+	meshObjectMenu(s, nm, [s]() { sceneRemoveSurface(s); }, g);
+}
+
 // Focal-mechanism GROUP properties: compression / dilatation / outline colour + outline width,
 // plus the per-event date label (off/on, font/size/colour/bold/italic). EVERY control applies
 // IMMEDIATELY (user requirement, 2026-07-04) — there is no Apply/OK gate here, unlike this
@@ -3585,7 +3607,7 @@ static void rebuildSceneObjects(Scene *s) {
 			const bool baseGrpOn = baseGrpOnOf(sp);    // what its rows show — see baseGrpOnOf
 			beginGroupHandle(nm, IC_Surface, baseGrpOn,
 			        nullptr,                                              // container does NOT fold the Shading dock (the Surface leaf does)
-			        [s](const QPoint &g) { surfaceObjectMenu(s, g); },
+			        [s](const QPoint &g) { if (s->fvTrueScale) baseMeshObjectMenu(s, g); else surfaceObjectMenu(s, g); },
 			        "Checkbox toggles the whole group · right-click for save / stacking",
 			        /*startFolded=*/true);                                // just the grid row until opened
 			// A grid held as a flat picture (layerImgMode) IS its surface: the texture on its quad is the
@@ -3600,7 +3622,7 @@ static void rebuildSceneObjects(Scene *s) {
 			            refreshGridColorbar(s); },
 			        [s](const QPoint&) { toggleShadingFold(s); },
 			        "Left-click to fold / un-fold the Shading panel · right-click for save / stacking",
-			        [s](const QPoint &g) { surfaceObjectMenu(s, g); });
+			        [s](const QPoint &g) { if (s->fvTrueScale) baseMeshObjectMenu(s, g); else surfaceObjectMenu(s, g); });
 			if (s->drape && !ownPicture) addRow(QString("Image drape"), s->drape, IC_Image);   // a real image draped on the grid
 			// Each child row draws ITS OWN state. Hiding the base surface as part of a LAYER transition
 			// (SACRED_LAW.md's "uncheck the source" when a derived result replaces it) switches these
@@ -3679,14 +3701,14 @@ static void rebuildSceneObjects(Scene *s) {
 			const bool gvis = a && a->GetVisibility() != 0;
 			beginGroupHandle(nm, IC_Surface, extraGrpOn(ex),
 			        nullptr,                                               // container does NOT fold the Shading dock (the Surface leaf does)
-			        [s, a](const QPoint &g) { gridObjectMenu(s, a, g); },  // right-click: save / delete
+			        [s, a, mesh = ex.isMesh](const QPoint &g) { if (mesh) extraMeshObjectMenu(s, a, g); else gridObjectMenu(s, a, g); },  // right-click: save / delete
 			        "Checkbox toggles the whole group · right-click to save / delete",
 			        /*startFolded=*/true);                                 // just the grid row until opened
 			makeRow("Surface", IC_Surface, gvis,                          // Surface leaf handle kept as a child
 			        [s, a](bool on) { if (a) a->SetVisibility(on ? 1 : 0); refreshGridColorbar(s); },
 			        [s](const QPoint&) { toggleShadingFold(s); },
 			        "Left-click for Shading · right-click to save / delete",
-			        [s, a](const QPoint &g) { gridObjectMenu(s, a, g); });
+			        [s, a, mesh = ex.isMesh](const QPoint &g) { if (mesh) extraMeshObjectMenu(s, a, g); else gridObjectMenu(s, a, g); });
 			if (ex.drape) addRow("Image drape", ex.drape, IC_Image);
 			// A MESH layer (VTK .vtp/.vtu surface, GMTfv solid) carries no z data layer and no LUT, so
 			// it never resolves as the active grid -- a Color Bar row would be permanently inert. Every

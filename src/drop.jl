@@ -275,6 +275,14 @@ function _open_spec_into(scene::Ptr{Cvoid}, spec::AbstractString, name::Abstract
 	# source uses. `.hdf` / `.h5` are deliberately NOT in this list: plain HDF5 rasters stay on GDAL.
 	# (File > Recent Files is stamped C++-side, where the dataset kind the file turned out to hold --
 	# grid vs mesh/vector -- is actually known.)
+	# A Draco-compressed glTF (mbmesh's mesh.glb, Save mesh… > glTF binary) is beyond vtkGLTFReader:
+	# MB-System reads it, the reader the mbmesh dialog uses, and it goes in through the same mesh door.
+	if _gltf_needs_draco(String(spec))
+		fv = _mbmesh_glb_geodetic(String(spec))
+		isempty(recent) || _record_recent(recent, fv)
+		_mbmesh_show(scene, fv, _mbmesh_free_name(scene, String(name)))
+		return
+	end
 	if _is_vtk_file(String(spec))
 		_open_vtk_into(scene, String(spec), name, empty)
 		return
@@ -468,6 +476,29 @@ const _VTK_EXTS = Set{String}([".vtk", ".vti", ".vtr", ".vts", ".vtp", ".vtu", "
 # `_cube_probe` does: splitext of "…nc?var" yields ".nc?var", never ".nc".
 _is_vtk_file(path::AbstractString) =
 	lowercase(splitext(String(first(split(String(path), '?'))))[2]) in _VTK_EXTS
+
+# Does this .glb/.gltf require KHR_draco_mesh_compression? Reads only the JSON (a .glb's first chunk).
+function _gltf_needs_draco(path::String)::Bool
+	ext = lowercase(splitext(path)[2])
+	(ext == ".glb" || ext == ".gltf") && isfile(path) || return false
+	json = try
+		open(path) do io
+			if ext == ".glb"
+				read(io, UInt32) == 0x46546c67 || return ""        # "glTF"
+				skip(io, 8)
+				len = Int(read(io, UInt32))
+				read(io, UInt32) == 0x4e4f534a || return ""        # "JSON"
+				String(read(io, len))
+			else
+				String(read(io))
+			end
+		end
+	catch
+		""
+	end
+	m = match(r"\"extensionsRequired\"\s*:\s*\[([^\]]*)\]", json)
+	return m !== nothing && occursin("KHR_draco_mesh_compression", m.captures[1])
+end
 
 # Hand a VTK file to the DLL, which reads it (87_vtkio.cpp) and routes the dataset into this window
 # through the ordinary grid / mesh / overlay builders. `promote` means the window is a bare launcher.

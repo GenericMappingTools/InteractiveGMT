@@ -107,7 +107,10 @@ const _LIB_FNS = Dict{Symbol,Ptr{Cvoid}}()
 # geostationary satellite is 6.6 Earth radii out) is not drawn outside the camera's field.
 # Generation 16 = gmtvtk_capture_view_rgb -> gmtvtk_capture_view_rgba: the globe/cube whole-view
 # capture the script export plots now returns FOUR bands, with the window background transparent.
-const _ABI_REQUIRED = 17
+# Generation 18 = gmtvtk_add_mesh_h takes `geog` and `zscale` before `name`: an extra mesh layer's own
+# lon/lat flag and vertical scale (its layer VE). Without them a lon/lat mesh added beside another was
+# drawn at VE 1, metres tall on degrees. A generation-17 library reads `geog` as the name pointer.
+const _ABI_REQUIRED = 18
 # What the library that ACTUALLY loaded reports (1 = the export is absent, i.e. it predates the grid
 # layout code). Read by `_grid_zbuf` (drop.jl): a library that cannot be told a buffer's layout is
 # never handed a row-major one.

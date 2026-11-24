@@ -1,0 +1,437 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>RemoteSMbmesh</class>
+ <widget class="QDialog" name="RemoteSMbmesh">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>520</width>
+    <height>433</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>3-D mesh (mbmesh)</string>
+  </property>
+  <widget class="QGroupBox" name="gb_input">
+   <property name="geometry">
+    <rect>
+     <x>11</x>
+     <y>11</y>
+     <width>498</width>
+     <height>118</height>
+    </rect>
+   </property>
+   <property name="title">
+    <string>Input</string>
+   </property>
+   <widget class="QLabel" name="lbl_input">
+    <property name="geometry">
+     <rect>
+      <x>11</x>
+      <y>27</y>
+      <width>54</width>
+      <height>26</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Points</string>
+    </property>
+   </widget>
+   <widget class="QLineEdit" name="p_input">
+    <property name="geometry">
+     <rect>
+      <x>71</x>
+      <y>27</y>
+      <width>388</width>
+      <height>26</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>The point data to mesh: an MB-System swath file (.mbXX, XX its MBIO format) or datalist (.mb-1), a LAS/LAZ file, or an x,y,z table. A table's z is a height, positive up. Data in another coordinate system is taken to longitude and latitude with the system its file declares. Filled in with the point file this window shows, if it shows one.</string>
+    </property>
+    <property name="refresh" stdset="0">
+     <bool>true</bool>
+    </property>
+   </widget>
+   <widget class="QToolButton" name="browse_p_input">
+    <property name="geometry">
+     <rect>
+      <x>463</x>
+      <y>27</y>
+      <width>24</width>
+      <height>26</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>Choose the point data to mesh</string>
+    </property>
+    <property name="text">
+     <string>...</string>
+    </property>
+    <property name="filter" stdset="0">
+     <string>Point data (*.mb* *.las *.laz *.xyz *.xyt *.txt *.dat *.csv);;All files (*)</string>
+    </property>
+   </widget>
+   <widget class="QLabel" name="lbl_outdir">
+    <property name="geometry">
+     <rect>
+      <x>11</x>
+      <y>57</y>
+      <width>54</width>
+      <height>26</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Save in</string>
+    </property>
+   </widget>
+   <widget class="QLineEdit" name="p_outdir">
+    <property name="geometry">
+     <rect>
+      <x>71</x>
+      <y>57</y>
+      <width>416</width>
+      <height>26</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>The folder mbmesh writes mesh.glb and the other outputs to; created when missing. Empty = beside the input, named after it (&lt;name&gt;_mbmesh). The points of a LAS or x,y,z input are also written there, as mbmesh reads them (mbmesh_points.xyt and its datalist mbmesh_input.mb-1).</string>
+    </property>
+   </widget>
+   <widget class="QLabel" name="lbl_srs">
+    <property name="geometry">
+     <rect>
+      <x>11</x>
+      <y>87</y>
+      <width>54</width>
+      <height>26</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>CRS</string>
+    </property>
+   </widget>
+   <widget class="QLineEdit" name="p_srs">
+    <property name="geometry">
+     <rect>
+      <x>71</x>
+      <y>87</y>
+      <width>416</width>
+      <height>26</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>The coordinate system of the points when the file does not say it and they are not longitude and latitude: an EPSG code (EPSG:3763) or a PROJ string. LAS/LAZ files are read without their coordinate system, so a projected LAS file needs it here. Empty = the file's own, or longitude and latitude. Not used for MB-System data, which is always in longitude and latitude.</string>
+    </property>
+    <property name="placeholderText">
+     <string>the file's own</string>
+    </property>
+   </widget>
+  </widget>
+  <widget class="QGroupBox" name="gb_mesh">
+   <property name="geometry">
+    <rect>
+     <x>11</x>
+     <y>135</y>
+     <width>498</width>
+     <height>118</height>
+    </rect>
+   </property>
+   <property name="title">
+    <string>Mesh</string>
+   </property>
+   <widget class="QLabel" name="lbl_method">
+    <property name="geometry">
+     <rect>
+      <x>11</x>
+      <y>27</y>
+      <width>54</width>
+      <height>26</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Method</string>
+    </property>
+   </widget>
+   <widget class="QComboBox" name="p_method">
+    <property name="refresh" stdset="0">
+     <bool>true</bool>
+    </property>
+    <property name="geometry">
+     <rect>
+      <x>71</x>
+      <y>27</y>
+      <width>416</width>
+      <height>26</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>Fast: the soundings themselves are the vertices, joined by a Delaunay triangulation (under a second; level of detail and decimate do not apply). mbmesh: MB-System's screened Poisson surface, a smooth watertight mesh, far slower.</string>
+    </property>
+    <item>
+     <property name="text">
+      <string>Fast: triangulate the soundings</string>
+     </property>
+    </item>
+    <item>
+     <property name="text">
+      <string>mbmesh: Poisson surface (slow)</string>
+     </property>
+    </item>
+   </widget>
+   <widget class="QLabel" name="lbl_lod">
+    <property name="geometry">
+     <rect>
+      <x>11</x>
+      <y>57</y>
+      <width>54</width>
+      <height>26</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Detail</string>
+    </property>
+   </widget>
+   <widget class="QLineEdit" name="p_lod">
+    <property name="geometry">
+     <rect>
+      <x>71</x>
+      <y>57</y>
+      <width>90</width>
+      <height>26</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>The smallest feature, in meters, the mesh should keep (mbmesh --level-of-detail). Empty = chosen by mbmesh from the spacing of the soundings.</string>
+    </property>
+    <property name="placeholderText">
+     <string>auto</string>
+    </property>
+   </widget>
+   <widget class="QLabel" name="lbl_lodu">
+    <property name="geometry">
+     <rect>
+      <x>165</x>
+      <y>57</y>
+      <width>20</width>
+      <height>26</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>m</string>
+    </property>
+   </widget>
+   <widget class="QLabel" name="lbl_decimate">
+    <property name="geometry">
+     <rect>
+      <x>200</x>
+      <y>57</y>
+      <width>60</width>
+      <height>26</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Decimate</string>
+    </property>
+   </widget>
+   <widget class="QLineEdit" name="p_decimate">
+    <property name="geometry">
+     <rect>
+      <x>264</x>
+      <y>57</y>
+      <width>90</width>
+      <height>26</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>Average the soundings in cells of this size, in meters, before the mesh is made (mbmesh --decimate): fewer points, a faster run, smaller files. Empty = every sounding is used.</string>
+    </property>
+    <property name="placeholderText">
+     <string>off</string>
+    </property>
+   </widget>
+   <widget class="QLabel" name="lbl_decimateu">
+    <property name="geometry">
+     <rect>
+      <x>358</x>
+      <y>57</y>
+      <width>20</width>
+      <height>26</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>m</string>
+    </property>
+   </widget>
+   <widget class="QCheckBox" name="p_geoorigin">
+    <property name="geometry">
+     <rect>
+      <x>11</x>
+      <y>87</y>
+      <width>300</width>
+      <height>26</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>Store the vertices relative to a GeoOrigin at the centre of the data (mbmesh --geoorigin). Without it the GLB vertices are absolute Earth-centred coordinates in 32-bit floats, which resolve only about half a meter.</string>
+    </property>
+    <property name="text">
+     <string>GeoOrigin (keeps sub-meter detail)</string>
+    </property>
+    <property name="checked">
+     <bool>true</bool>
+    </property>
+   </widget>
+  </widget>
+  <widget class="QGroupBox" name="gb_outputs">
+   <property name="geometry">
+    <rect>
+     <x>11</x>
+     <y>259</y>
+     <width>498</width>
+     <height>90</height>
+    </rect>
+   </property>
+   <property name="title">
+    <string>Files</string>
+   </property>
+   <widget class="QCheckBox" name="p_tileset">
+    <property name="geometry">
+     <rect>
+      <x>11</x>
+      <y>27</y>
+      <width>120</width>
+      <height>26</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>An OGC 3D Tiles tileset of the mesh, tileset/tileset.json in Save in (mbmesh --tileset), for web viewers that stream it.</string>
+    </property>
+    <property name="text">
+     <string>3D Tiles tileset</string>
+    </property>
+   </widget>
+   <widget class="QCheckBox" name="p_html">
+    <property name="geometry">
+     <rect>
+      <x>135</x>
+      <y>27</y>
+      <width>100</width>
+      <height>26</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>An X3DOM viewer page of the outputs (mbmesh --html). The page loads them over HTTP: mbmesh logs the command that serves the folder.</string>
+    </property>
+    <property name="text">
+     <string>X3DOM page</string>
+    </property>
+   </widget>
+   <widget class="QCheckBox" name="p_cesium">
+    <property name="geometry">
+     <rect>
+      <x>240</x>
+      <y>27</y>
+      <width>100</width>
+      <height>26</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>A CesiumJS viewer page of the outputs (mbmesh --cesium-html), the mesh placed on the globe.</string>
+    </property>
+    <property name="text">
+     <string>Cesium page</string>
+    </property>
+   </widget>
+   <widget class="QCheckBox" name="p_track">
+    <property name="geometry">
+     <rect>
+      <x>345</x>
+      <y>27</y>
+      <width>140</width>
+      <height>26</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>The sensor track as a 3-D line, track.glb (mbmesh --track-glb). Only swath data has a track.</string>
+    </property>
+    <property name="text">
+     <string>Track (swath data)</string>
+    </property>
+   </widget>
+   <widget class="QCheckBox" name="p_save">
+    <property name="geometry">
+     <rect>
+      <x>11</x>
+      <y>57</y>
+      <width>470</width>
+      <height>26</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Save the mesh files (mesh.glb and the chunks) in Save in</string>
+    </property>
+    <property name="toolTip">
+     <string>Off: the mesh goes straight into the window and nothing is written but mbmesh_run.log. The tileset and the pages are files, and save the mesh with them.</string>
+    </property>
+   </widget>
+  </widget>
+  <widget class="QLabel" name="lbl_status">
+   <property name="geometry">
+    <rect>
+     <x>11</x>
+     <y>355</y>
+     <width>498</width>
+     <height>36</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string/>
+   </property>
+   <property name="wordWrap">
+    <bool>true</bool>
+   </property>
+  </widget>
+  <widget class="QToolButton" name="tutorial">
+   <property name="geometry">
+    <rect>
+     <x>11</x>
+     <y>398</y>
+     <width>24</width>
+     <height>24</height>
+    </rect>
+   </property>
+   <property name="toolTip">
+    <string>Open the 3-D mesh (mbmesh) page of the manual: every field of this dialog explained.</string>
+   </property>
+   <property name="text">
+    <string>?</string>
+   </property>
+   <property name="page" stdset="0">
+    <string>77b-mbmesh</string>
+   </property>
+  </widget>
+  <widget class="QPushButton" name="run_mesh">
+   <property name="geometry">
+    <rect>
+     <x>378</x>
+     <y>397</y>
+     <width>131</width>
+     <height>26</height>
+    </rect>
+   </property>
+   <property name="toolTip">
+     <string>Run mbmesh on the input with these settings, and show the mesh in this window.</string>
+   </property>
+   <property name="text">
+    <string>Make the mesh</string>
+   </property>
+   <property name="busy" stdset="0">
+    <string>Making the 3-D mesh (mbmesh)…</string>
+   </property>
+  </widget>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

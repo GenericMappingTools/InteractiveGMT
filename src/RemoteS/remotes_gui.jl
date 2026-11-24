@@ -1381,7 +1381,7 @@ const _RS_TOOLS = Dict{String,Function}(
 	"indices" => _rs_indices, "truecolor" => _rs_truecolor, "calibration" => _rs_calibration,
 	"classify" => _rs_classify, "cutcube" => _rs_cutcube, "modisl2" => _rs_modisl2,
 	"modisscenes" => _rs_modisscenes, "hls" => _rs_hls, "swot" => _rs_swot, "s1" => _rs_s1,
-	"s1orbits" => _rs_s1orbits)
+	"s1orbits" => _rs_s1orbits, "mbmesh" => _rs_mbmesh)
 
 function _on_remotes(scene::Ptr{Cvoid}, params::Cstring, out::Ptr{UInt8}, cap::Cint)::Cint
 	tool = ""

@@ -247,6 +247,13 @@ function _on_save(scene::Ptr{Cvoid}, req::Cstring)::Cvoid
 			G === nothing && error("No grid to save in this window")
 			path = _ensure_ext(path, get(_IMG_EXT, fmt, ".tif"), _IMG_EXT)
 			_save_image(_grid_picture(scene, name, G), fmt, path)
+		elseif (kind == "mesh")
+			# only the GLB comes here: the VTK mesh formats are written by the viewer itself
+			fmt == "glb" || error("Save mesh: unknown format '$fmt'")
+			fv = _find_object(scene, :mesh, name)
+			fv === nothing && error("This mesh is not held by iGMT, so it cannot be written as GLB (save it as .vtp)")
+			lowercase(splitext(path)[2]) == ".glb" || (path *= ".glb")
+			_save_mesh_glb(fv, path)
 		else
 			error("Save: unknown kind '$kind'")
 		end

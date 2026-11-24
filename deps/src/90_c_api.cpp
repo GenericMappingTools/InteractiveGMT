@@ -1746,7 +1746,11 @@ GMTVTK_API void gmtvtk_unfold_scene_objects_h(void *handle) {
 //       empty = no text column): a GMTdataset's text column (tttimes' station names) is shown as the
 //       table's last column. A generation-16 library ignores it; a generation-16 host passes none
 //       and a generation-17 library reads garbage off the missing argument.
-GMTVTK_API int gmtvtk_abi_version(void) { return 17; }
+//   18: gmtvtk_add_mesh_h takes `geog` and `zscale` before `name`: the mesh layer's own lon/lat flag and
+//       its own vertical scale (its layer VE). Without them a lon/lat mesh added beside another was drawn
+//       at VE 1, metres tall on degrees, and the adopt framed the window on it. A generation-17 library
+//       reads `geog` as the name.
+GMTVTK_API int gmtvtk_abi_version(void) { return 18; }
 
 // The axis labels of the colour bar ON SCREEN (the window's one bar, `bar`): "x\x1fy", either part
 // possibly empty. Two-pass like every string getter here: returns the length (without the NUL),
@@ -15764,7 +15768,7 @@ GMTVTK_API int gmtvtk_add_mesh_h(void *handle, const double *xyz, int nv, const 
                                  const int *indices, const unsigned char *facergb,
                                  const unsigned char *vertrgb,
                                  const double *cz, const double *crgb, int ncolor,
-                                 const char *name) {
+                                 int geog, double zscale, const char *name) {
 	Scene *s = static_cast<Scene*>(handle);
 	if (!sceneAlive(s) || !xyz || nv <= 0 || !sides || !indices || nfaces <= 0) return 0;
 	double zmin, zmax;
@@ -15799,6 +15803,10 @@ GMTVTK_API int gmtvtk_add_mesh_h(void *handle, const double *xyz, int nv, const 
 
 	ExtraObj ex;
 	ex.isMesh = true;
+	// THIS mesh's own vertical scale (GMTfv.zscale: metres of height against degrees of lon/lat), as its
+	// layer VE -- what the promote door makes Scene::ve. Left at 1, a lon/lat mesh added beside another
+	// stood metres tall on a footprint of degrees, and the adopt framed the window on that needle.
+	ex.ve = (zscale > 0.0 && std::isfinite(zscale)) ? zscale : 1.0;
 	ex.actor = vtkSmartPointer<vtkActor>::New();
 	ex.actor->SetMapper(map);
 	ex.actor->GetProperty()->SetInterpolationToPBR();
@@ -15810,6 +15818,10 @@ GMTVTK_API int gmtvtk_add_mesh_h(void *handle, const double *xyz, int nv, const 
 	ex.name = (name && name[0]) ? name : ("Mesh " + std::to_string((int)s->extras.size() + 1));
 	ex.gstack = s->vecSeq++;                       // unified pile: newest layer lands on top
 	ex.tag    = ++s->gridTagSeq;
+	// THIS mesh's own x,y kind, set at the door: the adopt (gmtvtk_show_new_element_h) compares it with
+	// the window's and re-derives the window's scales on a mismatch, so a lon/lat mesh left at 0 here
+	// turned a lon/lat window cartesian and drew every layer in it at the wrong x and z scale.
+	ex.geog   = geog ? 1 : 0;
 	// A layer added HIDDEN starts with its axes intent OFF, matching it. The axes are drawn from that
 	// intent alone now (rebuildAxisLabels), so a default-true `shown` would box an empty frame around a
 	// layer that is not on screen yet; the caller's gmtvtk_show_new_element_h turns both on together.
@@ -15822,7 +15834,7 @@ GMTVTK_API int gmtvtk_add_mesh_h(void *handle, const double *xyz, int nv, const 
 		// built geometry, since a mesh carries no grid header.
 		ExtraObj &ne = s->extras.back();
 		double mb[6]; pd->GetBounds(mb);
-		axesSetFrame(ne.ax, mb[0], mb[1], mb[2], mb[3], zmin, zmax, 0);
+		axesSetFrame(ne.ax, mb[0], mb[1], mb[2], mb[3], zmin, zmax, ne.geog);
 		axesBuild(s, ne.ax, true);
 	}
 	applyGridStacking(s);
@@ -15894,11 +15906,9 @@ GMTVTK_API int gmtvtk_add_isosurface_h(void *handle, const float *cube, int nx, 
 		frgb[3 * f] = rgb[0]; frgb[3 * f + 1] = rgb[1]; frgb[3 * f + 2] = rgb[2];
 	}
 	const int ok = gmtvtk_add_mesh_h(handle, xyz.data(), (int)nv, sides.data(), (int)sides.size(), idx.data(),
-	                                 frgb.data(), nullptr, nullptr, nullptr, 0, name);
-	if (ok && !s->extras.empty() && s->extras.back().actor) {
+	                                 frgb.data(), nullptr, nullptr, nullptr, 0, geog, 1.0, name);
+	if (ok && !s->extras.empty() && s->extras.back().actor)
 		s->extras.back().actor->GetProperty()->SetOpacity(std::clamp(opacity, 0.0, 1.0));
-		s->extras.back().geog = geog;          // read by the adopt when it frames this layer's own axes
-	}
 	return ok;
 }
 
@@ -16861,7 +16871,7 @@ GMTVTK_API int gmtvtk_open_vtk_h(void *handle, const char *path, const char *nam
 			                      frgb, vrgb, nullptr, nullptr, nullptr, 0,
 			                      L.x0, L.x1, L.y0, L.y1, L.z0, L.z1, 0, 1.0, 0, nm)
 			: gmtvtk_add_mesh_h(handle, L.xyz.data(), nv, L.sides.data(), nfaces, L.indices.data(),
-			                    frgb, vrgb, nullptr, nullptr, 0, nm);
+			                    frgb, vrgb, nullptr, nullptr, 0, /*geog=*/0, /*zscale=*/1.0, nm);
 		if (!ok) return fail("the mesh could not be displayed");
 		// SACRED_LAW.md raster-own-axes law: EACH raster/mesh creates ITS OWN axes, UNCONDITIONALLY.
 		gmtvtk_show_new_element_h(handle, nm, L.x0, L.x1, L.y0, L.y1, L.z0, L.z1, 1, 0);
