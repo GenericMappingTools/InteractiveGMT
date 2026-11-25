@@ -168,7 +168,7 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_oc_progress_begin, :gmtvtk_oc_progress_set, :gmtvtk_oc_progress_end, :gmtvtk_oc_queue_place,
 	:gmtvtk_set_bgregion_callback, :gmtvtk_set_newwindow_callback, :gmtvtk_set_save_callback,
 	:gmtvtk_set_save_geotiff_callback, :gmtvtk_set_move_callback, :gmtvtk_set_img_stretch_callback,
-	:gmtvtk_set_geography_callback, :gmtvtk_set_lonlat_box_callback, :gmtvtk_set_tides_callback, :gmtvtk_set_tidemodel_callback, :gmtvtk_set_earthtide_callback,
+	:gmtvtk_set_geography_callback, :gmtvtk_set_lonlat_box_callback, :gmtvtk_set_srs_xy_callback, :gmtvtk_overlay_to_front_h, :gmtvtk_add_image_sheet_h, :gmtvtk_remove_image_sheets_h, :gmtvtk_sheet_slider_h, :gmtvtk_sheet_select_h, :gmtvtk_set_tides_callback, :gmtvtk_set_tidemodel_callback, :gmtvtk_set_earthtide_callback,
 	:gmtvtk_set_solar_callback, :gmtvtk_solar_report,
 	:gmtvtk_set_solid_callback, :gmtvtk_set_grdsample_callback, :gmtvtk_set_gridmeta_callback,
 	:gmtvtk_set_dimfun_callback, :gmtvtk_set_nswing_callback,
@@ -206,6 +206,7 @@ const _LIB_SYMBOLS = (
 	:gmtvtk_set_vectorwizard_callback, :gmtvtk_vectorwizard_set_preview, :gmtvtk_vectorwizard_set_text,
 	:gmtvtk_overlay_set_filled_h, :gmtvtk_overlay_set_vwkey_h, :gmtvtk_grid_share_zscale_h,
 	:gmtvtk_overlay_set_tool_pick_h,     # a tool's guide line its dialog can be pointed at (src/swot.jl)
+	:gmtvtk_set_click_tool_h,            # a plain click in the view goes to a scene dialog (s2products.jl, landsat.jl)
 	:gmtvtk_set_image_histo_callback, :gmtvtk_histo_set_counts, :gmtvtk_histo_set_bands, :gmtvtk_histo_offer_display8,
 	:gmtvtk_set_image_enhance_callback, :gmtvtk_enhance_set_band, :gmtvtk_enhance_set_auto_limits, :gmtvtk_enhance_set_data_range,
 	:gmtvtk_set_rgb_scatter_callback, :gmtvtk_set_forget_callback,

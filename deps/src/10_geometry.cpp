@@ -207,6 +207,7 @@ struct Overlay {
 	// clipped exactly as before.
 	double clipLift = 0.0;
 	std::string name;                        // label shown in the Scene Objects panel
+	std::string srcSrs; std::vector<double> srcXY;  // the system its x,y were drawn in + those x,y (2 per vertex), kept the first time the window changes system under it (sceneRecrossVectors)
 	bool   realZ = false;                    // the vertices carry a real elevation, not a flat z=0 map
 	                                          // annotation -- i.e. this line is CLAMPED TO THE SURFACE
 	                                          // (a coastline/border draped on the relief, a draped track,
@@ -570,6 +571,7 @@ struct SymbolLayer {
 	                                           // back (symbolApplyZ) — the depth is never lost, and the
 	                                           // glyph's colour/lighting/size are never touched to fake it.
 	std::vector<double> xyOrig;               // the TRUE lon/lat each point was plotted at, 2 per point.
+	std::string srcSrs; std::vector<double> srcXY;  // the system its x,y were drawn in + those x,y (2 per vertex), kept the first time the window changes system under it (sceneRecrossVectors)
 	                                           // The points themselves carry x already multiplied by xfac,
 	                                           // which is a FLAT-map quantity; the globe needs the real
 	                                           // lon/lat to put the point on the sphere (symbolApplyZ).
@@ -636,6 +638,13 @@ static double symPointSizePx(SymbolLayer &sl, vtkIdType i) {
 struct Curtain {
 	vtkSmartPointer<vtkActor> actor;
 	std::string name;                        // label shown in the Scene Objects panel
+	// A PICTURE SHEET (gmtvtk_add_image_sheet_h): a flat textured quad, e.g. one scene quicklook of a
+	// tool dialog stack. `groupName` = the stack it belongs to (its master row, removed together);
+	// `pickTool`/`pickVerb` = the dialog a plain click on it is sent to, with picked=<name>.
+	std::string groupName, pickTool, pickVerb;
+	double sheetZ = 0.0;                     // a sheet: its height (TRUE z), what its stack slider compares
+	std::vector<unsigned char> sheetAlpha;   // a sheet: its picture's alpha (row 0 = bottom), so a click on a
+	int sheetAW = 0, sheetAH = 0;            // see-through part goes on to the sheet below
 	// THE LAYER THIS ELEMENT BELONGS TO: the ExtraObj::tag of the grid that was ACTIVE when it was
 	// created, or kAxesOwnerBase for the base relief. It is the ONLY exaggeration this element is ever
 	// drawn with (layerZScale) -- no other layer's VE can reach it. Same field, same meaning, on every
@@ -1110,6 +1119,7 @@ struct Polygon {
 	double fillColor[3] = { 1.0, 0.55, 0.0 };// fill colour (default orange, matches outline); editable in Line Properties
 	double fillOpacity  = 0.0;               // fill transparency (0 = no fill -> outline-only look preserved by default)
 	std::string name;                        // label shown in the Scene Objects panel ("polygon N")
+	std::string srcSrs; std::vector<double> srcXY;  // the system its x,y were drawn in + those x,y (2 per vertex), kept the first time the window changes system under it (sceneRecrossVectors)
 	bool   clamped = false;                  // draped on the terrain (see Overlay::clamped — same toggle,
 	std::vector<double> zClampSave;          // same one function, offered on every vector element's handle)
 	std::string groupName;                   // when non-empty, polys sharing it fold under ONE collapsible Scene Objects node (e.g. "Slip model" — Import Model Slip patches)
@@ -1264,6 +1274,7 @@ struct TextLabel {
 	                                          // the real quad and fills this in; applyVE reuses it)
 	std::string text;                        // the shown string (rendered in the scene)
 	std::string name;                        // short Scene Objects label ("Text N")
+	std::string srcSrs; std::vector<double> srcXY;  // the system its x,y were drawn in + those x,y (2 per vertex), kept the first time the window changes system under it (sceneRecrossVectors)
 	std::string font  = "Arial";             // VTK font family: "Arial" / "Courier" / "Times"
 	int    size  = 18;
 	double color[3] = { 0.0, 0.0, 0.0 };     // default: black
@@ -1950,6 +1961,20 @@ struct Scene {
 
 	std::vector<Overlay> overlays;   // GMTdataset line/point overlays (per-element context menus)
 	std::vector<Curtain> curtains;   // Fledermaus vertical image curtains hung along an XY track
+	// The LEVEL SLIDER of a picture-sheet stack (gmtvtk_sheet_slider_h): an upright axis at TRUE (sheetX, sheetY)
+	// from the ground to the top level, a tick per level and a knob the view drags (GLView, sheetKnob*); every
+	// sheet of `sheetGroup` above the knob is hidden. Level k (1..n) sits at z = sheetZ0 + k*sheetDz. The
+	// actors ride the window scales like the sheets (applyVE -> sheetSliderScale).
+	vtkSmartPointer<vtkActor> sheetAxis, sheetTicks, sheetKnob;
+	vtkSmartPointer<vtkBillboardTextActor3D> sheetKnobText;
+	vtkSmartPointer<vtkActor> sheetSel;       // the CHOSEN sheet's thin red outline (gmtvtk_sheet_select_h), at
+	double sheetSelZ = 0.0;                  // its sheet's height; hidden with its level
+	double sheetX = 0.0, sheetY = 0.0;
+	int sheetN = 0, sheetK = 0, sheetVeOwner = -1;
+	bool sheetDrag = false;
+	std::string sheetGroup;
+	double sheetZ0 = 0.0, sheetDz = 1.0;
+	std::vector<std::string> sheetLabels;
 	std::vector<ExtraObj> extras;    // grids/images dropped into this window after it opened
 	std::vector<SymbolLayer> symbols;       // screen-constant glyph layers (volcanoes, seismicity, …)
 	vtkSmartPointer<vtkCommand> symSizeCmd; // per-frame rescale observer, installed once (addSymbols)
@@ -2189,6 +2214,10 @@ struct Scene {
 	// seed point itself, not a line. Same arming/disarming and the same left-click consumption as the
 	// element picks above, so an armed seed pick can never leak into a camera rotate either.
 	std::function<void(double, double)> seedPickCB;
+	// Tool dialogs whose scene footprints are on this window (Sentinel-2, Landsat): a plain left CLICK in
+	// the view (released within 3 px of the press: never a pan) goes to each as what=<verb>, px, py in
+	// TRUE world coords, and the dialog chooses the scene under it. (tool, verb); gmtvtk_set_click_tool_h.
+	std::vector<std::pair<std::string, std::string>> clickTools;
 	// …and how the user says "that's all of them": a right-click or a double-click, both routed here
 	// (the tool's own button works too). Only the multi-seed collector sets this.
 	std::function<void()> seedPickEndCB;
@@ -6260,6 +6289,82 @@ static void sceneGlobeSync(Scene *s) {
 	if (!on) s->globeHooks.clear();
 }
 
+static void sheetSliderDrop(Scene *s) {
+	for (vtkProp *a : { (vtkProp *)s->sheetAxis.Get(), (vtkProp *)s->sheetTicks.Get(), (vtkProp *)s->sheetKnob.Get(),
+	                    (vtkProp *)s->sheetKnobText.Get() })
+		if (a && s->ren) s->ren->RemoveViewProp(a);
+	s->sheetAxis = nullptr;  s->sheetTicks = nullptr;  s->sheetKnob = nullptr;  s->sheetKnobText = nullptr;
+	if (s->sheetSel && s->ren) s->ren->RemoveViewProp(s->sheetSel);   // the chosen sheet's outline too
+	s->sheetSel = nullptr;
+	s->sheetGroup.clear();
+	s->sheetLabels.clear();
+	s->sheetN = s->sheetK = 0;
+	s->sheetDrag = false;
+}
+// ── the LEVEL SLIDER of a picture-sheet stack (Scene::sheetAxis …, gmtvtk_sheet_slider_h) ──────────────
+// The scale the slider's actors ride: the SAME the stack's sheets get in applyVE (kx, 1, their layer's VE).
+static void sheetSliderScales(Scene *s, double &kx, double &kz) {
+	kx = s->globe ? 1.0 : s->xfac;
+	kz = s->globe ? 1.0 : layerZScale(s, s->sheetVeOwner);
+}
+static void sheetSliderScale(Scene *s) {
+	double kx, kz; sheetSliderScales(s, kx, kz);
+	if (s->sheetSel) s->sheetSel->SetScale(kx, 1.0, kz);   // the chosen sheet's outline, same scales
+	if (!s->sheetKnob) return;
+	for (vtkActor *a : { s->sheetAxis.Get(), s->sheetTicks.Get(), s->sheetKnob.Get() })
+		if (a) a->SetScale(kx, 1.0, kz);
+	if (s->sheetKnobText)                         // a billboard: placed in scaled space by hand
+		s->sheetKnobText->SetPosition(s->sheetX * kx, s->sheetY, (s->sheetZ0 + s->sheetK * s->sheetDz) * kz);
+}
+// Knob on level k (1..n): the sheets above it hidden, the knob and its date moved there.
+static void sheetSliderSet(Scene *s, int k) {
+	if (!s->sheetKnob || s->sheetN < 1) return;
+	k = std::max(1, std::min(s->sheetN, k));
+	s->sheetK = k;
+	const double top = s->sheetZ0 + k * s->sheetDz + 1e-9 * std::fabs(s->sheetDz);
+	for (auto &cu : s->curtains)
+		if (cu.groupName == s->sheetGroup && cu.actor) cu.actor->SetVisibility(cu.sheetZ <= top ? 1 : 0);
+	if (s->sheetSel) s->sheetSel->SetVisibility(s->sheetSelZ <= top ? 1 : 0);   // with its sheet
+	auto *pd = vtkPolyData::SafeDownCast(s->sheetKnob->GetMapper()->GetInput());
+	if (pd && pd->GetPoints()) {
+		pd->GetPoints()->SetPoint(0, s->sheetX, s->sheetY, s->sheetZ0 + k * s->sheetDz);
+		pd->GetPoints()->Modified();
+		pd->Modified();
+	}
+	if (s->sheetKnobText && k <= (int)s->sheetLabels.size())
+		s->sheetKnobText->SetInput(("  " + s->sheetLabels[(size_t)k - 1]).c_str());
+	sheetSliderScale(s);
+}
+// The TRUE point (x, y, z) of the slider in display pixels, through the actors' own scale.
+static void sheetSliderToDisplay(Scene *s, double z, double out[2]) {
+	double kx, kz; sheetSliderScales(s, kx, kz);
+	s->ren->SetWorldPoint(s->sheetX * kx, s->sheetY, z * kz, 1.0);
+	s->ren->WorldToDisplay();
+	const double *d = s->ren->GetDisplayPoint();
+	out[0] = d[0]; out[1] = d[1];
+}
+// Is display point (dx, dy) on the knob? (what grabs it)
+static bool sheetKnobHit(Scene *s, double dx, double dy) {
+	if (!s || !s->sheetKnob || !s->sheetKnob->GetVisibility() || !s->ren) return false;
+	double p[2]; sheetSliderToDisplay(s, s->sheetZ0 + s->sheetK * s->sheetDz, p);
+	return std::hypot(p[0] - dx, p[1] - dy) <= 14.0;
+}
+// The knob dragged to display point (dx, dy): the level whose place on the axis is nearest. True when
+// the level changed.
+static bool sheetKnobDragTo(Scene *s, double dx, double dy) {
+	if (!s || !s->sheetKnob || s->sheetN < 1) return false;
+	double b[2], t[2];
+	sheetSliderToDisplay(s, s->sheetZ0, b);
+	sheetSliderToDisplay(s, s->sheetZ0 + s->sheetN * s->sheetDz, t);
+	const double vx = t[0] - b[0], vy = t[1] - b[1], L2 = vx * vx + vy * vy;
+	if (L2 <= 0.0) return false;
+	const double f = ((dx - b[0]) * vx + (dy - b[1]) * vy) / L2;
+	const int k = std::max(1, std::min(s->sheetN, (int)std::lround(f * s->sheetN)));
+	if (k == s->sheetK) return false;
+	sheetSliderSet(s, k);
+	return true;
+}
+
 static void applyVE(Scene *s) {
 	s->zfac = sceneZRef(s);        // re-derived from the drawn geometry, never from a unit assumption
 	// THE SCALE EVERY ACTOR GETS, decided once, here — including in the globe, where it is (1,1,1)
@@ -6287,6 +6392,7 @@ static void applyVE(Scene *s) {
 		if (ov.actor) ov.actor->SetScale(kx, 1.0, G ? 1.0 : layerZScale(s, ov.veOwner));
 	for (auto &cu : s->curtains)
 		if (cu.actor) cu.actor->SetScale(kx, 1.0, G ? 1.0 : layerZScale(s, cu.veOwner));
+	sheetSliderScale(s);                          // a sheet stack's level slider rides the same scales
 	for (auto &ex : s->extras) {                                       // each dropped grid/image at ITS OWN VE
 		// A GRID has a real elevation span (ex.zmin/ex.zmax, set by gmtvtk_add_surface_h's grid branch) and
 		// rides ITS OWN axis mapping times ITS OWN ve. An IMAGE has no span of its own -- it is a flat plane

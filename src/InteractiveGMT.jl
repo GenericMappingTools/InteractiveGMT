@@ -216,6 +216,8 @@ include("bandslist.jl")  # Image > Load Bands: multiband/.vrt band picker (port 
 include("RemoteS/RemoteS.jl") # submodule InteractiveGMT.RemoteS: port of RemoteS.jl (indices, Landsat, MODIS L2, orbits)
 include("swot.jl")      # Satellite > SWOT: PO.DAAC L2 search/download/grid (a Remote sensing dialog tool)
 include("s1products.jl") # Satellite > Copernicus > Sentinel-1 SAR products: CDSE search/download/show (a Remote sensing dialog tool)
+include("s2products.jl") # Satellite > Copernicus > Sentinel-2 MSI products: CDSE search, quicklooks, product/band download, band cube
+include("landsat.jl")    # Satellite > Landsat scenes: USGS M2M or CDSE search, browse pictures, whole/band download, band cube
 include("s1orbits.jl")   # Geophysics > GMTSAR > Sentinel-1 orbits: ESA POEORB/RESORB .EOF per scene (a Remote sensing dialog tool)
 include("mbmesh_dialog.jl") # Geophysics > MB-System > 3-D mesh (mbmesh): MB-System's mbmesh on any point data (a Remote sensing dialog tool)
 include("RemoteS/remotes_gui.jl") # Satellite > Remote sensing: the dialogs over that submodule

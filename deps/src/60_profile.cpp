@@ -778,6 +778,12 @@ static bool polyEditCopyToClipboard(Scene *s);                   // Ctrl+C in ve
 static int  polyHitText(Scene *s, int x, int y, double tol);     // text label under cursor (85)
 static int  mecaHitAt(Scene *s, int x, int y);                   // focal-mechanism ball under cursor (85)
 static bool symHitHandle(Scene *s, int x, int y, double tol);    // armed symbol under cursor (85)
+static bool polyPickWorld(Scene *s, int mx, int my, double outTrue[3]);   // cursor -> TRUE world point (85)
+// A plain left click for a tool dialog with scene footprints on the window (Scene::clickTools): set by the
+// Remote sensing dialogs (70_window.cpp); args: scene, tool, verb, TRUE world x, y.
+static std::function<void(Scene *, const std::string &, const std::string &, double, double)> g_sceneClickTool;
+// ...and a plain left click on one of a dialog's picture sheets: scene, tool, verb, the sheet's name.
+static std::function<void(Scene *, const std::string &, const std::string &, const std::string &)> g_sceneSheetPick;
 
 class GLView : public QVTKOpenGLNativeWidget {
 public:
@@ -786,9 +792,32 @@ public:
 protected:
 	bool   midDown = false, midMoved = false;
 	QPoint midPress, midLast;
+	bool   leftDown = false;       // a left press nothing else took (no colorbar, no polygon tool, no pick)
+	QPoint leftPress;
 
 	void devPx(const QPoint &p, double &dx, double &dy) {
 		displayPxFromQt(this, renderWindow(), p, dx, dy);
+	}
+	// A picture stack's slider knob: QVTKOpenGLNativeWidget::event hands EVERY mouse event to the VTK
+	// interactor before the mouse*Event overrides run, so a knob drag also turned the camera. A press on
+	// the knob and everything until its release are therefore taken HERE, never reaching the base class.
+	bool event(QEvent *e) override {
+		const QEvent::Type t = e->type();
+		if (s && (t == QEvent::MouseButtonPress || t == QEvent::MouseMove || t == QEvent::MouseButtonRelease)) {
+			auto *me = static_cast<QMouseEvent *>(e);
+			bool mine = s->sheetDrag;
+			if (!mine && t == QEvent::MouseButtonPress && me->button() == Qt::LeftButton) {
+				double dx, dy; devPx(me->position().toPoint(), dx, dy);
+				mine = sheetKnobHit(s, dx, dy);
+			}
+			if (mine) {
+				if (t == QEvent::MouseButtonPress)        mousePressEvent(me);
+				else if (t == QEvent::MouseMove)          mouseMoveEvent(me);
+				else                                      mouseReleaseEvent(me);
+				return true;
+			}
+		}
+		return QVTKOpenGLNativeWidget::event(e);
 	}
 	void recenterAt(const QPoint &p) {
 		if (!s || !s->ren) return;
@@ -804,6 +833,7 @@ protected:
 		renderWindow()->Render();
 	}
 	void mousePressEvent(QMouseEvent *e) override {
+		leftDown = false;               // set again below only when nothing else takes the press
 		if (e->button() == Qt::MiddleButton) {
 			midDown = true; midMoved = false;
 			midPress = e->position().toPoint(); midLast = midPress;
@@ -821,8 +851,23 @@ protected:
 		if (s && (e->button() == Qt::LeftButton || e->button() == Qt::RightButton)) {
 			double dx, dy; devPx(e->position().toPoint(), dx, dy);
 			const bool shift = (e->modifiers() & Qt::ShiftModifier) != 0;
-			if (polygonHandlePress(s, e->button() == Qt::LeftButton ? 0 : 1, (int)dx, (int)dy, shift))
+			if (polygonHandlePress(s, e->button() == Qt::LeftButton ? 0 : 1, (int)dx, (int)dy, shift)) {
+				leftDown = false;
 				return;                 // consumed -> keep VTK (gizmo / dolly) out of it
+			}
+		}
+		// A picture stack's level slider: a left press on its knob grabs it (the camera stays still).
+		if (s && e->button() == Qt::LeftButton) {
+			double dx, dy; devPx(e->position().toPoint(), dx, dy);
+			if (sheetKnobHit(s, dx, dy)) {
+				s->sheetDrag = true;
+				setCursor(Qt::SizeVerCursor);
+				return;
+			}
+		}
+		if (e->button() == Qt::LeftButton) {
+			leftDown = true;
+			leftPress = e->position().toPoint();
 		}
 		QVTKOpenGLNativeWidget::mousePressEvent(e);
 	}
@@ -840,6 +885,12 @@ protected:
 			const QPoint cp = e->position().toPoint();
 			if ((cp - midPress).manhattanLength() > 3) midMoved = true;
 			if (midMoved) { panBy(midLast, cp); midLast = cp; }
+			return;
+		}
+		// The stack slider's knob being dragged: the level nearest the cursor along the axis.
+		if (s && s->sheetDrag) {
+			double dx, dy; devPx(e->position().toPoint(), dx, dy);
+			if (sheetKnobDragTo(s, dx, dy)) renderWindow()->Render();
 			return;
 		}
 		// Colorbar drag in progress: move it and consume.
@@ -862,7 +913,8 @@ protected:
 			               || (s->polyEdit >= 0 && polyHitHandle(s, (int)dx, (int)dy, 10.0) >= 0)
 			               || mecaHitAt(s, (int)dx, (int)dy) >= 0
 			               || s->profMarkDrag || profMarkHit(s, (int)dx, (int)dy)
-			               || (s->symArmed >= 0 && symHitHandle(s, (int)dx, (int)dy, 16.0));
+			               || (s->symArmed >= 0 && symHitHandle(s, (int)dx, (int)dy, 16.0))
+			               || sheetKnobHit(s, dx, dy);
 			const bool isAll = cursor().shape() == Qt::SizeAllCursor;
 			if (over && !isAll)       setCursor(Qt::SizeAllCursor);
 			else if (!over && isAll)  unsetCursor();
@@ -883,10 +935,75 @@ protected:
 			renderWindow()->Render();
 			return;
 		}
+		if (s && e->button() == Qt::LeftButton && s->sheetDrag) {
+			s->sheetDrag = false;                    // knob let go: the Scene Objects ticks follow
+			unsetCursor();
+			sceneQueueRebuildObjects(s);
+			return;
+		}
 		if (s && e->button() == Qt::LeftButton && colorbarRelease(s))
 			return;                     // ended a colorbar drag
 		if (s && e->button() == Qt::LeftButton && polygonHandleRelease(s))
 			return;                     // ended a vertex drag
+		// A plain left CLICK (not a pan: within 3 px of the press) on a window carrying scene footprints of
+		// a tool dialog: its map point goes to that dialog, which chooses the scene under it. Sent after this
+		// event (the answer may redraw the footprints); the release itself goes on to VTK as always.
+		if (s && e->button() == Qt::LeftButton && leftDown) {
+			leftDown = false;
+			// A click on a dialog's PICTURE SHEET (a quicklook of a scene stack, Curtain::pickTool) chooses
+			// that sheet's scene: the sheet in front wins over the map point behind it.
+			bool onSheet = false;
+			if (g_sceneSheetPick && s->vectorPickMode == 0 && (e->position().toPoint() - leftPress).manhattanLength() <= 3) {
+				// A software ray pick against the VISIBLE sheets only (a hidden level above the slider's
+				// knob is not there to be clicked); the hardware prop picker cannot run outside a render.
+				vtkNew<vtkCellPicker> pk;
+				pk->SetTolerance(0.0005);
+				pk->PickFromListOn();
+				bool any = false;
+				for (const auto &cu : s->curtains)
+					if (!cu.pickTool.empty() && cu.actor && cu.actor->GetVisibility()) { pk->AddPickList(cu.actor); any = true; }
+				if (any) {
+					double dx, dy; devPx(e->position().toPoint(), dx, dy);
+					// The nearest sheet along the ray WHOSE PICTURE IS THERE: a hit on a see-through part
+					// (alpha 0, the pass's no-data) drops that sheet and asks again, so the click reaches the
+					// picture the user actually sees under the cursor.
+					for (int tries = 0; tries < 64 && !onSheet; ++tries) {
+						if (!pk->Pick(dx, dy, 0.0, s->ren) || !pk->GetActor()) break;
+						vtkActor *hit = pk->GetActor();
+						const Curtain *got = nullptr;
+						for (const auto &cu : s->curtains)
+							if (!cu.pickTool.empty() && cu.actor.Get() == hit) { got = &cu; break; }
+						if (!got) break;
+						if (!got->sheetAlpha.empty()) {
+							const double *pc = pk->GetPCoords();     // quad: (r, s) = the picture's (u, v)
+							const int ix = std::max(0, std::min(got->sheetAW - 1, (int)(pc[0] * got->sheetAW)));
+							const int iy = std::max(0, std::min(got->sheetAH - 1, (int)(pc[1] * got->sheetAH)));
+							if (got->sheetAlpha[(size_t)iy * got->sheetAW + ix] == 0) { pk->DeletePickList(hit); continue; }
+						}
+						Scene *sc = s;
+						const std::string tool = got->pickTool, verb = got->pickVerb, name = got->name;
+						QTimer::singleShot(0, this, [sc, tool, verb, name]() {
+							if (g_sceneSheetPick) g_sceneSheetPick(sc, tool, verb, name);
+						});
+						onSheet = true;
+					}
+				}
+			}
+			if (!onSheet && !s->clickTools.empty() && g_sceneClickTool && s->vectorPickMode == 0 &&
+			    (e->position().toPoint() - leftPress).manhattanLength() <= 3) {
+				double dx, dy; devPx(e->position().toPoint(), dx, dy);
+				double w[3];
+				if (polyPickWorld(s, (int)dx, (int)dy, w)) {
+					Scene *sc = s;
+					const auto tools = s->clickTools;
+					const double x = w[0], y = w[1];
+					QTimer::singleShot(0, this, [sc, tools, x, y]() {
+						for (const auto &t : tools)
+							if (g_sceneClickTool) g_sceneClickTool(sc, t.first, t.second, x, y);
+					});
+				}
+			}
+		}
 		QVTKOpenGLNativeWidget::mouseReleaseEvent(e);
 	}
 	// Ctrl+C while a symbol is armed (double-click "edit mode" selection, see Scene::symArmed) copies

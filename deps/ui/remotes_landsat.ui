@@ -1,0 +1,291 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>RemoteSLandsat</class>
+ <widget class="QDialog" name="RemoteSLandsat">
+  <property name="geometry"><rect><x>0</x><y>0</y><width>720</width><height>658</height></rect></property>
+  <property name="windowTitle"><string>Landsat scenes</string></property>
+  <widget class="QTabWidget" name="tabs">
+   <property name="foldable" stdset="0">
+    <bool>true</bool>
+   </property>
+   <property name="geometry"><rect><x>4</x><y>4</y><width>359</width><height>612</height></rect></property>
+   <property name="currentIndex"><number>0</number></property>
+   <widget class="QWidget" name="tab_search">
+    <attribute name="title"><string>Search</string></attribute>
+    <widget class="QGroupBox" name="gb_rg_region">
+     <property name="geometry"><rect><x>5</x><y>7</y><width>345</width><height>142</height></rect></property>
+     <property name="title"><string>Region</string></property>
+     <widget class="QLabel" name="lbl_rg_n">
+      <property name="geometry"><rect><x>37</x><y>27</y><width>26</width><height>26</height></rect></property>
+      <property name="frameShape"><enum>QFrame::Shape::Box</enum></property>
+      <property name="text"><string>N</string></property>
+      <property name="alignment"><set>Qt::AlignmentFlag::AlignCenter</set></property>
+     </widget>
+     <widget class="QLabel" name="lbl_rg_w">
+      <property name="geometry"><rect><x>11</x><y>53</y><width>26</width><height>26</height></rect></property>
+      <property name="frameShape"><enum>QFrame::Shape::Box</enum></property>
+      <property name="text"><string>W</string></property>
+      <property name="alignment"><set>Qt::AlignmentFlag::AlignCenter</set></property>
+     </widget>
+     <widget class="QLabel" name="lbl_rg_e">
+      <property name="geometry"><rect><x>63</x><y>53</y><width>26</width><height>26</height></rect></property>
+      <property name="frameShape"><enum>QFrame::Shape::Box</enum></property>
+      <property name="text"><string>E</string></property>
+      <property name="alignment"><set>Qt::AlignmentFlag::AlignCenter</set></property>
+     </widget>
+     <widget class="QLabel" name="lbl_rg_s">
+      <property name="geometry"><rect><x>37</x><y>79</y><width>26</width><height>26</height></rect></property>
+      <property name="frameShape"><enum>QFrame::Shape::Box</enum></property>
+      <property name="text"><string>S</string></property>
+      <property name="alignment"><set>Qt::AlignmentFlag::AlignCenter</set></property>
+     </widget>
+     <widget class="QLineEdit" name="p_rg_n">
+      <property name="geometry"><rect><x>150</x><y>28</y><width>130</width><height>24</height></rect></property>
+      <property name="text"><string>37.5</string></property>
+      <property name="alignment"><set>Qt::AlignmentFlag::AlignCenter</set></property>
+     </widget>
+     <widget class="QLineEdit" name="p_rg_w">
+      <property name="geometry"><rect><x>100</x><y>54</y><width>114</width><height>24</height></rect></property>
+      <property name="text"><string>-8.5</string></property>
+      <property name="alignment"><set>Qt::AlignmentFlag::AlignCenter</set></property>
+     </widget>
+     <widget class="QLineEdit" name="p_rg_e">
+      <property name="geometry"><rect><x>220</x><y>54</y><width>114</width><height>24</height></rect></property>
+      <property name="text"><string>-7.5</string></property>
+      <property name="alignment"><set>Qt::AlignmentFlag::AlignCenter</set></property>
+     </widget>
+     <widget class="QLineEdit" name="p_rg_s">
+      <property name="geometry"><rect><x>150</x><y>80</y><width>130</width><height>24</height></rect></property>
+      <property name="text"><string>37</string></property>
+      <property name="alignment"><set>Qt::AlignmentFlag::AlignCenter</set></property>
+     </widget>
+     <widget class="QPushButton" name="run_rgwindow">
+      <property name="geometry"><rect><x>11</x><y>110</y><width>323</width><height>24</height></rect></property>
+      <property name="toolTip"><string>Fill the four limits with the region the window is showing.</string></property>
+      <property name="text"><string>Use the window's limits</string></property>
+     </widget>
+    </widget>
+    <widget class="QGroupBox" name="gb_query">
+     <property name="geometry"><rect><x>5</x><y>155</y><width>345</width><height>186</height></rect></property>
+     <property name="title"><string>Source, product, period and clouds</string></property>
+     <widget class="QLabel" name="lbl_source">
+      <property name="geometry"><rect><x>11</x><y>27</y><width>55</width><height>26</height></rect></property>
+      <property name="text"><string>Source</string></property>
+     </widget>
+     <widget class="QComboBox" name="p_source">
+      <property name="geometry"><rect><x>70</x><y>27</y><width>264</width><height>26</height></rect></property>
+      <property name="toolTip"><string>Microsoft Planetary Computer: USGS's Collection 2 Level-2 files (surface reflectance and temperature, Landsat 4-5, 7, 8-9, the whole globe) with NO account. USGS EarthExplorer: the same archive plus Level-1 and the whole-scene .tar, through its M2M API; needs your ERS user name, an M2M application token, and M2M download access granted by USGS.</string></property>
+      <property name="refresh" stdset="0"><bool>true</bool></property>
+     </widget>
+     <widget class="QLabel" name="lbl_product">
+      <property name="geometry"><rect><x>11</x><y>59</y><width>55</width><height>26</height></rect></property>
+      <property name="text"><string>Product</string></property>
+     </widget>
+     <widget class="QComboBox" name="p_product">
+      <property name="geometry"><rect><x>70</x><y>59</y><width>264</width><height>26</height></rect></property>
+      <property name="toolTip"><string>Level-2: surface reflectance (SR bands) and surface temperature (ST band), corrected for the atmosphere by USGS. Level-1: top-of-atmosphere digital numbers, with the 15 m panchromatic band and both thermal bands. A scene is 185 x 180 km, 30 m pixels.</string></property>
+      <property name="refresh" stdset="0"><bool>true</bool></property>
+     </widget>
+     <widget class="QLabel" name="lbl_from">
+      <property name="geometry"><rect><x>11</x><y>91</y><width>50</width><height>22</height></rect></property>
+      <property name="text"><string>From</string></property>
+     </widget>
+     <widget class="QDateEdit" name="p_from">
+      <property name="geometry"><rect><x>70</x><y>91</y><width>110</width><height>22</height></rect></property>
+      <property name="toolTip"><string>First day of the period (UTC), included.</string></property>
+      <property name="displayFormat"><string>yyyy-MM-dd</string></property>
+      <property name="calendarPopup"><bool>true</bool></property>
+     </widget>
+     <widget class="QLabel" name="lbl_to">
+      <property name="geometry"><rect><x>194</x><y>91</y><width>24</width><height>22</height></rect></property>
+      <property name="text"><string>To</string></property>
+     </widget>
+     <widget class="QDateEdit" name="p_to">
+      <property name="geometry"><rect><x>224</x><y>91</y><width>110</width><height>22</height></rect></property>
+      <property name="toolTip"><string>Last day of the period (UTC), included.</string></property>
+      <property name="displayFormat"><string>yyyy-MM-dd</string></property>
+      <property name="calendarPopup"><bool>true</bool></property>
+     </widget>
+     <widget class="QLabel" name="lbl_cloud">
+      <property name="geometry"><rect><x>11</x><y>121</y><width>55</width><height>24</height></rect></property>
+      <property name="text"><string>Clouds</string></property>
+     </widget>
+     <widget class="QSpinBox" name="p_cloud">
+      <property name="geometry"><rect><x>70</x><y>121</y><width>70</width><height>24</height></rect></property>
+      <property name="toolTip"><string>The largest cloud cover accepted, in percent of the whole scene (the scene's own cloud cover, not over your region). 100: every scene.</string></property>
+      <property name="suffix"><string> %</string></property>
+      <property name="minimum"><number>0</number></property>
+      <property name="maximum"><number>100</number></property>
+      <property name="value"><number>30</number></property>
+     </widget>
+     <widget class="QLabel" name="lbl_cloud_hint">
+      <property name="geometry"><rect><x>150</x><y>121</y><width>184</width><height>24</height></rect></property>
+      <property name="text"><string>at most, of the whole scene</string></property>
+     </widget>
+     <widget class="QPushButton" name="run_search">
+      <property name="geometry"><rect><x>11</x><y>153</y><width>156</width><height>26</height></rect></property>
+      <property name="toolTip"><string>Ask the source for the scenes of the product over the region in the period, with at most that cloud cover, newest first, and draw their footprints (on an empty window, over a map with coastlines made for them). Then click inside a footprint in the view to choose its scene; clicking the same place again steps to the next scene covering it. A new search replaces the previous footprints.</string></property>
+      <property name="text"><string>Find the scenes</string></property>
+      <property name="busy" stdset="0"><string>Finding the Landsat scenes over the region…</string></property>
+     </widget>
+     <widget class="QPushButton" name="run_stack">
+      <property name="geometry"><rect><x>178</x><y>153</y><width>156</width><height>26</height></rect></property>
+      <property name="toolTip"><string>Show the browse picture of every scene found, each laid on the ground it covers, stacked one level per pass (the rows of one path on one day side by side; oldest at the bottom, newest on top), the parts with no data see-through, in a 3-D view of the window. Drag the knob of the axis on the map's upper-left corner to hide the levels above it; click a picture to choose its scene. Press again after a new search to rebuild the stack.</string></property>
+      <property name="text"><string>Quicklooks 3-D</string></property>
+      <property name="busy" stdset="0"><string>Stacking the browse pictures…</string></property>
+     </widget>
+    </widget>
+    <widget class="QGroupBox" name="gb_scene">
+     <property name="geometry"><rect><x>5</x><y>347</y><width>345</width><height>124</height></rect></property>
+     <property name="title"><string>Scene</string></property>
+     <widget class="QLabel" name="lbl_granule">
+      <property name="geometry"><rect><x>11</x><y>27</y><width>55</width><height>26</height></rect></property>
+      <property name="text"><string>Scene</string></property>
+     </widget>
+     <widget class="QComboBox" name="p_granule">
+      <property name="geometry"><rect><x>70</x><y>27</y><width>264</width><height>26</height></rect></property>
+      <property name="toolTip"><string>The scenes found, newest first: date, satellite (LC08, LC09, LE07, LT05...), WRS-2 path/row and cloud cover. "(on disk)": the whole product is already in the folder below. Choosing one highlights its footprint in the view and shows its browse picture.</string></property>
+      <property name="refresh" stdset="0"><bool>true</bool></property>
+     </widget>
+     <widget class="QLabel" name="lbl_folder">
+      <property name="geometry"><rect><x>11</x><y>59</y><width>55</width><height>26</height></rect></property>
+      <property name="text"><string>Folder</string></property>
+     </widget>
+     <widget class="QLineEdit" name="p_folder">
+      <property name="geometry"><rect><x>70</x><y>59</y><width>264</width><height>26</height></rect></property>
+      <property name="toolTip"><string>Where everything is downloaded to (made if it does not exist): a whole scene (USGS: its .tar; Planetary Computer: all its files, in the scene's sub-folder), single bands in a sub-folder named for the scene, browse pictures in "quicklooks". A file already there is not downloaded again.</string></property>
+     </widget>
+     <widget class="QPushButton" name="run_download">
+      <property name="geometry"><rect><x>11</x><y>91</y><width>323</width><height>26</height></rect></property>
+      <property name="toolTip"><string>Download the WHOLE chosen scene (every band plus its metadata) into the folder. Planetary Computer: every file, one by one, no account. USGS: the .tar, with the login of the Account tab.</string></property>
+      <property name="text"><string>Download the whole scene</string></property>
+      <property name="busy" stdset="0"><string>Downloading the Landsat scene…</string></property>
+     </widget>
+    </widget>
+    <widget class="QLabel" name="lbl_dn">
+     <property name="geometry"><rect><x>11</x><y>481</y><width>333</width><height>100</height></rect></property>
+     <property name="text"><string>The bands are stored as USGS delivers them, in digital numbers. Level-2: reflectance = DN x 0.0000275 - 0.2; surface temperature (kelvin) = DN x 0.00341802 + 149. Level-1: the MTL file of the whole scene has the factors to radiance and reflectance. QA_PIXEL flags clouds, shadow, water and snow.</string></property>
+     <property name="alignment"><set>Qt::AlignmentFlag::AlignLeading|Qt::AlignmentFlag::AlignLeft|Qt::AlignmentFlag::AlignTop</set></property>
+     <property name="wordWrap"><bool>true</bool></property>
+    </widget>
+   </widget>
+   <widget class="QWidget" name="tab_account">
+    <attribute name="title"><string>Account</string></attribute>
+    <widget class="QGroupBox" name="gb_us">
+     <property name="geometry"><rect><x>5</x><y>7</y><width>345</width><height>236</height></rect></property>
+     <property name="title"><string>USGS (EarthExplorer) login</string></property>
+     <widget class="QLabel" name="lbl_us_info">
+      <property name="geometry"><rect><x>11</x><y>24</y><width>323</width><height>80</height></rect></property>
+      <property name="text"><string>Your ERS user name and an M2M application token (made on your ERS profile, not your password). Searching works with them; downloading also needs M2M access, requested once on your ERS profile ("Request Access"). No account yet? &lt;a href=&quot;https://ers.cr.usgs.gov/register&quot;&gt;Register here&lt;/a&gt;.</string></property>
+      <property name="textFormat"><enum>Qt::TextFormat::RichText</enum></property>
+      <property name="alignment"><set>Qt::AlignmentFlag::AlignLeading|Qt::AlignmentFlag::AlignLeft|Qt::AlignmentFlag::AlignTop</set></property>
+      <property name="wordWrap"><bool>true</bool></property>
+      <property name="openExternalLinks"><bool>true</bool></property>
+     </widget>
+     <widget class="QLabel" name="lbl_us_user">
+      <property name="geometry"><rect><x>11</x><y>108</y><width>60</width><height>26</height></rect></property>
+      <property name="text"><string>User</string></property>
+     </widget>
+     <widget class="QLineEdit" name="p_us_user">
+      <property name="geometry"><rect><x>77</x><y>108</y><width>257</width><height>26</height></rect></property>
+      <property name="toolTip"><string>Your ERS (USGS EarthExplorer) user name.</string></property>
+     </widget>
+     <widget class="QLabel" name="lbl_us_token">
+      <property name="geometry"><rect><x>11</x><y>140</y><width>60</width><height>26</height></rect></property>
+      <property name="text"><string>Token</string></property>
+     </widget>
+     <widget class="QLineEdit" name="p_us_token">
+      <property name="geometry"><rect><x>77</x><y>140</y><width>257</width><height>26</height></rect></property>
+      <property name="toolTip"><string>The M2M application token made on your ERS profile.</string></property>
+      <property name="echoMode"><enum>QLineEdit::EchoMode::Password</enum></property>
+     </widget>
+     <widget class="QPushButton" name="run_saveusgs">
+      <property name="geometry"><rect><x>11</x><y>174</y><width>323</width><height>26</height></rect></property>
+      <property name="toolTip"><string>Write the user name and token to the machine m2m.cr.usgs.gov entry of .netrc in your home folder. Every other entry of the file is kept. Without saving, the two boxes are used for this session only.</string></property>
+      <property name="text"><string>Save USGS login</string></property>
+      <property name="busy" stdset="0"><string>Saving the USGS login…</string></property>
+     </widget>
+     <widget class="QLabel" name="lbl_us_where">
+      <property name="geometry"><rect><x>11</x><y>204</y><width>323</width><height>28</height></rect></property>
+      <property name="text"><string/></property>
+      <property name="wordWrap"><bool>true</bool></property>
+     </widget>
+    </widget>
+    <widget class="QLabel" name="lbl_pc_info">
+     <property name="geometry"><rect><x>11</x><y>253</y><width>333</width><height>80</height></rect></property>
+     <property name="text"><string>The Microsoft Planetary Computer needs no account at all: it serves USGS's own Collection 2 Level-2 files (Landsat 4-5, 7, 8-9) to anyone. Only Level-1 and the whole-scene .tar archives need the USGS account above.</string></property>
+     <property name="alignment"><set>Qt::AlignmentFlag::AlignLeading|Qt::AlignmentFlag::AlignLeft|Qt::AlignmentFlag::AlignTop</set></property>
+     <property name="wordWrap"><bool>true</bool></property>
+    </widget>
+   </widget>
+  </widget>
+  <widget class="QGroupBox" name="gb_thumb">
+   <property name="geometry"><rect><x>368</x><y>4</y><width>348</width><height>370</height></rect></property>
+   <property name="title"><string>Browse picture</string></property>
+   <widget class="QLabel" name="lbl_thumb">
+    <property name="geometry"><rect><x>24</x><y>24</y><width>300</width><height>300</height></rect></property>
+    <property name="toolTip"><string>The source's browse picture of the chosen scene, in natural colour, so the clouds and the coverage can be judged before downloading.</string></property>
+    <property name="frameShape"><enum>QFrame::Shape::Box</enum></property>
+    <property name="text"><string>No scene chosen.</string></property>
+    <property name="textFormat"><enum>Qt::TextFormat::RichText</enum></property>
+    <property name="alignment"><set>Qt::AlignmentFlag::AlignCenter</set></property>
+    <property name="wordWrap"><bool>true</bool></property>
+   </widget>
+   <widget class="QLabel" name="lbl_thumbinfo">
+    <property name="geometry"><rect><x>11</x><y>330</y><width>326</width><height>34</height></rect></property>
+    <property name="text"><string/></property>
+    <property name="alignment"><set>Qt::AlignmentFlag::AlignHCenter|Qt::AlignmentFlag::AlignTop</set></property>
+    <property name="wordWrap"><bool>true</bool></property>
+   </widget>
+  </widget>
+  <widget class="QGroupBox" name="gb_bands">
+   <property name="geometry"><rect><x>368</x><y>380</y><width>348</width><height>236</height></rect></property>
+   <property name="title"><string>Bands</string></property>
+   <widget class="QLabel" name="lbl_bsize">
+    <property name="geometry"><rect><x>11</x><y>22</y><width>326</width><height>24</height></rect></property>
+    <property name="text"><string/></property>
+   </widget>
+   <widget class="QCheckBox" name="p_band_01"><property name="geometry"><rect><x>11</x><y>49</y><width>105</width><height>22</height></rect></property><property name="refresh" stdset="0"><bool>true</bool></property></widget>
+   <widget class="QCheckBox" name="p_band_02"><property name="geometry"><rect><x>119</x><y>49</y><width>105</width><height>22</height></rect></property><property name="refresh" stdset="0"><bool>true</bool></property></widget>
+   <widget class="QCheckBox" name="p_band_03"><property name="geometry"><rect><x>227</x><y>49</y><width>110</width><height>22</height></rect></property><property name="refresh" stdset="0"><bool>true</bool></property></widget>
+   <widget class="QCheckBox" name="p_band_04"><property name="geometry"><rect><x>11</x><y>73</y><width>105</width><height>22</height></rect></property><property name="refresh" stdset="0"><bool>true</bool></property></widget>
+   <widget class="QCheckBox" name="p_band_05"><property name="geometry"><rect><x>119</x><y>73</y><width>105</width><height>22</height></rect></property><property name="refresh" stdset="0"><bool>true</bool></property></widget>
+   <widget class="QCheckBox" name="p_band_06"><property name="geometry"><rect><x>227</x><y>73</y><width>110</width><height>22</height></rect></property><property name="refresh" stdset="0"><bool>true</bool></property></widget>
+   <widget class="QCheckBox" name="p_band_07"><property name="geometry"><rect><x>11</x><y>97</y><width>105</width><height>22</height></rect></property><property name="refresh" stdset="0"><bool>true</bool></property></widget>
+   <widget class="QCheckBox" name="p_band_08"><property name="geometry"><rect><x>119</x><y>97</y><width>105</width><height>22</height></rect></property><property name="refresh" stdset="0"><bool>true</bool></property></widget>
+   <widget class="QCheckBox" name="p_band_09"><property name="geometry"><rect><x>227</x><y>97</y><width>110</width><height>22</height></rect></property><property name="refresh" stdset="0"><bool>true</bool></property></widget>
+   <widget class="QCheckBox" name="p_band_10"><property name="geometry"><rect><x>11</x><y>121</y><width>105</width><height>22</height></rect></property><property name="refresh" stdset="0"><bool>true</bool></property></widget>
+   <widget class="QCheckBox" name="p_band_11"><property name="geometry"><rect><x>119</x><y>121</y><width>105</width><height>22</height></rect></property><property name="refresh" stdset="0"><bool>true</bool></property></widget>
+   <widget class="QCheckBox" name="p_band_12"><property name="geometry"><rect><x>227</x><y>121</y><width>110</width><height>22</height></rect></property><property name="refresh" stdset="0"><bool>true</bool></property></widget>
+   <widget class="QCheckBox" name="p_band_13"><property name="geometry"><rect><x>11</x><y>145</y><width>105</width><height>22</height></rect></property><property name="refresh" stdset="0"><bool>true</bool></property></widget>
+   <widget class="QCheckBox" name="p_band_14"><property name="geometry"><rect><x>119</x><y>145</y><width>105</width><height>22</height></rect></property><property name="refresh" stdset="0"><bool>true</bool></property></widget>
+   <widget class="QCheckBox" name="p_band_15"><property name="geometry"><rect><x>227</x><y>145</y><width>110</width><height>22</height></rect></property><property name="refresh" stdset="0"><bool>true</bool></property></widget>
+   <widget class="QCheckBox" name="p_cut">
+    <property name="geometry"><rect><x>11</x><y>175</y><width>326</width><height>22</height></rect></property>
+    <property name="toolTip"><string>Download ONLY the region of the Search tab (converted to the scene's own UTM system): GDAL reads just that window of each band's cloud-optimised GeoTIFF over the internet, never the whole file. Unticked: the whole scene is downloaded (about 80 MB per band, 7700 x 7800 pixels).</string></property>
+    <property name="text"><string>Cut to the region</string></property>
+    <property name="checked"><bool>true</bool></property>
+   </widget>
+   <widget class="QPushButton" name="run_bands">
+    <property name="geometry"><rect><x>11</x><y>201</y><width>326</width><height>26</height></rect></property>
+    <property name="toolTip"><string>Download only the ticked bands of the chosen scene (a file already in the folder is not downloaded again), cut them to the region, put the 30 m ones in ONE band cube (a GeoTIFF in the scene's UTM system, beside the band files) and show it in this window. The 15 m panchromatic band and the 8-bit quality layers are shown as grids of their own.</string></property>
+    <property name="text"><string>Download the bands and show the cube</string></property>
+    <property name="busy" stdset="0"><string>Getting the Landsat bands…</string></property>
+   </widget>
+  </widget>
+  <widget class="QToolButton" name="tutorial">
+   <property name="geometry"><rect><x>9</x><y>624</y><width>24</width><height>24</height></rect></property>
+   <property name="toolTip"><string>Open the Landsat scenes page of the manual.</string></property>
+   <property name="text"><string>?</string></property>
+   <property name="page" stdset="0"><string>73d-landsat</string></property>
+  </widget>
+  <widget class="QLabel" name="lbl_status">
+   <property name="geometry"><rect><x>37</x><y>622</y><width>679</width><height>30</height></rect></property>
+   <property name="text"><string/></property>
+   <property name="alignment"><set>Qt::AlignmentFlag::AlignLeading|Qt::AlignmentFlag::AlignLeft|Qt::AlignmentFlag::AlignTop</set></property>
+   <property name="wordWrap"><bool>true</bool></property>
+  </widget>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

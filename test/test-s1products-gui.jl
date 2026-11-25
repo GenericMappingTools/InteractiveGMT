@@ -81,10 +81,10 @@ end
 		# Choosing a scene in the list (the combo's refresh) lights ITS frame, and gives the other its pen back.
 		ok, r = RemoteSGui.rs(h, vcat(box, ["what=refresh", "p_granule_idx=0"]))
 		@test ok == 1 && IG._S1_LIT[h] == lab1
-		@test pen(lab1)[1:4] == [1.0, 0.0, 0.0, 3.0]
+		@test pen(lab1)[1:4] == [1.0, 0.0, 0.0, 6.0]
 		ok, r = RemoteSGui.rs(h, vcat(box, ["what=refresh", "p_granule_idx=1"]))
 		@test ok == 1 && IG._S1_LIT[h] == lab2
-		@test pen(lab2)[1:4] == [1.0, 0.0, 0.0, 3.0] && pen(lab1) == own
+		@test pen(lab2)[1:4] == [1.0, 0.0, 0.0, 6.0] && pen(lab1) == own
 		# A point inside both frame-147 scenes: the first click takes one, the next click the other.
 		ok, r = RemoteSGui.rs(h, vcat(box, ["what=pickscene", "px=-8", "py=40.6", "p_granule_idx=1"]))
 		@test ok == 1 && occursin("set:p_granule=0", r) && IG._S1_LIT[h] == lab1
@@ -103,6 +103,12 @@ end
 		@test ccall(_test_fn(:gmtvtk_view_press_test), Cint, (Ptr{Cvoid}, Cdouble, Cdouble, Cdouble), h, -8.0, 38.9, 0.0) == 1
 		for _ in 1:5; IG._pump_once(); end
 		@test IG._S1_LIT[h] == lab2
+		# And with no button at all: a plain left click in the view inside frame 147 chooses its scene.
+		@test ccall(_test_fn(:gmtvtk_view_click_test), Cint, (Ptr{Cvoid}, Cdouble, Cdouble, Cdouble), h, -8.0, 40.6, 0.0) == 1
+		for _ in 1:5; IG._pump_once(); end
+		@test IG._S1_LIT[h] == lab1
+		ok, r = RemoteSGui.rs(h, vcat(box, ["what=clickscene", "px=-8", "py=37.0", "p_granule_idx=0"]))
+		@test ok == 1 && isempty(strip(r))                      # outside every footprint: an ordinary click
 	finally
 		delete!(IG._S1_FOUND, h);  delete!(IG._S1_FRAMES, h);  delete!(IG._S1_GROUP, h);  delete!(IG._RS_REGION_BOX, h)
 		delete!(IG._S1_PENS, h);  delete!(IG._S1_LIT, h)

@@ -1222,6 +1222,197 @@ GMTVTK_API int gmtvtk_add_curtain_file_h(void *handle, const double *px, const d
 	return 1;
 }
 
+// A PICTURE SHEET: a picture laid FLAT at height `z` on the
+// quadrilateral `xy` (4 corners, TRUE coords: SW, SE, NE, NW -- the picture's bottom-left, bottom-right,
+// top-right, top-left). A Curtain like any other (same row, same VE, same globe handling), named `name`;
+// `group` = the stack it belongs to (declare its master with gmtvtk_set_group_master_h), `tool`/`verb` =
+// the dialog a plain click on it is sent to with picked=<name> (empty = not clickable). Returns 1, or 0
+// on a dead window or an unreadable picture.
+// `img` = w*h pixels of `comps` (3 RGB, 4 RGBA: alpha 0 = see-through, e.g. a quicklook's no-data),
+// row 0 = the picture's BOTTOM (the curtain convention).
+GMTVTK_API int gmtvtk_add_image_sheet_h(void *handle, const char *name, const char *group, const double *xy, double z,
+                                        const unsigned char *img, int w, int h, int comps,
+                                        const char *tool, const char *verb) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !xy || !img || w < 1 || h < 1 || !name || !name[0]) return 0;
+	auto tex = makeBufferTexture(img, w, h, comps);
+	if (!tex) return 0;
+	vtkNew<vtkPoints> pts; pts->SetDataTypeToDouble();
+	vtkNew<vtkFloatArray> tc; tc->SetNumberOfComponents(2); tc->SetName("tc");
+	const float uv[4][2] = { {0, 0}, {1, 0}, {1, 1}, {0, 1} };
+	for (int i = 0; i < 4; ++i) {
+		pts->InsertNextPoint(xy[2*i], xy[2*i+1], z);
+		tc->InsertNextTuple2(uv[i][0], uv[i][1]);
+	}
+	vtkNew<vtkCellArray> quad;
+	vtkIdType q[4] = { 0, 1, 2, 3 };
+	quad->InsertNextCell(4, q);
+	vtkSmartPointer<vtkPolyData> pd = vtkSmartPointer<vtkPolyData>::New();
+	pd->SetPoints(pts);
+	pd->SetPolys(quad);
+	pd->GetPointData()->SetTCoords(tc);
+	vtkNew<vtkPolyDataMapper> map;
+	map->SetInputData(pd);
+	map->ScalarVisibilityOff();
+	vtkSmartPointer<vtkActor> a = vtkSmartPointer<vtkActor>::New();
+	a->SetMapper(map);
+	a->SetTexture(tex);
+	a->GetProperty()->LightingOff();              // the picture's own colours, as a curtain shows them
+	a->SetScale(s->xfac, 1.0, layerZScale(s, activeOwnerTag(s)));
+	s->ren->AddActor(a);
+	Curtain cu{ a, name };
+	cu.veOwner = activeOwnerTag(s);
+	cu.groupName = group ? group : "";
+	cu.pickTool = tool ? tool : "";
+	cu.pickVerb = verb ? verb : "";
+	cu.sheetZ = z;
+	if (comps == 4) {                             // its alpha: a click on a see-through part goes on below
+		cu.sheetAlpha.resize((size_t)w * h);
+		for (size_t i = 0; i < (size_t)w * h; ++i) cu.sheetAlpha[i] = img[4 * i + 3];
+		cu.sheetAW = w;  cu.sheetAH = h;
+	}
+	s->curtains.push_back(cu);
+	rebuildSceneObjects(s);
+	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+	return 1;
+}
+
+
+// Points as one actor: screen-sized round dots (`px`) of colour `rgb`.
+static vtkSmartPointer<vtkActor> sheetDots(const std::vector<std::array<double, 3>> &p, double px, const double rgb[3]) {
+	vtkNew<vtkPoints> pts;
+	vtkNew<vtkCellArray> verts;
+	for (const auto &q : p) { vtkIdType id = pts->InsertNextPoint(q[0], q[1], q[2]); verts->InsertNextCell(1, &id); }
+	auto pd = vtkSmartPointer<vtkPolyData>::New();
+	pd->SetPoints(pts);
+	pd->SetVerts(verts);
+	vtkNew<vtkPolyDataMapper> m;
+	m->SetInputData(pd);
+	auto a = vtkSmartPointer<vtkActor>::New();
+	a->SetMapper(m);
+	a->GetProperty()->SetColor(rgb[0], rgb[1], rgb[2]);
+	a->GetProperty()->SetPointSize((float)px);
+	a->GetProperty()->RenderPointsAsSpheresOn();
+	a->GetProperty()->LightingOff();
+	a->PickableOff();
+	return a;
+}
+
+// The LEVEL SLIDER of picture-sheet stack `group`: an upright axis at TRUE (x, y) from the ground to the
+// top level, a tick at each level 1..n (level k at z = z0 + k*dz) and a knob the view drags (GLView ->
+// sheetKnobHit / sheetKnobDragTo); every sheet above the knob is hidden, so the stack is read from any level
+// down. `labels` = n TAB-separated texts, one per level, shown beside the knob (the pass date). The actors
+// ride the window scales like the sheets (applyVE). n <= 0 removes the slider.
+GMTVTK_API int gmtvtk_sheet_slider_h(void *handle, const char *group, double x, double y, double z0, double dz,
+                                     int n, const char *labels) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s)) return 0;
+	sheetSliderDrop(s);
+	if (n <= 0 || !group || !group[0] || !s->ren) return 0;
+	s->sheetGroup = group;
+	s->sheetX = x;  s->sheetY = y;  s->sheetZ0 = z0;  s->sheetDz = dz;  s->sheetN = n;
+	s->sheetVeOwner = activeOwnerTag(s);
+	for (const QString &l : QString::fromUtf8(labels ? labels : "").split('\t')) s->sheetLabels.push_back(l.toStdString());
+	s->sheetLabels.resize((size_t)n);
+	{                                                // the axis: ground to top level
+		vtkNew<vtkLineSource> ln;
+		ln->SetPoint1(x, y, z0);
+		ln->SetPoint2(x, y, z0 + n * dz);
+		vtkNew<vtkPolyDataMapper> m;
+		m->SetInputConnection(ln->GetOutputPort());
+		s->sheetAxis = vtkSmartPointer<vtkActor>::New();
+		s->sheetAxis->SetMapper(m);
+		s->sheetAxis->GetProperty()->SetColor(0.92, 0.92, 0.92);
+		s->sheetAxis->GetProperty()->SetLineWidth(4.0f);
+		s->sheetAxis->GetProperty()->RenderLinesAsTubesOn();
+		s->sheetAxis->GetProperty()->LightingOff();
+		s->sheetAxis->PickableOff();
+	}
+	std::vector<std::array<double, 3>> ticks;
+	for (int k = 1; k <= n; ++k) ticks.push_back({ x, y, z0 + k * dz });
+	const double tickRGB[3] = { 0.75, 0.75, 0.75 }, knobRGB[3] = { 1.0, 0.85, 0.0 };
+	s->sheetTicks = sheetDots(ticks, 9.0, tickRGB);
+	s->sheetKnob = sheetDots({ { x, y, z0 + n * dz } }, 22.0, knobRGB);
+	s->sheetKnobText = vtkSmartPointer<vtkBillboardTextActor3D>::New();
+	s->sheetKnobText->GetTextProperty()->SetFontSize(15);
+	s->sheetKnobText->GetTextProperty()->SetColor(1.0, 1.0, 1.0);
+	s->sheetKnobText->GetTextProperty()->SetJustificationToLeft();
+	s->sheetKnobText->GetTextProperty()->SetVerticalJustificationToCentered();
+	s->sheetKnobText->PickableOff();
+	s->ren->AddActor(s->sheetAxis);
+	s->ren->AddActor(s->sheetTicks);
+	s->ren->AddActor(s->sheetKnob);
+	s->ren->AddActor(s->sheetKnobText);
+	sheetSliderSet(s, n);                            // knob at the top: every level shown
+	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+	return 1;
+}
+
+// A thin RED OUTLINE round the picture sheet `name` -- the scene the dialog has chosen -- at the sheet's own
+// height, hidden with its level when the slider's knob is below it. One at a time: a new one replaces it;
+// "" just removes it. Returns 1 when drawn.
+GMTVTK_API int gmtvtk_sheet_select_h(void *handle, const char *name) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !s->ren) return 0;
+	if (s->sheetSel) s->ren->RemoveViewProp(s->sheetSel);
+	s->sheetSel = nullptr;
+	const Curtain *cu = nullptr;
+	if (name && name[0])
+		for (const auto &c : s->curtains) if (c.name == name && c.actor) { cu = &c; break; }
+	int ok = 0;
+	if (cu) {
+		auto *src = vtkPolyData::SafeDownCast(cu->actor->GetMapper()->GetInput());
+		if (src && src->GetPoints() && src->GetNumberOfPoints() >= 4) {
+			vtkNew<vtkPoints> pts;
+			for (vtkIdType i = 0; i < 4; ++i) pts->InsertNextPoint(src->GetPoint(i));
+			vtkNew<vtkCellArray> ln;
+			vtkIdType ids[5] = { 0, 1, 2, 3, 0 };
+			ln->InsertNextCell(5, ids);
+			auto pd = vtkSmartPointer<vtkPolyData>::New();
+			pd->SetPoints(pts);
+			pd->SetLines(ln);
+			vtkNew<vtkPolyDataMapper> m;
+			m->SetInputData(pd);
+			m->SetResolveCoincidentTopologyToPolygonOffset();   // drawn over its own picture, never under it
+			s->sheetSel = vtkSmartPointer<vtkActor>::New();
+			s->sheetSel->SetMapper(m);
+			s->sheetSel->GetProperty()->SetColor(1.0, 0.0, 0.0);
+			s->sheetSel->GetProperty()->SetLineWidth(2.5f);
+			s->sheetSel->GetProperty()->RenderLinesAsTubesOn();
+			s->sheetSel->GetProperty()->LightingOff();
+			s->sheetSel->PickableOff();
+			s->sheetSelZ = cu->sheetZ;
+			s->ren->AddActor(s->sheetSel);
+			sheetSliderScale(s);
+			if (s->sheetKnob)                             // hidden with its level, like the sheet itself
+				s->sheetSel->SetVisibility(cu->actor->GetVisibility());
+			ok = 1;
+		}
+	}
+	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+	return ok;
+}
+
+// Remove every picture sheet of stack `group` (and its master declarations). Returns how many went.
+GMTVTK_API int gmtvtk_remove_image_sheets_h(void *handle, const char *group) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !group || !group[0]) return 0;
+	if (s->sheetGroup == group) sheetSliderDrop(s);
+	int n = 0;
+	for (size_t i = s->curtains.size(); i-- > 0; ) {
+		if (s->curtains[i].groupName != group) continue;
+		if (s->curtains[i].actor) s->ren->RemoveActor(s->curtains[i].actor);
+		s->groupMaster.erase(s->curtains[i].name);
+		s->curtains.erase(s->curtains.begin() + (long)i);
+		++n;
+	}
+	if (n) {
+		rebuildSceneObjects(s);
+		if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+	}
+	return n;
+}
+
 // POP a floating table of `data` for this window — show_table(fig, D) and everything built on it
 // (the polyline Line-length/Azimuth tables, gmtgravmag3d's track mode, grdseamount's statistics).
 // `data` is COLUMN-MAJOR (Julia layout): element (row r, col c) lives at data[(size_t)c*nrows + r].
@@ -2195,12 +2386,95 @@ GMTVTK_API int gmtvtk_grid_rgb_at(void *handle, int gridSel, double z, double *o
 // EPSG). Julia resolves them via GMT.jl and pushes them here right after the window opens. Storing
 // any of them marks the data as referenced and enables the Geography menu (disabled by default since
 // it needs a reference frame); an all-empty CRS disables it again.
+// The window's system as ONE string the host transform takes (crs.jl _crs_srs: proj4, else WKT, else
+// EPSG:n); "" = unreferenced.
+static std::string sceneSrsString(const Scene *s) {
+	if (!s->crsProj4.empty()) return s->crsProj4;
+	if (!s->crsWkt.empty()) return s->crsWkt;
+	return s->crsEpsg != 0 ? "EPSG:" + std::to_string(s->crsEpsg) : std::string();
+}
+
+// One element's x,y (2 per vertex, `cur`) brought into system `to`. The first time, the element keeps
+// the system it was drawn in (`from`, the window's until now) and those x,y; every crossing after that
+// starts from them, so going back to the original system gives the original numbers exactly and no
+// error piles up. A vertex the transform cannot place takes its neighbour's position (a NaN vertex
+// would poison the actor's bounds). false = nothing changed.
+static bool recrossXY(std::string &srcSrs, std::vector<double> &srcXY, const std::string &from,
+                      const std::string &to, std::vector<double> &cur) {
+	if (cur.empty()) return false;
+	if (srcSrs.empty()) { srcSrs = from; srcXY = cur; }
+	if (srcXY.size() != cur.size()) { srcSrs = from; srcXY = cur; }   // geometry edited since: re-anchor
+	std::vector<double> out = srcXY;
+	const int n = int(out.size() / 2);
+	if (srcSrs != to && g_juliaSrsXY(srcSrs.c_str(), to.c_str(), out.data(), n) < 0) return false;
+	int last = -1;
+	for (int i = 0; i < n; i++) {
+		if (std::isfinite(out[2*i]) && std::isfinite(out[2*i+1])) { last = i; continue; }
+		if (last >= 0) { out[2*i] = out[2*last]; out[2*i+1] = out[2*last+1]; }
+	}
+	if (last < 0) return false;                 // nothing of it exists in the new system
+	for (int i = 0; i < n && !(std::isfinite(out[2*i]) && std::isfinite(out[2*i+1])); i++) {
+		int j = i + 1;                          // leading failures: the first good vertex
+		while (j < n && !(std::isfinite(out[2*j]) && std::isfinite(out[2*j+1]))) j++;
+		out[2*i] = out[2*j]; out[2*i+1] = out[2*j+1];
+	}
+	cur.swap(out);
+	return true;
+}
+
+// THE crossing of a window's VECTOR elements when the window changes system (a raster in another
+// system adopted into it: a UTM scene opened over a lon/lat map). Every line, polygon, text and symbol
+// was crossed into the window's system when it was drawn (crs.jl); without this they kept those
+// numbers and sat far outside the new frame -- the S2/Landsat footprints and region box "vanished"
+// the moment the scene's image opened. Same host transform as every plot (crs.jl _srs_xy).
+static void sceneRecrossVectors(Scene *s, const std::string &from, const std::string &to) {
+	if (!g_juliaSrsXY || from.empty() || to.empty() || from == to) return;
+	std::vector<double> xy;
+	for (auto &ov : s->overlays) {
+		if (!ov.baseLine || !ov.baseLine->GetPoints()) continue;
+		vtkPoints *pts = ov.baseLine->GetPoints();
+		const vtkIdType n = pts->GetNumberOfPoints();
+		xy.resize(size_t(n) * 2);
+		for (vtkIdType i = 0; i < n; i++) { double p[3]; pts->GetPoint(i, p); xy[2*i] = p[0]; xy[2*i+1] = p[1]; }
+		if (!recrossXY(ov.srcSrs, ov.srcXY, from, to, xy)) continue;
+		for (vtkIdType i = 0; i < n; i++) { double p[3]; pts->GetPoint(i, p); p[0] = xy[2*i]; p[1] = xy[2*i+1]; pts->SetPoint(i, p); }
+		pts->Modified();
+		ov.baseLine->Modified();
+		if (ov.filled) overlayBuildFill(ov);
+		if (!ov.gapAnchors.empty()) overlayRebuildGapCells(s, ov);
+	}
+	for (auto &pg : s->polys) {
+		xy.resize(pg.v.size() * 2);
+		for (size_t i = 0; i < pg.v.size(); i++) { xy[2*i] = pg.v[i][0]; xy[2*i+1] = pg.v[i][1]; }
+		if (!recrossXY(pg.srcSrs, pg.srcXY, from, to, xy)) continue;
+		for (size_t i = 0; i < pg.v.size(); i++) { pg.v[i][0] = xy[2*i]; pg.v[i][1] = xy[2*i+1]; }
+		polyRebuildLine(s, pg);
+		if (pg.fill) polyRebuildFill(s, pg);
+	}
+	for (auto &t : s->texts) {
+		xy = { t.pos[0], t.pos[1] };
+		if (!recrossXY(t.srcSrs, t.srcXY, from, to, xy)) continue;
+		t.pos[0] = xy[0]; t.pos[1] = xy[1];
+	}
+	for (auto &sl : s->symbols) {
+		if (sl.xyOrig.empty()) continue;
+		xy = sl.xyOrig;
+		if (!recrossXY(sl.srcSrs, sl.srcXY, from, to, xy)) continue;
+		sl.xyOrig = xy;
+		sl.posMode = -1;                        // symbolApplyZ writes the points back from xyOrig
+		symbolApplyZ(s, sl);
+	}
+	applyVE(s);                                 // texts and every actor re-placed at the window's scales
+}
+
 GMTVTK_API void gmtvtk_set_crs(void *handle, const char *proj4, const char *wkt, int epsg) {
 	Scene *s = static_cast<Scene*>(handle);
 	if (!sceneAlive(s)) return;
+	const std::string was = sceneSrsString(s);
 	s->crsProj4 = proj4 ? proj4 : "";
 	s->crsWkt   = wkt   ? wkt   : "";
 	s->crsEpsg  = epsg;
+	sceneRecrossVectors(s, was, sceneSrsString(s));
 	if (s->geoMenu) s->geoMenu->menuAction()->setEnabled(s->hasCRS());
 	sceneUpdateCrsChip(s);      // the status corner reads the SAME store (never its own copy)
 }
@@ -4345,6 +4619,25 @@ GMTVTK_API void gmtvtk_set_geography_callback(JuliaGeoFn fn) {
 // asks before any geographic request leaves a projected window. nullptr to detach.
 GMTVTK_API void gmtvtk_set_lonlat_box_callback(JuliaLonLatBoxFn fn) {
 	g_juliaLonLatBox = fn;
+}
+
+// Put the overlay named `name` (the newest of that name) on TOP of the window's vector pile -- the SAME
+// restackVector the handle's "Bring to front" menu runs. 1 = moved, 0 = no such overlay.
+GMTVTK_API int gmtvtk_overlay_to_front_h(void *scene, const char *name) {
+	Scene *s = static_cast<Scene*>(scene);
+	if (!sceneAlive(s) || !name || !name[0]) return 0;
+	for (auto it = s->overlays.rbegin(); it != s->overlays.rend(); ++it) {
+		if (it->name != name) continue;
+		restackVector(s, &it->stack, 0);
+		if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+		return 1;
+	}
+	return 0;
+}
+
+// Register the host's point transform (crs.jl _on_srs_xy) sceneRecrossVectors moves vector elements with.
+GMTVTK_API void gmtvtk_set_srs_xy_callback(JuliaSrsXYFn fn) {
+	g_juliaSrsXY = fn;
 }
 
 // Register the 3-D Bodies toolbar callback. `fn` (Julia @cfunction, signature JuliaSolidFn) is
@@ -8354,6 +8647,18 @@ GMTVTK_API int gmtvtk_overlay_set_tool_pick_h(void *scene, const char *name, con
 		return 1;
 	}
 	return 0;
+}
+
+// Tool dialog `tool` has scene footprints on this window: a plain left click in the view is sent to it as
+// what=<verb>, px, py (Scene::clickTools, GLView::mouseReleaseEvent). An empty `verb` takes `tool` off.
+GMTVTK_API int gmtvtk_set_click_tool_h(void *scene, const char *tool, const char *verb) {
+	Scene *s = (Scene*)scene;
+	if (!s || !sceneAlive(s) || !tool || !tool[0]) return 0;
+	const std::string t(tool), v(verb ? verb : "");
+	auto &L = s->clickTools;
+	L.erase(std::remove_if(L.begin(), L.end(), [&t](const std::pair<std::string, std::string> &p) { return p.first == t; }), L.end());
+	if (!v.empty()) L.emplace_back(t, v);
+	return 1;
 }
 
 // Mark every overlay named (or grouped as) `name` as a RIVER NETWORK (Overlay::riverNet): its
@@ -14074,6 +14379,24 @@ GMTVTK_API int gmtvtk_toplevel_grab_test(const char *title, const char *path) {
 // `what`: 0 = setText on the QLineEdit `objName`, 1 = click the button `objName`, 2 = check the
 // radio/check button `objName`, 3 = resize the window itself to `text` = "w,h" (objName unused).
 // 1 = done, 0 = no such window/widget.
+// test hook: the current text of combo `objName` in the visible top-level window whose title contains
+// `title`, and the window's x on screen in out2[0] (the left edge), its width in out2[1]. Returns 1.
+GMTVTK_API int gmtvtk_toplevel_combo_text_test(const char *title, const char *objName, char *out, int cap, int *out2) {
+	if (!title || !objName || !out || cap <= 0) return 0;
+	const QString want = QString::fromUtf8(title);
+	for (QWidget *w : QApplication::topLevelWidgets()) {
+		if (!w->isVisible() || !w->windowTitle().contains(want, Qt::CaseInsensitive)) continue;
+		auto *c = w->findChild<QComboBox *>(QString::fromUtf8(objName));
+		const QByteArray t = c ? c->currentText().toUtf8() : QByteArray();
+		const int n = std::min((int)t.size(), cap - 1);
+		memcpy(out, t.constData(), n);
+		out[n] = 0;
+		if (out2) { out2[0] = w->x(); out2[1] = w->width(); }
+		return 1;
+	}
+	return 0;
+}
+
 GMTVTK_API int gmtvtk_toplevel_widget_test(const char *title, const char *objName, int what, const char *text) {
 	if (!title || !objName) return 0;
 	const QString want = QString::fromUtf8(title);
@@ -14430,6 +14753,68 @@ GMTVTK_API int gmtvtk_view_press_test(void *scene, double x, double y, double z)
 	const bool used = polygonHandlePress(s, 0, (int)std::lround(d[0]), (int)std::lround(d[1]), false);
 	QApplication::processEvents();
 	return used ? 1 : 0;
+}
+
+// test hook: put a picture-stack slider's knob on level `k`, through the SAME apply a drag runs. Returns
+// how many sheets of its stack are visible afterwards, -1 = no slider.
+GMTVTK_API int gmtvtk_sheet_slider_set_test(void *scene, int k) {
+	Scene *s = static_cast<Scene*>(scene);
+	if (!s || !s->sheetKnob) return -1;
+	sheetSliderSet(s, k);
+	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+	int n = 0;
+	for (const auto &cu : s->curtains) if (cu.groupName == s->sheetGroup && cu.actor && cu.actor->GetVisibility()) ++n;
+	return n;
+}
+
+// test hook: the window's vertical exaggeration set to `ve` (> 0; <= 0 leaves it), then a REAL Qt drag
+// of the stack slider's knob from where it is to level `k`'s place on the axis -- press, move, release
+// through GLView. Returns the knob's level afterwards, -1 = no slider.
+GMTVTK_API int gmtvtk_sheet_knob_drag_test(void *scene, int k, double ve) {
+	Scene *s = static_cast<Scene*>(scene);
+	if (!s || !s->sheetKnob || !s->widget || !s->widget->renderWindow()) return -1;
+	if (ve > 0.0) { s->ve = ve; applyVE(s); }
+	s->widget->renderWindow()->Render();
+	const double dpr = s->widget->devicePixelRatioF();
+	const int Hpx = s->widget->renderWindow()->GetSize()[1];
+	auto logical = [&](double z) {
+		double d[2]; sheetSliderToDisplay(s, z, d);
+		return QPointF(d[0] / dpr, (Hpx - d[1]) / dpr);
+	};
+	const QPointF p1 = logical(s->sheetZ0 + s->sheetK * s->sheetDz), p2 = logical(s->sheetZ0 + k * s->sheetDz);
+	QWidget *w = s->widget;
+	auto send = [&](QEvent::Type t, const QPointF &p, Qt::MouseButton b, Qt::MouseButtons bs) {
+		QMouseEvent ev(t, p, w->mapToGlobal(p.toPoint()), b, bs, Qt::NoModifier);
+		QApplication::sendEvent(w, &ev);
+	};
+	send(QEvent::MouseButtonPress, p1, Qt::LeftButton, Qt::LeftButton);
+	send(QEvent::MouseMove, (p1 + p2) / 2, Qt::NoButton, Qt::LeftButton);
+	send(QEvent::MouseMove, p2, Qt::NoButton, Qt::LeftButton);
+	send(QEvent::MouseButtonRelease, p2, Qt::LeftButton, Qt::NoButton);
+	s->widget->renderWindow()->Render();
+	return s->sheetK;
+}
+
+// A plain left CLICK (press and release on the same pixel) at the TRUE point (x, y, z), sent as real Qt
+// mouse events to the view widget, so it runs through the view's own handlers (GLView) — what a user's
+// click does. 1 = sent.
+GMTVTK_API int gmtvtk_view_click_test(void *scene, double x, double y, double z) {
+	Scene *s = static_cast<Scene *>(scene);
+	if (!s) return 0;
+	testBorrowScene(s);                  // the window belongs to the production library
+	if (!s->widget || !s->widget->renderWindow()) return 0;
+	double d[2];
+	polyToDisplay(s, { x, y, z }, d);
+	const double r = s->widget->devicePixelRatioF();
+	const int    H = s->widget->renderWindow()->GetSize()[1];
+	const QPointF p(d[0] / r, (H - d[1]) / r);           // the inverse of displayPxFromQt
+	const QPointF g = s->widget->mapToGlobal(p);
+	QMouseEvent press(QEvent::MouseButtonPress, p, g, Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+	QApplication::sendEvent(s->widget, &press);
+	QMouseEvent release(QEvent::MouseButtonRelease, p, g, Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+	QApplication::sendEvent(s->widget, &release);
+	QApplication::processEvents();
+	return 1;
 }
 
 // test hook: THE BASE PYRAMID AS IT STANDS, counted off the tree (never inferred from code):

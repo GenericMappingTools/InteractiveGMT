@@ -3364,6 +3364,24 @@ static void rebuildSceneObjects(Scene *s) {
 				kids.push_back(GroupChild(GroupChild::TextBatch,   kv.first));
 			}
 			sceneDeleteGroup(s, kids);
+			// ...and the picture sheets declared under it (a quicklook stack): the master's Remove takes
+			// every member, whatever kind of element it is.
+			bool gone = false;
+			for (size_t i = s->curtains.size(); i-- > 0; ) {
+				auto mit = s->groupMaster.find(s->curtains[i].name);
+				if (s->curtains[i].groupName.empty() || mit == s->groupMaster.end() || mit->second != m) continue;
+				if (s->curtains[i].actor) s->ren->RemoveActor(s->curtains[i].actor);
+				s->curtains.erase(s->curtains.begin() + (long)i);
+				gone = true;
+			}
+			if (gone) {
+				// the stack's level slider goes with its last sheet
+				bool left = false;
+				for (const auto &cu : s->curtains) if (!s->sheetGroup.empty() && cu.groupName == s->sheetGroup) left = true;
+				if (!left) sheetSliderDrop(s);
+				sceneQueueRebuildObjects(s);
+				if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+			}
 		};
 		QTreeWidgetItem *save = curParent;
 		curParent = nullptr;                              // a master is always a top-level row
@@ -4099,8 +4117,15 @@ static void rebuildSceneObjects(Scene *s) {
 		emitSymbolRow(sl);
 		curParent = save;
 	}
-	for (auto &cu : s->curtains)
+	for (auto &cu : s->curtains) {
+		// A picture sheet of a stack hangs under the stack's master row (masterItemFor, the same
+		// declaration symbol layers use); a plain curtain stays a top-level row.
+		QTreeWidgetItem *save = curParent;
+		if (!cu.groupName.empty())
+			if (QTreeWidgetItem *mi = masterItemFor(cu.name)) curParent = mi;
 		addRow(QString::fromStdString(cu.name), cu.actor, IC_Curtain);
+		curParent = save;
+	}
 	QString slipGroupOpen;                               // name of the currently-open slip-patch group node (empty = none)
 	QTreeWidgetItem *polyMasterSave = nullptr;           // curParent to restore when a MASTERED group closes
 	std::set<std::string> mecaGroupsShown;               // focal-mechanism groupNames already given their ONE row

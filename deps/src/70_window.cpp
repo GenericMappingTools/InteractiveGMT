@@ -15442,6 +15442,66 @@ public:
 		dlg->setWindowModality(Qt::NonModal);
 		QDialog *d = dlg;   // local copy — the member can't be lambda-captured
 		lblStatus = d->findChild<QLabel *>("lbl_status");
+		// A part of the dialog the .ui marks `foldable` (a direct child, absolute geometry, e.g. the Search /
+		// Account tabs) gets a small ◀ button in the free right end of its own top row. Folding hides the
+		// part and the dialog collapses it TOWARDS THE RIGHT: its left edge moves right by the part's width,
+		// the parts on its right stay exactly where they are on screen, only the button (now ▶) is left of
+		// them, and the dialog stops covering the view; ▶ undoes exactly that.
+		const QObjectList kids = d->children();      // a COPY: the loop adds buttons to the dialog
+		for (QObject *o : kids) {
+			auto *part = qobject_cast<QWidget *>(o);
+			if (!part || !part->property("foldable").toBool()) continue;
+			auto *btn = new QToolButton(d);
+			btn->setText(QString::fromUtf8("◀"));
+			btn->setObjectName("fold_" + part->objectName());
+			btn->setToolTip("Fold this part away (the dialog narrows); press again to bring it back");
+			btn->setAutoRaise(true);
+			const QRect g = part->geometry();
+			btn->setGeometry(g.right() - 17, g.top(), 18, 20);
+			btn->show();
+			btn->raise();
+			struct FoldState { int shift = 0; QPoint home; std::vector<std::pair<QPointer<QWidget>, int>> moved; };
+			auto st = std::make_shared<FoldState>();
+			st->home = btn->pos();
+			QObject::connect(btn, &QToolButton::clicked, [d, part, btn, st]() {
+				if (part->isVisible()) {                   // FOLD
+					const QRect pg = part->geometry();
+					int next = d->width();                 // where the parts to its right begin
+					for (QObject *c : d->children())
+						if (auto *w = qobject_cast<QWidget *>(c); w && w != part && w != btn && !w->isWindow() && w->x() > pg.right())
+							next = std::min(next, w->x());
+					const int strip = 22;                  // what stays on the left: the button
+					st->shift = next - pg.x() - strip;
+					st->moved.clear();
+					for (QObject *c : d->children()) {
+						auto *w = qobject_cast<QWidget *>(c);
+						if (!w || w == part || w == btn || w->isWindow()) continue;
+						if (w->x() > pg.right()) { w->move(w->x() - st->shift, w->y()); st->moved.push_back({ w, 0 }); }
+						else if (w->geometry().right() > pg.right()) { w->resize(w->width() - st->shift, w->height()); st->moved.push_back({ w, 1 }); }
+					}
+					part->hide();
+					btn->move(pg.x(), pg.y());
+					btn->setText(QString::fromUtf8("▶"));
+					d->setMinimumWidth(0);
+					d->resize(d->width() - st->shift, d->height());
+					d->move(d->x() + st->shift, d->y());      // the window's LEFT edge moves right: what stays on
+					                                         // screen (the Quicklook, the Bands) does not move
+				}
+				else {                                     // UNFOLD: exactly back
+					d->move(d->x() - st->shift, d->y());      // the left edge back where it was
+					d->resize(d->width() + st->shift, d->height());
+					for (auto &m : st->moved) {
+						if (!m.first) continue;
+						if (m.second == 0) m.first->move(m.first->x() + st->shift, m.first->y());
+						else               m.first->resize(m.first->width() + st->shift, m.first->height());
+					}
+					part->show();
+					btn->move(st->home);
+					btn->setText(QString::fromUtf8("◀"));
+					btn->raise();
+				}
+			});
+		}
 
 		for (QWidget *w : d->findChildren<QWidget *>()) {
 			const QString n = w->objectName();
@@ -15699,6 +15759,30 @@ static void openRemoteSDialogNow(QWidget *win, Scene *s, const std::string &tool
 	QApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
 	rd->request("init", false);   // prefill (the window's own file, its bands, the tool's lists)
 }
+
+// A plain left click on a window carrying a dialog's scene footprints (Scene::clickTools,
+// GLView::mouseReleaseEvent): the click's map point goes to that dialog as what=<verb>, px, py. Asked as a
+// QUESTION (no busy notice, no error box): a click outside every footprint is an ordinary click and the
+// dialog answers it with nothing. A dialog deleted meanwhile is simply not asked.
+static const bool g_remotesClickHook = [] {
+	g_sceneClickTool = [](Scene *s, const std::string &tool, const std::string &verb, double x, double y) {
+		if (!sceneAlive(s)) return;
+		auto it = g_remotesDlgs.find({s, tool});
+		if (it == g_remotesDlgs.end() || !it->second || !it->second->dlg) return;
+		it->second->request(QString::fromStdString(verb), false, QString(),
+		                    QString("px=%1\npy=%2\n").arg(x, 0, 'g', 17).arg(y, 0, 'g', 17));
+	};
+	// A click on one of the dialog's picture sheets (a quicklook in its scene stack): the SAME request its
+	// guide lines' menu item sends, picked=<the sheet's name>.
+	g_sceneSheetPick = [](Scene *s, const std::string &tool, const std::string &verb, const std::string &name) {
+		if (!sceneAlive(s)) return;
+		auto it = g_remotesDlgs.find({s, tool});
+		if (it == g_remotesDlgs.end() || !it->second || !it->second->dlg) return;
+		it->second->request(QString::fromStdString(verb), false, QString(),
+		                    "picked=" + QString::fromStdString(name) + "\n");
+	};
+	return true;
+}();
 
 // A guide line's own menu item (Overlay::pickTool/pickVerb, 55_lineprops.cpp) points its tool's dialog
 // at it: the dialog is brought up (or back from the dock) and sent the SAME request its pickline_
@@ -34384,6 +34468,9 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// Process API above, so its own entry. One more tool of the Remote sensing dialog family
 	// (src/s1products.jl over deps/ui/remotes_s1.ui and the generic RemoteSDialog).
 	mCoper->addAction("Sentinel-1 SAR products…", [win, s]() { openRemoteSDialog(win, s, "s1"); });
+	// Sentinel-2 MSI products — the optical twin: same catalogue and CDSE login, plus a cloud limit, each
+	// scene's quicklook, and the product's single band files (src/s2products.jl over deps/ui/remotes_s2.ui).
+	mCoper->addAction("Sentinel-2 MSI products…", [win, s]() { openRemoteSDialog(win, s, "s2"); });
 	// Ocean Color — likewise moved from Geophysics: MODIS/VIIRS/SeaWiFS ocean-colour products.
 	mSat->addAction("Oceancolor…", [win, s]() {
 		// Already open or parked in this window? Bring THAT one back — never a second browser.
@@ -34395,6 +34482,9 @@ static Scene *buildAndShow(vtkSmartPointer<vtkPolyData> pd,
 	// SWOT — PO.DAAC Level-2 sea surface / water heights (src/swot.jl). One more tool of the Remote
 	// sensing dialog family: deps/ui/remotes_swot.ui over the same generic RemoteSDialog.
 	mSat->addAction("SWOT…", [win, s]() { openRemoteSDialog(win, s, "swot"); });
+	// Landsat scenes — USGS's Collection 2 from the Microsoft Planetary Computer (no account), or through
+	// EarthExplorer's M2M API: src/landsat.jl over deps/ui/remotes_landsat.ui, the same generic dialog.
+	mSat->addAction("Landsat scenes…", [win, s]() { openRemoteSDialog(win, s, "landsat"); });
 	// Remote sensing — the RemoteS port (src/RemoteS/). ONE addMenu at the end of this menu; every
 	// entry is the same generic dialog over its own .ui (RemoteSDialog, above).
 	QMenu *mRs = mSat->addMenu("Remote sensing");

@@ -142,6 +142,7 @@ const _TEST_SYMBOLS = (
 	:gmtvtk_xyplot_objmgr_test,       # an X,Y Object Manager row: click its label, check / uncheck it
 	:gmtvtk_dialog_button_test,       # a dialog's push button by objectName: its text, and a click
 	:gmtvtk_view_press_test,          # a left click on the view at a true point (an armed pick takes it)
+	:gmtvtk_view_click_test, :gmtvtk_sheet_slider_set_test, :gmtvtk_sheet_knob_drag_test, :gmtvtk_toplevel_combo_text_test,          # a plain left click (Qt press + release) on the view, through GLView
 	:gmtvtk_xyplot_annot_props_test,  # an X,Y annotation's properties dialog, one control clicked
 	:gmtvtk_dialog_tab_test,          # a dialog tab brought to the front, as a click on it does
 	:gmtvtk_nodegraph_test,           # the script graph: its box count, a field double-clicked and edited

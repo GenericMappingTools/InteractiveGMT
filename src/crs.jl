@@ -185,9 +185,32 @@ function _on_lonlat_box(scene::Ptr{Cvoid}, box::Ptr{Cdouble})::Cint
 	end
 end
 
+# C callback (JuliaSrsXYFn): `n` x,y pairs in `xy` from system `from` to system `to`, in place. 1 =
+# transformed, 0 = same system (untouched), -1 = failed. What the viewer moves a window's vector elements
+# with when the window changes system (sceneRecrossVectors, 90_c_api.cpp). Never throws.
+function _on_srs_xy(from::Cstring, to::Cstring, xy::Ptr{Cdouble}, n::Cint)::Cint
+	try
+		a = unsafe_string(from);  b = unsafe_string(to)
+		_same_srs(a, b) && return Cint(0)
+		v = unsafe_wrap(Array, xy, 2 * Int(n))
+		M = Matrix{Float64}(undef, Int(n), 2)
+		for i in 1:Int(n); M[i, 1] = v[2i - 1];  M[i, 2] = v[2i];  end
+		Q = _srs_xy(M, a, b)
+		for i in 1:Int(n); v[2i - 1] = Q[i, 1];  v[2i] = Q[i, 2];  end
+		return Cint(1)
+	catch
+		return Cint(-1)
+	end
+end
+
 function _register_lonlat_box()
 	fptr = @cfunction((s, b) -> Base.invokelatest(_on_lonlat_box, s, b), Cint, (Ptr{Cvoid}, Ptr{Cdouble}))
 	ccall(_fn(:gmtvtk_set_lonlat_box_callback), Cvoid, (Ptr{Cvoid},), fptr)
+	if haskey(_LIB_FNS, :gmtvtk_set_srs_xy_callback)
+		gptr = @cfunction((a, b, p, n) -> Base.invokelatest(_on_srs_xy, a, b, p, n), Cint,
+		                  (Cstring, Cstring, Ptr{Cdouble}, Cint))
+		ccall(_fn(:gmtvtk_set_srs_xy_callback), Cvoid, (Ptr{Cvoid},), gptr)
+	end
 	return
 end
 

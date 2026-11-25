@@ -784,6 +784,11 @@ static JuliaGeoFn g_juliaGeo = nullptr;
 // gmtvtk_set_lonlat_box_callback.
 typedef int (*JuliaLonLatBoxFn)(void *scene, double *box);
 static JuliaLonLatBoxFn g_juliaLonLatBox = nullptr;
+// n points (x,y pairs in `xy`) from system `from` to system `to`, in place — THE host transform
+// (crs.jl _srs_xy). 1 = transformed, 0 = same system (untouched), -1 = failed. Set via
+// gmtvtk_set_srs_xy_callback; what sceneRecrossVectors moves a window's vector elements with.
+typedef int (*JuliaSrsXYFn)(const char *from, const char *to, double *xy, int n);
+static JuliaSrsXYFn g_juliaSrsXY = nullptr;
 
 // THE crossing from "a region of this window" to "a region of the Earth". Every request that leaves
 // the window for a GEOGRAPHIC source (GSHHG, a quake catalog, a tide model, the sun) goes through it:

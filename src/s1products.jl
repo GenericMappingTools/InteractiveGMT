@@ -427,6 +427,7 @@ function _s1_plot_footprints!(scene::Ptr{Cvoid}, found::Vector{S1Product},
 	old = pop!(_S1_GROUP, scene, "")
 	isempty(old) || ccall(_fn(:gmtvtk_remove_overlay_group_h), Cint, (Ptr{Cvoid}, Cstring), scene, old)
 	delete!(_S1_FRAMES, scene);  delete!(_S1_PENS, scene);  delete!(_S1_LIT, scene)
+	ccall(_fn(:gmtvtk_set_click_tool_h), Cint, (Ptr{Cvoid}, Cstring, Cstring), scene, "s1", "")
 	isempty(found) && return 0
 	# Frames: same track, same direction, footprint centres less than half a degree apart in latitude.
 	# (the closing vertex repeats the first one and is not counted twice)
@@ -471,6 +472,9 @@ function _s1_plot_footprints!(scene::Ptr{Cvoid}, found::Vector{S1Product},
 	_S1_GROUP[scene] = nm
 	_S1_FRAMES[scene] = labels
 	_S1_PENS[scene] = pens
+	# A plain click inside a footprint chooses its scene too (GLView::mouseReleaseEvent -> "clickscene"),
+	# beside the "Pick a scene" button.
+	ccall(_fn(:gmtvtk_set_click_tool_h), Cint, (Ptr{Cvoid}, Cstring, Cstring), scene, "s1", "clickscene")
 	return length(labels)
 end
 
@@ -484,9 +488,125 @@ end
 
 # Highlight the footprint of the chosen scene (red, 3 px) and give the one lit before back its own pen.
 function _s1_highlight!(scene::Ptr{Cvoid}, k::Int)
-	pens = get(_S1_PENS, scene, Dict{String,Vector{Float64}}())
-	lab = _s1_frame_of(scene, k)
-	old = get(_S1_LIT, scene, "")
+	_rs_light_footprint!(scene, _S1_LIT, get(_S1_PENS, scene, Dict{String,Vector{Float64}}()), _s1_frame_of(scene, k))
+	return nothing
+end
+
+# THE chosen-scene highlight of every scene tool (Sentinel-1, Sentinel-2, Landsat): the footprint `lab`
+# drawn in a thick red pen ON TOP of the vector pile (other footprints, the region box, the coastline
+# would otherwise cover it), the one lit before given back its own pen. `lit` = the tool's window ->
+# lit label, `pens` = label -> its own pen (6 numbers from gmtvtk_overlay_style_h).
+const _RS_LIT_PEN = (1.0, 0.0, 0.0, 6.0)          # r, g, b, width px
+
+# ── THE quicklook stack of every scene tool (Sentinel-2, Landsat) ────────────────────────────────────
+# Every scene's quicklook laid FLAT on the ground it covers, ONE LEVEL PER PASS (the tiles/rows of one
+# acquisition side by side), oldest at the bottom, in a 3-D view of the window; a level slider on the
+# upper-left corner of the map hides the levels above its knob; a plain click on a picture chooses its
+# scene (the sheet is named for the scene's footprint, so it is the same pickscene request); the chosen
+# scene's picture gets a thin red outline. The tools only say WHAT each picture is and WHERE it lies.
+struct RsSheet
+	name::String                 # the scene's footprint label (its own name)
+	t0::DateTime
+	pass::String                 # the key of its pass: same key = same level
+	label::String                # the pass, as the slider shows it
+	epsg::Int                    # the picture's ground box, in its own UTM system
+	x0::Float64
+	x1::Float64
+	y0::Float64
+	y1::Float64
+	file::String                 # the picture on disk
+end
+
+# A picture as RGBA, row 0 = its BOTTOM, at most `maxpx` on its longer side (a 1024 px Landsat preview is
+# thinned by taking every k-th pixel), its NO-DATA see-through (alpha 0): the picture's own alpha when it
+# has one (a PNG preview), else the black CONNECTED TO ITS EDGE, flood-filled from the border (dark pixels
+# inside the picture -- deep sea, shadow -- stay opaque, or a click on dark water would fall through).
+function _rs_picture_rgba(f::String; maxpx::Int=512)::Tuple{Vector{UInt8},Int,Int}
+	A = GMT.gdalread(f)                                 # (x, y, band), y = 1 the TOP row
+	W, H = size(A, 1), size(A, 2)
+	nb = ndims(A) == 3 ? size(A, 3) : 1
+	k = max(1, cld(max(W, H), maxpx))
+	xs = 1:k:W;  ys = 1:k:H
+	w, h = length(xs), length(ys)
+	px(i, j, b) = A[xs[i], ys[j], min(b, nb)]
+	nod = falses(w, h)
+	if nb >= 4
+		for j in 1:h, i in 1:w;  nod[i, j] = px(i, j, 4) == 0;  end
+	else
+		dark(i, j) = max(px(i, j, 1), px(i, j, 2), px(i, j, 3)) <= 0x0c
+		stack = Tuple{Int,Int}[]
+		for i in 1:w, j in (1, h);  dark(i, j) && !nod[i, j] && (nod[i, j] = true; push!(stack, (i, j)));  end
+		for j in 1:h, i in (1, w);  dark(i, j) && !nod[i, j] && (nod[i, j] = true; push!(stack, (i, j)));  end
+		while !isempty(stack)
+			i, j = pop!(stack)
+			for (u, v) in ((i - 1, j), (i + 1, j), (i, j - 1), (i, j + 1))
+				(1 <= u <= w && 1 <= v <= h && !nod[u, v] && dark(u, v)) || continue
+				nod[u, v] = true
+				push!(stack, (u, v))
+			end
+		end
+	end
+	out = Vector{UInt8}(undef, 4 * w * h)
+	p = 1
+	for j in h:-1:1, i in 1:w                           # bottom row first
+		out[p] = px(i, j, 1);  out[p+1] = px(i, j, 2);  out[p+2] = px(i, j, 3)
+		out[p+3] = nod[i, j] ? 0x00 : 0xff
+		p += 4
+	end
+	return out, w, h
+end
+
+function _rs_remove_stack!(scene::Ptr{Cvoid}, stacks::Dict{Ptr{Cvoid},String})
+	g = pop!(stacks, scene, "")
+	isempty(g) || ccall(_fn(:gmtvtk_remove_image_sheets_h), Cint, (Ptr{Cvoid}, Cstring), scene, g)
+	return nothing
+end
+
+# Lay `sheets` as the stack `g` of `tool`'s dialog in window `scene`; `lit` = the footprint label already
+# chosen (outlined), "" none. Returns how many pictures went in.
+function _rs_plot_stack!(scene::Ptr{Cvoid}, stacks::Dict{Ptr{Cvoid},String}, sheets::Vector{RsSheet}, g::String,
+                         tool::String, lit::String)::Int
+	_rs_remove_stack!(scene, stacks)
+	isempty(sheets) && return 0
+	order = sortperm([s.t0 for s in sheets])            # oldest first = lowest level
+	passes = unique(sheets[k].pass for k in order)       # ONE level per pass, in time order
+	level = Dict(p => i for (i, p) in enumerate(passes))
+	plabel = Dict(sheets[k].pass => sheets[k].label for k in order)
+	dst = _window_srs(scene);  isempty(dst) && (dst = _LONLAT)
+	cs = [_srs_xy([s.x0 s.y0; s.x1 s.y0; s.x1 s.y1; s.x0 s.y1], "EPSG:$(s.epsg)", dst) for s in sheets]
+	allx = reduce(vcat, (c[:, 1] for c in cs));  ally = reduce(vcat, (c[:, 2] for c in cs))
+	span = max(maximum(allx) - minimum(allx), maximum(ally) - minimum(ally))
+	dz = span / max(length(passes), 1)                 # the stack about as tall as the area is wide
+	n = 0
+	for k in order
+		s = sheets[k]
+		isempty(s.file) && continue
+		img, w, h = try _rs_picture_rgba(s.file) catch; (UInt8[], 0, 0) end
+		isempty(img) && continue
+		c = cs[k]
+		xy = Float64[c[1, 1], c[1, 2], c[2, 1], c[2, 2], c[3, 1], c[3, 2], c[4, 1], c[4, 2]]
+		nm = s.name * " (quicklook)"
+		ccall(_fn(:gmtvtk_set_group_master_h), Cint, (Ptr{Cvoid}, Cstring, Cstring), scene, nm, g)
+		n += ccall(_fn(:gmtvtk_add_image_sheet_h), Cint,
+		           (Ptr{Cvoid}, Cstring, Cstring, Ptr{Cdouble}, Cdouble, Ptr{UInt8}, Cint, Cint, Cint, Cstring, Cstring),
+		           scene, nm, g, xy, level[s.pass] * dz, img, w, h, 4, tool, "pickscene")
+	end
+	stacks[scene] = g
+	fr = _seis_display_frame(scene)
+	fr === nothing && (fr = (minimum(allx), maximum(allx), minimum(ally), maximum(ally)))
+	ccall(_fn(:gmtvtk_sheet_slider_h), Cint,
+	      (Ptr{Cvoid}, Cstring, Cdouble, Cdouble, Cdouble, Cdouble, Cint, Cstring),
+	      scene, g, fr[1], fr[4], 0.0, dz, length(passes), join((plabel[p] for p in passes), '\t'))
+	isempty(lit) || ccall(_fn(:gmtvtk_sheet_select_h), Cint, (Ptr{Cvoid}, Cstring), scene, lit * " (quicklook)")
+	ccall(_fn(:gmtvtk_set_view_mode_h), Cint, (Ptr{Cvoid}, Cint), scene, 0)    # the stack is a 3-D thing
+	ccall(_fn(:gmtvtk_fit_camera_for_orbit_h), Cint, (Ptr{Cvoid}, Cdouble), scene, length(passes) * dz)
+	ccall(_fn(:gmtvtk_orbit), Cvoid, (Ptr{Cvoid}, Cdouble, Cdouble, Cdouble), scene, 0.0, -60.0, 0.0)   # seen from the south
+	return n
+end
+
+function _rs_light_footprint!(scene::Ptr{Cvoid}, lit::Dict{Ptr{Cvoid},String}, pens::Dict{String,Vector{Float64}},
+                              lab::String)
+	old = get(lit, scene, "")
 	old == lab && return nothing
 	if !isempty(old) && haskey(pens, old)
 		p = pens[old]
@@ -494,12 +614,13 @@ function _s1_highlight!(scene::Ptr{Cvoid}, k::Int)
 		      (Ptr{Cvoid}, Cstring, Cdouble, Cdouble, Cdouble, Cdouble, Cint, Cdouble),
 		      scene, old, p[1], p[2], p[3], p[4], round(Int, p[5]), p[6])
 	end
-	delete!(_S1_LIT, scene)
+	delete!(lit, scene)
 	(isempty(lab) || !haskey(pens, lab)) && return nothing
 	ccall(_fn(:gmtvtk_set_overlay_style_h), Cint,
 	      (Ptr{Cvoid}, Cstring, Cdouble, Cdouble, Cdouble, Cdouble, Cint, Cdouble),
-	      scene, lab, 1.0, 0.0, 0.0, 3.0, 0, 1.0)
-	_S1_LIT[scene] = lab
+	      scene, lab, _RS_LIT_PEN[1], _RS_LIT_PEN[2], _RS_LIT_PEN[3], _RS_LIT_PEN[4], 0, 1.0)
+	ccall(_fn(:gmtvtk_overlay_to_front_h), Cint, (Ptr{Cvoid}, Cstring), scene, lab)
+	lit[scene] = lab
 	return nothing
 end
 
@@ -621,19 +742,28 @@ function _rs_s1(scene::Ptr{Cvoid}, d::Dict{String,String}, io::IOBuffer)::Bool
 		_rs_status(io, isempty(found) ? "No $(mode) $(_S1_PRODUCTS[prod][1]) scene over the region in that period." :
 		               "$(length(found)) scene(s) in $(nfr) frame(s), newest first." *
 		               (total > length(found) ? " The catalogue has $(total): shorten the period to see the rest." : "") *
-		               " Choose one in the list, or Pick a scene and click inside its footprint.")
+		               " Choose one in the list, or click inside its footprint in the view (or Pick a scene).")
 		return true
 	end
-	if what == "pickscene" && !isempty(_rs_get(d, "px"))
+	# "pickscene" with a point: the armed "Pick a scene" button. "clickscene": a plain click in the view
+	# (GLView), where a click outside every footprint is an ordinary click and is answered with nothing.
+	if (what == "pickscene" || what == "clickscene") && !isempty(_rs_get(d, "px"))
+		quiet = what == "clickscene"
 		found = get(_S1_FOUND, scene, S1Product[])
-		isempty(found) && error("Find the scenes first, then click inside one of the footprints it draws.")
+		if isempty(found)
+			quiet && return true
+			error("Find the scenes first, then click inside one of the footprints it draws.")
+		end
 		x, y = _rs_num(d, "px", NaN), _rs_num(d, "py", NaN)
 		src = _window_srs(scene)
 		if !isempty(src) && !_project_is_geog(src)
 			Q = _srs_xy([x y], src, _LONLAT);  x, y = Q[1, 1], Q[1, 2]
 		end
 		ks = _s1_covering(found, x, y)
-		isempty(ks) && error("No scene found covers $(round(x, digits = 3)), $(round(y, digits = 3)): click inside a footprint.")
+		if isempty(ks)
+			quiet && return true
+			error("No scene found covers $(round(x, digits = 3)), $(round(y, digits = 3)): click inside a footprint.")
+		end
 		# Clicking the same place again steps to the next scene that covers it.
 		cur = _rs_idx(d, "p_granule") + 1
 		j = findfirst(==(cur), ks)

@@ -1,0 +1,1208 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>RemoteSS2</class>
+ <widget class="QDialog" name="RemoteSS2">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>720</width>
+    <height>640</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>Sentinel-2 MSI products</string>
+  </property>
+  <widget class="QTabWidget" name="tabs">
+   <property name="foldable" stdset="0">
+    <bool>true</bool>
+   </property>
+   <property name="geometry">
+    <rect>
+     <x>4</x>
+     <y>4</y>
+     <width>359</width>
+     <height>594</height>
+    </rect>
+   </property>
+   <property name="currentIndex">
+    <number>0</number>
+   </property>
+   <widget class="QWidget" name="tab_search">
+    <attribute name="title">
+     <string>Search</string>
+    </attribute>
+    <widget class="QGroupBox" name="gb_rg_region">
+     <property name="geometry">
+      <rect>
+       <x>5</x>
+       <y>7</y>
+       <width>345</width>
+       <height>142</height>
+      </rect>
+     </property>
+     <property name="title">
+      <string>Region</string>
+     </property>
+     <widget class="QLabel" name="lbl_rg_n">
+      <property name="geometry">
+       <rect>
+        <x>37</x>
+        <y>27</y>
+        <width>26</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="frameShape">
+       <enum>QFrame::Shape::Box</enum>
+      </property>
+      <property name="text">
+       <string>N</string>
+      </property>
+      <property name="alignment">
+       <set>Qt::AlignmentFlag::AlignCenter</set>
+      </property>
+     </widget>
+     <widget class="QLabel" name="lbl_rg_w">
+      <property name="geometry">
+       <rect>
+        <x>11</x>
+        <y>53</y>
+        <width>26</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="frameShape">
+       <enum>QFrame::Shape::Box</enum>
+      </property>
+      <property name="text">
+       <string>W</string>
+      </property>
+      <property name="alignment">
+       <set>Qt::AlignmentFlag::AlignCenter</set>
+      </property>
+     </widget>
+     <widget class="QLabel" name="lbl_rg_e">
+      <property name="geometry">
+       <rect>
+        <x>63</x>
+        <y>53</y>
+        <width>26</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="frameShape">
+       <enum>QFrame::Shape::Box</enum>
+      </property>
+      <property name="text">
+       <string>E</string>
+      </property>
+      <property name="alignment">
+       <set>Qt::AlignmentFlag::AlignCenter</set>
+      </property>
+     </widget>
+     <widget class="QLabel" name="lbl_rg_s">
+      <property name="geometry">
+       <rect>
+        <x>37</x>
+        <y>79</y>
+        <width>26</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="frameShape">
+       <enum>QFrame::Shape::Box</enum>
+      </property>
+      <property name="text">
+       <string>S</string>
+      </property>
+      <property name="alignment">
+       <set>Qt::AlignmentFlag::AlignCenter</set>
+      </property>
+     </widget>
+     <widget class="QLineEdit" name="p_rg_n">
+      <property name="geometry">
+       <rect>
+        <x>150</x>
+        <y>28</y>
+        <width>130</width>
+        <height>24</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string>37.5</string>
+      </property>
+      <property name="alignment">
+       <set>Qt::AlignmentFlag::AlignCenter</set>
+      </property>
+     </widget>
+     <widget class="QLineEdit" name="p_rg_w">
+      <property name="geometry">
+       <rect>
+        <x>100</x>
+        <y>54</y>
+        <width>114</width>
+        <height>24</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string>-8.5</string>
+      </property>
+      <property name="alignment">
+       <set>Qt::AlignmentFlag::AlignCenter</set>
+      </property>
+     </widget>
+     <widget class="QLineEdit" name="p_rg_e">
+      <property name="geometry">
+       <rect>
+        <x>220</x>
+        <y>54</y>
+        <width>114</width>
+        <height>24</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string>-7.5</string>
+      </property>
+      <property name="alignment">
+       <set>Qt::AlignmentFlag::AlignCenter</set>
+      </property>
+     </widget>
+     <widget class="QLineEdit" name="p_rg_s">
+      <property name="geometry">
+       <rect>
+        <x>150</x>
+        <y>80</y>
+        <width>130</width>
+        <height>24</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string>37</string>
+      </property>
+      <property name="alignment">
+       <set>Qt::AlignmentFlag::AlignCenter</set>
+      </property>
+     </widget>
+     <widget class="QPushButton" name="run_rgwindow">
+      <property name="geometry">
+       <rect>
+        <x>11</x>
+        <y>110</y>
+        <width>323</width>
+        <height>24</height>
+       </rect>
+      </property>
+      <property name="toolTip">
+       <string>Fill the four limits with the region the window is showing.</string>
+      </property>
+      <property name="text">
+       <string>Use the window's limits</string>
+      </property>
+     </widget>
+    </widget>
+    <widget class="QGroupBox" name="gb_query">
+     <property name="geometry">
+      <rect>
+       <x>5</x>
+       <y>155</y>
+       <width>345</width>
+       <height>154</height>
+      </rect>
+     </property>
+     <property name="title">
+      <string>Product, period and clouds</string>
+     </property>
+     <widget class="QLabel" name="lbl_product">
+      <property name="geometry">
+       <rect>
+        <x>11</x>
+        <y>27</y>
+        <width>55</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string>Product</string>
+      </property>
+     </widget>
+     <widget class="QComboBox" name="p_product">
+      <property name="geometry">
+       <rect>
+        <x>70</x>
+        <y>27</y>
+        <width>264</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="toolTip">
+       <string>L2A: surface reflectance, corrected for the atmosphere by ESA (Sen2Cor), with a scene classification band (SCL: cloud, shadow, water, snow...) and bands at 10, 20 and 60 m. L1C: top-of-atmosphere reflectance, every band only at its own spacing (B02 B03 B04 B08 10 m; B05 B06 B07 B8A B11 B12 20 m; B01 B09 B10 60 m). A tile is 110 x 110 km, about 0.5 to 1.2 GB as a whole product.</string>
+      </property>
+      <property name="refresh" stdset="0">
+       <bool>true</bool>
+      </property>
+     </widget>
+     <widget class="QLabel" name="lbl_from">
+      <property name="geometry">
+       <rect>
+        <x>11</x>
+        <y>59</y>
+        <width>50</width>
+        <height>22</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string>From</string>
+      </property>
+     </widget>
+     <widget class="QDateEdit" name="p_from">
+      <property name="geometry">
+       <rect>
+        <x>70</x>
+        <y>59</y>
+        <width>110</width>
+        <height>22</height>
+       </rect>
+      </property>
+      <property name="toolTip">
+       <string>First day of the period (UTC), included.</string>
+      </property>
+      <property name="displayFormat">
+       <string>yyyy-MM-dd</string>
+      </property>
+      <property name="calendarPopup">
+       <bool>true</bool>
+      </property>
+     </widget>
+     <widget class="QLabel" name="lbl_to">
+      <property name="geometry">
+       <rect>
+        <x>194</x>
+        <y>59</y>
+        <width>24</width>
+        <height>22</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string>To</string>
+      </property>
+     </widget>
+     <widget class="QDateEdit" name="p_to">
+      <property name="geometry">
+       <rect>
+        <x>224</x>
+        <y>59</y>
+        <width>110</width>
+        <height>22</height>
+       </rect>
+      </property>
+      <property name="toolTip">
+       <string>Last day of the period (UTC), included.</string>
+      </property>
+      <property name="displayFormat">
+       <string>yyyy-MM-dd</string>
+      </property>
+      <property name="calendarPopup">
+       <bool>true</bool>
+      </property>
+     </widget>
+     <widget class="QLabel" name="lbl_cloud">
+      <property name="geometry">
+       <rect>
+        <x>11</x>
+        <y>89</y>
+        <width>55</width>
+        <height>24</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string>Clouds</string>
+      </property>
+     </widget>
+     <widget class="QSpinBox" name="p_cloud">
+      <property name="geometry">
+       <rect>
+        <x>70</x>
+        <y>89</y>
+        <width>70</width>
+        <height>24</height>
+       </rect>
+      </property>
+      <property name="toolTip">
+       <string>The largest cloud cover accepted, in percent of the tile (the product's own cloudCover, computed by ESA over the whole 110 km tile, not over your region). 100: every scene.</string>
+      </property>
+      <property name="suffix">
+       <string> %</string>
+      </property>
+      <property name="minimum">
+       <number>0</number>
+      </property>
+      <property name="maximum">
+       <number>100</number>
+      </property>
+      <property name="value">
+       <number>30</number>
+      </property>
+     </widget>
+     <widget class="QLabel" name="lbl_cloud_hint">
+      <property name="geometry">
+       <rect>
+        <x>150</x>
+        <y>89</y>
+        <width>184</width>
+        <height>24</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string>at most, of the whole tile</string>
+      </property>
+     </widget>
+     <widget class="QPushButton" name="run_search">
+      <property name="geometry">
+       <rect>
+        <x>11</x>
+        <y>121</y>
+        <width>156</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="toolTip">
+       <string>Ask the Copernicus Data Space catalogue (no login needed) for the scenes of the product over the region in the period, with at most that cloud cover, newest first, and draw their footprints (on an empty window, over a map with coastlines made for them). Then click inside a footprint in the view to choose its scene; clicking the same place again steps to the next scene covering it. A new search replaces the previous footprints.</string>
+      </property>
+      <property name="text">
+       <string>Find the scenes</string>
+      </property>
+      <property name="busy" stdset="0">
+       <string>Finding the Sentinel-2 scenes over the region…</string>
+      </property>
+     </widget>
+     <widget class="QPushButton" name="run_stack">
+      <property name="geometry">
+       <rect>
+        <x>178</x>
+        <y>121</y>
+        <width>156</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="toolTip">
+       <string>Show the quicklook of every scene found, each laid on its own tile, stacked one level per pass (all tiles of one pass side by side; oldest at the bottom, newest on top), the parts with no data see-through, in a 3-D view of the window. Click a quicklook to choose its scene. Press again after a new search to rebuild the stack.</string>
+      </property>
+      <property name="text">
+       <string>Quicklooks 3-D</string>
+      </property>
+      <property name="busy" stdset="0">
+       <string>Stacking the quicklooks…</string>
+      </property>
+     </widget>
+    </widget>
+    <widget class="QGroupBox" name="gb_scene">
+     <property name="geometry">
+      <rect>
+       <x>5</x>
+       <y>315</y>
+       <width>345</width>
+       <height>124</height>
+      </rect>
+     </property>
+     <property name="title">
+      <string>Scene</string>
+     </property>
+     <widget class="QLabel" name="lbl_granule">
+      <property name="geometry">
+       <rect>
+        <x>11</x>
+        <y>27</y>
+        <width>55</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string>Scene</string>
+      </property>
+     </widget>
+     <widget class="QComboBox" name="p_granule">
+      <property name="geometry">
+       <rect>
+        <x>70</x>
+        <y>27</y>
+        <width>264</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="toolTip">
+       <string>The scenes found, newest first: start time (UTC), satellite (S2A, S2B, S2C), MGRS tile, cloud cover and size of the whole product. "(on disk)": the whole product is already in the folder below. Choosing one highlights its footprint in the view and shows its quicklook.</string>
+      </property>
+      <property name="refresh" stdset="0">
+       <bool>true</bool>
+      </property>
+     </widget>
+     <widget class="QLabel" name="lbl_folder">
+      <property name="geometry">
+       <rect>
+        <x>11</x>
+        <y>59</y>
+        <width>55</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string>Folder</string>
+      </property>
+     </widget>
+     <widget class="QLineEdit" name="p_folder">
+      <property name="geometry">
+       <rect>
+        <x>70</x>
+        <y>59</y>
+        <width>264</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="toolTip">
+       <string>Where everything is downloaded to (made if it does not exist): a whole product as the zip ESA distributes, single bands in a sub-folder named for the product, quicklooks in "quicklooks". A file already there is not downloaded again.</string>
+      </property>
+     </widget>
+     <widget class="QPushButton" name="run_download">
+      <property name="geometry">
+       <rect>
+        <x>11</x>
+        <y>91</y>
+        <width>323</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="toolTip">
+       <string>Download the WHOLE chosen product (the .SAFE zip, every band at every spacing plus its metadata) into the folder, with the Copernicus Data Space login of the Account tab.</string>
+      </property>
+      <property name="text">
+       <string>Download the whole product (.zip)</string>
+      </property>
+      <property name="busy" stdset="0">
+       <string>Downloading the Sentinel-2 product…</string>
+      </property>
+     </widget>
+    </widget>
+    <widget class="QLabel" name="lbl_dn">
+     <property name="geometry">
+      <rect>
+       <x>11</x>
+       <y>449</y>
+       <width>333</width>
+       <height>110</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>The bands are stored as ESA delivers them, in digital numbers. Since processing baseline 04.00 (January 2022, N0400 and later in the name), reflectance = (DN - 1000) / 10000; before it, DN / 10000. In SCL, 3 is cloud shadow, 8 to 10 clouds and cirrus, 11 snow.</string>
+     </property>
+     <property name="alignment">
+      <set>Qt::AlignmentFlag::AlignLeading|Qt::AlignmentFlag::AlignLeft|Qt::AlignmentFlag::AlignTop</set>
+     </property>
+     <property name="wordWrap">
+      <bool>true</bool>
+     </property>
+    </widget>
+   </widget>
+   <widget class="QWidget" name="tab_account">
+    <attribute name="title">
+     <string>Account</string>
+    </attribute>
+    <widget class="QGroupBox" name="gb_cd">
+     <property name="geometry">
+      <rect>
+       <x>5</x>
+       <y>7</y>
+       <width>345</width>
+       <height>304</height>
+      </rect>
+     </property>
+     <property name="title">
+      <string>Copernicus Data Space login</string>
+     </property>
+     <widget class="QLabel" name="lbl_cd_info">
+      <property name="geometry">
+       <rect>
+        <x>11</x>
+        <y>24</y>
+        <width>323</width>
+        <height>66</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string>Searching and quicklooks need no account. Downloading needs a free Copernicus Data Space account: the e-mail and password you log in with on the web site (the same login as Sentinel-1 SAR products). No account yet? &lt;a href=&quot;https://dataspace.copernicus.eu&quot;&gt;Register here&lt;/a&gt;.</string>
+      </property>
+      <property name="textFormat">
+       <enum>Qt::TextFormat::RichText</enum>
+      </property>
+      <property name="alignment">
+       <set>Qt::AlignmentFlag::AlignLeading|Qt::AlignmentFlag::AlignLeft|Qt::AlignmentFlag::AlignTop</set>
+      </property>
+      <property name="wordWrap">
+       <bool>true</bool>
+      </property>
+      <property name="openExternalLinks">
+       <bool>true</bool>
+      </property>
+     </widget>
+     <widget class="QLabel" name="lbl_cd_user">
+      <property name="geometry">
+       <rect>
+        <x>11</x>
+        <y>96</y>
+        <width>60</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string>E-mail</string>
+      </property>
+     </widget>
+     <widget class="QLineEdit" name="p_cd_user">
+      <property name="geometry">
+       <rect>
+        <x>77</x>
+        <y>96</y>
+        <width>257</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="toolTip">
+       <string>The e-mail address of your Copernicus Data Space account.</string>
+      </property>
+     </widget>
+     <widget class="QLabel" name="lbl_cd_pass">
+      <property name="geometry">
+       <rect>
+        <x>11</x>
+        <y>128</y>
+        <width>60</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string>Password</string>
+      </property>
+     </widget>
+     <widget class="QLineEdit" name="p_cd_pass">
+      <property name="geometry">
+       <rect>
+        <x>77</x>
+        <y>128</y>
+        <width>257</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="echoMode">
+       <enum>QLineEdit::EchoMode::Password</enum>
+      </property>
+     </widget>
+     <widget class="QCheckBox" name="show_p_cd_pass">
+      <property name="geometry">
+       <rect>
+        <x>77</x>
+        <y>158</y>
+        <width>257</width>
+        <height>22</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string>Show the password</string>
+      </property>
+     </widget>
+     <widget class="QLabel" name="lbl_cd_totp">
+      <property name="geometry">
+       <rect>
+        <x>11</x>
+        <y>186</y>
+        <width>60</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string>2FA code</string>
+      </property>
+     </widget>
+     <widget class="QLineEdit" name="p_cd_totp">
+      <property name="geometry">
+       <rect>
+        <x>77</x>
+        <y>186</y>
+        <width>100</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="toolTip">
+       <string>Only for an account with two-factor login: the code your authenticator app shows NOW, typed just before a download. It is used once and never saved; the login it opens is kept for the session.</string>
+      </property>
+     </widget>
+     <widget class="QPushButton" name="run_savelogin">
+      <property name="geometry">
+       <rect>
+        <x>11</x>
+        <y>220</y>
+        <width>323</width>
+        <height>26</height>
+       </rect>
+      </property>
+      <property name="toolTip">
+       <string>Write the e-mail and password to the machine identity.dataspace.copernicus.eu entry of .netrc in your home folder. Every other entry of the file is kept. Without saving, the two boxes are used for this session only.</string>
+      </property>
+      <property name="text">
+       <string>Save login</string>
+      </property>
+      <property name="busy" stdset="0">
+       <string>Saving the Copernicus Data Space login…</string>
+      </property>
+     </widget>
+     <widget class="QLabel" name="lbl_cd_where">
+      <property name="geometry">
+       <rect>
+        <x>11</x>
+        <y>252</y>
+        <width>323</width>
+        <height>44</height>
+       </rect>
+      </property>
+      <property name="text">
+       <string/>
+      </property>
+      <property name="alignment">
+       <set>Qt::AlignmentFlag::AlignLeading|Qt::AlignmentFlag::AlignLeft|Qt::AlignmentFlag::AlignTop</set>
+      </property>
+      <property name="wordWrap">
+       <bool>true</bool>
+      </property>
+     </widget>
+    </widget>
+   </widget>
+  </widget>
+  <widget class="QGroupBox" name="gb_thumb">
+   <property name="geometry">
+    <rect>
+     <x>368</x>
+     <y>4</y>
+     <width>348</width>
+     <height>370</height>
+    </rect>
+   </property>
+   <property name="title">
+    <string>Quicklook</string>
+   </property>
+   <widget class="QLabel" name="lbl_thumb">
+    <property name="geometry">
+     <rect>
+      <x>24</x>
+      <y>24</y>
+      <width>300</width>
+      <height>300</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>ESA's quicklook of the chosen scene: the whole 110 km tile in true colour, north up, so the clouds and the part of the tile the orbit covered can be judged before downloading.</string>
+    </property>
+    <property name="frameShape">
+     <enum>QFrame::Shape::Box</enum>
+    </property>
+    <property name="text">
+     <string>No scene chosen.</string>
+    </property>
+    <property name="textFormat">
+     <enum>Qt::TextFormat::RichText</enum>
+    </property>
+    <property name="alignment">
+     <set>Qt::AlignmentFlag::AlignCenter</set>
+    </property>
+    <property name="wordWrap">
+     <bool>true</bool>
+    </property>
+   </widget>
+   <widget class="QLabel" name="lbl_thumbinfo">
+    <property name="geometry">
+     <rect>
+      <x>11</x>
+      <y>330</y>
+      <width>326</width>
+      <height>34</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string/>
+    </property>
+    <property name="alignment">
+     <set>Qt::AlignmentFlag::AlignHCenter|Qt::AlignmentFlag::AlignTop</set>
+    </property>
+    <property name="wordWrap">
+     <bool>true</bool>
+    </property>
+   </widget>
+  </widget>
+  <widget class="QGroupBox" name="gb_bands">
+   <property name="geometry">
+    <rect>
+     <x>368</x>
+     <y>380</y>
+     <width>348</width>
+     <height>218</height>
+    </rect>
+   </property>
+   <property name="title">
+    <string>Bands</string>
+   </property>
+   <widget class="QLabel" name="lbl_bres">
+    <property name="geometry">
+     <rect>
+      <x>11</x>
+      <y>27</y>
+      <width>70</width>
+      <height>26</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Resolution</string>
+    </property>
+   </widget>
+   <widget class="QComboBox" name="p_bres">
+    <property name="geometry">
+     <rect>
+      <x>84</x>
+      <y>27</y>
+      <width>80</width>
+      <height>26</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>The pixel size of the bands. L2A: every band the product has at that spacing (a coarser spacing also carries the finer bands, averaged). L1C: only the bands whose own spacing it is. Only the bands the chosen scene really has there can be ticked; every ticked band is downloaded at this pixel size.</string>
+    </property>
+    <property name="refresh" stdset="0">
+     <bool>true</bool>
+    </property>
+   </widget>
+   <widget class="QLabel" name="lbl_bsize">
+    <property name="geometry">
+     <rect>
+      <x>172</x>
+      <y>27</y>
+      <width>165</width>
+      <height>26</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string/>
+    </property>
+   </widget>
+   <widget class="QCheckBox" name="p_b_b01">
+    <property name="geometry">
+     <rect>
+      <x>11</x>
+      <y>57</y>
+      <width>64</width>
+      <height>22</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>Coastal aerosol, 443 nm</string>
+    </property>
+    <property name="text">
+     <string>B01</string>
+    </property>
+    <property name="refresh" stdset="0">
+     <bool>true</bool>
+    </property>
+   </widget>
+   <widget class="QCheckBox" name="p_b_b02">
+    <property name="geometry">
+     <rect>
+      <x>77</x>
+      <y>57</y>
+      <width>64</width>
+      <height>22</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>Blue, 490 nm</string>
+    </property>
+    <property name="text">
+     <string>B02</string>
+    </property>
+    <property name="checked">
+     <bool>true</bool>
+    </property>
+    <property name="refresh" stdset="0">
+     <bool>true</bool>
+    </property>
+   </widget>
+   <widget class="QCheckBox" name="p_b_b03">
+    <property name="geometry">
+     <rect>
+      <x>143</x>
+      <y>57</y>
+      <width>64</width>
+      <height>22</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>Green, 560 nm</string>
+    </property>
+    <property name="text">
+     <string>B03</string>
+    </property>
+    <property name="checked">
+     <bool>true</bool>
+    </property>
+    <property name="refresh" stdset="0">
+     <bool>true</bool>
+    </property>
+   </widget>
+   <widget class="QCheckBox" name="p_b_b04">
+    <property name="geometry">
+     <rect>
+      <x>209</x>
+      <y>57</y>
+      <width>64</width>
+      <height>22</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>Red, 665 nm</string>
+    </property>
+    <property name="text">
+     <string>B04</string>
+    </property>
+    <property name="checked">
+     <bool>true</bool>
+    </property>
+    <property name="refresh" stdset="0">
+     <bool>true</bool>
+    </property>
+   </widget>
+   <widget class="QCheckBox" name="p_b_b05">
+    <property name="geometry">
+     <rect>
+      <x>275</x>
+      <y>57</y>
+      <width>64</width>
+      <height>22</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>Red edge, 705 nm</string>
+    </property>
+    <property name="text">
+     <string>B05</string>
+    </property>
+    <property name="refresh" stdset="0">
+     <bool>true</bool>
+    </property>
+   </widget>
+   <widget class="QCheckBox" name="p_b_b06">
+    <property name="geometry">
+     <rect>
+      <x>11</x>
+      <y>81</y>
+      <width>64</width>
+      <height>22</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>Red edge, 740 nm</string>
+    </property>
+    <property name="text">
+     <string>B06</string>
+    </property>
+    <property name="refresh" stdset="0">
+     <bool>true</bool>
+    </property>
+   </widget>
+   <widget class="QCheckBox" name="p_b_b07">
+    <property name="geometry">
+     <rect>
+      <x>77</x>
+      <y>81</y>
+      <width>64</width>
+      <height>22</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>Red edge, 783 nm</string>
+    </property>
+    <property name="text">
+     <string>B07</string>
+    </property>
+    <property name="refresh" stdset="0">
+     <bool>true</bool>
+    </property>
+   </widget>
+   <widget class="QCheckBox" name="p_b_b08">
+    <property name="geometry">
+     <rect>
+      <x>143</x>
+      <y>81</y>
+      <width>64</width>
+      <height>22</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>Near infrared, 842 nm</string>
+    </property>
+    <property name="text">
+     <string>B08</string>
+    </property>
+    <property name="checked">
+     <bool>true</bool>
+    </property>
+    <property name="refresh" stdset="0">
+     <bool>true</bool>
+    </property>
+   </widget>
+   <widget class="QCheckBox" name="p_b_b8a">
+    <property name="geometry">
+     <rect>
+      <x>209</x>
+      <y>81</y>
+      <width>64</width>
+      <height>22</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>Narrow near infrared, 865 nm</string>
+    </property>
+    <property name="text">
+     <string>B8A</string>
+    </property>
+    <property name="refresh" stdset="0">
+     <bool>true</bool>
+    </property>
+   </widget>
+   <widget class="QCheckBox" name="p_b_b09">
+    <property name="geometry">
+     <rect>
+      <x>275</x>
+      <y>81</y>
+      <width>64</width>
+      <height>22</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>Water vapour, 945 nm</string>
+    </property>
+    <property name="text">
+     <string>B09</string>
+    </property>
+    <property name="refresh" stdset="0">
+     <bool>true</bool>
+    </property>
+   </widget>
+   <widget class="QCheckBox" name="p_b_b10">
+    <property name="geometry">
+     <rect>
+      <x>11</x>
+      <y>105</y>
+      <width>64</width>
+      <height>22</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>SWIR cirrus, 1375 nm (L1C only)</string>
+    </property>
+    <property name="text">
+     <string>B10</string>
+    </property>
+    <property name="refresh" stdset="0">
+     <bool>true</bool>
+    </property>
+   </widget>
+   <widget class="QCheckBox" name="p_b_b11">
+    <property name="geometry">
+     <rect>
+      <x>77</x>
+      <y>105</y>
+      <width>64</width>
+      <height>22</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>SWIR, 1610 nm</string>
+    </property>
+    <property name="text">
+     <string>B11</string>
+    </property>
+    <property name="refresh" stdset="0">
+     <bool>true</bool>
+    </property>
+   </widget>
+   <widget class="QCheckBox" name="p_b_b12">
+    <property name="geometry">
+     <rect>
+      <x>143</x>
+      <y>105</y>
+      <width>64</width>
+      <height>22</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>SWIR, 2190 nm</string>
+    </property>
+    <property name="text">
+     <string>B12</string>
+    </property>
+    <property name="refresh" stdset="0">
+     <bool>true</bool>
+    </property>
+   </widget>
+   <widget class="QCheckBox" name="p_b_scl">
+    <property name="geometry">
+     <rect>
+      <x>209</x>
+      <y>105</y>
+      <width>64</width>
+      <height>22</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>Scene classification (L2A only): 0 no data, 1 saturated, 2 dark, 3 cloud shadow, 4 vegetation, 5 bare soil, 6 water, 7 unclassified, 8 cloud medium, 9 cloud high, 10 thin cirrus, 11 snow.</string>
+    </property>
+    <property name="text">
+     <string>SCL</string>
+    </property>
+    <property name="refresh" stdset="0">
+     <bool>true</bool>
+    </property>
+   </widget>
+   <widget class="QCheckBox" name="p_b_aot">
+    <property name="geometry">
+     <rect>
+      <x>275</x>
+      <y>105</y>
+      <width>64</width>
+      <height>22</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>Aerosol optical thickness at 550 nm (L2A)</string>
+    </property>
+    <property name="text">
+     <string>AOT</string>
+    </property>
+    <property name="refresh" stdset="0">
+     <bool>true</bool>
+    </property>
+   </widget>
+   <widget class="QCheckBox" name="p_b_wvp">
+    <property name="geometry">
+     <rect>
+      <x>11</x>
+      <y>129</y>
+      <width>64</width>
+      <height>22</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>Water vapour column (L2A)</string>
+    </property>
+    <property name="text">
+     <string>WVP</string>
+    </property>
+    <property name="refresh" stdset="0">
+     <bool>true</bool>
+    </property>
+   </widget>
+   <widget class="QCheckBox" name="p_b_tci">
+    <property name="geometry">
+     <rect>
+      <x>77</x>
+      <y>129</y>
+      <width>64</width>
+      <height>22</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>True-colour picture (8-bit RGB of B04 B03 B02). Shown as an image of its own, not as a layer of the band cube.</string>
+    </property>
+    <property name="text">
+     <string>TCI</string>
+    </property>
+    <property name="refresh" stdset="0">
+     <bool>true</bool>
+    </property>
+   </widget>
+   <widget class="QCheckBox" name="p_cut">
+    <property name="geometry">
+     <rect>
+      <x>11</x>
+      <y>157</y>
+      <width>326</width>
+      <height>22</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>Cut the bands to the region of the Search tab (converted to the tile's own UTM system, and cut to the tile). Unticked: the whole 110 km tile (10980 x 10980 pixels at 10 m: about 240 MB of memory per band).</string>
+    </property>
+    <property name="text">
+     <string>Cut to the region</string>
+    </property>
+    <property name="checked">
+     <bool>true</bool>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="run_bands">
+    <property name="geometry">
+     <rect>
+      <x>11</x>
+      <y>183</y>
+      <width>326</width>
+      <height>26</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>Download only the ticked bands of the chosen scene (each band file once; one already in the folder is not downloaded again), cut them to the region, put them in ONE band cube (a GeoTIFF in the tile's UTM system, beside the band files) and show it in this window. TCI, if ticked, is shown as an image of its own.</string>
+    </property>
+    <property name="text">
+     <string>Download the bands and show the cube</string>
+    </property>
+    <property name="busy" stdset="0">
+     <string>Getting the Sentinel-2 bands…</string>
+    </property>
+   </widget>
+  </widget>
+  <widget class="QToolButton" name="tutorial">
+   <property name="geometry">
+    <rect>
+     <x>9</x>
+     <y>606</y>
+     <width>24</width>
+     <height>24</height>
+    </rect>
+   </property>
+   <property name="toolTip">
+    <string>Open the Sentinel-2 products page of the manual.</string>
+   </property>
+   <property name="text">
+    <string>?</string>
+   </property>
+   <property name="page" stdset="0">
+    <string>73c-sentinel2</string>
+   </property>
+  </widget>
+  <widget class="QLabel" name="lbl_status">
+   <property name="geometry">
+    <rect>
+     <x>37</x>
+     <y>604</y>
+     <width>679</width>
+     <height>30</height>
+    </rect>
+   </property>
+   <property name="text">
+    <string/>
+   </property>
+   <property name="alignment">
+    <set>Qt::AlignmentFlag::AlignLeading|Qt::AlignmentFlag::AlignLeft|Qt::AlignmentFlag::AlignTop</set>
+   </property>
+   <property name="wordWrap">
+    <bool>true</bool>
+   </property>
+  </widget>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>
