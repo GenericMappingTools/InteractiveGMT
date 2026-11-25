@@ -57,6 +57,7 @@ const _S2_FRAMES = Dict{Ptr{Cvoid},Dict{String,Vector{Int}}}()    # window -> fo
 const _S2_GROUP  = Dict{Ptr{Cvoid},String}()                      # window -> group tag of its footprints
 const _S2_PENS   = Dict{Ptr{Cvoid},Dict{String,Vector{Float64}}}() # window -> footprint label -> its own pen
 const _S2_LIT    = Dict{Ptr{Cvoid},String}()                      # window -> the highlighted footprint
+const _S2_SEARCHED = Dict{Ptr{Cvoid},NTuple{4,Float64}}()         # window -> the region its list was found for
 # product id -> (granule folder, every band file: (IMG_DATA sub-folder, file name, bytes)). The tree of a
 # product never changes, so it is listed once per session.
 const _S2_NODES  = Dict{String,Tuple{String,Vector{Tuple{String,String,Float64}}}}()
@@ -245,6 +246,14 @@ function _s2_fill_bands!(io::IOBuffer, d::Dict{String,String}, s::Union{S2Scene,
 		return nothing
 	end
 	box = _ls_box(d)
+	# A found scene always reaches the region it was found for; one that does not means the region was
+	# changed after the search (the refresh then clears the list, "Region changed: Find the scenes again").
+	# Never an error thrown out of a panel refresh, never a button that would fetch nothing.
+	if box !== nothing && (try _s2_window(s, box, res); false catch; true end)
+		_rs_enable(io, "run_bands", false)
+		_rs_label(io, "lbl_bsize", "Region changed: Find the scenes again")
+		return nothing
+	end
 	ondisk = all(((_, o),) -> isfile(o), _s2_outs(s, ks, res, dir, box))
 	if box === nothing
 		n = round(Int, 109800 / res)                   # the tile, in cells of the chosen spacing
@@ -793,8 +802,11 @@ function _rs_s2(scene::Ptr{Cvoid}, d::Dict{String,String}, io::IOBuffer)::Bool
 		found = get(_S2_FOUND, scene, S2Scene[])
 		k = _rs_idx(d, "p_granule") + 1
 		s = 1 <= k <= length(found) ? found[k] : nothing
-		# Another level makes the last search's list stale.
-		if s !== nothing && (_s2_isl1c(s) != (lev == "MSIL1C"))
+		# Another level, or ANOTHER REGION, makes the last search's list stale: every scene in it was found
+		# for the old region, and one that does not reach the new region must never stay choosable.
+		rg = try _s1_box(d) catch; nothing end
+		moved = s !== nothing && rg !== nothing && get(_S2_SEARCHED, scene, rg) != rg
+		if s !== nothing && (moved || _s2_isl1c(s) != (lev == "MSIL1C"))
 			old = pop!(_S2_GROUP, scene, "")
 			isempty(old) || ccall(_fn(:gmtvtk_remove_overlay_group_h), Cint, (Ptr{Cvoid}, Cstring), scene, old)
 			_s2_remove_stack!(scene)
@@ -803,7 +815,8 @@ function _rs_s2(scene::Ptr{Cvoid}, d::Dict{String,String}, io::IOBuffer)::Bool
 			_rs_items(io, "p_granule", String[])
 			_s2_show_thumb!(io, nothing, _s2_folder(d))
 			_s2_fill_bands!(io, d, nothing, _s2_folder(d))
-			_rs_status(io, "Product changed: Find the scenes again.")
+			delete!(_S2_SEARCHED, scene)
+			_rs_status(io, (moved ? "Region" : "Product") * " changed: Find the scenes again.")
 			return true
 		end
 		s === nothing ? _s2_fill_bands!(io, d, nothing, _s2_folder(d)) : _s2_choose!(io, scene, d, k)
@@ -822,6 +835,7 @@ function _rs_s2(scene::Ptr{Cvoid}, d::Dict{String,String}, io::IOBuffer)::Bool
 			_rs_prog_close()
 		end
 		_S2_FOUND[scene] = found
+		_S2_SEARCHED[scene] = (W, E, S, N)            # the region this list belongs to
 		dir = _s2_folder(d)
 		_rs_items(io, "p_granule", String[_s2_label(x, dir) for x in found])
 		nfr = _s2_plot_footprints!(scene, found, W, E, S, N)

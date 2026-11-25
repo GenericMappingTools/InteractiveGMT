@@ -67,9 +67,30 @@ end
 		@test occursin("enable:p_b_b02=0", r)                       # not in this (trimmed) tree
 		@test occursin("label:lbl_bsize=2 at 10 m: whole tile, 10980x10980 px", r)   # B04 + B08: SCL is not at 10 m
 		# Only the region: its size in pixels on the tile's own UTM grid, nothing downloaded whole.
-		dc = merge(d, Dict("p_cut" => "1", "p_rg_w" => "-8.0", "p_rg_e" => "-7.9", "p_rg_s" => "37.0", "p_rg_n" => "37.1"))
+		dc = merge(d, Dict("p_cut" => "1", "p_rg_w" => "-7.8", "p_rg_e" => "-7.7", "p_rg_s" => "36.5", "p_rg_n" => "36.6"))
 		IG._s2_fill_bands!(io, dc, l2, dir)
 		@test occursin(r"label:lbl_bsize=2 at 10 m: region only, \d+x\d+ px", String(take!(io)))
+		# A region off the scene's tile (west of 29SPA's 600 km edge): only possible when the region was
+		# changed after the search -- the panel never offers a fetch of nothing.
+		dw = merge(d, Dict("p_cut" => "1", "p_rg_w" => "-8.0", "p_rg_e" => "-7.9", "p_rg_s" => "37.0", "p_rg_n" => "37.1"))
+		IG._s2_fill_bands!(io, dw, l2, dir)
+		r = String(take!(io))
+		@test occursin("label:lbl_bsize=Region changed: Find the scenes again", r) && occursin("enable:run_bands=0", r)
+		# ...and the dialog's refresh after that edit drops the list itself: a scene found for the old
+		# region can never stay chosen. The same region keeps it.
+		w0 = Ptr{Cvoid}(C_NULL)
+		IG._S2_FOUND[w0] = [l2];  IG._S2_SEARCHED[w0] = (-7.8, -7.7, 36.5, 36.6)
+		try
+			ds = merge(dc, Dict("what" => "refresh", "p_product_idx" => "0", "p_granule_idx" => "0", "p_folder" => dir))
+			IG._rs_s2(w0, ds, io);  take!(io)
+			@test haskey(IG._S2_FOUND, w0)                                   # same region: list kept
+			IG._rs_s2(w0, merge(ds, Dict("p_rg_w" => "-8.0", "p_rg_e" => "-7.9", "p_rg_s" => "37.0", "p_rg_n" => "37.1")), io)
+			r = String(take!(io))
+			@test !haskey(IG._S2_FOUND, w0) && occursin("Region changed: Find the scenes again.", r)
+			@test occursin("items:p_granule=", r)                            # the list emptied in the dialog
+		finally
+			delete!(IG._S2_FOUND, w0);  delete!(IG._S2_SEARCHED, w0)
+		end
 		@test IG._s2_epsg(l2) == 32629
 		# ONE file per request; once it is in the folder nothing is fetched again.
 		outs = IG._s2_outs(l2, ["B04", "B08"], 10, dir, nothing)
