@@ -3637,6 +3637,10 @@ static void rebuildSceneObjects(Scene *s) {
 				tips.push_back("<qt><nobr><b>" + path.toHtmlEscaped() + "</b></nobr><br>Click for Load file</qt>");
 			}
 		auto bi = s->srcBands.find(owner);
+		// Where the bands are STORED: the file the element was opened from (its row is listed just above).
+		// A band row reads its band from there when clicked, so it says so -- nothing else on screen tells.
+		const QString bandFile = (fi != s->srcFiles.end() && !fi->second.empty())
+		                         ? QString::fromStdString(fi->second.front()) : QString();
 		if (bi != s->srcBands.end())
 			for (size_t k = 0; k < bi->second.size(); ++k) {
 				const QString label = QString::fromStdString(bi->second[k]);
@@ -3652,8 +3656,12 @@ static void rebuildSceneObjects(Scene *s) {
 						closeBusyDialog();
 					});
 				}});
-				tips.push_back("<qt><nobr><b>Band " + QString::number(band) + ": " + label.toHtmlEscaped() +
-				               "</b></nobr><br>Click for Load band</qt>");
+				tips.push_back("<qt><nobr><b>Band " + QString::number(band) + ": " + label.toHtmlEscaped() + "</b></nobr>" +
+				               (bandFile.isEmpty() ? QString() :
+				                "<br>Stored in the file <nobr><b>" + QFileInfo(bandFile).fileName().toHtmlEscaped() + "</b></nobr>" +
+				                "<br>in the folder <nobr>" + QFileInfo(bandFile).absolutePath().toHtmlEscaped() + "</nobr>" +
+				                "<br>(not in memory: Load band reads it from that file)") +
+				               "<br>Click for Load band</qt>");
 			}
 		for (size_t r = 0; r < rows.size(); ++r) {
 			std::function<void(const QPoint&)> menu = rows[r].second;

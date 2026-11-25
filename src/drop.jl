@@ -292,9 +292,11 @@ function _open_spec_into(scene::Ptr{Cvoid}, spec::AbstractString, name::Abstract
 	# plain read, or the file simply fails to open. `_bands_open_first!` registers it for
 	# Image > Load Bands and puts its FIRST band on screen, which is Mirone's multiband open. Returns
 	# false for everything else (an RGB photo included), and then the ordinary path below runs.
-	if _bands_open_first!(scene, String(spec), String(name), empty, String(recent))
-		_list_parts!(scene, String(spec), _BANDS_SHOWN[scene][2])
-		return
+	let shown = _bands_open_first!(scene, String(spec), String(name), empty, String(recent))
+		if !isempty(shown)
+			_list_parts!(scene, String(spec), shown)
+			return
+		end
 	end
 	# An MB-System swath file (.mbXX / .mbXXX, XX = the MBIO format number) or datalist (.mb-1, a list of
 	# swath files) is read with MB-System's own mbgetdata (its GMT module), ONCE: every beam's lon/lat/z,
@@ -399,6 +401,9 @@ function _list_parts!(scene::Ptr{Cvoid}, spec::String, handle::String)::Nothing
 	labels = try _rs_bands(base) catch; String[] end
 	length(labels) > 1 || return nothing
 	_SRC_BANDS[(scene, handle)] = (base, labels)
+	# The file the bands are STORED in, as a row of the group (its name; full path in its tooltip): the
+	# band rows read from it when clicked, and nothing else on screen said where that was.
+	ccall(_fn(:gmtvtk_set_source_files_h), Cvoid, (Ptr{Cvoid}, Cstring, Cstring), scene, handle, base)
 	ccall(_fn(:gmtvtk_set_source_bands_h), Cvoid, (Ptr{Cvoid}, Cstring, Cstring),
 	      scene, handle, join(labels, '\n'))
 	return nothing

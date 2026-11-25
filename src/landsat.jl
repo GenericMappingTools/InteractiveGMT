@@ -685,10 +685,10 @@ function _ls_plot_stack!(scene::Ptr{Cvoid}, found::Vector{LsScene}, dir::String,
 			push!(sheets, RsSheet(s.name, s.t0, "$(first(s.name, 4))_$(s.path)_$(day)", "$(day)  path $(s.path)",
 			                      Int(gr[1]), gr[2], gr[3], gr[4], gr[5], f))
 		end
+		return _rs_plot_stack!(scene, _LS_STACK, sheets, g, "landsat", get(_LS_LIT, scene, ""))
 	finally
-		_rs_prog_close()
+		_rs_prog_close()                            # only once the pictures are in: no dead time
 	end
-	return _rs_plot_stack!(scene, _LS_STACK, sheets, g, "landsat", get(_LS_LIT, scene, ""))
 end
 
 # --- the dialog --------------------------------------------------------------------------------------------
@@ -890,6 +890,10 @@ function _rs_landsat(scene::Ptr{Cvoid}, d::Dict{String,String}, io::IOBuffer)::B
 	end
 	if what == "stack"
 		found = get(_LS_FOUND, scene, LsScene[])
+		if _rs_toggle_stack!(scene, _LS_STACK)        # pressed again: the 3-D stack goes away
+			_rs_status(io, "Browse-picture stack removed, the view put back as it was.")
+			return true
+		end
 		isempty(found) && error("Find the scenes first.")
 		n = _ls_plot_stack!(scene, found, _ls_folder(d), d)
 		_rs_status(io, "$(n) browse pictures stacked one level per pass, oldest at the bottom. Click one to choose its scene.")
@@ -917,6 +921,7 @@ function _rs_landsat(scene::Ptr{Cvoid}, d::Dict{String,String}, io::IOBuffer)::B
 	_rs_on(d, "p_cut") && box === nothing && error("Give the four limits of the region (W < E, S < N), or untick \"Cut to the region\".")
 	files = _ls_fetch_bands(s, ks, dir, d, box)
 	role = Dict(b[1] => b[4] for b in bands);  desc = Dict(b[1] => b[3] for b in bands)
+	_ls_remove_stack!(scene)                       # the data takes the window: the 3-D browse stack goes, the view comes back
 	shown = String[]
 	# A band that cannot be a layer of the 30 m 16-bit cube is a grid of its own.
 	for (b, f) in files
@@ -943,6 +948,7 @@ function _rs_landsat(scene::Ptr{Cvoid}, d::Dict{String,String}, io::IOBuffer)::B
 	found = _LS_FOUND[scene]
 	_rs_items(io, "p_granule", String[_ls_label(x, dir) for x in found])
 	_ls_choose!(io, scene, d, findfirst(==(s), found))
+	_rs_release_clicks!(scene, "landsat")
 	_rs_status(io, "$(join(shown, " and ")) written in $(_ls_band_dir(s, dir)) and opened.")
 	return true
 end

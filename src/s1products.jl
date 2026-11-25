@@ -521,8 +521,12 @@ end
 # thinned by taking every k-th pixel), its NO-DATA see-through (alpha 0): the picture's own alpha when it
 # has one (a PNG preview), else the black CONNECTED TO ITS EDGE, flood-filled from the border (dark pixels
 # inside the picture -- deep sea, shadow -- stay opaque, or a click on dark water would fall through).
-function _rs_picture_rgba(f::String; maxpx::Int=512)::Tuple{Vector{UInt8},Int,Int}
-	A = GMT.gdalread(f)                                 # (x, y, band), y = 1 the TOP row
+_rs_picture_rgba(f::String; maxpx::Int=512)::Tuple{Vector{UInt8},Int,Int} =
+	_rs_rgba_of(GMT.gdalread(f), maxpx)                 # (x, y, band), y = 1 the TOP row
+# A function barrier: gdalread's result type is only known at run time, and the pixel loops below run
+# over every pixel -- left inside the caller they dispatched dynamically on each one (1.7 s for 38
+# quicklooks, measured; this way, milliseconds).
+function _rs_rgba_of(A, maxpx::Int)::Tuple{Vector{UInt8},Int,Int}
 	W, H = size(A, 1), size(A, 2)
 	nb = ndims(A) == 3 ? size(A, 3) : 1
 	k = max(1, cld(max(W, H), maxpx))
@@ -556,40 +560,91 @@ function _rs_picture_rgba(f::String; maxpx::Int=512)::Tuple{Vector{UInt8},Int,In
 	return out, w, h
 end
 
-function _rs_remove_stack!(scene::Ptr{Cvoid}, stacks::Dict{Ptr{Cvoid},String})
+# The view a window had before its stack put it in 3-D: (view mode, az, el, width). Removing the stack
+# puts that view back, so the 3-D is a thing the stack brings and takes away, never a state it leaves.
+const _RS_STACK_VIEW = Dict{Ptr{Cvoid},NTuple{4,Float64}}()
+
+# Remove the stack of `scene` (if any) and give the window back the view it had before the stack.
+# Returns how many pictures went (0 = there was none on screen, e.g. Removed from Scene Objects).
+# THE end of a scene tool's search mode (Sentinel-1, Sentinel-2, Landsat): once the tool has put DATA in
+# the window, a plain click is the user's again. While armed ("clickscene", set by Find the scenes) every
+# click inside a footprint chose a scene -- a network listing, the spinning cursor and "Chose ..." -- and a
+# second click stepped to the next scene, so the delivered image could not be clicked at all. The next
+# Find the scenes arms it again; the "Pick a scene" button and the footprints' own menu still work.
+_rs_release_clicks!(scene::Ptr{Cvoid}, tool::String) =
+	ccall(_fn(:gmtvtk_set_click_tool_h), Cint, (Ptr{Cvoid}, Cstring, Cstring), scene, tool, "")
+
+function _rs_remove_stack!(scene::Ptr{Cvoid}, stacks::Dict{Ptr{Cvoid},String})::Int
 	g = pop!(stacks, scene, "")
-	isempty(g) || ccall(_fn(:gmtvtk_remove_image_sheets_h), Cint, (Ptr{Cvoid}, Cstring), scene, g)
-	return nothing
+	v = pop!(_RS_STACK_VIEW, scene, nothing)
+	isempty(g) && return 0
+	n = Int(ccall(_fn(:gmtvtk_remove_image_sheets_h), Cint, (Ptr{Cvoid}, Cstring), scene, g))
+	if n > 0 && v !== nothing
+		mode = round(Int, v[1])
+		ccall(_fn(:gmtvtk_set_view_mode_h), Cint, (Ptr{Cvoid}, Cint), scene, mode)
+		mode == 0 && ccall(_fn(:gmtvtk_set_view_azel_h), Cint,
+		                   (Ptr{Cvoid}, Cdouble, Cdouble, Cdouble, Cdouble, Cint, Cdouble, Cdouble, Cdouble),
+		                   scene, v[2], v[3], v[4], -1.0, 0, 0.0, 0.0, 0.0)
+	end
+	return n
 end
 
+# The stack button: a stack on screen is taken away (true); none (never made, or already Removed from
+# Scene Objects) -> false, and the caller builds it.
+_rs_toggle_stack!(scene::Ptr{Cvoid}, stacks::Dict{Ptr{Cvoid},String})::Bool =
+	haskey(stacks, scene) && _rs_remove_stack!(scene, stacks) > 0
+
 # Lay `sheets` as the stack `g` of `tool`'s dialog in window `scene`; `lit` = the footprint label already
-# chosen (outlined), "" none. Returns how many pictures went in.
+# chosen (outlined), "" none. Returns how many pictures went in. Runs under the caller's progress dialog
+# (_rs_prog_show), which it keeps telling which picture it is on.
 function _rs_plot_stack!(scene::Ptr{Cvoid}, stacks::Dict{Ptr{Cvoid},String}, sheets::Vector{RsSheet}, g::String,
                          tool::String, lit::String)::Int
 	_rs_remove_stack!(scene, stacks)
 	isempty(sheets) && return 0
+	azel = zeros(3)                                    # the view to give back when the stack goes
+	ccall(_fn(:gmtvtk_get_view_azel_h), Cint, (Ptr{Cvoid}, Ptr{Cdouble}), scene, azel)
+	_RS_STACK_VIEW[scene] = (Float64(ccall(_fn(:gmtvtk_get_view_mode_h), Cint, (Ptr{Cvoid},), scene)),
+	                         azel[1], azel[2], azel[3])
 	order = sortperm([s.t0 for s in sheets])            # oldest first = lowest level
 	passes = unique(sheets[k].pass for k in order)       # ONE level per pass, in time order
 	level = Dict(p => i for (i, p) in enumerate(passes))
 	plabel = Dict(sheets[k].pass => sheets[k].label for k in order)
 	dst = _window_srs(scene);  isempty(dst) && (dst = _LONLAT)
-	cs = [_srs_xy([s.x0 s.y0; s.x1 s.y0; s.x1 s.y1; s.x0 s.y1], "EPSG:$(s.epsg)", dst) for s in sheets]
+	# ONE transform per source system (all the tiles of a UTM zone at once): each _srs_xy call sets a
+	# projection up, ~20 ms, so one per picture was most of the stack's time once the pictures were cached.
+	cs = Vector{Matrix{Float64}}(undef, length(sheets))
+	for e in unique(s.epsg for s in sheets)
+		ks = [k for k in eachindex(sheets) if sheets[k].epsg == e]
+		C = reduce(vcat, ([s.x0 s.y0; s.x1 s.y0; s.x1 s.y1; s.x0 s.y1] for s in sheets[ks]))
+		Q = _srs_xy(C, "EPSG:$(e)", dst)
+		for (j, k) in enumerate(ks)
+			cs[k] = Q[4j-3:4j, 1:2]
+		end
+	end
 	allx = reduce(vcat, (c[:, 1] for c in cs));  ally = reduce(vcat, (c[:, 2] for c in cs))
 	span = max(maximum(allx) - minimum(allx), maximum(ally) - minimum(ally))
 	dz = span / max(length(passes), 1)                 # the stack about as tall as the area is wide
 	n = 0
-	for k in order
-		s = sheets[k]
-		isempty(s.file) && continue
-		img, w, h = try _rs_picture_rgba(s.file) catch; (UInt8[], 0, 0) end
-		isempty(img) && continue
-		c = cs[k]
-		xy = Float64[c[1, 1], c[1, 2], c[2, 1], c[2, 2], c[3, 1], c[3, 2], c[4, 1], c[4, 2]]
-		nm = s.name * " (quicklook)"
-		ccall(_fn(:gmtvtk_set_group_master_h), Cint, (Ptr{Cvoid}, Cstring, Cstring), scene, nm, g)
-		n += ccall(_fn(:gmtvtk_add_image_sheet_h), Cint,
-		           (Ptr{Cvoid}, Cstring, Cstring, Ptr{Cdouble}, Cdouble, Ptr{UInt8}, Cint, Cint, Cint, Cstring, Cstring),
-		           scene, nm, g, xy, level[s.pass] * dz, img, w, h, 4, tool, "pickscene")
+	# The Scene Objects tree held still while the pictures go in, rebuilt ONCE at the thaw: one rebuild
+	# per picture was a whole panel rebuild per quicklook.
+	ccall(_fn(:gmtvtk_freeze_scene_objects_h), Cint, (Ptr{Cvoid}, Cint), scene, 1)
+	try
+		for (i, k) in enumerate(order)
+			s = sheets[k]
+			_rs_prog(round(Int, 100 * (i - 1) / length(order)), "Laying picture $(i) of $(length(order)) in the 3-D stack…")
+			isempty(s.file) && continue
+			img, w, h = try _rs_picture_rgba(s.file) catch; (UInt8[], 0, 0) end
+			isempty(img) && continue
+			c = cs[k]
+			xy = Float64[c[1, 1], c[1, 2], c[2, 1], c[2, 2], c[3, 1], c[3, 2], c[4, 1], c[4, 2]]
+			nm = s.name * " (quicklook)"
+			ccall(_fn(:gmtvtk_set_group_master_h), Cint, (Ptr{Cvoid}, Cstring, Cstring), scene, nm, g)
+			n += ccall(_fn(:gmtvtk_add_image_sheet_h), Cint,
+			           (Ptr{Cvoid}, Cstring, Cstring, Ptr{Cdouble}, Cdouble, Ptr{UInt8}, Cint, Cint, Cint, Cstring, Cstring),
+			           scene, nm, g, xy, level[s.pass] * dz, img, w, h, 4, tool, "pickscene")
+		end
+	finally
+		ccall(_fn(:gmtvtk_freeze_scene_objects_h), Cint, (Ptr{Cvoid}, Cint), scene, 0)
 	end
 	stacks[scene] = g
 	fr = _seis_display_frame(scene)
@@ -599,8 +654,13 @@ function _rs_plot_stack!(scene::Ptr{Cvoid}, stacks::Dict{Ptr{Cvoid},String}, she
 	      scene, g, fr[1], fr[4], 0.0, dz, length(passes), join((plabel[p] for p in passes), '\t'))
 	isempty(lit) || ccall(_fn(:gmtvtk_sheet_select_h), Cint, (Ptr{Cvoid}, Cstring), scene, lit * " (quicklook)")
 	ccall(_fn(:gmtvtk_set_view_mode_h), Cint, (Ptr{Cvoid}, Cint), scene, 0)    # the stack is a 3-D thing
+	# Seen from the south, 30 degrees up, looking at the middle of the stack: an ABSOLUTE placement.
+	# (gmtvtk_orbit is a RELATIVE nudge -- tilting an already tilted camera 60 more degrees turned the
+	# view over the top, upside down.)
+	ccall(_fn(:gmtvtk_set_view_azel_h), Cint,
+	      (Ptr{Cvoid}, Cdouble, Cdouble, Cdouble, Cdouble, Cint, Cdouble, Cdouble, Cdouble),
+	      scene, 0.0, 30.0, -1.0, -1.0, 1, 0.5 * (fr[1] + fr[2]), 0.5 * (fr[3] + fr[4]), 0.5 * length(passes) * dz)
 	ccall(_fn(:gmtvtk_fit_camera_for_orbit_h), Cint, (Ptr{Cvoid}, Cdouble), scene, length(passes) * dz)
-	ccall(_fn(:gmtvtk_orbit), Cvoid, (Ptr{Cvoid}, Cdouble, Cdouble, Cdouble), scene, 0.0, -60.0, 0.0)   # seen from the south
 	return n
 end
 
@@ -817,6 +877,7 @@ function _rs_s1(scene::Ptr{Cvoid}, d::Dict{String,String}, io::IOBuffer)::Bool
 	recipe = "Sentinel-1 $(basename(f)): $(what_) " * (warp ? "warped to $(inc) deg (gdalwarp -tps -r average)" :
 	                                                          "in its radar geometry, pixels as stored")
 	_rs_deliver(scene, G, name, recipe; flat = true)
+	_rs_release_clicks!(scene, "s1")
 	_rs_status(io, "$(name) added." * (sigma && !db ?
 	           " GDAL offers no calibrated (SIGMA0) band for this product: these are the uncalibrated values." : ""))
 	return true

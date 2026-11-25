@@ -265,7 +265,10 @@ function _s2_outs(s::S2Scene, ks::Vector{String}, res::Int, dir::String,
 	day = GMT.Dates.format(s.p.t0, "yyyy-mm-dd")
 	lvl = _s2_isl1c(s) ? "L1C" : "L2A"
 	bd = _s2_band_dir(s, dir)
-	tag = box === nothing ? "" : "_cut_" * join((replace(string(round(v, digits = 4)), "-" => "m", "." => "p") for v in box), "_")
+	# Named for the window REALLY cut (the region cut to this scene, in the tile's metres), never for the
+	# region as typed: two regions that reach the same part of the scene are the same file.
+	tag = box === nothing ? "" :
+	      (wb = _s2_window(s, box, res); "_cut_" * join((string(round(Int, v)) for v in wb[1:4]), "_"))
 	cks = [k for k in ks if k != "TCI"]
 	outs = Tuple{Bool,String}[]
 	"TCI" in ks && push!(outs, (true, joinpath(bd, "$(s.tile)_$(day)_TCI_$(res)m$(tag).tiff")))
@@ -341,8 +344,9 @@ function _s2_cut_box(f::String, box::Union{Nothing,NTuple{4,Float64}})::Union{No
 end
 
 # --- the region only: Copernicus' own window service ---------------------------------------------
-# "Cut to the region" never fetches a band file: ESA's band files are JPEG 2000, which cannot be
-# read by window over the net here. The Copernicus Data Space's Sentinel Hub Process API (sh.dataspace…)
+# "Cut to the region" never fetches a band file. JPEG 2000 itself CAN be read by window over the net (ESA's
+# band files are tiled; a JP2 reader fetches only the tiles a window needs), but GMT's GDAL has no JP2 driver
+# iGMT may use: only JP2ECW, which must never read a .jp2, and no JP2OpenJPEG. The Copernicus Data Space's Sentinel Hub Process API (sh.dataspace…)
 # cuts the window on the server and sends ONLY it, as a GeoTIFF, on the tile's own UTM grid at the chosen
 # spacing, with the same CDSE login token as the band downloads (checked live 2026-11-24: 1.8 s for one
 # 10 m band over 9x11 km). The bands come as ESA's raw digital numbers (`units:"DN"`,
@@ -352,6 +356,11 @@ end
 # One request answers at most 2500x2500 pixels, so a larger region is asked in pieces, stitched by a VRT
 # that GDAL writes into ONE GeoTIFF (the band descriptions with it); the pieces are removed.
 const _S2_SH_MAX = 2500
+# When a block is asked again. Measured: a block's first byte after ~9 s (Copernicus computing), the
+# whole block in 11-20 s with 4 at once. Seen live 2026-11-25: one request of 9 got NO byte at all while
+# the same block asked alone answered in 4.3 s -- it stalls on our side, and only asking again gets it.
+const _S2_FIRST_BYTE = 25.0                      # s without a first byte
+const _S2_STALL      = 15.0                      # s without a new byte, once bytes flow
 
 # The tile's UTM system: "29SNB" -> EPSG:32629 (latitude band N..X = north).
 function _s2_epsg(s::S2Scene)::Int
@@ -360,9 +369,22 @@ function _s2_epsg(s::S2Scene)::Int
 	return (m[2][1] >= 'N' ? 32600 : 32700) + parse(Int, m[1])
 end
 
-# The lon/lat region in the tile's system, widened to whole cells of `res`: (w, e, s, n, nx, ny).
+# The lon/lat region in the tile's system, CUT TO THE CHOSEN SCENE -- its tile and its own data footprint
+# (a pass can cover only part of a tile) -- then widened to whole cells of `res`: (w, e, s, n, nx, ny).
+# Never the region as typed: the window service mosaics every tile of the pass inside the box it is asked
+# for, so an uncut box came back as the whole region, filled from tiles that are not the scene.
 function _s2_window(s::S2Scene, box::NTuple{4,Float64}, res::Int)::Tuple{Float64,Float64,Float64,Float64,Int,Int}
-	w, e, so, n = _box_to(_LONLAT, "EPSG:$(_s2_epsg(s))", box...)
+	srs = "EPSG:$(_s2_epsg(s))"
+	w, e, so, n = _box_to(_LONLAT, srs, box...)
+	_, tx0, tx1, ty0, ty1 = _s2_tile_box(s.tile)
+	w, e, so, n = max(w, tx0), min(e, tx1), max(so, ty0), min(n, ty1)
+	if !isempty(s.p.rings)                        # the footprint's box, in the tile's system
+		F = _srs_xy(reduce(vcat, (M[:, 1:2] for M in s.p.rings)), _LONLAT, srs)
+		w, e = max(w, minimum(F[:, 1])), min(e, maximum(F[:, 1]))
+		so, n = max(so, minimum(F[:, 2])), min(n, maximum(F[:, 2]))
+	end
+	(w < e && so < n) || error("The region does not reach this scene ($(s.tile), $(GMT.Dates.format(s.p.t0, "yyyy-mm-dd HH:MM"))): " *
+	                           "choose a scene whose footprint covers part of it.")
 	r = Float64(res)
 	w, e, so, n = floor(w / r) * r, ceil(e / r) * r, floor(so / r) * r, ceil(n / r) * r
 	return w, e, so, n, round(Int, (e - w) / r), round(Int, (n - so) / r)
@@ -403,22 +425,23 @@ _s2_xml(t::String)::String = replace(t, '&' => "&amp;", '<' => "&lt;", '>' => "&
 # The window of the ticked bands (or the true-colour picture) over the lon/lat `box`, written to `out`,
 # ONE GeoTIFF.
 function _s2_fetch_window(s::S2Scene, ks::Vector{String}, tci::Bool, res::Int, box::NTuple{4,Float64},
-                          out::String, desc::Vector{String}, d::Dict{String,String})::Nothing
+                          out::String, desc::Vector{String}, d::Dict{String,String}; scene::Ptr{Cvoid}=C_NULL)::Nothing
 	w, e, so, n, _, _ = _s2_window(s, box, res)
-	return _s2_fetch_utm(s, ks, tci, res, w, e, so, n, out, desc, d)
+	return _s2_fetch_utm(s, ks, tci, res, w, e, so, n, out, desc, d; scene = scene)
 end
 
 # The WHOLE tile the same way (the window service, in pieces): iGMT never reads ESA's JPEG 2000 band
 # files -- GMT's GDAL has only the ECW driver for them, which must never be used to read a JP2.
 function _s2_fetch_tile(s::S2Scene, ks::Vector{String}, tci::Bool, res::Int, out::String,
-                        desc::Vector{String}, d::Dict{String,String})::Nothing
+                        desc::Vector{String}, d::Dict{String,String}; scene::Ptr{Cvoid}=C_NULL)::Nothing
 	_, x0, x1, y0, y1 = _s2_tile_box(s.tile)
-	return _s2_fetch_utm(s, ks, tci, res, x0, x1, y0, y1, out, desc, d)
+	return _s2_fetch_utm(s, ks, tci, res, x0, x1, y0, y1, out, desc, d; scene = scene)
 end
 
 # The window w, e, s, n (the tile's UTM system, whole cells of `res`) of the ticked bands, ONE GeoTIFF.
 function _s2_fetch_utm(s::S2Scene, ks::Vector{String}, tci::Bool, res::Int, w::Float64, e::Float64, so::Float64,
-                       n::Float64, out::String, desc::Vector{String}, d::Dict{String,String})::Nothing
+                       n::Float64, out::String, desc::Vector{String}, d::Dict{String,String};
+                       scene::Ptr{Cvoid}=C_NULL)::Nothing
 	r = Float64(res)
 	nx = round(Int, (e - w) / r);  ny = round(Int, (n - so) / r)
 	(nx > 0 && ny > 0) || error("The region is empty.")
@@ -434,14 +457,86 @@ function _s2_fetch_utm(s::S2Scene, ks::Vector{String}, tci::Bool, res::Int, w::F
 	what = tci ? "the true-colour picture" : "$(length(ks)) band(s)"
 	_rs_prog_show("Asking Copernicus for $(what) over the region…")
 	try
-		for (k, (f, i0, j0, cx, cy)) in enumerate(pieces)
-			_rs_prog(round(Int, 100 * (k - 1) / length(pieces)),
-			         "Region of $(what), $(nx)x$(ny) pixels" * (length(pieces) > 1 ? ": piece $(k) of $(length(pieces))" : ""))
+		# A BLOCK = one request of at most 2500x2500 pixels, the most the service answers at once; a larger
+		# window is several. FOUR asked at a time (measured 2026-11-25: 4 full 4-band blocks in 20 s at
+		# once, ~55 s one after the other; ~9 s of each is Copernicus computing, with no traffic at all).
+		# The download tasks do network work ONLY; the progress dialog is told from THIS task, the dialog's
+		# own, never from inside a download task.
+		# The login token is asked for PER BLOCK: a CDSE token lives ~10 minutes, and a long job that took
+		# one at the start had its later blocks refused (HTTP 401). _s1_token hands back the cached one
+		# while it is still good and renews it when it is not.
+		nextk = Ref(0);  done = Ref(0);  err = Ref{Any}(nothing)
+		# ONE block, with a watchdog: a block answers in 11-20 s (measured), but Copernicus can leave a
+		# request hanging -- the bar froze at 67 % for minutes, the request's own limit being 600 s. Each
+		# try writes its own file; one not answered in _S2_BLOCK_WAIT s is ABANDONED (it ends by itself,
+		# unseen) and the block asked again, at most 3 tries.
+		function fetch_block(k::Int)
+			f, i0, j0, cx, cy = pieces[k]
 			pw = w + i0 * r;  pn = n - j0 * r
-			_shub_process_to_file(url, _s2_sh_body(s, ks, tci, pw, pn - cy * r, pw + cx * r, pn, cx, cy), tok, f)
-			open(io -> read(io, 4), f) in (UInt8[0x49, 0x49, 0x2a, 0x00], UInt8[0x4d, 0x4d, 0x00, 0x2a]) ||
-				error("Copernicus did not send a GeoTIFF for $(what):\n\n$(first(read(f, String), 400))")
+			body = _s2_sh_body(s, ks, tci, pw, pn - cy * r, pw + cx * r, pn, cx, cy)
+			last = nothing
+			for attempt in 1:3
+				ft = "$(f).try$(attempt)"
+				tk = @async try
+					_shub_process_to_file(url, body, _s1_token(d), ft);  nothing
+				catch e
+					e
+				end
+				# A stalled request is told by its FILE: no first byte in _S2_FIRST_BYTE s (a healthy block's
+				# first byte comes after ~9 s of Copernicus computing), or no growth for _S2_STALL s once
+				# bytes flow. Then it is re-asked at once, never waited out.
+				t1 = time();  sz = 0;  tgrow = t1
+				while !istaskdone(tk) && err[] === nothing
+					sleep(0.25)
+					s2 = isfile(ft) ? filesize(ft) : 0
+					s2 > sz && (sz = s2; tgrow = time())
+					(sz == 0 ? time() - t1 > _S2_FIRST_BYTE : time() - tgrow > _S2_STALL) && break
+				end
+				err[] === nothing || return
+				if !istaskdone(tk)
+					last = ErrorException(sz == 0 ? "no answer in $(_S2_FIRST_BYTE) s" : "the transfer stopped for $(_S2_STALL) s")
+					continue
+				end
+				last = fetch(tk)
+				if last === nothing
+					open(io -> read(io, 4), ft) in (UInt8[0x49, 0x49, 0x2a, 0x00], UInt8[0x4d, 0x4d, 0x00, 0x2a]) ||
+						error("Copernicus did not send a GeoTIFF for $(what):\n\n$(first(read(ft, String), 400))")
+					mv(ft, f; force = true)
+					return
+				end
+			end
+			error("Copernicus did not deliver block $(k) of $(length(pieces)) of $(what) in 3 tries: " *
+			      sprint(showerror, last))
 		end
+		function worker()
+			while err[] === nothing
+				k = (nextk[] += 1)
+				k > length(pieces) && return
+				try
+					fetch_block(k)
+					err[] === nothing && (done[] += 1)
+				catch e
+					err[] === nothing && (err[] = e)
+				end
+			end
+		end
+		tasks = [@async(worker()) for _ in 1:min(4, length(pieces))]
+		t0 = time()
+		# The window can be closed while this waits: then STOP -- no new block is asked for, and the
+		# progress dialog is never touched again (each update re-shows it: it kept popping up after
+		# iGMT's window was gone). Blocks already in flight end on their own, unseen.
+		alive() = scene == C_NULL || ccall(_fn(:gmtvtk_is_alive), Cint, (Ptr{Cvoid},), scene) == 1
+		while !all(istaskdone, tasks)
+			if !alive()
+				err[] === nothing && (err[] = ErrorException("The window was closed: the download of $(what) was stopped."))
+				break
+			end
+			_rs_prog(round(Int, 100 * done[] / length(pieces)), "$(what), $(nx)x$(ny) pixels: " *
+			         "$(done[]) of $(length(pieces)) block(s) received, $(round(Int, time() - t0)) s " *
+			         "(each block up to $(_S2_SH_MAX)x$(_S2_SH_MAX) pixels; Copernicus computes it before sending)")
+			sleep(0.5)
+		end
+		err[] === nothing || throw(err[])
 		_rs_prog(100, "Writing $(basename(out))…")
 		x = IOBuffer()
 		print(x, "<VRTDataset rasterXSize=\"$(nx)\" rasterYSize=\"$(ny)\">\n<SRS>EPSG:$(_s2_epsg(s))</SRS>\n",
@@ -464,10 +559,11 @@ function _s2_fetch_utm(s::S2Scene, ks::Vector{String}, tci::Bool, res::Int, w::F
 		isfile(out) || error("GDAL wrote nothing to $(out)")
 	finally
 		_rs_prog_close()
-		for p in pieces
-			isfile(p[1]) && rm(p[1]; force = true)
+		# every block file and every try of one; a try still in flight (abandoned, window closed) holds its file
+		for p in pieces, g in (p[1], ("$(p[1]).try$(a)" for a in 1:3)...)
+			try; isfile(g) && rm(g; force = true); catch; end
 		end
-		isfile(vrt) && rm(vrt; force = true)
+		try; isfile(vrt) && rm(vrt; force = true); catch; end
 	end
 	return nothing
 end
@@ -548,7 +644,10 @@ const _S2_STACK = Dict{Ptr{Cvoid},String}()           # window -> group name of 
 # corner from its two letters (column sets by zone mod 3, row letters shifted by 5 in even zones,
 # repeating every 2000 km, resolved with the latitude band), then ESA's tile = 109.8 km from the square's
 # upper-left corner going east and south.
-function _s2_tile_box(tile::String)::Tuple{Int,Float64,Float64,Float64,Float64}
+const _S2_TILE_BOX = Dict{String,Tuple{Int,Float64,Float64,Float64,Float64}}()   # a tile's box never changes
+_s2_tile_box(tile::String)::Tuple{Int,Float64,Float64,Float64,Float64} =
+	get!(() -> _s2_tile_box_calc(tile), _S2_TILE_BOX, tile)
+function _s2_tile_box_calc(tile::String)::Tuple{Int,Float64,Float64,Float64,Float64}
 	m = match(r"^(\d{2})([C-X])([A-Z])([A-V])$", tile)
 	m === nothing && error("Not an MGRS tile: \"$(tile)\".")
 	zone = parse(Int, m[1]);  band = m[2][1];  cl = m[3][1];  rl = m[4][1]
@@ -584,19 +683,22 @@ function _s2_plot_stack!(scene::Ptr{Cvoid}, found::Vector{S2Scene}, dir::String)
 	sheets = RsSheet[]
 	_rs_prog_show("Fetching $(length(found)) quicklooks…")
 	try
-		for (i, s) in enumerate(found)
+		files = String[]
+		for (i, s) in enumerate(found)              # a cached one is read from disk
 			_rs_prog(round(Int, 100 * (i - 1) / length(found)), "Quicklook $(i) of $(length(found))")
-			f = _s2_quicklook(s, dir)
+			push!(files, _s2_quicklook(s, dir))
+		end
+		for (s, f) in zip(found, files)
 			p = _s2_pass(s)
 			t = try GMT.Dates.DateTime(p, "yyyymmddTHHMMSS") catch; nothing end
 			epsg, x0, x1, y0, y1 = _s2_tile_box(s.tile)
 			push!(sheets, RsSheet(_s2_base(s), s.p.t0, p, t === nothing ? p : GMT.Dates.format(t, "yyyy-mm-dd HH:MM"),
 			                      epsg, x0, x1, y0, y1, f))
 		end
+		return _rs_plot_stack!(scene, _S2_STACK, sheets, g, "s2", get(_S2_LIT, scene, ""))
 	finally
 		_rs_prog_close()
 	end
-	return _rs_plot_stack!(scene, _S2_STACK, sheets, g, "s2", get(_S2_LIT, scene, ""))
 end
 
 # --- the dialog ------------------------------------------------------------------------------------
@@ -773,6 +875,10 @@ function _rs_s2(scene::Ptr{Cvoid}, d::Dict{String,String}, io::IOBuffer)::Bool
 	end
 	if what == "stack"
 		found = get(_S2_FOUND, scene, S2Scene[])
+		if _rs_toggle_stack!(scene, _S2_STACK)        # pressed again: the 3-D stack goes away
+			_rs_status(io, "Quicklook stack removed, the view put back as it was.")
+			return true
+		end
 		isempty(found) && error("Find the scenes first.")
 		n = _s2_plot_stack!(scene, found, _s2_folder(d))
 		_rs_status(io, "$(n) quicklooks stacked one level per pass, oldest at the bottom. Click one to choose its scene.")
@@ -804,14 +910,18 @@ function _rs_s2(scene::Ptr{Cvoid}, d::Dict{String,String}, io::IOBuffer)::Bool
 	if box !== nothing
 		# Only the region's window, cut by Copernicus on its server: no band file is downloaded.
 		for (t, o) in todo
-			_s2_fetch_window(s, t ? ["TCI"] : cks, t, res, box, o, t ? String[] : desc, d)
+			_s2_fetch_window(s, t ? ["TCI"] : cks, t, res, box, o, t ? String[] : desc, d; scene = scene)
 		end
 	else
 		# The whole tile, by the same window service in pieces: no JPEG 2000 band file is ever read.
 		for (t, o) in todo
-			_s2_fetch_tile(s, t ? ["TCI"] : cks, t, res, o, t ? String[] : desc, d)
+			_s2_fetch_tile(s, t ? ["TCI"] : cks, t, res, o, t ? String[] : desc, d; scene = scene)
 		end
 	end
+	# The data takes the window: the quicklook stack (a 3-D picture of the SEARCH) goes, and the window
+	# gets back the view it had before it (the 2-D map) -- the same removal as pressing Quicklooks 3-D
+	# again. Left there, the cube opened in 3-D under floating quicklooks.
+	_s2_remove_stack!(scene)
 	shown = String[]
 	for (_, o) in outs
 		_on_drop(scene, o)                         # the ONE open-a-file-into-a-window path
@@ -820,6 +930,7 @@ function _rs_s2(scene::Ptr{Cvoid}, d::Dict{String,String}, io::IOBuffer)::Bool
 	found = _S2_FOUND[scene]
 	_rs_items(io, "p_granule", String[_s2_label(x, dir) for x in found])
 	_s2_choose!(io, scene, d, findfirst(==(s), found))
+	_rs_release_clicks!(scene, "s2")
 	_rs_status(io, "$(join(shown, " and ")) written in $(_s2_band_dir(s, dir)) and opened.")
 	return true
 end

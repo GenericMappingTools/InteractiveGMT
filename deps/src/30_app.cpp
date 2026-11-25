@@ -2406,7 +2406,13 @@ static void ensureApp() {
 		"QPushButton:pressed, QToolButton:pressed {"
 		"  background-color: #9fb6cd; border: 2px inset #4a6c8a; padding-top: 2px; padding-left: 2px; }"
 		"QPushButton:checked, QToolButton:checked {"
-		"  background-color: #b9cbe0; border: 2px inset #4a6c8a; }");
+		"  background-color: #b9cbe0; border: 2px inset #4a6c8a; }"
+		// EVERY message box's text can be selected and copied (user's standing order: an error the user
+		// cannot copy is an error that cannot be reported). Here, once, on the application: it reaches
+		// all ~560 QMessageBox sites, the static warning()/critical()/information() calls included, which
+		// a per-site setTextInteractionFlags never could. 7 = selectable by mouse (1) and keyboard (2),
+		// links still clickable (4).
+		"QMessageBox { messagebox-text-interaction-flags: 7; }");
 	g_app->installEventFilter(new EnterDefocusFilter(g_app));   // Enter defocuses any QLineEdit (app-wide)
 	g_app->installEventFilter(new StickyTooltipFilter(g_app));  // tooltips stay up until the mouse moves on
 }

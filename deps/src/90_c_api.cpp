@@ -1273,7 +1273,9 @@ GMTVTK_API int gmtvtk_add_image_sheet_h(void *handle, const char *name, const ch
 	}
 	s->curtains.push_back(cu);
 	rebuildSceneObjects(s);
-	if (s->widget && s->widget->renderWindow()) s->widget->renderWindow()->Render();
+	// NO Render here: sheets come in a batch (a whole quicklook stack), and a full-window render per
+	// picture was most of the stack's time. The caller draws once at the end (the slider,
+	// gmtvtk_sheet_slider_h, and the Scene Objects thaw both render).
 	return 1;
 }
 

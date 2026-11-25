@@ -15754,10 +15754,16 @@ static void openRemoteSDialogNow(QWidget *win, Scene *s, const std::string &tool
 		}
 		d->move(at);
 	}
-	d->raise();
-	d->activateWindow();
 	QApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
 	rd->request("init", false);   // prefill (the window's own file, its bands, the tool's lists)
+	// IN FRONT, AFTER everything that can re-activate the iGMT window: the init above, and the menu the
+	// click came from, which on closing hands the activation back to the window under it. Raised before
+	// those, the dialog came up BEHIND the iGMT window (user's report, Sentinel-2 MSI products). Once
+	// now, and once more when the event loop has finished closing the menu.
+	d->raise();
+	d->activateWindow();
+	QPointer<QDialog> qd(d);
+	QTimer::singleShot(150, d, [qd]() { if (qd && qd->isVisible()) { qd->raise(); qd->activateWindow(); } });
 }
 
 // A plain left click on a window carrying a dialog's scene footprints (Scene::clickTools,

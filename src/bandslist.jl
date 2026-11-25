@@ -526,32 +526,36 @@ end
 # rest for bands_list; this does the same. Returns false when `spec` is not a band stack, and the
 # caller then opens it the ordinary way.
 #
+# Returns the name of the element it put on screen ("" = not a band stack). That element is the FILE's
+# own, NOT a band Load Bands loaded: it is never recorded in `_BANDS_SHOWN`, the slot `_bands_show!`
+# clears before each Load -- recording it there made the first "Load" (an RGB composition) DELETE the
+# opened cube and stand in its place.
+#
 # A 3/4-band BYTE file is deliberately NOT a band stack: it is an RGB(A) photograph and must open as
 # the picture it is (Mirone shows those as colour too). It is still registered, so Load Bands can
 # pull its individual channels afterwards.
-function _bands_open_first!(scene::Ptr{Cvoid}, spec::String, name::String, promote::Bool, recent::String)::Bool
+function _bands_open_first!(scene::Ptr{Cvoid}, spec::String, name::String, promote::Bool, recent::String)::String
 	base = first(split(spec, '?'))
 	ext  = lowercase(splitext(base)[2])
 	# A subdataset spec, or a file GMT reads natively as a grid/cube, is none of this tool's business.
-	(occursin('?', spec) || ext in (".nc", ".grd", ".cpt")) && return false
+	(occursin('?', spec) || ext in (".nc", ".grd", ".cpt")) && return ""
 	n = _bands_register!(scene, spec)
-	n > 1 || return false
+	n > 1 || return ""
 	info = _BANDS_INFO[scene]
-	(info.bytes && n <= 4) && return false            # an RGB(A) photo: let the normal image path show it
+	(info.bytes && n <= 4) && return ""               # an RGB(A) photo: let the normal image path show it
 	# A DATA stack (Int16 and wider — the .vrt a Copernicus archive is unpacked into, a multiband
 	# elevation/anomaly tif) is a CUBE: its bands are layers of one quantity, and layers are navigated
 	# with the layer slider, not by re-opening the file a band at a time. It leaves through the cube
 	# door instead (`_cube_probe` -> `_on_3d_cube_dropped`, drop.jl) — registered all the same, just
 	# above, so Image > Load Bands and the PCA still serve it. PIXEL stacks are untouched: they keep
 	# Mirone's multiband open, which is what this function was written for.
-	info.isdata && return false
+	info.isdata && return ""
 	B = _bands_get(scene, 1)                          # "display the first raster in the vrt"
 	isempty(recent) || _record_recent(recent, B)
 	bname = string(name, " — ", info.names[1])
 	_drop_into(scene, B, bname; promote = promote, source = spec)
 	_adopt_new_element(scene, bname, B)
-	_BANDS_SHOWN[scene] = (B isa GMTgrid ? :grid : :image, bname)
-	return true
+	return bname
 end
 
 # JIT warm-up (warmup.jl). Compute PCA and Load reach `GMT.pca`, `mat2img`/`slicecube` and the
