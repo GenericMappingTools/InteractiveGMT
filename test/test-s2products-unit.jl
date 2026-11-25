@@ -65,7 +65,7 @@ end
 		r = String(take!(io))
 		@test occursin("enable:p_b_b04=1", r) && occursin("enable:p_b_tci=1", r) && occursin("enable:p_b_scl=0", r)
 		@test occursin("enable:p_b_b02=0", r)                       # not in this (trimmed) tree
-		@test occursin("label:lbl_bsize=2 at 10 m: whole tile, 84.9 MB", r)   # B04 + B08: SCL is not at 10 m
+		@test occursin("label:lbl_bsize=2 at 10 m: whole tile, 10980x10980 px", r)   # B04 + B08: SCL is not at 10 m
 		# Only the region: its size in pixels on the tile's own UTM grid, nothing downloaded whole.
 		dc = merge(d, Dict("p_cut" => "1", "p_rg_w" => "-8.0", "p_rg_e" => "-7.9", "p_rg_s" => "37.0", "p_rg_n" => "37.1"))
 		IG._s2_fill_bands!(io, dc, l2, dir)

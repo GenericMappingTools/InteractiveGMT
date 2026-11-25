@@ -59,7 +59,7 @@ end
 		ok, r = RemoteSGui.rs(h, vcat(box, ["what=refresh", "p_granule_idx=1"]))
 		@test ok == 1 && IG._S2_LIT[h] == IG._s2_base(found[2])
 		@test pen(IG._S2_LIT[h])[1:4] == [1.0, 0.0, 0.0, 6.0]
-		@test occursin("enable:p_b_b04=1", r) && occursin("label:lbl_bsize=1 at 10 m: whole tile, 42.9 MB", r)
+		@test occursin("enable:p_b_b04=1", r) && occursin("label:lbl_bsize=1 at 10 m: whole tile, 10980x10980 px", r)
 		@test occursin("label:lbl_thumbinfo=2026-11-12 11:13  S2C  tile 29SNA  orbit R137", r)
 		# Pointing at a footprint chooses its newest scene; a click inside both steps between them.
 		ok, r = RemoteSGui.rs(h, vcat(box, ["what=pickscene", "picked=$(lab)"]))

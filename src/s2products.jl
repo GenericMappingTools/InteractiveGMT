@@ -247,7 +247,8 @@ function _s2_fill_bands!(io::IOBuffer, d::Dict{String,String}, s::Union{S2Scene,
 	box = _ls_box(d)
 	ondisk = all(((_, o),) -> isfile(o), _s2_outs(s, ks, res, dir, box))
 	if box === nothing
-		txt = ondisk ? "on disk" : "whole tile, $(_s2_mb(sum(have[k][3] for k in ks)))"
+		n = round(Int, 109800 / res)                   # the tile, in cells of the chosen spacing
+		txt = ondisk ? "on disk" : "whole tile, $(n)x$(n) px"
 	else
 		_, _, _, _, nx, ny = _s2_window(s, box, res)
 		txt = ondisk ? "on disk" : "region only, $(nx)x$(ny) px"
@@ -399,12 +400,28 @@ end
 
 _s2_xml(t::String)::String = replace(t, '&' => "&amp;", '<' => "&lt;", '>' => "&gt;", '"' => "&quot;")
 
-# The window of the ticked bands (or the true-colour picture) written to `out`, ONE GeoTIFF.
+# The window of the ticked bands (or the true-colour picture) over the lon/lat `box`, written to `out`,
+# ONE GeoTIFF.
 function _s2_fetch_window(s::S2Scene, ks::Vector{String}, tci::Bool, res::Int, box::NTuple{4,Float64},
                           out::String, desc::Vector{String}, d::Dict{String,String})::Nothing
-	w, e, so, n, nx, ny = _s2_window(s, box, res)
-	(nx > 0 && ny > 0) || error("The region is empty.")
+	w, e, so, n, _, _ = _s2_window(s, box, res)
+	return _s2_fetch_utm(s, ks, tci, res, w, e, so, n, out, desc, d)
+end
+
+# The WHOLE tile the same way (the window service, in pieces): iGMT never reads ESA's JPEG 2000 band
+# files -- GMT's GDAL has only the ECW driver for them, which must never be used to read a JP2.
+function _s2_fetch_tile(s::S2Scene, ks::Vector{String}, tci::Bool, res::Int, out::String,
+                        desc::Vector{String}, d::Dict{String,String})::Nothing
+	_, x0, x1, y0, y1 = _s2_tile_box(s.tile)
+	return _s2_fetch_utm(s, ks, tci, res, x0, x1, y0, y1, out, desc, d)
+end
+
+# The window w, e, s, n (the tile's UTM system, whole cells of `res`) of the ticked bands, ONE GeoTIFF.
+function _s2_fetch_utm(s::S2Scene, ks::Vector{String}, tci::Bool, res::Int, w::Float64, e::Float64, so::Float64,
+                       n::Float64, out::String, desc::Vector{String}, d::Dict{String,String})::Nothing
 	r = Float64(res)
+	nx = round(Int, (e - w) / r);  ny = round(Int, (n - so) / r)
+	(nx > 0 && ny > 0) || error("The region is empty.")
 	tok = _s1_token(d)
 	url = _shub_process_url(_SHUB_CDSE)
 	mkpath(dirname(out))
@@ -789,42 +806,10 @@ function _rs_s2(scene::Ptr{Cvoid}, d::Dict{String,String}, io::IOBuffer)::Bool
 		for (t, o) in todo
 			_s2_fetch_window(s, t ? ["TCI"] : cks, t, res, box, o, t ? String[] : desc, d)
 		end
-	elseif !isempty(todo)
-		# The whole tile: ESA's band files, turned into the one file each request makes, then removed
-		# (the result is the file; keeping the .jp2 beside it would be the same data twice).
-		need = String[k for k in ks if any(((t, _),) -> t == (k == "TCI"), todo)]
-		files = _s2_fetch_bands(s, need, res, dir, d)
-		try
-			for (t, o) in todo
-				one = [(k, f) for (k, f) in files if (k == "TCI") == t]
-				if t || length(one) == 1
-					# One band (or the true-colour picture): ESA's file as one GeoTIFF, no cube step.
-					f = one[1][2]
-					_rs_prog_show("Writing $(basename(o))…")
-					try
-						GMT.gdaltranslate(f, ["-co", "COMPRESS=DEFLATE"]; dest = o)
-					finally
-						_rs_prog_close()
-					end
-					isfile(o) || error("gdal_translate wrote nothing to $(o)")
-				else
-					cube = [(k, f) for (k, f) in files if k != "TCI"]
-					_rs_prog_show("Stacking $(length(cube)) band(s) into one cube…")
-					try
-						# cutcube reads each band with GMT's grdcut: a GMT door, so each name goes through it
-						# safe (a folder with a space or a non-ASCII letter otherwise breaks it).
-						RS.cutcube(names = String[_gmt_safe_path(f; quoted = false) for (_, f) in cube], region = nothing,
-						           sentinel2 = res, description = desc, save = o)
-					finally
-						_rs_prog_close()
-					end
-					isfile(o) || error("cutcube wrote nothing to $(o)")
-				end
-			end
-		finally
-			for (_, f) in files
-				isfile(f) && rm(f; force = true)
-			end
+	else
+		# The whole tile, by the same window service in pieces: no JPEG 2000 band file is ever read.
+		for (t, o) in todo
+			_s2_fetch_tile(s, t ? ["TCI"] : cks, t, res, o, t ? String[] : desc, d)
 		end
 	end
 	shown = String[]
