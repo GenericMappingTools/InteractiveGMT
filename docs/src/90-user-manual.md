@@ -682,8 +682,14 @@ polygons, text, curtains, beachballs, colour bars, axes, … — each row with i
 
 **Band stacks** list what they are made of, in rows with no checkbox below their group's usual rows:
 a **.vrt** lists its band files (click one for **Load file**), a multi-band **cube** lists its bands
-by name (click one for **Load band**, which adds that band as a layer of its own). See
+by name (click one for **Load band**, which adds that band as a layer of its own). A multi-band file
+that opens showing only its first band also lists the **file** its bands are stored in; hover a band
+row to see that file and its folder, which is where **Load band** reads the band from. *Image →
+Load Bands* compositions are added beside the opened file, never in its place. See
 [Remote sensing: Spectral indices and Band cube](74f-remote-sensing.md#In-Scene-Objects).
+
+**Messages** — the text of every message box (errors included) can be selected with the mouse and
+copied, to paste into a report.
 
 ---
 

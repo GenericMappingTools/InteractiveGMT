@@ -242,7 +242,9 @@ end
 # same registration — "EXACT SAME LIMITS and increments", with only a floating-point epsilon of
 # slack (a grid that went through a file round-trip can differ in the last bit).
 function _gc_same_geom(G::GMTgrid, ref::GMTgrid)::Bool
-	size(G.z) == size(ref.z) || return false
+	# Node counts from the COORDINATES (grid-layout law): size(z) is (ny,nx) or (nx,ny) depending on the
+	# memory layout, so two grids of one geometry read by different readers looked different.
+	_grid_dims(G) == _grid_dims(ref) || return false
 	G.registration == ref.registration || return false
 	tolx = abs(ref.inc[1]) * 1e-6;  toly = abs(ref.inc[2]) * 1e-6
 	(abs(G.inc[1] - ref.inc[1]) <= tolx && abs(G.inc[2] - ref.inc[2]) <= toly) || return false

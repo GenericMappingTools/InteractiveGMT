@@ -121,6 +121,42 @@ All four empty: the whole scene. Three ways to fill it besides typing:
 
 **Build cube** — cuts, stacks, writes and opens.
 
+## Landsat calibration
+
+*Satellite → Remote sensing → Landsat calibration…* turns one Landsat 8/9 band (a band file, or a
+band of a cube made by *Band cube*) into a physical quantity, with the scene's **MTL**. The **Quantity**
+list depends on what the band is.
+
+A **Level-1** band (`…_L1TP_…_B4.TIF`) holds the sensor's raw counts:
+
+| Quantity | Result |
+|:---------|:-------|
+| Radiance at top of atmosphere | DN x `RADIANCE_MULT` + `RADIANCE_ADD`, W/(m² sr µm) |
+| Reflectance at top of atmosphere | DN x `REFLECTANCE_MULT` + `REFLECTANCE_ADD`, divided by sin(sun elevation) |
+| Surface reflectance (COST model) | an estimate with the atmosphere removed (Chavez dark-object correction) |
+| Brightness temperature (bands 10, 11) | from the thermal radiance, with `K1`/`K2` |
+
+A **Level-2** band (`…_L2SP_…_SR_B4.TIF`, `…_ST_B10.TIF`) has had the atmosphere removed already, and
+its integers are codes for surface quantities. Top-of-atmosphere values cannot be made from it, so
+the list offers only what it holds:
+
+| Quantity | Result |
+|:---------|:-------|
+| Surface reflectance | DN x 0.0000275 − 0.2 (the scale of `LEVEL2_SURFACE_REFLECTANCE_PARAMETERS`), 0–1 |
+| Radiance at the surface | surface reflectance x sin(sun elevation) x `RADIANCE_MULT` / Level-1 `REFLECTANCE_MULT`, W/(m² sr µm) |
+| Surface temperature (band 10) | the ST band's own scale, from `LEVEL2_SURFACE_TEMPERATURE_PARAMETERS` |
+
+The last ratio in *Radiance at the surface* is the band's solar irradiance divided by π d² (Landsat
+8/9 MTLs do not give the irradiance itself). It is the radiance of a matt surface under the full
+top-of-atmosphere sun: the product carries no measure of the light actually reaching the ground.
+
+A band is Level-2 when its MTL has the `LEVEL2_SURFACE_REFLECTANCE_PARAMETERS` group, or, without an
+MTL at hand, when its name says so (`_L2SP_`, `_SR_B`, `_ST_B`).
+
+The result joins the window as a new grid on exactly the band's own geometry (same pixels, same
+registration, same limits), so the *Grid calculator* offers it beside the band and any other product
+of the same scene.
+
 ## In Scene Objects
 
 A band stack's group lists what it is made of, below its usual rows:
@@ -133,6 +169,11 @@ These rows have no checkbox — they are not on screen, they are what the stack 
 - a **file** row offers **Load file**: that band file opens in the window, as *File → Open* would open it;
 - a **band** row offers **Load band**: that band joins the window as a layer of its own, named
   `<cube> — <band>`.
+
+A multi-band file of 8 or 16-bit pixels (a Sentinel-2 or Landsat band download, for instance) opens
+showing its first band only. Its group then lists the **file** the bands are stored in, as a row of
+its own, above the band rows. The bands are not in memory: hover a band row and it names that file
+and its folder, and **Load band** reads the band from it.
 
 Hover a row for the file's full path, or the band's number and full name.
 

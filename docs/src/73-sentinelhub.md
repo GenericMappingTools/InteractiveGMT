@@ -11,7 +11,9 @@ once**, which lands as a file and is opened like any other raster — with its o
 range and its own colour bar.
 
 For the Sentinel-1 product *files* themselves (GRD, SLC, OCN `.SAFE` archives) see
-[Sentinel-1 SAR products](73b-sentinel1.md): a different service with a different login.
+[Sentinel-1 SAR products](73b-sentinel1.md): a different service with a different login. For the
+bands of one Sentinel-2 *scene* (not a mosaic), with its quicklook and cut to your region, see
+[Sentinel-2 MSI products](73c-sentinel2.md).
 
 ## Before anything: the Copernicus paperwork
 

@@ -15666,7 +15666,9 @@ public:
 			RemoteSDialog *rd;
 			CloseParks(QObject *p, RemoteSDialog *r) : QObject(p), rd(r) {}
 			bool eventFilter(QObject *o, QEvent *e) override {
-				if (rd && e->type() == QEvent::Close && rd->parkNow()) {
+				// Landsat calibration: the X DELETES it (user's order) -- the close goes through to
+				// WA_DeleteOnClose and the menu builds a fresh one. Minimise still parks it.
+				if (rd && e->type() == QEvent::Close && rd->tool != "calibration" && rd->parkNow()) {
 					e->ignore();
 					return true;
 				}
@@ -15762,8 +15764,14 @@ static void openRemoteSDialogNow(QWidget *win, Scene *s, const std::string &tool
 	// now, and once more when the event loop has finished closing the menu.
 	d->raise();
 	d->activateWindow();
+	// The second raise is ONLY for the case it exists for: the iGMT window took the activation back (the
+	// closing menu). Another dialog opened meanwhile is left in front -- re-raising this one regardless
+	// stole the front from the dialog opened after it.
 	QPointer<QDialog> qd(d);
-	QTimer::singleShot(150, d, [qd]() { if (qd && qd->isVisible()) { qd->raise(); qd->activateWindow(); } });
+	QPointer<QWidget> qw(win);
+	QTimer::singleShot(150, d, [qd, qw]() {
+		if (qd && qd->isVisible() && qw && QApplication::activeWindow() == qw->window()) { qd->raise(); qd->activateWindow(); }
+	});
 }
 
 // A plain left click on a window carrying a dialog's scene footprints (Scene::clickTools,

@@ -337,6 +337,7 @@ function _rs_indices(scene::Ptr{Cvoid}, d::Dict{String,String}, io::IOBuffer)::B
 		end
 		O.nodata = NaN
 		GMT.setgrdminmax!(O)
+		_rs_on_file_geometry!(O, file)                 # the bands' own geometry, so it joins them
 	end
 	# Each output kind is its own result: a mask must never replace the index grid it came from.
 	what_out = isempty(kw) ? "" : haskey(Dict(kw), :classes) ? " classes" :
@@ -376,10 +377,33 @@ end
 
 # --- Landsat calibration -----------------------------------------------------------------------
 
+# The Quantity list. A LEVEL-2 product's bands are already surface reflectance (SR, scaled UInt16) and
+# surface temperature (ST): the top-of-atmosphere quantities cannot be made from them (the atmosphere
+# is gone), and the COST model is a correction of LEVEL-1 counts. So a Level-2 file is offered exactly
+# what it holds. Same order of decision as RemoteS' parse_mtl: the MTL's LEVEL2 group, else the name.
+const _RS_CAL_L1 = ["Radiance at top of atmosphere", "Reflectance at top of atmosphere",
+                    "Surface reflectance (COST model)", "Brightness temperature (bands 10, 11)"]
+# "Radiance at the surface" = rho_SR * sin(sun elevation) * RADIANCE_MULT / Level-1 REFLECTANCE_MULT, the
+# last ratio being Esun/(pi d^2) of the band (what dn2radiance computes on a Level-2 band): a Lambertian
+# surface under the full top-of-atmosphere sun, no downward attenuation or sky light.
+const _RS_CAL_L2 = ["Surface reflectance", "Radiance at the surface", "Surface temperature (band 10)"]
+
+function _rs_cal_level2(file::String, mtl::String)::Bool
+	isempty(file) && return false
+	lines = try RS.read_mtl_lines(file, mtl) catch; nothing end
+	lines === nothing || return any(l -> strip(l) == "GROUP = LEVEL2_SURFACE_REFLECTANCE_PARAMETERS", lines)
+	return occursin(r"_L2S[PR]_|_(SR|ST)_B\d"i, basename(file))
+end
+
 function _rs_calibration(scene::Ptr{Cvoid}, d::Dict{String,String}, io::IOBuffer)::Bool
 	what = _rs_get(d, "what")
 	file = _rs_file!(io, d, scene)
 	if what == "init" || what == "refresh"
+		l2 = _rs_cal_level2(file, _rs_get(d, "p_mtl"))
+		qs = l2 ? _RS_CAL_L2 : _RS_CAL_L1
+		cur = _rs_get(d, "p_quantity")
+		_rs_items(io, "p_quantity", qs)
+		_rs_set(io, "p_quantity", something(findfirst(==(cur), qs), 1) - 1)
 		names = _rs_bands(file)
 		if length(names) > 1
 			_rs_items(io, "p_band", names)
@@ -405,11 +429,21 @@ function _rs_calibration(scene::Ptr{Cvoid}, d::Dict{String,String}, io::IOBuffer
 	end
 	mtl = _rs_get(d, "p_mtl")
 	q = _rs_get(d, "p_quantity")
-	G, tag = startswith(q, "Radiance")    ? (RS.dn2radiance(file; band = band, mtl = mtl), "Radiance TOA") :
-	         startswith(q, "Reflectance") ? (RS.dn2reflectance(file; band = band, mtl = mtl), "Reflectance TOA") :
-	         startswith(q, "Surface")     ? (RS.reflectance_surf(file; band = band, mtl = mtl), "Surface reflectance") :
-	                                        (RS.dn2temperature(file; band = band, mtl = mtl), "Brightness temperature")
+	if _rs_cal_level2(file, mtl)
+		# Level-2: the SR band's own scaling IS the surface reflectance (dn2reflectance applies the Level-2
+		# pair, no sun division); an ST band's IS the surface temperature (dn2temperature).
+		q in _RS_CAL_L2 || error("A Level-2 band holds surface reflectance and surface temperature only: choose one of those.")
+		G, tag = q == _RS_CAL_L2[1] ? (RS.dn2reflectance(file; band = band, mtl = mtl), "Surface reflectance") :
+		         q == _RS_CAL_L2[2] ? (RS.dn2radiance(file; band = band, mtl = mtl), "Radiance at the surface") :
+		                              (RS.dn2temperature(file; band = band, mtl = mtl), "Surface temperature")
+	else
+		G, tag = startswith(q, "Radiance")    ? (RS.dn2radiance(file; band = band, mtl = mtl), "Radiance TOA") :
+		         startswith(q, "Reflectance") ? (RS.dn2reflectance(file; band = band, mtl = mtl), "Reflectance TOA") :
+		         startswith(q, "Surface")     ? (RS.reflectance_surf(file; band = band, mtl = mtl), "Surface reflectance (COST)") :
+		                                        (RS.dn2temperature(file; band = band, mtl = mtl), "Brightness temperature")
+	end
 	G isa GMTgrid || error("got a $(typeof(G)), not a grid")
+	_rs_on_file_geometry!(G, file)                     # the band's own geometry, so it joins the band
 	name = "$(tag)$(band > 0 ? " B$(band)" : "") — $(splitext(basename(file))[1])"
 	_rs_deliver(scene, G, name, "RemoteS $(tag) of \"$(basename(file))\""; flat = true)
 	_rs_status(io, "$(name) added.")
@@ -470,6 +504,30 @@ function _rs_cut_set_region!(io::IOBuffer, b::NTuple{4,Float64})
 end
 
 # A raster file's own extent (header only) and system.
+# A grid COMPUTED FROM a band file (calibration, a spectral index) comes back on THAT FILE'S geometry --
+# its registration, x/y, limits and increments, to the last decimal (SACRED_LAW, derived-from-a-grid
+# geometry). RemoteS hands back the same nodes as a GRIDLINE grid at the cell centres (a Landsat band is
+# pixel-registered): a different geometry for the same pixels, so the Grid calculator, which joins only
+# arrays of one geometry, never offered the product beside the band it came from. The node count is
+# checked, never assumed: a disagreement is an error, never a resample.
+function _rs_on_file_geometry!(G::GMTgrid, f::String)::GMTgrid
+	a = _emp_att(f)
+	h = a.hdr                                          # the raster's EDGES (GDAL extent); h[7] is not its registration
+	nx, ny = _grid_dims(G)
+	(nx, ny) == (a.nx, a.ny) || error("The result is $(nx)x$(ny) but $(basename(f)) is $(a.nx)x$(a.ny): " *
+	                                  "it must land on the band's own pixels.")
+	# As GMT reads the file itself: PIXEL registration on the extent's edges -- measured on a Landsat C2
+	# band, which even declares AREA_OR_POINT=Point and is still read reg=1 on its edges. The band shown
+	# in the window carries exactly this geometry, so the product lands on it.
+	dx = (h[2] - h[1]) / nx;  dy = (h[4] - h[3]) / ny
+	G.x = collect(range(h[1], h[2], length = nx + 1))
+	G.y = collect(range(h[3], h[4], length = ny + 1))
+	G.range[1:4] = h[1:4]
+	G.inc = Float64[dx, dy]
+	G.registration = 1
+	return G
+end
+
 function _rs_file_box(f::String)::Tuple{NTuple{4,Float64},String}
 	isfile(f) || error("File not found: $f")
 	h = _emp_att(f).hdr
