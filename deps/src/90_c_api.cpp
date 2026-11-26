@@ -5452,6 +5452,15 @@ GMTVTK_API void gmtvtk_set_source_bands_h(void *handle, const char *name, const 
 	sceneQueueRebuildObjects(s);
 }
 
+// Flag element `name` as a cube of Landsat or Sentinel-2 bands (on=1) or not (on=0): its handle then
+// offers "Spectral indices…" on the cube's file (Scene::specCubeNames).
+GMTVTK_API void gmtvtk_set_spectral_cube_h(void *handle, const char *name, int on) {
+	Scene *s = static_cast<Scene*>(handle);
+	if (!sceneAlive(s) || !name) return;
+	if (on) s->specCubeNames.insert(name);
+	else    s->specCubeNames.erase(name);
+}
+
 // Register the "Load band" callback (JuliaBandRowFn); nullptr detaches.
 GMTVTK_API void gmtvtk_set_band_row_callback(JuliaBandRowFn fn) {
 	g_juliaBandRow = fn;

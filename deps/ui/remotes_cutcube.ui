@@ -266,20 +266,39 @@
      <string>OR</string>
     </property>
    </widget>
-   <widget class="QPushButton" name="run_rgrect">
+   <widget class="QPushButton" name="drawrect_rgrect">
     <property name="geometry">
      <rect>
       <x>71</x>
       <y>223</y>
-      <width>255</width>
+      <width>168</width>
       <height>26</height>
      </rect>
     </property>
     <property name="toolTip">
-     <string>Fill the Region with the last rectangle drawn in the window (Draw &gt; Rectangle) over the image showing: draw it over the area of interest first.</string>
+     <string>Draw a rectangle in the window now (click one corner, then the opposite corner): the Region becomes that rectangle, converted to the band files' coordinates. Press again to cancel.</string>
     </property>
     <property name="text">
-     <string>Use the drawn rectangle</string>
+     <string>Draw rectangle</string>
+    </property>
+    <property name="needsmap" stdset="0">
+     <bool>true</bool>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="run_rgrect">
+    <property name="geometry">
+     <rect>
+      <x>245</x>
+      <y>223</y>
+      <width>168</width>
+      <height>26</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>Fill the Region with the LAST rectangle drawn in the window (Draw &gt; Rectangle) over the image showing. To pick the area now, use Draw rectangle.</string>
+    </property>
+    <property name="text">
+     <string>Use last drawn rectangle</string>
     </property>
     <property name="needsmap" stdset="0">
      <bool>true</bool>
@@ -288,9 +307,9 @@
    <widget class="QPushButton" name="run_rgband">
     <property name="geometry">
      <rect>
-      <x>332</x>
+      <x>419</x>
       <y>223</y>
-      <width>255</width>
+      <width>168</width>
       <height>26</height>
      </rect>
     </property>

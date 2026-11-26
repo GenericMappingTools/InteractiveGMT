@@ -15188,6 +15188,35 @@ public:
 		if (sceneAlive(scn) && scn->win) scn->win->statusBar()->showMessage(m, 4000);
 	}
 
+	// The ask: directive's question (see apply). "Use" sends what=session (Julia appends the session's
+	// band files to the list); "Pick" is a press of the list's own ... button.
+	void askLoadedFiles(const QString &list, int n) {
+		if (!dlg || !sceneAlive(scn)) return;
+		QDialog ask(dlg);
+		ask.setWindowTitle(dlg->windowTitle());
+		ask.setWindowFlags(Qt::Dialog | Qt::WindowTitleHint | Qt::WindowCloseButtonHint);
+		auto *lay = new QVBoxLayout(&ask);
+		lay->setContentsMargins(8, 8, 8, 8);  lay->setSpacing(6);
+		lay->addWidget(new QLabel(QString("This session already holds %1 band file(s).\n"
+		                                  "Use them as the bands, or pick band files?").arg(n), &ask));
+		auto *row = new QHBoxLayout;
+		QPushButton *bUse  = new QPushButton(QString("Use the %1 loaded bands").arg(n), &ask);
+		QPushButton *bPick = new QPushButton("Pick band files…", &ask);
+		row->addWidget(bUse);  row->addWidget(bPick);
+		lay->addLayout(row);
+		bUse->setDefault(true);
+		QPushButton *clicked = nullptr;
+		QObject::connect(bUse,  &QPushButton::clicked, &ask, [&]() { clicked = bUse;  ask.accept(); });
+		QObject::connect(bPick, &QPushButton::clicked, &ask, [&]() { clicked = bPick; ask.accept(); });
+		ask.exec();
+		if (!dlg || !sceneAlive(scn)) return;
+		if (clicked == bUse)
+			request("session", true, "Looking for the bands loaded in this session…");
+		else if (clicked == bPick) {
+			if (auto *bt = dlg->findChild<QAbstractButton *>("browse_" + list)) bt->click();
+		}
+	}
+
 	// The request block: the tool, the verb, and every p_* widget as it stands.
 	QString collect(const QString &what) const {
 		QString kv = QString("tool=%1\nwhat=%2\n").arg(QString::fromStdString(tool), what);
@@ -15244,6 +15273,45 @@ public:
 			if (kind == "label") {
 				if (auto *lb = qobject_cast<QLabel *>(w)) lb->setText(v);
 				else if (auto *ab = qobject_cast<QAbstractButton *>(w)) ab->setText(v);
+				continue;
+			}
+			// add:<file-list input>=a\tb -- APPEND files to it (checked, each once), never a replace: what
+			// the user already gathered, checked or not, stays as it is.
+			if (kind == "add") {
+				auto *lw = qobject_cast<QListWidget *>(w);
+				if (lw && lw->property("input").toBool()) {
+					QSignalBlocker b(lw);
+					for (const QString &p : v.split('\t', Qt::SkipEmptyParts)) rsAddFileItem(lw, p);
+				}
+				continue;
+			}
+			// ask:<file-list input>=<n> -- this session already holds n band files: ASK whether to use
+			// them or pick files, as Image > Load Bands asks (askBandSource: two choices, no Cancel, the
+			// window's X is the way out). After this answer is applied, never from inside it.
+			if (kind == "ask") {
+				auto *lw = qobject_cast<QListWidget *>(w);
+				const int n = v.toInt();
+				if (lw && lw->property("input").toBool() && n > 0)
+					QTimer::singleShot(0, dlg, [this, n, name]() { askLoadedFiles(name, n); });
+				continue;
+			}
+			// askdir:<line edit>=<verb>\t<file name> -- the output was named without a folder: ASK where it
+			// goes (never the session's current folder), put <folder>/<name> in the box and press run_<verb>
+			// again. No folder chosen = nothing is written, and the status line says so. After this answer.
+			if (kind == "askdir") {
+				auto *le = qobject_cast<QLineEdit *>(w);
+				const QString verb = v.section('\t', 0, 0), fname = v.section('\t', 1);
+				if (le && !verb.isEmpty() && !fname.isEmpty())
+					QTimer::singleShot(0, dlg, [this, le, verb, fname]() {
+						if (!dlg || !sceneAlive(scn)) return;
+						const QString dir = QFileDialog::getExistingDirectory(dlg, "Folder where " + fname + " is saved",
+						                                                      prefStartDir());
+						if (dir.isEmpty()) { say(fname + " not written: no folder chosen."); return; }
+						rememberStartDir(dir + "/" + fname);
+						le->setText(QDir::toNativeSeparators(QDir(dir).filePath(fname)));
+						auto *pb = dlg->findChild<QPushButton *>("run_" + verb);
+						request(verb, true, pb ? pb->property("busy").toString() : QString());
+					});
 				continue;
 			}
 			if (kind == "items") {
@@ -15377,6 +15445,64 @@ public:
 		pickArmed = true;
 		if (s->widget) s->widget->setCursor(Qt::CrossCursor);
 		say("Click a line in the view (press the button again to cancel).");
+	}
+
+	// The drawrect_<verb> button. The window's Rectangle tool is switched on through its own toolbar
+	// action; a watch then looks for the rectangle it adds (a user rectangle whose name was not there
+	// before) and hands THAT one over. The tool switched off with no new rectangle (Esc, another tool,
+	// this button again) = cancelled. Nothing of the draw tool itself is touched.
+	QPointer<QTimer> rectWatch;
+	void armRectDraw(QPushButton *pb, const QString &verb) {
+		if (!sceneAlive(scn) || !dlg) return;
+		QAction *rectAct = nullptr;
+		for (QAction *a : scn->shapeActs) if (a->text() == "Rectangle") rectAct = a;
+		if (rectWatch) {                                     // pressed again: cancel
+			rectWatch->deleteLater();
+			rectWatch = nullptr;
+			if (rectAct && rectAct->isChecked()) rectAct->setChecked(false);
+			say("Drawing cancelled.");
+			return;
+		}
+		if (!rectAct) { say("This window has no Rectangle draw tool."); return; }
+		if (scn->emptyStart) { say("Load an image first: the rectangle is drawn on it."); return; }
+		// The user rectangles (the ones gmtvtk_serialize_polys lists with isRect): how many, and the newest
+		// (polyFinalize pushes a new one at the END). By count, not by name: "rectangle N" is numbered
+		// from how many exist, so after a delete a new one can carry an old name.
+		auto userRects = [](Scene *s, QString *newest) {
+			int n = 0;
+			for (auto &pg : s->polys)
+				if (pg.isRect && pg.nestKind == 0 && !pg.isFault && pg.groupName.empty()) {
+					++n;
+					if (newest) *newest = QString::fromStdString(pg.name);
+				}
+			return n;
+		};
+		const int before = userRects(scn, nullptr);
+		rectAct->setChecked(true);
+		if (!rectAct->isChecked()) return;                   // the tool refused (it says why on the status bar)
+		QPointer<QPushButton> btn(pb);
+		QPointer<QAction> act(rectAct);
+		const QString busy = pb->property("busy").toString();
+		auto *t = new QTimer(dlg);
+		rectWatch = t;
+		QObject::connect(t, &QTimer::timeout, dlg, [this, t, btn, act, verb, busy, before, userRects]() {
+			if (!sceneAlive(scn)) { rectWatch = nullptr; t->deleteLater(); return; }
+			QString added;
+			if (userRects(scn, &added) > before && !added.isEmpty()) {
+				rectWatch = nullptr;
+				t->deleteLater();
+				if (dlg) { dlg->raise(); dlg->activateWindow(); }
+				request(verb, true, busy, "picked=" + added + "\n");
+				return;
+			}
+			if (!act || !act->isChecked()) {                 // tool off, nothing drawn
+				rectWatch = nullptr;
+				t->deleteLater();
+				say("Drawing cancelled.");
+			}
+		});
+		t->start(120);
+		say("Draw the rectangle in the window: click one corner, then the opposite corner (press Draw rectangle again to cancel).");
 	}
 
 	// The pickpoint_<verb> button: arm the shared POINT pick (Scene::vectorPickMode 3, seedPickCB) for
@@ -15542,6 +15668,59 @@ public:
 					});
 					if (lw->property("refresh").toBool())
 						QObject::connect(lw, &QListWidget::itemChanged, [this](QListWidgetItem *) { refresh(); });
+					// A list the .ui makes REORDERABLE (InternalMove: the order IS the result, Band cube's
+					// band order) also takes files dropped from Explorer -- appended, checked, each once, the
+					// same rsAddFileItem the ... button uses -- through the Empilhador's drop filter, which
+					// leaves the list's own drag-to-reorder alone. A move is a change of the list too (the
+					// first file is the one whose MTL the cube keeps). Right-click: the files already
+					// loaded in this session (what=session, Julia answers with add:).
+					if (lw->dragDropMode() == QAbstractItemView::InternalMove) {
+						QPointer<QListWidget> qlw(lw);
+						lw->viewport()->installEventFilter(new EmpilhadorDropFilter([this, qlw](const QStringList &fns) {
+							if (!qlw) return;
+							{
+								QSignalBlocker b(qlw);
+								for (const QString &f : fns) rsAddFileItem(qlw, f);
+							}
+							if (qlw->property("refresh").toBool()) refresh();
+						}, lw));
+						if (lw->property("refresh").toBool())
+							QObject::connect(lw->model(), &QAbstractItemModel::rowsMoved, lw, [this]() { refresh(); });
+						// Removing a file: the right-click's "Remove" (the file clicked on, else the selected
+						// ones), "Remove all", or the Delete key on the selected files. A change of the list.
+						auto removeItems = [this, lw](QList<QListWidgetItem *> its) {
+							if (its.isEmpty()) return;
+							{
+								QSignalBlocker b(lw);
+								for (QListWidgetItem *it : its) delete lw->takeItem(lw->row(it));
+							}
+							if (lw->property("refresh").toBool()) refresh();
+						};
+						auto *del = new QShortcut(QKeySequence(QKeySequence::Delete), lw);
+						del->setContext(Qt::WidgetShortcut);
+						QObject::connect(del, &QShortcut::activated, lw, [lw, removeItems]() { removeItems(lw->selectedItems()); });
+						lw->setContextMenuPolicy(Qt::CustomContextMenu);
+						QObject::connect(lw, &QWidget::customContextMenuRequested, lw, [this, lw, removeItems](const QPoint &p) {
+							QListWidgetItem *at = lw->itemAt(p);
+							QList<QListWidgetItem *> sel = at ? QList<QListWidgetItem *>{ at } : lw->selectedItems();
+							QMenu m;
+							QAction *aRem = m.addAction(sel.size() == 1 ? "Remove " + sel.first()->text() : QString("Remove"));
+							aRem->setEnabled(!sel.isEmpty());
+							QAction *aAll = m.addAction("Remove all");
+							aAll->setEnabled(lw->count() > 0);
+							m.addSeparator();
+							QAction *aSes = m.addAction("Add the bands loaded in this session");
+							QAction *pick = m.exec(lw->viewport()->mapToGlobal(p));
+							if (pick == aRem) removeItems(sel);
+							else if (pick == aAll) {
+								QList<QListWidgetItem *> all;
+								for (int i = 0; i < lw->count(); ++i) all << lw->item(i);
+								removeItems(all);
+							}
+							else if (pick == aSes)
+								request("session", true, "Looking for the bands loaded in this session…");
+						});
+					}
 					continue;
 				}
 				QLineEdit *le = d->findChild<QLineEdit *>(n.mid(7));
@@ -15627,6 +15806,15 @@ public:
 				if (!pb) continue;
 				const QString verb = n.mid(9);
 				QObject::connect(pb, &QPushButton::clicked, [this, pb, verb] { armLinePick(pb, verb); });
+			}
+			// drawrect_<verb>: draw a rectangle in the view NOW, with the window's own Draw > Rectangle tool
+			// (its toolbar action, toggled exactly as a toolbar click toggles it). The rectangle that tool
+			// adds is sent as what=<verb>, picked=<its Scene Objects name>. Pressing again cancels.
+			if (n.startsWith("drawrect_")) {
+				auto *pb = qobject_cast<QPushButton *>(w);
+				if (!pb) continue;
+				const QString verb = n.mid(9);
+				QObject::connect(pb, &QPushButton::clicked, [this, pb, verb] { armRectDraw(pb, verb); });
 			}
 			// pickpoint_<verb>: click a point in the view (Scene::vectorPickMode 3) — its world x,y are
 			// sent as what=<verb>, px=, py=. Pressing the button again or a right-click disarms it.
@@ -15846,6 +16034,29 @@ static void rsOpenL2With(Scene *s, const QString &file) {
 // image's file. Only Julia knows which file an image came from, so the image's NAME goes with the
 // init request (obj=) and Julia puts its file in the File box. Waits for the handle's menu to be
 // gone first, as openRemoteSDialog does.
+// A Landsat / Sentinel-2 cube handle's "Spectral indices…": the indices dialog opened (or brought back)
+// on THAT cube's file, by the same obj= init the calibration entry below sends.
+static const bool g_rsIndicesHook = [] {
+	g_rsIndicesImage = [](Scene *s, const char *name) {
+		const QString nm = QString::fromUtf8(name ? name : "");
+		auto tries = std::make_shared<int>(0);
+		auto step = std::make_shared<std::function<void()>>();
+		*step = [s, nm, tries, step]() {
+			if (!sceneAlive(s) || !s->win) return;
+			if (QApplication::activePopupWidget() && ++*tries < 30) {
+				QTimer::singleShot(30, s->win, *step);
+				return;
+			}
+			openRemoteSDialogNow(s->win, s, "indices");
+			auto it = g_remotesDlgs.find({s, "indices"});
+			if (it == g_remotesDlgs.end() || !it->second || !it->second->dlg) return;
+			it->second->request("init", false, QString(), "obj=" + nm + "\n");
+		};
+		if (sceneAlive(s) && s->win) QTimer::singleShot(0, s->win, *step);
+	};
+	return true;
+}();
+
 static const bool g_rsCalibrateHook = [] {
 	g_rsCalibrateImage = [](Scene *s, const char *name) {
 		const QString nm = QString::fromUtf8(name ? name : "");

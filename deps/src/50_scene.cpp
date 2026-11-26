@@ -1359,6 +1359,8 @@ static void imageHandleMenu(Scene *s, int idx, const QPoint &g) {
 	// TOA, surface reflectance, brightness temperature) opened on THIS image's file.
 	QAction *aCalib = (g_rsCalibrateImage && flagged(s->imgHasOrig))
 	                  ? m.addAction("Landsat calibration (radiance / reflectance TOA)…") : nullptr;
+	// A cube of Landsat or Sentinel-2 bands: the Spectral indices tool opened on THIS cube's file.
+	QAction *aIndices = (g_rsIndicesImage && flagged(s->specCubeNames)) ? m.addAction("Spectral indices…") : nullptr;
 	// Binarize, Shape detector and K-means classification are NOT here: they live in the Image menu,
 	// which opens them — or brings back a parked/hidden one — for the displayed image.
 	// Same "Image > Show Histogram" the menu bar opens, on THIS handle's image (the menu-bar entry
@@ -1385,6 +1387,7 @@ static void imageHandleMenu(Scene *s, int idx, const QPoint &g) {
 	if (aHisto && c == aHisto) { g_showImageHisto(s, cname.c_str()); return; }
 	if (aEnhance && c == aEnhance) { g_enhanceReopen(s, cname.c_str()); return; }
 	if (aCalib && c == aCalib) { g_rsCalibrateImage(s, cname.c_str()); return; }
+	if (aIndices && c == aIndices) { g_rsIndicesImage(s, cname.c_str()); return; }
 	if (aResize && c == aResize) { g_showImageResize(s, cname.c_str()); return; }
 	if (c == aMove) {
 		if (!moveObjectToNewWindow(s, "image", QString::fromStdString(cname))) return;   // a failed move leaves the image put

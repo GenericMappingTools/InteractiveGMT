@@ -382,6 +382,15 @@ end
 # A netCDF/GMT grid cube is left alone: its layers are walked with the layer slider.
 const _SRC_BANDS = Dict{Tuple{Ptr{Cvoid},String},Tuple{String,Vector{String}}}()   # (scene, handle) -> (file, labels)
 
+# Is this band stack Landsat or Sentinel-2? Either every band carries the description Band cube gives
+# those bands (RemoteS' Lsat8_desc / Sentinel2_*_desc: "Band4 - Red [0.64-0.67]"), or the product names
+# say so (`_rs_sensor`: LC08_/LT05_/S2A_/T29SNC_…/HLS).
+function _is_spectral_cube(file::String, labels::Vector{String})::Bool
+	known = union(values(RemoteS.Lsat8_desc), values(RemoteS.Sentinel2_10m_desc), values(RemoteS.Sentinel2_20m_desc))
+	all(l -> l in known, labels) && return true
+	return _rs_sensor(basename(file) * "\n" * join(labels, "\n")) !== nothing
+end
+
 function _list_parts!(scene::Ptr{Cvoid}, spec::String, handle::String)::Nothing
 	base = String(first(split(spec, '?')))
 	isfile(base) || return nothing
@@ -401,11 +410,14 @@ function _list_parts!(scene::Ptr{Cvoid}, spec::String, handle::String)::Nothing
 	labels = try _rs_bands(base) catch; String[] end
 	length(labels) > 1 || return nothing
 	_SRC_BANDS[(scene, handle)] = (base, labels)
-	# The file the bands are STORED in, as a row of the group (its name; full path in its tooltip): the
-	# band rows read from it when clicked, and nothing else on screen said where that was.
-	ccall(_fn(:gmtvtk_set_source_files_h), Cvoid, (Ptr{Cvoid}, Cstring, Cstring), scene, handle, base)
+	# The cube's members are its BANDS, nothing else: the cube's own file is NEVER listed as a member of
+	# itself (it used to be, as a "source file" row -- user, 2026-11-26: "a cube cannot have as a member
+	# a reference to itself"). Only a .vrt has source files, and those are other files (branch above).
 	ccall(_fn(:gmtvtk_set_source_bands_h), Cvoid, (Ptr{Cvoid}, Cstring, Cstring),
 	      scene, handle, join(labels, '\n'))
+	# A cube of Landsat or Sentinel-2 bands: its handle offers "Spectral indices…" on this file.
+	_is_spectral_cube(base, labels) &&
+		ccall(_fn(:gmtvtk_set_spectral_cube_h), Cvoid, (Ptr{Cvoid}, Cstring, Cint), scene, handle, Cint(1))
 	return nothing
 end
 

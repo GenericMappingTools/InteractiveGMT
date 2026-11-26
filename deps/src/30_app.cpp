@@ -1766,6 +1766,9 @@ static void (*g_enhanceReopen)(Scene *scene, const char *name) = nullptr;
 // Satellite > Remote sensing > "Landsat calibration…" (radiance / reflectance TOA, …) opened on the
 // FILE of the image whose Scene Objects handle was clicked ("" = the window's primary image).
 static void (*g_rsCalibrateImage)(Scene *scene, const char *name) = nullptr;
+// Satellite > Remote sensing > "Spectral indices…" opened on the FILE of the Landsat / Sentinel-2 cube
+// whose Scene Objects handle was clicked (Scene::specCubeNames).
+static void (*g_rsIndicesImage)(Scene *scene, const char *name) = nullptr;
 // "Image > Show Histogram", reachable from an image's own Scene Objects handle as well as from the
 // menu bar. ONE function draws it (70_window.cpp `showImageHistogram`); this hook is only how the
 // earlier fragment reaches it. `name` names the image whose handle was clicked ("" = the primary).

@@ -1775,6 +1775,9 @@ struct Scene {
 	// 8-bit image from that source, so the entry only appears for an image that HAS one — on a plain
 	// 8-bit image there is nothing wider to stretch from. Set from Julia (gmtvtk_image_set_has_orig_h).
 	std::set<std::string> imgHasOrig;
+	// Cubes made of Landsat or Sentinel-2 bands, by Scene Objects name: their handle offers "Spectral
+	// indices…" on the cube's file. Set from Julia (gmtvtk_set_spectral_cube_h, drop.jl _list_parts!).
+	std::set<std::string> specCubeNames;
 	// Images that are genuine 3-band RGB, by the same naming. "Explore RGB" splits an image into its
 	// colour components, so it is offered ONLY for one that HAS them — Mirone hides the entry for any
 	// non-RGB image (mirone.m: `if (ndims(img) < 3), return, end`). Set from Julia

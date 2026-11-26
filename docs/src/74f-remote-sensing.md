@@ -101,17 +101,31 @@ kept in the cube's metadata, so *Spectral indices* and *Landsat calibration* can
 
 **Band files** — the band files, in the order they go into the cube. Only the **checked** ones are
 used. Opened from a window that shows a .vrt, the list holds that .vrt's band files, all checked.
+Otherwise, when this session already holds band files (any window; a file whose name ends in a band
+number, `…_B4.TIF`, `…_B04_10m.jp2`, `….B8A.tif` — a DEM or a cube opened beside them is not one),
+the dialog asks, as *Load Bands* does: **Use the N loaded bands** (they fill the list, all checked)
+or **Pick band files…** (the **...** file picker).
 - **...** adds files (several at once; press it again to add more, from another folder too). A file
   already listed is not added twice.
+- **Drop** files from Explorer onto the list to add them, the same way.
+- **Right-click** the list → *Add the bands loaded in this session*: the session's band files not
+  yet listed are added; what is already there stays as it is.
+- **Remove** a file: right-click it → *Remove <file>*, or select it and press **Delete**.
+  *Remove all* empties the list.
 - **Drag** a file up or down to change its place in the cube.
+- The cube keeps the MTL of the **first** band file. With Landsat bands whose MTL (`…_MTL.txt`) is
+  not beside that first file, the status line warns: the cube will build, but *Landsat calibration*
+  and TOA reflectance will not be available on it.
 - Hover a file for its full path.
 
 **Region** — W / E / S / N in the band files' own coordinates (UTM metres for Landsat and Sentinel-2).
 All four empty: the whole scene. Three ways to fill it besides typing:
 - **OR Ref file** — pick a grid or image: its extent becomes the region, converted to the bands'
   coordinates when it is in another system. Limits you typed are left alone until you pick a new one.
-- **OR Use the drawn rectangle** — the last rectangle drawn in the window (*Draw → Rectangle*), over
-  the image it shows, converted to the bands' coordinates when the window is in another system.
+- **OR Draw rectangle** — draw it now: the window's Rectangle tool switches on; click one corner, then
+  the opposite one. The region becomes THAT rectangle (whatever other rectangles the window holds),
+  converted to the bands' coordinates when the window is in another system. Press again to cancel.
+- **Use last drawn rectangle** — the last rectangle already drawn in the window (*Draw → Rectangle*).
 - **Use the first band's extent** — the whole scene's extent, to trim by hand.
 
 **Sentinel-2** — Sentinel-2 file names do not say which band set they are; say whether these are the

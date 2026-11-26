@@ -535,19 +535,91 @@ function _rs_file_box(f::String)::Tuple{NTuple{4,Float64},String}
 	return (h[1], h[2], h[3], h[4]), (try GMT.getproj(f) catch; "" end)
 end
 
+# The band files already loaded in this session, in load order, each once: every raster any open
+# window read from a file (the provenance log Save Session reads), a .vrt standing for its band files.
+# A band file is one whose name ends in a band number ("…_B4", "…_B04_10m", "….B8A") -- the same tail
+# `_rs_band_roles` reads; a DEM or a cube loaded beside the bands is not one of them.
+function _rs_session_bands()::Vector{String}
+	out = String[]
+	isband(f::String) = occursin(r"(?:^|[_.\-])B(\d{1,2}|8A)(?:_VCID_\d|_\d+m)?$"i, splitext(basename(f))[1])
+	function take(f::String)
+		f = String(first(split(f, '?')))
+		(isempty(f) || !isfile(f)) && return
+		if lowercase(splitext(f)[2]) == ".vrt"
+			for s in (try filter(isfile, _vrt_source_files(f)) catch; String[] end)
+				isband(s) && !(abspath(s) in abspath.(out)) && push!(out, s)
+			end
+		elseif isband(f) && !(abspath(f) in abspath.(out))
+			push!(out, f)
+		end
+	end
+	for (_, recs) in _SESSION_LOG, r in recs
+		r.origin === :file && r.kind in (:basegrid, :dropgrid, :image, :dropimage) && take(r.source)
+	end
+	for (_, b) in _BANDS_INFO
+		take(String(b.path))
+	end
+	return out
+end
+
+# The cube keeps the MTL of its FIRST band file (RS.cutcube reads it there). Landsat bands whose MTL
+# cannot be found make a cube that Spectral indices (TOA) and Landsat calibration cannot calibrate: say
+# so before the cube is built, and again after. "" when there is nothing to warn about.
+function _rs_cut_mtl_warning(names::Vector{String})::String
+	any(f -> occursin(r"^L[COTE]0\d_"i, basename(f)), names) || return ""
+	RS.read_mtl_lines(names[1]) === nothing || return ""
+	return " WARNING: no MTL file (…_MTL.txt) found beside $(basename(names[1])) (the first band): the cube " *
+	       "will not carry it, so Landsat calibration and TOA reflectance will not be available on it."
+end
+
+function _rs_cut_status(io::IOBuffer, names::Vector{String}, first_open::Bool = false)
+	n = length(names)
+	hint = first_open ? " Drop band files from Explorer onto the list; right-click it to remove files or add the bands loaded in this session." : ""
+	_rs_status(io, (n == 0 ? "Choose the band files of one scene." : "$(n) band file(s).") * hint *
+	               (n == 0 ? "" : _rs_cut_mtl_warning(names)))
+end
+
+# The box of the drawn rectangle called `name` (the newest one of that name: after a delete, a new
+# rectangle can carry an old one's number). Same record `_rs_drawn_rect` reads (gmtvtk_serialize_polys).
+function _rs_named_rect(scene::Ptr{Cvoid}, name::String)::NTuple{4,Float64}
+	box = nothing
+	for line in split(_serialize_polys_raw(scene), '\n'; keepempty = false)
+		p = split(line, ';'; limit = 13)
+		(length(p) == 13 && p[2] == "1" && p[12] == name) || continue
+		xy = [parse.(Float64, split(v, ',')[1:2]) for v in split(p[13], '|'; keepempty = false)]
+		isempty(xy) && continue
+		xs, ys = first.(xy), last.(xy)
+		box = (minimum(xs), maximum(xs), minimum(ys), maximum(ys))
+	end
+	box === nothing && error("The rectangle \"$name\" is no longer in the window.")
+	return box
+end
+
 function _rs_cutcube(scene::Ptr{Cvoid}, d::Dict{String,String}, io::IOBuffer)::Bool
 	what = _rs_get(d, "what")
 	names = _rs_cut_names(d)
 	if what == "init"
-		# Opened over a .vrt: its band files, all checked, ready to be ticked out.
+		# Opened over a .vrt: its band files, all checked, ready to be ticked out. Otherwise, when this
+		# session already holds band files, the USER is asked whether to use them or pick files (ask:,
+		# the dialog's Load-Bands-style question; "use" comes back as what=session) -- never taken silently.
 		wf = String(first(split(_rs_window_file(scene), '?')))
-		if lowercase(splitext(wf)[2]) == ".vrt" && isfile(wf)
-			src = filter(isfile, _vrt_source_files(wf))
-			if !isempty(src)
-				_rs_items(io, "p_names", src)
-				names = src
-			end
+		src = (lowercase(splitext(wf)[2]) == ".vrt" && isfile(wf)) ? filter(isfile, _vrt_source_files(wf)) : String[]
+		if !isempty(src)
+			_rs_items(io, "p_names", src)
+			names = src
+		else
+			nses = length(_rs_session_bands())
+			nses > 0 && println(io, "ask:p_names=", nses)
 		end
+	end
+	if what == "session"
+		# The list's right-click "Add the bands loaded in this session": APPENDED (a file already listed
+		# stays as it is, checked or not), never a replace of what the user gathered.
+		new = filter(f -> !(abspath(f) in abspath.(names)), _rs_session_bands())
+		isempty(new) && (_rs_status(io, "No band files loaded in this session that are not already listed."); return true)
+		println(io, "add:p_names=", join(new, '\t'))
+		_rs_cut_status(io, vcat(names, new))
+		return true
 	end
 	if what == "init" || what == "refresh"
 		ref = _rs_get(d, "p_reffile")
@@ -556,14 +628,16 @@ function _rs_cutcube(scene::Ptr{Cvoid}, d::Dict{String,String}, io::IOBuffer)::B
 			_rs_cut_set_region!(io, _rs_cut_in_bands(names, srs, b))
 			_RS_CUT_REF[scene] = ref
 		end
-		n = length(names)
-		_rs_status(io, n == 0 ? "Choose the band files of one scene." : "$(n) band file(s).")
+		_rs_cut_status(io, names, what == "init")
 		return true
 	end
 	if what == "rgrect"
+		# picked=<name>: the rectangle "Draw rectangle" just had drawn; else the last one drawn.
 		_rs_need_map(scene)
-		_rs_cut_set_region!(io, _rs_cut_in_bands(names, _window_srs(scene), _rs_drawn_rect(scene)))
-		_rs_status(io, "Region set to the drawn rectangle.")
+		picked = _rs_get(d, "picked")
+		box = isempty(picked) ? _rs_drawn_rect(scene) : _rs_named_rect(scene, picked)
+		_rs_cut_set_region!(io, _rs_cut_in_bands(names, _window_srs(scene), box))
+		_rs_status(io, "Region set to " * (isempty(picked) ? "the last drawn rectangle." : "$(picked)."))
 		return true
 	end
 	if what == "rgband"
@@ -576,6 +650,16 @@ function _rs_cutcube(scene::Ptr{Cvoid}, d::Dict{String,String}, io::IOBuffer)::B
 	isempty(names) && error("Choose the band files of one scene.")
 	save = _rs_get(d, "p_save")
 	isempty(save) && error("Choose the output file.")
+	# A cube is a GeoTIFF and its name says so: anything not ending in .tif gets .tiff. A name without
+	# a folder is NEVER written relative to the session's current folder (that put "cubo3" into the
+	# program's own folder): the user is asked WHERE (askdir:), and Build cube runs again from there.
+	lowercase(splitext(save)[2]) in (".tif", ".tiff") || (save *= ".tiff")
+	if !isabspath(save)
+		println(io, "askdir:p_save=compute\t", save)
+		_rs_status(io, "Choose the folder where $(save) is saved.")
+		return true
+	end
+	isdir(dirname(save)) || error("The folder $(dirname(save)) does not exist.")
 	lim = [_rs_get(d, w) for w in ("p_rg_w", "p_rg_e", "p_rg_s", "p_rg_n")]
 	reg = if all(isempty, lim)
 		nothing
@@ -590,7 +674,8 @@ function _rs_cutcube(scene::Ptr{Cvoid}, d::Dict{String,String}, io::IOBuffer)::B
 	RS.cutcube(names = names, region = reg, sentinel2 = sent, save = save)
 	isfile(save) || error("cutcube wrote nothing to $save")
 	_on_drop(scene, save)			# the ONE open-a-file-into-a-window path
-	_rs_status(io, "$(basename(save)) written ($(length(names)) bands) and opened.")
+	_rs_set(io, "p_save", save)
+	_rs_status(io, "$(save) written ($(length(names)) bands) and opened." * _rs_cut_mtl_warning(names))
 	return true
 end
 
