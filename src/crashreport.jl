@@ -234,7 +234,7 @@ function _crash_mailto(title::String, body::String, zipname::String)::String
 end
 
 # Turn the dead session folder into igmt_crash_<time>.zip and offer to report it.
-function _crash_report(sdir::String, event)
+function _crash_report(sdir::String, event; dialog::Bool = true)       # dialog=false: the tests
 	started = isfile(joinpath(sdir, "info.txt")) ? mtime(joinpath(sdir, "info.txt")) : 0.0
 	fields  = event === nothing ? nothing : _crash_event_fields(event)
 	event === nothing || write(joinpath(sdir, "eventlog.xml"), event)
@@ -261,13 +261,13 @@ function _crash_report(sdir::String, event)
 	rm(sdir; recursive = true, force = true)
 	olds = sort(filter(f -> startswith(f, "igmt_crash_") && endswith(f, ".zip"), readdir(root)))
 	foreach(f -> rm(joinpath(root, f); force = true), olds[1:max(0, length(olds) - 10)])   # keep the last 10
-	_crash_has(:gmtvtk_crash_report_dialog) || return nothing
+	(dialog && _crash_has(:gmtvtk_crash_report_dialog)) || return zip
 	url = _crash_mailto(title, body, basename(zip))
 	ccall(_fn(:gmtvtk_crash_report_dialog), Cint, (Cstring, Cstring, Cstring, Cstring), body, zip, _CRASH_EMAIL, url)
 	return nothing
 end
 
-function _crash_check_previous()
+function _crash_check_previous(; dialog::Bool = true)                   # dialog=false: the tests
 	root = _crash_root()
 	isdir(root) || return nothing
 	events = nothing
@@ -283,7 +283,7 @@ function _crash_check_previous()
 			rm(sdir; recursive = true, force = true)     # no sign of a crash: Windows shut down, Task Manager
 			continue
 		end
-		_crash_report(sdir, ev)
+		_crash_report(sdir, ev; dialog)
 	end
 	return nothing
 end

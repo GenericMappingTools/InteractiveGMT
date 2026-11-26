@@ -47,8 +47,7 @@ end
 TEMPORARY. On an iGMT Windows install whose proj.db its own PROJ rejects, replace
 <INSTDIR>\\gmt\\share\\proj with the contents of `zip`. True when nothing is left to do.
 """
-function _proj_db_repair(zip::String)::Bool
-	inst = _projfix_inst()
+function _proj_db_repair(zip::String; inst::String = _projfix_inst())::Bool   # inst= : the tests' fake install
 	isempty(inst) && return true
 	dir   = joinpath(inst, "gmt", "share", "proj")
 	stamp = joinpath(dir, _PROJFIX_STAMP)
