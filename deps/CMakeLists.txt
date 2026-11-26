@@ -358,7 +358,7 @@ if(IGMT_WITH_MBNAVADJUST AND MBEDIT_SRC AND MBGRDVIZ_SRC AND EXISTS "${CMAKE_CUR
   message(STATUS "gmtvtk: building the EXPERIMENTAL navigation adjustment tool (src/mbnavadjust/)")
 endif()
 
-set(GMTVTK_SRC src/gmtvtk.cpp src/mbgrid.c ${CUBE_SRC} ${NSWING_SRC} src/satellite.cpp ${SAT_CODE_SRC} ${MBEDIT_SRC} ${MBVELOCITY_SRC} ${MBNAVEDIT_SRC} ${MBEDITVIZ_SRC} ${MBGRDVIZ_SRC} ${PCE_SRC} ${WCDVIEWER_SRC} ${MBNAVADJUST_SRC})
+set(GMTVTK_SRC src/gmtvtk.cpp src/crashreport.cpp src/mbgrid.c ${CUBE_SRC} ${NSWING_SRC} src/satellite.cpp ${SAT_CODE_SRC} ${MBEDIT_SRC} ${MBVELOCITY_SRC} ${MBNAVEDIT_SRC} ${MBEDITVIZ_SRC} ${MBGRDVIZ_SRC} ${PCE_SRC} ${WCDVIEWER_SRC} ${MBNAVADJUST_SRC})
 
 # deps/ui/*.ui are loaded at RUNTIME (QUiLoader, see FocalMechanismsDialog in 70_window.cpp) for
 # dialogs where the .ui must stay the single source of truth — no hand-ported C++ to fall out of

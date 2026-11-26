@@ -2294,6 +2294,63 @@ public:
 };
 
 // ---------------------------------------------------------------------------------------------
+// THE CRASH TRAIL: what the user did last, for the crash report (crashreport.cpp keeps it in a
+// memory-mapped ring that survives any death of the process). Every click, menu pick, Enter/Escape and
+// window shown, named as the user saw it: "click 'Compute' [Grid Calculator]". Installed on the
+// application, so no dialog — present or future — can be left out. Type tests only on every other event.
+extern "C" void igmt_trail_add(const char *text);
+
+class CrashTrailFilter : public QObject {
+public:
+	using QObject::QObject;
+protected:
+	bool eventFilter(QObject *obj, QEvent *ev) override {
+		const QEvent::Type t = ev->type();
+		if (t != QEvent::MouseButtonRelease && t != QEvent::KeyPress && t != QEvent::Show) return false;
+		QWidget *w = qobject_cast<QWidget *>(obj);
+		if (!w) return false;
+		if (t == QEvent::Show) {
+			if (!w->isWindow() || w->windowType() == Qt::ToolTip || w->windowType() == Qt::Popup) return false;
+			QString s = "show " + QString(w->metaObject()->className()) + " '" + w->windowTitle() + "'";
+			if (auto *mb = qobject_cast<QMessageBox *>(w)) s += ": " + mb->text().left(140);
+			igmt_trail_add(s.toUtf8().constData());
+			return false;
+		}
+		// a mouse/key event the widget ignores is re-sent to its parent as the SAME event: record it once
+		static const QEvent *last = nullptr;
+		static ulong lastTs = 0;
+		const ulong ts = static_cast<QInputEvent *>(ev)->timestamp();
+		if (ev == last && ts == lastTs) return false;
+		last = ev;
+		lastTs = ts;
+		QString what;
+		if (t == QEvent::KeyPress) {
+			const int k = static_cast<QKeyEvent *>(ev)->key();
+			if (k != Qt::Key_Return && k != Qt::Key_Enter && k != Qt::Key_Escape && k != Qt::Key_Delete) return false;
+			what = QString("key ") + (k == Qt::Key_Escape ? "Esc" : k == Qt::Key_Delete ? "Del" : "Enter") + " in " +
+			       w->metaObject()->className();
+		}
+		else if (auto *m = qobject_cast<QMenu *>(w)) {
+			QAction *a = m->actionAt(static_cast<QMouseEvent *>(ev)->position().toPoint());
+			if (!a) return false;
+			what = "menu '" + m->title() + "' > '" + a->text() + "'";
+		}
+		else if (auto *b = qobject_cast<QAbstractButton *>(w)) {
+			QString txt = b->text().isEmpty() ? b->toolTip().left(60) : b->text();
+			what = "click " + QString(b->metaObject()->className()) + " '" + txt + "'";
+			if (b->isCheckable()) what += b->isChecked() ? " (on->off)" : " (off->on)";
+		}
+		else
+			what = "click " + QString(w->metaObject()->className()) + (w->objectName().isEmpty() ? "" : " #" + w->objectName());
+		what.remove('&');
+		const QString title = w->window() ? w->window()->windowTitle() : QString();
+		if (!title.isEmpty()) what += " [" + title + "]";
+		igmt_trail_add(what.toUtf8().constData());
+		return false;                              // only watching
+	}
+};
+
+// ---------------------------------------------------------------------------------------------
 // QT'S OWN DIAGNOSTICS ARE ERRORS. Not warnings — errors.
 //
 // "QThreadStorage: entry 2 destroyed before end of thread", "QLayout: Attempting to add QLayout to X
@@ -2330,6 +2387,7 @@ static void gmtvtkMessageHandler(QtMsgType t, const QMessageLogContext &ctx, con
 		if (ctx.file && ctx.file[0]) line += std::string(" (") + ctx.file + ":" + std::to_string(ctx.line) + ")";
 		if (g_qtMessages.size() >= GMTVTK_MAX_QT_MESSAGES) g_qtMessages.erase(g_qtMessages.begin());
 		g_qtMessages.push_back(line);
+		igmt_trail_add(line.c_str());              // and into the crash trail
 	}
 	if (g_prevMsgHandler) g_prevMsgHandler(t, ctx, msg);   // stderr keeps working, unchanged
 }
@@ -2418,6 +2476,7 @@ static void ensureApp() {
 		"QMessageBox { messagebox-text-interaction-flags: 7; }");
 	g_app->installEventFilter(new EnterDefocusFilter(g_app));   // Enter defocuses any QLineEdit (app-wide)
 	g_app->installEventFilter(new StickyTooltipFilter(g_app));  // tooltips stay up until the mouse moves on
+	g_app->installEventFilter(new CrashTrailFilter(g_app));     // last user actions, for a crash report
 }
 
 // THE SHUTDOWN THE PROCESS NEVER HAD, and the reason every session ended with

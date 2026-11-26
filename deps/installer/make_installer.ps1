@@ -159,6 +159,22 @@ if (-not $SkipStage) {
     $LASTEXITCODE = 0
     Write-Host "share: copied $GmtShare"
 
+    # --- share\proj: the data of the PROJ that proj_w64.dll IS ---
+    # `gmt --show-sharedir` of a source-tree build is the git checkout, whose share\proj is an
+    # untracked folder no pull or build ever refreshes (2019 grids, a 2021 proj.db), while the DLL
+    # comes from the symlink into the PROJ build. A newer PROJ rejects an older proj.db
+    # ("DATABASE.LAYOUT.VERSION.MINOR = 1 whereas a number >= 7 is expected"), and GMT points PROJ
+    # at <share>\proj itself (gmt_init.c, OSRSetPROJSearchPaths), as setup.jl's PROJ_DATA does.
+    $projDll = Get-Item (Join-Path $GmtBin "proj_w64.dll")
+    $projSrc = $projDll.FullName
+    if ($projDll.LinkType -eq "SymbolicLink") { $projSrc = @($projDll.Target)[0] }
+    $projData = Join-Path (Split-Path (Split-Path $projSrc)) "share\proj"     # <prefix>\lib\proj_w64.dll -> <prefix>\share\proj
+    if (-not (Test-Path (Join-Path $projData "proj.db"))) { throw "no proj.db beside $projSrc (looked in $projData)" }
+    & robocopy $projData (Join-Path $gshr "proj") /E /NFL /NDL /NJH /NJS /NP | Out-Null
+    if ($LASTEXITCODE -ge 8) { throw "robocopy of $projData failed ($LASTEXITCODE)" }
+    $LASTEXITCODE = 0
+    Write-Host "share\proj: copied $projData (the PROJ of $projSrc)"
+
     # --- smoke test: the staged gmt runs with ONLY its own folder + Windows on PATH ---
     $env:PATH = "$gbin;$sys32;$env:SystemRoot"
     $env:GMT_SHAREDIR = $gshr
@@ -167,6 +183,23 @@ if (-not $SkipStage) {
     & (Join-Path $gbin "gmt.exe") grdmath -R0/1/0/1 -I1 1 = (Join-Path $stage "smoke.nc")
     if ($LASTEXITCODE -ne 0) { throw "staged gmt grdmath failed" }
     Remove-Item (Join-Path $stage "smoke.nc")
+    # PROJ must accept the shipped proj.db: an EPSG code is read from it. Any PROJ message here
+    # (wrong layout, missing db) is a broken bundle, whatever the exit code.
+    foreach ($v in "PROJ_DATA", "PROJ_LIB", "LOCAL_PROJ_LIB") { Remove-Item "env:$v" -ErrorAction SilentlyContinue }
+    $env:PROJ_DATA = Join-Path $gshr "proj"
+    $prevEAP = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+    $pt = Join-Path $stage "smoke_pt.txt"
+    Set-Content $pt "-9 40" -Encoding ascii                  # a file: a PS pipe into gmt.exe gave no output
+    $out = @(& (Join-Path $gbin "gmt.exe") mapproject $pt -JEPSG:32629 -R-10/-8/39/41 2>&1 | ForEach-Object { "$_" })
+    $code = $LASTEXITCODE
+    $ErrorActionPreference = $prevEAP
+    Remove-Item $pt
+    # -9 is UTM zone 29's central meridian: x must be exactly the 500000 m false easting
+    if ($code -ne 0 -or ($out -match 'PROJ|SRS') -or -not ($out -match '^500000\s')) {
+        throw "staged PROJ rejects its proj.db (EPSG:32629 test):`n$($out -join "`n")"
+    }
+    Remove-Item env:PROJ_DATA
+    Write-Host "staged PROJ reads its proj.db (EPSG:32629 ok)"
     Write-Host "staged GMT $ver runs standalone"
 }
 

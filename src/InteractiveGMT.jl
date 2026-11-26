@@ -33,6 +33,7 @@ include("libgmtvtk.jl")
 include("gmtjl_strip.jl") # GMT.jl in an iGMT Windows install: the JLLs its bundled GMT replaces
 include("selfupdate.jl") # update!() -- pull + rebuild in place, for a `] dev`-installed checkout
 include("projfix.jl")    # TEMPORARY: replace the out-of-date proj.db of pre-2026-11-26 Windows installs
+include("crashreport.jl") # a crash on a user's machine leaves a report; the next start offers to send it
 
 # --- handles, event loop, in-window Julia console ----------------------------------------
 include("types.jl")
@@ -340,6 +341,11 @@ function __init__()
 	# error on first use.
 	try
 		_load_library()
+		try
+			_crash_session_start()   # crash catcher + action trail; reports a previous crash (crashreport.jl)
+		catch e
+			@tool_error "InteractiveGMT: could not start crash reporting." exception=(e,)
+		end
 		_plugin_push_ready()        # activated above, before the viewer existed (gmtplugin.jl)
 		try
 			_craft_push_state()      # the script editor's Install / Edit / Update buttons (craftapps.jl)

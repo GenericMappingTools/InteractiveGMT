@@ -9165,6 +9165,59 @@ GMTVTK_API int gmtvtk_crs_select(void *handle, const char *initial, char *out, i
 	return 1;
 }
 
+// THE CRASH REPORT, at the start after a session that died (src/crashreport.jl builds it). `summary` is
+// the text shown (selectable, and Copy-able as the details), `zip` the report file, `email` where to
+// send it, `mailto` a mailto: link with subject and text already filled in. "Send e-mail..." opens the
+// mail program with that link AND an Explorer window with the zip selected, to attach it. No mail
+// program (webmail): "Copy address" + "Open folder" do the same by hand. The dialog stays open after
+// those two, so both can be used. Returns 1 when the user chose to send, 0 otherwise.
+GMTVTK_API int gmtvtk_crash_report_dialog(const char *summary, const char *zip, const char *email, const char *mailto) {
+	ensureApp();
+	const QString zp   = QString::fromUtf8(zip ? zip : "");
+	const QString addr = QString::fromUtf8(email ? email : "");
+	QMessageBox box;
+	box.setIcon(QMessageBox::Warning);
+	box.setWindowTitle("iGMT closed unexpectedly");
+	box.setText("iGMT closed unexpectedly the last time it was used.\n\n"
+	            "A crash report was saved. Please e-mail it to\n\n    " + addr + "\n\n"
+	            "so the cause can be found and fixed. Attach this file to the e-mail:\n\n    " +
+	            QDir::toNativeSeparators(zp) + "\n\n"
+	            "\"Send e-mail...\" opens your mail program and the folder with the file. If you use webmail, "
+	            "use \"Copy address\" and \"Open folder\" instead.");
+	box.setDetailedText(QString::fromUtf8(summary ? summary : ""));
+	QPushButton *send = box.addButton("Send e-mail...", QMessageBox::AcceptRole);
+	QPushButton *copy = box.addButton("Copy address", QMessageBox::ActionRole);
+	QPushButton *dir  = box.addButton("Open folder", QMessageBox::ActionRole);
+	box.addButton("Close", QMessageBox::RejectRole);
+	box.setDefaultButton(send);
+	auto showFile = [&]() {
+#ifdef _WIN32
+		QProcess::startDetached("explorer.exe", { "/select,", QDir::toNativeSeparators(zp) });
+#else
+		QDesktopServices::openUrl(QUrl::fromLocalFile(QFileInfo(zp).absolutePath()));
+#endif
+	};
+	// every button closes a QMessageBox: Copy / Open folder do their job and show it again
+	for (;;) {
+		box.exec();
+		QAbstractButton *c = box.clickedButton();
+		if (c == copy) {
+			QApplication::clipboard()->setText(addr);
+			continue;
+		}
+		if (c == dir) {
+			showFile();
+			continue;
+		}
+		if (c == send) {
+			QDesktopServices::openUrl(QUrl(QString::fromUtf8(mailto ? mailto : ""), QUrl::TolerantMode));
+			showFile();
+			return 1;
+		}
+		return 0;
+	}
+}
+
 // --- test-only hooks for the fault-trace endpoint logic (exercised by the Julia test suite) -------
 // Compiled ONLY into gmtvtk_test.dll (GMTVTK_TEST_API, set by the gmtvtk_test CMake target).
 // The production gmtvtk.dll never sees these symbols at all — not hidden, not exported.

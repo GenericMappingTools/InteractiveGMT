@@ -437,6 +437,9 @@ const _LIB_OPTIONAL = (
 	# EXPERIMENTAL water column viewer (deps/src/wcdviewer/, IGMT_WITH_WCDVIEWER)
 	:gmtvtk_set_wcd_callbacks, :gmtvtk_wcd_open, :gmtvtk_wcd_state, :gmtvtk_wcd_set_ping, :gmtvtk_wcd_pick_at,
 	:gmtvtk_wcd_save_png, :gmtvtk_wcd_grab_window, :gmtvtk_wcd_close,
+	# crash reports on users' machines (deps/src/crashreport.cpp, src/crashreport.jl). OPTIONAL: an
+	# install that pulled this source but still has an older gmtvtk.dll must start as before.
+	:gmtvtk_crash_install, :gmtvtk_crash_trail, :gmtvtk_crash_eventlog, :gmtvtk_crash_report_dialog,
 )
 
 # Why the library failed to load, kept so the FIRST viewer call can repeat it. __init__ is
