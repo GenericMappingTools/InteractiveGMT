@@ -32,6 +32,7 @@ include("errors.jl")   # THE failure sink + @tool_error: first, so every later f
 include("libgmtvtk.jl")
 include("gmtjl_strip.jl") # GMT.jl in an iGMT Windows install: the JLLs its bundled GMT replaces
 include("selfupdate.jl") # update!() -- pull + rebuild in place, for a `] dev`-installed checkout
+include("projfix.jl")    # TEMPORARY: replace the out-of-date proj.db of pre-2026-11-26 Windows installs
 
 # --- handles, event loop, in-window Julia console ----------------------------------------
 include("types.jl")
@@ -302,6 +303,12 @@ end
 # of non-Windows) so `using InteractiveGMT` still succeeds; viewer calls then error on first use.
 function __init__()
 	_dbg("startup", "__init__ enter")
+	# TEMPORARY (projfix.jl): before anything can open proj.db. One gmt.exe run, once per install.
+	try
+		_proj_db_repair(joinpath(dirname(@__DIR__), "deps", "proj_data_fix.zip"))
+	catch e
+		@tool_error "iGMT: the PROJ database check failed." exception=(e,)
+	end
 	# GDAL reads on ALL CORES. A tiled/compressed raster (every Landsat/Sentinel scene, every VRT over
 	# them) is decompressed single-threaded by default; this is the one process-wide switch that fixes
 	# it for every read in the package. Measured on a 4-band 60-Mpx Landsat VRT: 5.9 s -> 3.9 s.

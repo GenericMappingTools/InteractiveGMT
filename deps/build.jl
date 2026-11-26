@@ -434,6 +434,15 @@ function main()
 end
 
 if Sys.iswindows()
+    # TEMPORARY (src/projfix.jl): Check for Updates runs this script from the freshly pulled tree,
+    # so this is where an existing iGMT Windows install gets its out-of-date proj.db replaced.
+    # Before main(): a failed binary download must not skip it.
+    include(joinpath(@__DIR__, "..", "src", "projfix.jl"))
+    try
+        _proj_db_repair(joinpath(@__DIR__, "proj_data_fix.zip"))
+    catch e
+        @warn "iGMT: the PROJ database repair failed -- it is retried at the next start of iGMT." exception=(e,)
+    end
     main()
 elseif (Sys.islinux() && Sys.ARCH === :x86_64) || (Sys.isapple() && Sys.ARCH in (:aarch64, :x86_64))
     main_unix()
