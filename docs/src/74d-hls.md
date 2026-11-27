@@ -34,6 +34,18 @@ the window shows; **Use the drawn rectangle** with the last rectangle drawn in t
 (*Draw → Rectangle*). A projected window's box is turned into degrees. Keep regions small (a field,
 a farm, a valley): every date reads the region's pixels again.
 
+**Field polygon** — makes a field, not a rectangle, the working area. Give a polygon file (GeoJSON,
+shapefile, GMT table…, through **...**; a projected file is converted with its own coordinate
+system), or press **Pick in window** and click a closed polygon already in the window — one drawn
+with *Draw → Polygon* (or Rectangle, Circle) or one imported from a file. The box then holds that
+file's path or that polygon's Scene Objects name, and the four limits become the polygon's bounding
+box. Only the pixels whose centre is inside the polygon count: the others are left empty (NaN), and
+the **clear share** that keeps or drops a date and the **mean** of each date are taken over the
+field's pixels alone, so a cloud next to the field no longer drops a date, and the bare edges around
+it no longer pull its mean. A file with several polygons uses all of them. Emptying the box, or
+**Use the window's limits** / **Use the drawn rectangle**, goes back to the whole rectangle. From
+Julia: `hls_series(; polygon = gmtread("field.geojson"), from, to)` (`s2_series` alike).
+
 **From / To** — the period, both days included.
 
 **Index** — computed with the same engine as *Spectral indices* (RemoteS):

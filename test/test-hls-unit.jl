@@ -112,3 +112,54 @@ end
 	@test isapprox(M.mean[1], 0.1091; atol = 5e-4)                   # HLS S30: 0.1197
 	@test size(M.grids[1].z) == (136, 114) && size(V.grids[1].z) == (270, 226)
 end
+
+@testitem "HLS field polygon: rings, the working region, and the pixels inside it" tags=[:unit, :remotes] begin
+	using InteractiveGMT
+	const R = InteractiveGMT.RemoteS
+	const GMT = InteractiveGMT.GMT
+
+	# Rings: an open lon/lat ring is closed; fewer than 3 vertices, or not lon/lat, is refused.
+	r = R._hls_rings([0.0 0.0; 1.0 0.0; 1.0 1.0])
+	@test length(r) == 1 && size(r[1]) == (4, 2) && r[1][1, :] == r[1][end, :]
+	@test_throws ErrorException R._hls_rings([0.0 0.0; 1.0 0.0])
+	@test_throws ErrorException R._hls_rings([500000.0 4.2e6; 500100.0 4.2e6; 500100.0 4.2001e6])
+	@test R._hls_rings(nothing) == Matrix{Float64}[]
+	@test R._hls_work_region([1.0, 2.0, 3.0, 4.0], Matrix{Float64}[]) == [1.0, 2.0, 3.0, 4.0]
+	@test R._hls_work_region(Float64[], r) == [0.0, 1.0, 0.0, 1.0]
+	@test_throws ErrorException R._hls_work_region(Float64[], Matrix{Float64}[])
+
+	# A square field in UTM 29N, given in lon/lat, placed back on a 30 m UTM grid: the pixels whose
+	# centre is inside it, and no other — for both memory layouts and both registrations.
+	utm = "+proj=utm +zone=29 +datum=WGS84 +units=m +no_defs"
+	sq = [500045.0 4200075.0; 500165.0 4200075.0; 500165.0 4200225.0; 500045.0 4200225.0; 500045.0 4200075.0]
+	ll = InteractiveGMT._vector_xy_project(sq, utm, InteractiveGMT._LONLAT)
+	# The same field as a UTM GMTdataset: converted with its own CRS.
+	D = GMT.mat2ds(sq); D.proj4 = utm
+	@test isapprox(R._hls_rings(D)[1], ll; atol = 1e-9)
+	rings = R._hls_rings(ll)
+	for reg in (0, 1)
+		# node / cell-edge origin and extent: 11 x 11 centres at 500000 + 30k, 4200000 + 30k either way
+		x0, y0, w = 500000.0 - 15reg, 4200000.0 - 15reg, 300.0 + 30reg
+		G = GMT.mat2grid(zeros(Float32, 11, 11); x = [x0, x0 + w], y = [y0, y0 + w], reg = reg, proj4 = utm)
+		@test G.inc == [30.0, 30.0]
+		nx, ny = InteractiveGMT._grid_dims(G)
+		want = falses(ny, nx)                       # (iy, ix), row 1 = south
+		h = reg == 1 ? 15.0 : 0.0
+		for ix in 1:nx, iy in 1:ny
+			x, y = G.range[1] + h + 30(ix - 1), G.range[3] + h + 30(iy - 1)
+			want[iy, ix] = !(500045 <= x <= 500165 && 4200075 <= y <= 4200225)
+		end
+		@test count(!, want) == 20                  # 4 columns x 5 rows of centres inside the square
+		for lay in ("BCB", "TRB")
+			T = deepcopy(G)
+			if lay == "TRB"                         # the same grid, row-major and north-first
+				T.z = reshape(vec(permutedims(reverse(G.z, dims = 1))), size(G.z))
+				T.layout = "TRB"
+			end
+			out = R._hls_outside(T, rings)
+			@test size(out) == size(T.z)
+			C = deepcopy(T);  C.z = Float32.(out)
+			@test Bool.(InteractiveGMT._zmat(C)) == want
+		end
+	end
+end

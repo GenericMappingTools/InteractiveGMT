@@ -12225,6 +12225,7 @@ public:
 	QListWidget *listBox = nullptr;
 	bool reallyClose = false;  // set by the parked row's "Delete": let the next close through
 	int nameEnd = -1;          // length of the expression right after a list name was put in (ifelseComma)
+	int autoComma = -1;        // length of the expression right after an automatic ", " (firstArgComma)
 
 	// Every way back in (double-click, the row's checkbox, its "Show"). The window's grids may have
 	// changed while it was parked, so the list is asked for again.
@@ -12316,12 +12317,29 @@ public:
 		cmdEdit = d->findChild<QPlainTextEdit *>("edit_command");
 		listBox = d->findChild<QListWidget *>("listbox_inArrays");
 
+		// An operator TYPED right after the automatic ", " of a picked first argument takes it back, as the
+		// keypad's operator buttons do (dropAutoComma).
+		struct TypedOpDropsComma : QObject {
+			GridCalculatorDialog *gc;
+			TypedOpDropsComma(QObject *parent, GridCalculatorDialog *c) : QObject(parent), gc(c) {}
+			bool eventFilter(QObject *o, QEvent *e) override {
+				if (e->type() == QEvent::KeyPress && gc && gc->autoComma >= 0) {
+					const QString t = static_cast<QKeyEvent *>(e)->text();
+					if (t.size() == 1 && QString("<>=&|*/^+)").contains(t[0]) && gc->cmdEdit->textCursor().atEnd())
+						gc->dropAutoComma(t);
+				}
+				return QObject::eventFilter(o, e);
+			}
+		};
+		if (cmdEdit) cmdEdit->installEventFilter(new TypedOpDropsComma(cmdEdit, this));
+
 		// Append text at the end of the expression box and keep the caret there. `operand` = the text
 		// STARTS a new operand (a grid name, a number, a function, "(", "!"): inside an open ifelse( whose
 		// current argument is already complete, the separating ", " is written first (ifelseComma).
 		auto append = [this](const QString &t, bool operand = false) {
 			if (!cmdEdit) return;
 			cmdEdit->moveCursor(QTextCursor::End);
+			if (!operand) dropAutoComma(t);
 			if (operand && ifelseComma(cmdEdit->toPlainText(), t, nameEnd)) cmdEdit->insertPlainText(", ");
 			cmdEdit->insertPlainText(t);
 			cmdEdit->setFocus();
@@ -12368,8 +12386,18 @@ public:
 				cmdEdit->setPlainText(tok);
 			else {
 				cmdEdit->moveCursor(QTextCursor::End);
+				const bool first = firstArgEmpty(cmdEdit->toPlainText());
 				if (ifelseComma(cmdEdit->toPlainText(), tok, nameEnd)) cmdEdit->insertPlainText(",");
 				cmdEdit->insertPlainText(" " + tok);
+				// The name IS the whole first argument of an ifelse (the mask): its ", " goes in now, so the
+				// next pick is A. An operator that follows takes it back out (dropAutoComma: "topo > 0").
+				if (first) {
+					nameEnd = cmdEdit->toPlainText().size();
+					cmdEdit->insertPlainText(", ");
+					autoComma = cmdEdit->toPlainText().size();
+					cmdEdit->setFocus();
+					return;
+				}
 			}
 			nameEnd = cmdEdit->toPlainText().size();      // the box now ENDS in a name, digits included
 			cmdEdit->setFocus();
@@ -12439,6 +12467,34 @@ public:
 		    text.size() != nameEnd) return false;
 		const QChar end = text.trimmed().back();
 		return end.isLetterOrNumber() || end == '_' || end == '.' || end == ')' || end == '}';
+	}
+
+	// Is the end of `text` the still-EMPTY first argument of an `ifelse(` — "ifelse(" with nothing (but
+	// blanks) after it? Then a grid picked now is the mask, and its ", " is written with it.
+	static bool firstArgEmpty(const QString &text) {
+		const QString t = text.trimmed();
+		if (!t.endsWith("ifelse(")) return false;
+		const int k = t.size() - 7;                       // "ifelse" must be a whole word
+		return k == 0 || !(t[k - 1].isLetterOrNumber() || t[k - 1] == '_' || t[k - 1] == '.');
+	}
+
+	// The automatic ", " after a picked first argument is taken back when that argument goes on with an
+	// operator (`t`, the text about to be appended: " > ", ")", …): "ifelse( topo, " + ">" is
+	// "ifelse( topo > ". Only while the box still ends exactly at that comma; "!" and "-" may start the
+	// next argument ("ifelse(m, -1)"), so they keep it.
+	void dropAutoComma(const QString &t) {
+		if (!cmdEdit || autoComma < 0) return;
+		const QString text = cmdEdit->toPlainText();
+		const QString op = t.trimmed();
+		const bool atComma = text.size() == autoComma && text.endsWith(", ");
+		autoComma = -1;
+		if (!atComma || op.isEmpty() || op.startsWith('!') || op.startsWith('-')) return;
+		QTextCursor c = cmdEdit->textCursor();
+		c.movePosition(QTextCursor::End);
+		c.movePosition(QTextCursor::Left, QTextCursor::KeepAnchor, 2);
+		c.removeSelectedText();
+		cmdEdit->setTextCursor(c);
+		nameEnd = cmdEdit->toPlainText().size();
 	}
 
 	// What a double-click writes into the expression. Grid names are substituted TEXTUALLY on the Julia

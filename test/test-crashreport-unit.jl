@@ -48,76 +48,84 @@ end
 end
 
 @testitem "crash report: dead sessions -- crashed one packed, clean-ended one dropped, live one kept" tags=[:unit] begin
-	Sys.iswindows() || return @test_skip "crash reports are Windows-only"
-	CR = InteractiveGMT
-	prof = mktempdir()
-	root = joinpath(prof, ".gmt", "igmt_crashes")
-	# a julia.exe that stays alive: its session must not be touched
-	live = run(`$(Base.julia_cmd()) --startup-file=no -e "sleep(120)"`; wait = false)
-	livepid = getpid(live)
-	events = CR._crash_events()
-	deadpid = first(p for p in 4_000_000:4_001_000 if CR._crash_event_for(events, p) === nothing)
-	crashed = joinpath(root, "session_$deadpid")
-	gone    = joinpath(root, "session_$(deadpid + 4)")
-	alive   = joinpath(root, "session_$livepid")
-	for d in (crashed, gone, alive)
-		mkpath(d)
-		write(joinpath(d, "info.txt"), "started  test\nhome $(prof)\\x\n")
-	end
-	write(joinpath(crashed, "stack.txt"), "exception C0000005 ACCESS_VIOLATION in gmtvtk.dll+0x10 (thread 1)\n\n  #00 gmtvtk.dll+0x10\n")
-	write(joinpath(crashed, "trail.txt"), "1 10:00:00.000 click QPushButton 'Compute' [Grid Calculator]\n")
-	try
-		withenv("USERPROFILE" => prof) do
-			CR._crash_check_previous(; dialog = false)
+	# NOT `Sys.iswindows() || return`: a testitem's body runs statement by statement at top level, where
+	# `return` ends only that statement and the rest still runs (Linux CI, 2026-11-27).
+	if !Sys.iswindows()
+		@test_skip "crash reports are Windows-only"
+	else
+		CR = InteractiveGMT
+		prof = mktempdir()
+		root = joinpath(prof, ".gmt", "igmt_crashes")
+		# a julia.exe that stays alive: its session must not be touched
+		live = run(`$(Base.julia_cmd()) --startup-file=no -e "sleep(120)"`; wait = false)
+		livepid = getpid(live)
+		events = CR._crash_events()
+		deadpid = first(p for p in 4_000_000:4_001_000 if CR._crash_event_for(events, p) === nothing)
+		crashed = joinpath(root, "session_$deadpid")
+		gone    = joinpath(root, "session_$(deadpid + 4)")
+		alive   = joinpath(root, "session_$livepid")
+		for d in (crashed, gone, alive)
+			mkpath(d)
+			write(joinpath(d, "info.txt"), "started  test\nhome $(prof)\\x\n")
 		end
-		zips = filter(f -> startswith(f, "igmt_crash_") && endswith(f, ".zip"), readdir(root))
-		@test length(zips) == 1
-		@test !isdir(crashed) && !isdir(gone) && isdir(alive)
-		tar = joinpath(ENV["SystemRoot"], "System32", "tar.exe")
-		@test sort(filter(!=("./"), readlines(`$tar -tf $(joinpath(root, zips[1]))`))) ==
-		      ["./info.txt", "./stack.txt", "./trail.txt"]
-	finally
-		kill(live)
-		rm(prof; recursive = true, force = true)
+		write(joinpath(crashed, "stack.txt"), "exception C0000005 ACCESS_VIOLATION in gmtvtk.dll+0x10 (thread 1)\n\n  #00 gmtvtk.dll+0x10\n")
+		write(joinpath(crashed, "trail.txt"), "1 10:00:00.000 click QPushButton 'Compute' [Grid Calculator]\n")
+		try
+			withenv("USERPROFILE" => prof) do
+				CR._crash_check_previous(; dialog = false)
+			end
+			zips = filter(f -> startswith(f, "igmt_crash_") && endswith(f, ".zip"), readdir(root))
+			@test length(zips) == 1
+			@test !isdir(crashed) && !isdir(gone) && isdir(alive)
+			tar = joinpath(ENV["SystemRoot"], "System32", "tar.exe")
+			@test sort(filter(!=("./"), readlines(`$tar -tf $(joinpath(root, zips[1]))`))) ==
+			      ["./info.txt", "./stack.txt", "./trail.txt"]
+		finally
+			kill(live)
+			rm(prof; recursive = true, force = true)
+		end
 	end
 end
 
 @testitem "crash report: a native crash leaves stack, dump and trail; a clean exit leaves nothing" tags=[:unit] begin
-	Sys.iswindows() || return @test_skip "crash reports are Windows-only"
-	CR = InteractiveGMT
-	@test CR._crash_has(:gmtvtk_crash_install)
-	dll = CR._LIB_USED[]
-	dir = mktempdir()
-	sess = joinpath(dir, "session")
-	script = joinpath(dir, "crash.jl")
-	write(script, """
-		using Libdl
-		h = dlopen($(repr(dll)))
-		ccall(dlsym(h, :gmtvtk_crash_install), Cint, (Cstring,), $(repr(sess))) == 1 || exit(7)
-		ccall(dlsym(h, :gmtvtk_crash_trail), Cvoid, (Cstring,), "click QPushButton 'Compute' [Grid Calculator]")
-		ARGS[1] == "crash" && ccall((:strlen, "msvcrt"), Csize_t, (Ptr{UInt8},), C_NULL)
-		""")
-	path = join(unique([CR._VTK_BIN, CR._QT_BIN, dirname(dll), ENV["PATH"]]), ';')
-	mkpath(sess)
-	p = run(pipeline(ignorestatus(addenv(`$(Base.julia_cmd()) --startup-file=no $script crash`, "PATH" => path));
-	                 stdout = devnull, stderr = devnull))
-	@test p.exitcode != 0 && p.exitcode != 7
-	st = joinpath(sess, "stack.txt")
-	@test isfile(st)
-	@test occursin("ACCESS_VIOLATION in msvcrt.dll", readline(st))
-	@test any(l -> startswith(l, "  #00 msvcrt.dll+"), readlines(st))
-	@test filesize(joinpath(sess, "crash.dmp")) > 10_000
-	t = CR._crash_trail_lines(joinpath(sess, "trail.txt"))
-	@test occursin("click QPushButton 'Compute' [Grid Calculator]", t[1])
-	@test occursin("*** ACCESS_VIOLATION in msvcrt.dll", t[end])
-	# no fault: nothing but the trail is written
-	rm(sess; recursive = true)
-	mkpath(sess)
-	q = run(pipeline(ignorestatus(addenv(`$(Base.julia_cmd()) --startup-file=no $script ok`, "PATH" => path));
-	                 stdout = devnull, stderr = devnull))
-	@test q.exitcode == 0
-	@test readdir(sess) == ["trail.txt"]
-	rm(dir; recursive = true, force = true)
+	if !Sys.iswindows()                     # see the item above: never `|| return` in a testitem
+		@test_skip "crash reports are Windows-only"
+	else
+		CR = InteractiveGMT
+		@test CR._crash_has(:gmtvtk_crash_install)
+		dll = CR._LIB_USED[]
+		dir = mktempdir()
+		sess = joinpath(dir, "session")
+		script = joinpath(dir, "crash.jl")
+		write(script, """
+			using Libdl
+			h = dlopen($(repr(dll)))
+			ccall(dlsym(h, :gmtvtk_crash_install), Cint, (Cstring,), $(repr(sess))) == 1 || exit(7)
+			ccall(dlsym(h, :gmtvtk_crash_trail), Cvoid, (Cstring,), "click QPushButton 'Compute' [Grid Calculator]")
+			ARGS[1] == "crash" && ccall((:strlen, "msvcrt"), Csize_t, (Ptr{UInt8},), C_NULL)
+			""")
+		path = join(unique([CR._VTK_BIN, CR._QT_BIN, dirname(dll), ENV["PATH"]]), ';')
+		mkpath(sess)
+		p = run(pipeline(ignorestatus(addenv(`$(Base.julia_cmd()) --startup-file=no $script crash`, "PATH" => path));
+		                 stdout = devnull, stderr = devnull))
+		@test p.exitcode != 0 && p.exitcode != 7
+		st = joinpath(sess, "stack.txt")
+		@test isfile(st)
+		@test occursin("ACCESS_VIOLATION in msvcrt.dll", readline(st))
+		@test any(l -> startswith(l, "  #00 msvcrt.dll+"), readlines(st))
+		@test filesize(joinpath(sess, "crash.dmp")) > 10_000
+		t = CR._crash_trail_lines(joinpath(sess, "trail.txt"))
+		@test occursin("click QPushButton 'Compute' [Grid Calculator]", t[1])
+		@test occursin("*** ACCESS_VIOLATION in msvcrt.dll", t[end])
+		# no fault: nothing but the trail is written
+		rm(sess; recursive = true)
+		mkpath(sess)
+		q = run(pipeline(ignorestatus(addenv(`$(Base.julia_cmd()) --startup-file=no $script ok`, "PATH" => path));
+		                 stdout = devnull, stderr = devnull))
+		@test q.exitcode == 0
+		@test readdir(sess) == ["trail.txt"]
+		rm(dir; recursive = true, force = true)
+	end
 end
 
 @testitem "crash report: only the desktop app makes sessions" tags=[:unit, :fast] begin

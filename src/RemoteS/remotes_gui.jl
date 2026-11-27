@@ -1374,9 +1374,10 @@ end
 function _rs_hls(scene::Ptr{Cvoid}, d::Dict{String,String}, io::IOBuffer)::Bool
 	what = _rs_get(d, "what")
 	what == "init"      && return _rs_hls_init(scene, d, io)
-	what == "refresh"   && return _rs_hls_status(d, io)
+	what == "refresh"   && return _rs_hls_refresh(scene, d, io)
 	what == "rgwindow"  && return _rs_hls_rgwindow(scene, io)
 	what == "rgrect"    && return _rs_hls_rgrect(scene, io)
+	what == "rgpoly"    && return _rs_hls_rgpoly(scene, d, io)
 	what == "savelogin" && return _rs_hls_savelogin(d, io)
 	# Behind an inference barrier: a plain call made inference walk into hls_series and the GDAL reads
 	# while compiling THIS function, i.e. on the dialog's first init (~2.5 s of it).
@@ -1436,13 +1437,13 @@ end
 _rs_hls_save_region(W::Float64, E::Float64, S::Float64, N::Float64) =
 	ccall(_fn(:gmtvtk_setting_set), Cvoid, (Cstring, Cstring), _RS_HLS_REGION_KEY, "$W/$E/$S/$N")
 
-function _rs_hls_status(d::Dict{String,String}, io::IOBuffer)::Bool
+function _rs_hls_status(d::Dict{String,String}, io::IOBuffer; pre::String = "")::Bool
 	ix = _rs_hls_index(d)
 	u, p = _rs_netrc_get(_rs_netrc_path(), _RS_URS)
 	roles = RS._HLS_INDEX[ix]
 	if _rs_hls_s2(d)
 		res = all(r -> haskey(RS._ES_BANDS10, r), roles) ? "10 m" : "20 m"
-		_rs_status(io, "$(ix) takes $(join(roles, ", ")): Sentinel-2 L2A at $(res), from Earth Search (no login needed).")
+		_rs_status(io, pre * "$(ix) takes $(join(roles, ", ")): Sentinel-2 L2A at $(res), from Earth Search (no login needed).")
 		return true
 	end
 	s2only = !all(r -> haskey(RS._HLS_BANDS["L30"], r), roles)
@@ -1450,7 +1451,7 @@ function _rs_hls_status(d::Dict{String,String}, io::IOBuffer)::Bool
 	      (s2only ? " Landsat has no red-edge bands: only the Sentinel-2 (S30) dates are used." : "")
 	(isempty(u) || isempty(p)) &&
 		(msg *= " Reading HLS needs your NASA Earthdata login: save it in the Account tab.")
-	_rs_status(io, msg)
+	_rs_status(io, pre * msg)
 	return true
 end
 
@@ -1463,6 +1464,7 @@ function _rs_hls_rgwindow(scene::Ptr{Cvoid}, io::IOBuffer)::Bool
 	b = _rs_window_box(scene)
 	b === nothing && error("The window shows nothing yet: type the limits, or draw a rectangle over a map.")
 	_rs_set_region!(io, _rs_lonlat_box(scene, b...))
+	_rs_set(io, "p_poly", "")					# a box chosen: the field polygon is no longer the working area
 	_rs_status(io, "Region set to the window's limits.")
 	return true
 end
@@ -1470,8 +1472,63 @@ end
 function _rs_hls_rgrect(scene::Ptr{Cvoid}, io::IOBuffer)::Bool
 	_rs_need_map(scene)
 	_rs_set_region!(io, _rs_lonlat_box(scene, _rs_drawn_rect(scene)...))
+	_rs_set(io, "p_poly", "")
 	_rs_status(io, "Region set to the drawn rectangle.")
 	return true
+end
+
+# --- the field polygon: the working area when the Field polygon box is not empty -------------------
+# The box holds a polygon FILE (GeoJSON, shapefile, GMT table…) or the Scene Objects NAME of a closed
+# polygon already in the window — a drawn one (Draw > Polygon / Rectangle / Circle) or an imported
+# one. "Pick in window" (pickline_rgpoly) writes the name of the one clicked; the ... button a file.
+# Answers the polygons as closed lon/lat rings (RS._hls_rings) and a few words naming them.
+function _rs_hls_poly(scene::Ptr{Cvoid}, src::String)::Tuple{Vector{Matrix{Float64}},String}
+	if isfile(src)
+		D = _gmtread(src)
+		(D isa GMTdataset || D isa Vector{<:GMTdataset}) ||
+			error("\"$(basename(src))\" is not a vector file: the field polygon must be a polygon (GeoJSON, shapefile, GMT table…).")
+		rings = RS._hls_rings(D)
+		return rings, "\"$(basename(src))\"" * (length(rings) > 1 ? " ($(length(rings)) polygons)" : "")
+	end
+	# A name in the window. Drawn polygons first, then imported vectors: the order the click pick
+	# (vectorPickFire) resolves a name in.
+	Ds = _poly_layer(scene, src)
+	isempty(Ds) && (Ds = _overlay_layer(scene, src))
+	isempty(Ds) && error("No polygon file and no polygon in the window called \"$src\".")
+	wsrs = _window_srs(scene)
+	rings = Matrix{Float64}[]
+	for D in Ds
+		M = Matrix{Float64}(D.data[:, 1:2])
+		(size(M, 1) >= 4 && M[1, :] == M[end, :]) ||
+			error("\"$src\" is a line, not a closed polygon: pick a polygon (Draw > Polygon, or an imported polygon).")
+		(isempty(wsrs) || _project_is_geog(wsrs)) || (M = _vector_xy_project(M, wsrs, _LONLAT))
+		push!(rings, M)
+	end
+	return RS._hls_rings(rings), "\"$src\" of the window"
+end
+
+# The polygon's box into the four limits, and a line saying which polygon is the working area.
+function _rs_hls_poly_show!(io::IOBuffer, rings::Vector{Matrix{Float64}}, what::String)::String
+	b = RS._hls_work_region(Float64[], rings)
+	_rs_set_region!(io, (b[1], b[2], b[3], b[4]))
+	return "Working area: the field polygon $(what); the limits are its bounding box."
+end
+
+# The pickline_rgpoly answer: picked=<the Scene Objects name of the line clicked>.
+function _rs_hls_rgpoly(scene::Ptr{Cvoid}, d::Dict{String,String}, io::IOBuffer)::Bool
+	nm = _rs_get(d, "picked")
+	rings, what = _rs_hls_poly(scene, nm)
+	_rs_set(io, "p_poly", nm)
+	_rs_status(io, _rs_hls_poly_show!(io, rings, what))
+	return true
+end
+
+# A change of a `refresh` widget: the index's bands, and the field polygon when one is named.
+function _rs_hls_refresh(scene::Ptr{Cvoid}, d::Dict{String,String}, io::IOBuffer)::Bool
+	src = strip(_rs_get(d, "p_poly"))
+	isempty(src) && return _rs_hls_status(d, io)
+	rings, what = _rs_hls_poly(scene, String(src))
+	return _rs_hls_status(d, io; pre = _rs_hls_poly_show!(io, rings, what) * " ")
 end
 
 function _rs_hls_savelogin(d::Dict{String,String}, io::IOBuffer)::Bool		# the .netrc entry MODIS scenes and SWOT save too
@@ -1485,6 +1542,15 @@ end
 function _rs_hls_compute(scene::Ptr{Cvoid}, d::Dict{String,String}, io::IOBuffer)::Bool
 	ix = _rs_hls_index(d)
 	prods = _RS_HLS_PRODUCTS[clamp(_rs_idx(d, "p_products") + 1, 1, length(_RS_HLS_PRODUCTS))]
+	# The field polygon, when named, IS the working area: the limits become its box, whatever they read.
+	psrc = String(strip(_rs_get(d, "p_poly")))
+	rings = Matrix{Float64}[]
+	if !isempty(psrc)
+		rings, pwhat = _rs_hls_poly(scene, psrc)
+		_rs_hls_poly_show!(io, rings, pwhat)
+		b = RS._hls_work_region(Float64[], rings)
+		d["p_rg_w"], d["p_rg_e"], d["p_rg_s"], d["p_rg_n"] = string.(b)
+	end
 	W, E, S, N = (_rs_num(d, w, NaN) for w in ("p_rg_w", "p_rg_e", "p_rg_s", "p_rg_n"))
 	any(isnan, (W, E, S, N)) && error("Give the four limits of the region (degrees).")
 	(W < E && S < N) || error("The region must have W < E and S < N.")
@@ -1501,10 +1567,11 @@ function _rs_hls_compute(scene::Ptr{Cvoid}, d::Dict{String,String}, io::IOBuffer
 	r = try
 		mc, mn = _rs_num(d, "p_maxcloud", 80.0), _rs_num(d, "p_minclear", 80.0) / 100
 		pr = (pc, m) -> _rs_prog(pc, m)
-		s2 ? RS.s2_series([W, E, S, N]; from = from, to = to, index = ix, maxcloud = mc, minclear = mn,
+		pg = isempty(rings) ? nothing : rings
+		s2 ? RS.s2_series([W, E, S, N]; from = from, to = to, index = ix, maxcloud = mc, minclear = mn, polygon = pg,
 		                  outdir = outdir, prefix = isempty(prefix) ? "s2" : prefix, progress = pr) :
 		     RS.hls_series([W, E, S, N]; from = from, to = to, index = ix, products = prods, maxcloud = mc,
-		                   minclear = mn, outdir = outdir, prefix = isempty(prefix) ? "hls" : prefix, progress = pr)
+		                   minclear = mn, polygon = pg, outdir = outdir, prefix = isempty(prefix) ? "hls" : prefix, progress = pr)
 	finally
 		_rs_prog_close()
 	end
@@ -1525,7 +1592,8 @@ function _rs_hls_compute(scene::Ptr{Cvoid}, d::Dict{String,String}, io::IOBuffer
 		for (t, p, G) in zip(r.time, r.product, r.grids)
 			nm = "$(ix) $(GMT.Dates.Date(t)) $(p) — $(src) $(r.tile)"
 			ccall(_fn(:gmtvtk_set_grid_group_h), Cint, (Ptr{Cvoid}, Cstring, Cstring), scene, nm, series)
-			_rs_deliver(scene, G, nm, "RemoteS.$(fn)([$W, $E, $S, $N]; from=\"$from\", to=\"$to\", index=\"$ix\")"; flat = true)
+			pcall = isempty(rings) ? "" : isfile(psrc) ? ", polygon=gmtread(\"$(psrc)\")" : ", polygon=<the window's polygon \"$(psrc)\">"
+			_rs_deliver(scene, G, nm, "RemoteS.$(fn)([$W, $E, $S, $N]; from=\"$from\", to=\"$to\", index=\"$ix\"$(pcall))"; flat = true)
 		end
 		_rs_status(io, "$(length(r.grids)) clear date(s) on tile $(r.tile), each added as its own $(rgb ? "image" : "grid") under \"$(series)\"." *
 		               (isempty(outdir) ? "" : " $(prefix)_*.tiff and $(prefix)_series.csv written to $(outdir)."))

@@ -251,6 +251,30 @@ end
 	end
 end
 
+@testitem "gridcalc: two-argument ifelse leaves nothing where the mask is false" tags=[:unit, :fast] begin
+	IG = InteractiveGMT; GMT = IG.GMT
+	mk(z) = GMT.mat2grid(Float32.(z); x = collect(range(0, 2, length = 3)), y = collect(range(0, 2, length = 3)))
+	A = mk([1.0 2 3; 4 5 6; 7 8 9])
+	arr = UInt8[10i + j + 100b for i in 1:3, j in 1:3, b in 0:2]
+	I = GMT.mat2img(arr, A)
+	objs = Tuple{String,IG.GMTgrid}[("topo", A)]
+	rgbs = Tuple{String,IG.GMTimage}[("img", I)]
+	ev(e) = IG._gridcalc_eval(objs, Dict{String,String}(), e; rgbs = rgbs)
+	# a grid: NaN where the mask is false, the same as ifelse(mask, topo, NaN)
+	z = ev("ifelse(topo > 4, topo)")
+	@test isequal(z, ev("ifelse(topo > 4, topo, NaN)"))
+	@test count(isnan, z) == count(<=(4), A.z)
+	@test isequal(ev("ifelse(topo > 4, 7)"), ev("ifelse(topo > 4, 7, NaN)"))
+	# an RGB image: fully transparent where the mask is false, the same as ifelse(mask, img, 255@100)
+	J = ev("ifelse(topo > 4, img)")
+	@test J.image == ev("ifelse(topo > 4, img, 255@100)").image
+	@test size(J.image, 3) == 4
+	# nested: the inner two-argument ifelse is completed first
+	@test isequal(ev("ifelse(topo > 2, ifelse(topo < 8, topo))"), ev("ifelse(topo > 2, ifelse(topo < 8, topo, NaN), NaN)"))
+	# a mask as A has no "nothing" of its own: refused, never guessed
+	@test try ev("ifelse(topo > 4, topo < 8)"); false catch x; x isa IG._GcRejected end
+end
+
 # An RGB image as every open reads it (row-major, pixel-interleaved "BRPa") against a mask made from
 # GDAL's own grid of its band 1 (column-major "BCB"): the two layouts are matched node for node, so
 # band 1 of the result is that grid, masked — not a flipped or sheared copy of it.

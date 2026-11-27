@@ -295,10 +295,17 @@ end
 
 """
     S = hls_series(region; from, to, index="NDVI", products=["L30","S30"], maxcloud=80,
-                   minclear=0.8, tile="", outdir="", prefix="hls")
+                   minclear=0.8, tile="", outdir="", prefix="hls", polygon=nothing)
+    S = hls_series(; polygon, from, to, ...)
 
 Time series of a spectral index from NASA HLS v2.0 over `region = [W, E, S, N]` (degrees), between the
 dates `from` and `to`. Only the region's pixels are read (COG windows), never whole tiles.
+
+- `polygon`: a FIELD as the working area — a GMTdataset (or a vector of them, e.g. what `gmtread` gives
+  for a GeoJSON or shapefile; a projected one is converted with its own CRS), or a Mx2 matrix (or a
+  vector of them) of longitude/latitude vertices. The region becomes the polygon's bounding box, every
+  pixel whose centre is outside the polygon is NaN, and the clear share and the mean are taken over
+  the pixels inside it only. Several polygons: their union (a ring inside another is not a hole).
 
 - `index`: one of NDVI, EVI, SAVI, MSAVI, NDWI, MNDWI, NBRI, NDMI (both products), NDREI1, NDREI2
   (Sentinel-2 only: Landsat has no red-edge bands, so L30 items are skipped for those).
@@ -317,10 +324,12 @@ tab of the HLS time series dialog (and of MODIS scenes) saves.
 Returns a NamedTuple `(time, product, grids, mean, clear, tile)`: the dates, "L30"/"S30" of each, the
 index grids (masked pixels NaN), the region mean of each, the clear fraction of each, and the MGRS tile.
 """
-function hls_series(region::Vector{Float64}; from::Union{String,DateTime}, to::Union{String,DateTime},
+function hls_series(region::Vector{Float64}=Float64[]; from::Union{String,DateTime}, to::Union{String,DateTime},
                     index::String="NDVI", products::Vector{String}=["L30", "S30"], maxcloud::Float64=80.0,
                     minclear::Float64=0.8, tile::String="", outdir::String="", prefix::String="hls",
-                    progress = (p, m) -> nothing)
+                    polygon = nothing, progress = (p, m) -> nothing)
+	rings = _hls_rings(polygon)
+	region = _hls_work_region(region, rings)
 	idx = uppercase(index)
 	haskey(_HLS_INDEX, idx) || error("unknown index \"$index\": use one of $(join(sort!(collect(keys(_HLS_INDEX))), ", "))")
 	roles = _HLS_INDEX[idx]
@@ -335,12 +344,12 @@ function hls_series(region::Vector{Float64}; from::Union{String,DateTime}, to::U
 	items = hls_search(region; from = from, to = to, products = prods, maxcloud = maxcloud)
 	isempty(items) && error("no HLS item over that region and period (with whole-tile cloud <= $(maxcloud) %)")
 	key(it::HLSItem, r::String)::String = _HLS_BANDS[it.product][r]
-	return _index_series(items, region, idx, roles, key, "Fmask", _fmask_bad, minclear, tile, outdir, prefix, progress)
+	return _index_series(items, region, rings, idx, roles, key, "Fmask", _fmask_bad, minclear, tile, outdir, prefix, progress)
 end
 
 """
     S = s2_series(region; from, to, index="NDVI", maxcloud=80, minclear=0.8, tile="", outdir="",
-                  prefix="s2", progress)
+                  prefix="s2", polygon=nothing, progress)
 
 The same time series as `hls_series`, from Sentinel-2 L2A at its own resolution (Element84's Earth
 Search, AWS, no account): **10 m** for the indices made of blue, green, red and NIR (NDVI, EVI, SAVI,
@@ -348,11 +357,15 @@ MSAVI, NDWI; NIR = B08), **20 m** for those that need a red-edge or SWIR band (N
 NDREI1, NDREI2; NIR = B8A). Clouds come from the scene classification (SCL: no data, saturated, cloud
 shadow, cloud, cirrus and snow are masked). Landsat is not mixed in: its grid and bands differ.
 
+`polygon`: a field as the working area, exactly as in `hls_series`.
+
 Returns the same NamedTuple as `hls_series`; `product` is "S2A", "S2B" or "S2C".
 """
-function s2_series(region::Vector{Float64}; from::Union{String,DateTime}, to::Union{String,DateTime},
+function s2_series(region::Vector{Float64}=Float64[]; from::Union{String,DateTime}, to::Union{String,DateTime},
                    index::String="NDVI", maxcloud::Float64=80.0, minclear::Float64=0.8, tile::String="",
-                   outdir::String="", prefix::String="s2", progress = (p, m) -> nothing)
+                   outdir::String="", prefix::String="s2", polygon = nothing, progress = (p, m) -> nothing)
+	rings = _hls_rings(polygon)
+	region = _hls_work_region(region, rings)
 	idx = uppercase(index)
 	haskey(_HLS_INDEX, idx) || error("unknown index \"$index\": use one of $(join(sort!(collect(keys(_HLS_INDEX))), ", "))")
 	roles = _HLS_INDEX[idx]
@@ -362,7 +375,71 @@ function s2_series(region::Vector{Float64}; from::Union{String,DateTime}, to::Un
 	items = s2_search(region; from = from, to = to, maxcloud = maxcloud)
 	isempty(items) && error("no Sentinel-2 scene over that region and period (with whole-tile cloud <= $(maxcloud) %)")
 	key(it::HLSItem, r::String)::String = bands[r]
-	return _index_series(items, region, idx, roles, key, "scl", _scl_bad, minclear, tile, outdir, prefix, progress)
+	return _index_series(items, region, rings, idx, roles, key, "scl", _scl_bad, minclear, tile, outdir, prefix, progress)
+end
+
+# --- the field polygon ---------------------------------------------------------------------------
+# `polygon=` as closed lon/lat rings (Mx2, first vertex repeated at the end), whatever it came as.
+_hls_rings(::Nothing)::Vector{Matrix{Float64}} = Matrix{Float64}[]
+_hls_rings(M::Matrix{Float64})::Vector{Matrix{Float64}} = _hls_rings([M])
+_hls_rings(D::GMTdataset)::Vector{Matrix{Float64}} = _hls_rings([D])
+_hls_rings(v::Vector{Matrix{Float64}})::Vector{Matrix{Float64}} = Matrix{Float64}[_hls_ring(M) for M in v]
+function _hls_rings(Ds::Vector{<:GMTdataset})::Vector{Matrix{Float64}}
+	out = Matrix{Float64}[]
+	for D in Ds
+		M = Matrix{Float64}(D.data[:, 1:2])
+		crs = isempty(D.proj4) ? D.wkt : D.proj4
+		(isempty(crs) || InteractiveGMT._project_is_geog(crs)) ||
+			(M = InteractiveGMT._vector_xy_project(M, crs, InteractiveGMT._LONLAT))
+		push!(out, _hls_ring(M))
+	end
+	return out
+end
+
+function _hls_ring(M::Matrix{Float64})::Matrix{Float64}
+	size(M, 2) >= 2 || error("a polygon needs two columns (longitude, latitude)")
+	P = M[:, 1:2]
+	(size(P, 1) >= 1 && P[1, :] != P[end, :]) && (P = vcat(P, P[1:1, :]))
+	size(P, 1) >= 4 || error("a polygon needs at least three vertices (it has $(size(P, 1) - 1))")
+	all(isfinite, P) || error("a polygon has a vertex that is not a number")
+	(all(x -> -360 <= x <= 360, P[:, 1]) && all(y -> -90 <= y <= 90, P[:, 2])) ||
+		error("the polygon's vertices are not longitudes/latitudes")
+	return P
+end
+
+# The region the work is done over: the polygons' bounding box when there are polygons, else `region`.
+function _hls_work_region(region::Vector{Float64}, rings::Vector{Matrix{Float64}})::Vector{Float64}
+	isempty(rings) || return [minimum(minimum(view(P, :, 1)) for P in rings), maximum(maximum(view(P, :, 1)) for P in rings),
+	                          minimum(minimum(view(P, :, 2)) for P in rings), maximum(maximum(view(P, :, 2)) for P in rings)]
+	length(region) == 4 || error("give the region [W, E, S, N], or a polygon")
+	return region
+end
+
+# Which pixels of `R` (a read of the tile, in its own UTM) have their CENTRE outside every ring: true =
+# outside. In R's own memory order — the order its z, the cloud masks and the bands all lie in — through
+# `_zmat`, the one (iy, ix) accessor, on a copy of R used as the mask's carrier.
+function _hls_outside(R::GMTgrid, rings::Vector{Matrix{Float64}})::BitArray
+	srs = isempty(R.proj4) ? R.wkt : R.proj4
+	isempty(srs) && error("the tile's grid carries no coordinate system: the polygon cannot be placed on it")
+	P = Matrix{Float64}[InteractiveGMT._vector_xy_project(r, "", srs) for r in rings]
+	box = [(minimum(view(p, :, 1)), maximum(view(p, :, 1)), minimum(view(p, :, 2)), maximum(view(p, :, 2))) for p in P]
+	K = deepcopy(R)
+	fill!(K.z, 1f0)
+	Z = InteractiveGMT._zmat(K)
+	nx, ny = InteractiveGMT._grid_dims(K)
+	h = R.registration == 1 ? 0.5 : 0.0
+	x0, y0 = R.range[1] + h * R.inc[1], R.range[3] + h * R.inc[2]
+	for ix in 1:nx, iy in 1:ny
+		x, y = x0 + (ix - 1) * R.inc[1], y0 + (iy - 1) * R.inc[2]
+		for (p, b) in zip(P, box)
+			(b[1] <= x <= b[2] && b[3] <= y <= b[4]) || continue
+			if GMT.inpolygon(x, y, p) >= 0
+				Z[iy, ix] = 0f0
+				break
+			end
+		end
+	end
+	return K.z .!= 0f0
 end
 
 # The two cloud masks, as "is this pixel unusable": HLS Fmask bits, Sentinel-2 SCL classes.
@@ -373,7 +450,8 @@ _scl_bad(v::Float32)::Bool = !(v >= 0 && v <= 255) || (round(Int, v) in _ES_SCL_
 # then the bands of the dates clear enough (pass 2), all on ONE pixel grid (the first date's first
 # band), scaled to reflectance, masked, and the index made by the RemoteS engine. `key(item, role)` is
 # the asset holding that band role; `maskkey` the mask asset; `isbad` reads a mask value.
-function _index_series(items::Vector{HLSItem}, region::Vector{Float64}, idx::String, roles::Vector{String},
+function _index_series(items::Vector{HLSItem}, region::Vector{Float64}, rings::Vector{Matrix{Float64}},
+                       idx::String, roles::Vector{String},
                        key::FK, maskkey::String, isbad::FB, minclear::Float64, tile::String, outdir::String,
                        prefix::String, progress) where {FK,FB}
 	if isempty(tile)
@@ -392,6 +470,11 @@ function _index_series(items::Vector{HLSItem}, region::Vector{Float64}, idx::Str
 	progress(4, "Tile $(tile): setting up the pixel grid…")
 	R = _hls_read(items[1].assets[key(items[1], roles[1])], W, E, S, N)
 	rd(h::String) = _hls_read_on(h, R)
+	# THE FIELD, when a polygon is the working area: a pixel outside it is masked exactly like a cloud,
+	# and the clear share is counted over the field's own pixels, never the box's.
+	outside = isempty(rings) ? falses(size(R.z)) : _hls_outside(R, rings)
+	nout = count(outside)
+	nout == length(outside) && error("the polygon covers no pixel centre of tile $(tile)'s grid: it is smaller than a pixel")
 
 	# Pass 1: every item's mask over the box, all at once; keep the dates clear enough.
 	n1 = length(items);  d1 = Ref(0)
@@ -401,11 +484,12 @@ function _index_series(items::Vector{HLSItem}, region::Vector{Float64}, idx::Str
 	keep = Int[];  bads = BitMatrix[];  clr = Float64[]
 	for (k, Fm) in enumerate(fms)
 		fm = Fm.z
+		size(fm) == size(outside) || error("$(items[k].id): its cloud mask window differs in size from the grid's")
 		bad = falses(size(fm))
 		@inbounds for j in eachindex(fm)
-			bad[j] = isbad(fm[j])
+			bad[j] = outside[j] || isbad(fm[j])
 		end
-		clear = 1.0 - count(bad) / length(bad)
+		clear = 1.0 - (count(bad) - nout) / (length(bad) - nout)
 		clear < minclear && continue
 		push!(keep, k);  push!(bads, bad);  push!(clr, clear)
 	end

@@ -38,7 +38,7 @@
      <x>4</x>
      <y>7</y>
      <width>438</width>
-     <height>92</height>
+     <height>124</height>
     </rect>
    </property>
    <property name="title">
@@ -174,12 +174,82 @@
      <bool>true</bool>
     </property>
    </widget>
+   <widget class="QLabel" name="lbl_poly">
+    <property name="geometry">
+     <rect>
+      <x>11</x>
+      <y>89</y>
+      <width>76</width>
+      <height>26</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Field polygon</string>
+    </property>
+   </widget>
+   <widget class="QLineEdit" name="p_poly">
+    <property name="geometry">
+     <rect>
+      <x>89</x>
+      <y>89</y>
+      <width>198</width>
+      <height>26</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>The working area as a FIELD: a polygon file (GeoJSON, shapefile, GMT table…) or the name of a closed polygon in the window (drawn or imported; "Pick in window" fills it). Only the pixels inside it count: the others are left empty, and the clear share and the mean are taken over the field alone. The four limits become its bounding box. Empty: the whole rectangle of the four limits.</string>
+    </property>
+    <property name="placeholderText">
+     <string>none: the whole region</string>
+    </property>
+    <property name="refresh" stdset="0">
+     <bool>true</bool>
+    </property>
+   </widget>
+   <widget class="QToolButton" name="browse_p_poly">
+    <property name="geometry">
+     <rect>
+      <x>291</x>
+      <y>92</y>
+      <width>24</width>
+      <height>20</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>Choose a field polygon file</string>
+    </property>
+    <property name="text">
+     <string>...</string>
+    </property>
+    <property name="filter" stdset="0">
+     <string>Polygons (*.geojson *.json *.shp *.gpkg *.kml *.gmt *.txt *.dat);;All files (*)</string>
+    </property>
+   </widget>
+   <widget class="QPushButton" name="pickline_rgpoly">
+    <property name="geometry">
+     <rect>
+      <x>321</x>
+      <y>89</y>
+      <width>106</width>
+      <height>26</height>
+     </rect>
+    </property>
+    <property name="toolTip">
+     <string>Click a closed polygon in the window (drawn with Draw &gt; Polygon, or imported from a file) to make it the working area. Press again to cancel.</string>
+    </property>
+    <property name="text">
+     <string>Pick in window</string>
+    </property>
+    <property name="needsmap" stdset="0">
+     <bool>true</bool>
+    </property>
+   </widget>
   </widget>
   <widget class="QGroupBox" name="gb_data">
    <property name="geometry">
     <rect>
      <x>4</x>
-     <y>105</y>
+     <y>137</y>
      <width>438</width>
      <height>156</height>
     </rect>
@@ -398,7 +468,7 @@
    <property name="geometry">
     <rect>
      <x>4</x>
-     <y>267</y>
+     <y>299</y>
      <width>438</width>
      <height>62</height>
     </rect>
@@ -446,9 +516,9 @@
    <property name="geometry">
     <rect>
      <x>4</x>
-     <y>333</y>
+     <y>365</y>
      <width>438</width>
-     <height>120</height>
+     <height>88</height>
     </rect>
    </property>
    <property name="font">

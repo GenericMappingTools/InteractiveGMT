@@ -93,8 +93,10 @@ plot!(x[.!s2], S.mean[.!s2], marker = :square, ms = 0.2, fill = :orange, label =
 - **Ten times the pixels**: set **Sensor** to *Sentinel-2 L2A, 10 m (Earth Search, no login)* and run
   Example 1 again. The same fields at 10 m instead of 30 m (no account needed): nine pixels where HLS
   has one, so small fields and their edges come out.
-- **One field only**: *Draw → Rectangle* over a single centre pivot in the window, then **Use the
-  drawn rectangle** and **Get the series**. Its curve stays high all summer, unlike the region's.
+- **One field only**: *Draw → Circle* (or *Polygon*) around a single centre pivot in the window, then
+  **Pick in window** beside **Field polygon** and click it, and **Get the series**. Only the pivot's
+  own pixels count, so its curve stays high all summer, unlike the region's. A field boundary file
+  (GeoJSON, shapefile) goes in the same box through its **...** button.
 - **NDMI** (water in the leaves) over the same year: it drops as soon as a crop goes short of
   water, so the watered fields should stand apart from the rest through the summer.
 - **NDWI** on the reservoirs: follow their water area through the summer as they are drawn down.

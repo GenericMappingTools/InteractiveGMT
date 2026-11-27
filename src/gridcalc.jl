@@ -68,6 +68,8 @@ end
 #   ifelse(m, A, B)  m a mask, A/B both grids/numbers or both masks; or one of them an RGB image and
 #                    the other an RGB image, a whole number 0-255 or a colour (r, g, b) of 0-255 —
 #                    :rgb, the only place an RGB image (or a colour) may stand;    result: RGB image
+#   ifelse(m, A)     B left out = nothing: NaN for a grid/number, fully transparent (255@100) for an
+#                    RGB image (`_gc_ifelse2` writes B in before the check)
 #   + - * / ^, any other Base function   a mask counts as 0/1 (`topo * mask`);  result: grid
 const _GC_ORDER = (:<, :<=, :>, :>=, :≤, :≥)
 const _GC_EQUAL = (:(==), :!=, :≠)
@@ -156,7 +158,7 @@ function _gc_kind(ex, kinds::Dict{Symbol,Symbol}, labels::Dict{Symbol,String})::
 		return :mask
 	end
 	if f === :ifelse
-		length(args) == 3 || throw(_GcRejected("$(sh(ex)): ifelse(mask, A, B) takes three arguments"))
+		length(args) == 3 || throw(_GcRejected("$(sh(ex)): ifelse takes (mask, A) or (mask, A, B)"))
 		kc = _gc_kind(args[1], kinds, labels)
 		_gc_masky(kc) || throw(_GcRejected("ifelse's first argument must be a mask (e.g. topo > 0), but $(sh(args[1])) is $(what(kc))"))
 		ka, kb = _gc_kind(args[2], kinds, labels), _gc_kind(args[3], kinds, labels)
@@ -190,6 +192,22 @@ function _gc_kind(ex, kinds::Dict{Symbol,Symbol}, labels::Dict{Symbol,String})::
 		_gc_pixel_only(k, a, labels)
 	end
 	return any(k -> k === :grid || k === :mask, ks) ? :grid : :num
+end
+
+# TWO-argument `ifelse(mask, A)`: B is filled in from A's kind, so where the mask is false there is
+# NOTHING — an RGB image becomes fully transparent there (`ifelse(mask, img, 255@100)`), a grid or a
+# number gets NaN (`ifelse(mask, topo, NaN)`). Rewritten bottom-up before the kind check, so a nested
+# two-argument ifelse is completed first and everything after (check, eval) only ever sees three.
+function _gc_ifelse2(ex, kinds::Dict{Symbol,Symbol}, labels::Dict{Symbol,String})
+	ex isa Expr || return ex
+	ex = Expr(ex.head, (_gc_ifelse2(a, kinds, labels) for a in ex.args)...)
+	(ex.head === :call && ex.args[1] === :ifelse && length(ex.args) == 3) || return ex
+	A = ex.args[3]
+	k = _gc_kind(A, kinds, labels)
+	fill = k === :rgb ? Expr(:call, :_gc_tr, 255, 100) : _gc_numy(k) ? NaN :
+		throw(_GcRejected("ifelse(mask, A) fills the rest with nothing: A must be a grid, a number or an RGB " *
+		                  "image, but `$(_gc_show(A, labels))` is $(_gc_what(k)). Give B: ifelse(mask, A, B)"))
+	return Expr(:call, :ifelse, ex.args[2], A, fill)
 end
 
 _gc_what(k::Symbol) = k === :grid ? "a grid" : k === :mask ? "a mask (true/false per node)" :
@@ -545,6 +563,7 @@ function _gridcalc_eval(objs::Vector{Tuple{String,GMTgrid}}, files::Dict{String,
 	for v in keys(images)
 		kinds[v] = :rgb
 	end
+	ex = _gc_ifelse2(ex, kinds, labels)              # ifelse(mask, A) -> ifelse(mask, A, nothing-of-A's-kind)
 	kind = _gc_kind(ex, kinds, labels)
 	(kind === :rgb && ex isa Symbol) && _gc_pixel_only(kind, ex, labels)     # a bare image: nothing to compute
 
